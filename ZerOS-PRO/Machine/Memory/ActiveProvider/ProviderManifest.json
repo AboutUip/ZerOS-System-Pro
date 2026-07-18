@@ -1,0 +1,9 @@
+{
+  "Schema": "ZVHP1-ActiveProvider-Manifest",
+  "SchemaVersion": 1,
+  "EntryModule": "Provider.ts",
+  "ExportName": "ActiveMemoryProvider",
+  "NamespacePath": "ZerOS.Machine.Memory.ActiveMemoryProvider",
+  "ActiveProtocol": "ZMP1",
+  "Notes": "Replace the entire ActiveProvider/ folder to swap memory implementation. Do not rename EntryModule or ExportName."
+}

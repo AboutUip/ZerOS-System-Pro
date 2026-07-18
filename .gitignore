@@ -1,0 +1,6 @@
+# Cursor
+.cursor/
+
+# Toolchain
+Toolchain/node_modules/
+Toolchain/Dist/
