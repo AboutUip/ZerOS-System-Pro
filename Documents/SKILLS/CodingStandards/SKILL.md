@@ -6,7 +6,7 @@ description: >-
   one-concern-per-file, deep Chinese comments, no invented APIs, Toolchain
   isolation, protocol-aligned types. Use when writing or reviewing ZerOS-PRO
   source; when the user mentions 规范编码, 目录整理, 独立文件, 枚举, 结构,
-  注释不足, Machine/Boot/Kernel, or Memory layout.
+  注释不足, Hardware/Boot/Kernel, or Memory layout.
 ---
 
 # ZerOS-PRO 规范编码
@@ -15,7 +15,7 @@ description: >-
 
 - 在 `ZerOS-PRO/**` 新增或修改 TypeScript
 - 用户提到规范编码、严格类型、命名空间、中文注释、目录整理、独立文件、未约定不实现
-- 实现 Machine / Boot / Kernel 等与 ZMP 协议对齐的模块
+- 实现 Hardware / Boot / Kernel 等与 ZMP 协议对齐的模块
 - 审查「文件是否散乱平铺、枚举/结构是否未剥离」
 
 ## 核心原则（不可妥协）
@@ -24,17 +24,17 @@ description: >-
 2. **协议优先**：行为与字段名以 `Documents/Protocol/**` 为准；冲突时改代码对齐协议，禁止静默发明协议外语义。
 3. **超严 TypeScript**：禁止 `any`、禁止非空断言滥用、禁止隐式不安全；提交前 `Toolchain` 下 `npm run check` 必须通过。
 4. **注释必须中文且深入**：不仅文件头与成员说明；**必须**对模块分段、函数/方法内部关键步骤作教学级解释（见「注释与可教学性」）。
-5. **命名空间分层**：产品代码挂在 `ZerOS.*` 命名空间；子系统根路径与命名空间对应（如 `ZerOS.Machine.Memory` ↔ `Machine/Memory/`）。子目录是**物理整理**，不强制加深命名空间层数（除非协议另有挂载面要求）。
+5. **命名空间分层**：产品代码挂在 `ZerOS.*` 命名空间；子系统根路径与命名空间对应（如 `ZerOS.Hardware.Memory` ↔ `Hardware/Memory/`）。子目录是**物理整理**，不强制加深命名空间层数（除非协议另有挂载面要求）。
 6. **工具链隔离**：`package.json` / `node_modules` / `Dist` / Vite 仅在 `Toolchain/`；禁止污染 `ZerOS-PRO/`。
 7. **一责一文件 + 按职责分目录**：**禁止**把枚举量、对象结构、工厂、类全部堆在同一文件或子系统根目录平铺；必须拆文件并落入对应子目录（见「目录与命名」）。
-8. **虚拟硬件可插拔**：经 ZVHP1 `*Slot` + 固定 `ActiveProvider/` 目录替换；Boot 只导入该目录入口，禁止为换实现而改 Boot 源码路径。
+8. **虚拟硬件可插拔**：插座在主板上。内存经 ZVHP1 `MemorySlot` + 固定 `Hardware/Memory/ActiveProvider/` 目录替换；主板只导入该目录入口。Boot 只给主板通电，禁止为换内存实现而改 Boot 或主板源码路径。
 
 ## 目录与命名
 
 | 对象 | 约定 |
 |------|------|
 | 产品源码根 | `ZerOS-PRO/` |
-| 顶层分层 | `Boot/`、`Kernel/`、`Machine/` 等；文件夹 / 源文件 **PascalCase** |
+| 顶层分层 | `Boot/`、`Hardware/`、`Kernel/`、`System/`；文件夹 / 源文件 **PascalCase** |
 | 子系统内部 | **必须**按职责分子目录；禁止在子系统根下散落十余个平级 `.ts` |
 | 规范字段 / 对外属性 | PascalCase，与协议规范名逐字一致（如 `InitState`、`UnitSizeBytes`） |
 | 协议标识字符串 | 精确匹配（如 `"ZMP1"`） |
@@ -42,8 +42,8 @@ description: >-
 
 ### 子系统子目录通例（以 Memory 为权威范例 · 必须遵守）
 
-路径：`ZerOS-PRO/Machine/Memory/`  
-命名空间：仍为 `ZerOS.Machine.Memory`（协议字段挂载面不变）。
+路径：`ZerOS-PRO/Hardware/Memory/`  
+命名空间：`ZerOS.Hardware.Memory`（协议字段名 `MachineMemory` 不变）。
 
 | 子目录 | 职责 | 放什么 | 禁止放入 |
 |--------|------|--------|----------|
@@ -51,21 +51,25 @@ description: >-
 | `Enum/` | 枚举量 / 取值常量 | `BitValue`、`UnitInitState`、`ExceptionCategory`、`ExceptionCode` 等 | 接口结构体、业务类 |
 | `Structure/` | 对象结构与纯工厂 | `MemoryEvent`、`MemorySignal`、`MemoryException`、`UnitIndexId`、`createMemoryException` | 总控/单元类 |
 | `Unit/` | 颗粒单元 | `MemoryUnit` 类 | 总控、配置面 |
+| `Block/` | 内存块 | `MemoryBlock`：浅切块、子块、`BitLength`、`Deepen`、块内位元端口 | 颗粒 `Cells`、总控、线性跨度公式（公式在 `Structure/BlockSpan`） |
+| `Test/` | 初始化前测试 | 临时总控、各必选用例、`MemoryTestSuite` | 协议登记表正文、把总控发布到 `MachineMemory.MemoryController` |
 | `Controller/` | 总控及其专用工具 | `MemoryController`、`FreezeUnitMap` | Init 门面、配置面 |
 | `Bootstrap/` | 引导与对外门面 | `MachineMemory`、`MemoryInit` | 颗粒存储实现 |
-| `Provider/` | 可插拔 Provider 包装 | `ReferenceMemoryProvider` | Slot 本体（在 `Machine/Slots/`） |
-| `ActiveProvider/` | **当前生效插头目录**（换实现只换此夹） | `Provider.ts` 导出 `ActiveMemoryProvider`、`ProviderManifest.json` | 禁止改导出名；Boot 只认此路径 |
+| `Provider/` | 可插拔 Provider 包装 | `ReferenceMemoryProvider` | Slot 本体（在 `Hardware/Motherboard/Slot/`） |
+| `ActiveProvider/` | **当前生效插头目录**（换实现只换此夹） | `Provider.ts` 导出 `ActiveMemoryProvider`、`ProviderManifest.json` | 禁止改导出名；主板只认此路径 |
+| `Docs/` | **这一份实现的 API 文档** | 官方虚拟内存的调用说明（Markdown） | 协议正文、登记表、可执行代码。禁止把 `Docs/` 写成第二份 ZMP1 |
 
-跨子系统可插拔插座：`ZerOS-PRO/Machine/Slots/`（ZVHP1：`MemorySlot.Bind` / `GetActive`）。
+内存插座在主板上：`ZerOS-PRO/Hardware/Motherboard/Slot/`（ZVHP1：`MemorySlot.Bind` / `GetActive`）。主板固定，不可插拔。内核与系统不持有内存总控。
 
 **规则：**
 
 - 新增枚举 → **必须**进 `Enum/`（独立文件，一枚举或一组紧密常量一个文件）。
 - 新增结构 / 接口 / 结构工厂 → **必须**进 `Structure/`。
-- 新增类按角色进 `Unit/` / `Controller/` / `Bootstrap/` / `Config/` / `Provider/`，**禁止**回退到 `Memory/` 根目录。
-- **替换社区内存实现（推荐）**：整体替换 `ActiveProvider/` 文件夹，保持 `Provider.ts` 与导出名 `ActiveMemoryProvider`；**禁止**为换实现而改 `Boot.ts` 导入路径。
+- 新增类按角色进 `Unit/` / `Block/` / `Test/` / `Controller/` / `Bootstrap/` / `Config/` / `Provider/`，**禁止**回退到 `Memory/` 根目录。
+- **替换社区内存实现（推荐）**：整体替换 `ActiveProvider/` 文件夹，保持 `Provider.ts` 与导出名 `ActiveMemoryProvider`；**禁止**为换实现而改主板或 `Boot.ts` 导入路径。
+- 协议只有一份，放在 `Documents/Protocol/`。`Hardware/Memory/Docs/` 只描述本仓库这份官方虚拟内存实现的 API；其它实现不必沿用同名方法或同目录文档。主板说明在 `Hardware/Motherboard/Docs/`，那不是协议。
 - 跨子目录引用使用相对路径（如 `../Enum/ExceptionCode`）。
-- 其它 Machine 子系统（日后 CPU 等）**应**套用同构：`Config` / `Enum` / `Structure` / 主体角色目录，并在 `Machine/Slots/` 登记对应 Slot，**应**提供对等的 `ActiveProvider/` 目录约定。
+- 其它硬件子系统（日后 CPU 等）**应**套用同构：`Config` / `Enum` / `Structure` / 主体角色目录。CPU 自己的协议出现后，由主板决定是否支持，并在主板文档里如实写下协议标识。
 
 ### 文件粒度
 
@@ -97,7 +101,7 @@ description: >-
 - 以 `Toolchain/tsconfig.json` 的 strict 全家桶为准（含 `noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`verbatimModuleSyntax` 等）。
 - 以仓库根 `eslint.config.js` 为准：禁 `any`、禁 unsafe、禁 `@ts-ignore` / `@ts-nocheck`、要求显式返回类型等。
 - **允许** `namespace`；ESLint 已对 `no-namespace` 关闭。
-- 纯类型模块用 `import type`；若需命名空间值合并，结构文件可留非协议运行时锚点常量（如 `MemoryEventModule`），并在消费方显式引用以免被树摇掉。
+- 纯类型模块用 `import type`。结构文件只导出类型时，不要再加运行时锚点常量。
 - 改完产品代码后在 `Toolchain` 执行：
 
 ```bash
@@ -141,12 +145,12 @@ npm run check
 
 ### 错误信息
 
-若约定可抛：前缀可定位模块，形如 `[ZerOS.Machine.Memory.…]`。
+若约定可抛：前缀可定位模块，形如 `[ZerOS.Hardware.Memory.…]`。
 
 ### 参考范例
 
-- 目录整理：`ZerOS-PRO/Machine/Memory/{Config,Enum,Structure,Unit,Controller,Bootstrap}/`
-- 深入注释：`ZerOS-PRO/Machine/Memory/Controller/MemoryController.ts`
+- 目录整理：`ZerOS-PRO/Hardware/Memory/{Config,Enum,Structure,Unit,Controller,Bootstrap}/`
+- 深入注释：`ZerOS-PRO/Hardware/Memory/Controller/MemoryController.ts`
 
 ## 反例（禁止）
 
@@ -155,7 +159,7 @@ npm run check
 - 为「方便」导出一堆未约定 helper
 - 英文-only 文件头、无组织顺序说明
 - 函数/方法内部无步骤注释（逻辑非平凡时）
-- **在 `Machine/Memory/` 根目录平铺枚举/结构/类**，或不按 `Config|Enum|Structure|…` 归类
+- **在 `Hardware/Memory/` 根目录平铺枚举/结构/类**，或不按 `Config|Enum|Structure|…` 归类
 - **单文件塞满**枚举 + 多结构 + 类 + 工厂
 - `as any`、`!` 非空断言连环、空 catch
 

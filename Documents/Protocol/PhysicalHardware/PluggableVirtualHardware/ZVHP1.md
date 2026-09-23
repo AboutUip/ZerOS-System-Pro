@@ -3,7 +3,7 @@
 > 文档路径：`Documents/Protocol/PhysicalHardware/PluggableVirtualHardware/ZVHP1.md`  
 > 规范状态：**规范性（Normative）**  
 > 协议标识字符串（唯一）：`ZVHP1`  
-> 参考实现（非规范）：`ZerOS-PRO/Machine/Slots/`
+> 参考实现（非规范）：`ZerOS-PRO/Hardware/Motherboard/Slot/`
 
 ---
 
@@ -14,7 +14,7 @@
 本文是 **ZerOS Virtual Hardware Pluggable Protocol 第 1 版（ZVHP1）** 的对外契约。
 
 - 规定虚拟硬件**可插拔替换**时，主机与第三方实现必须共用的**插座名、Provider 形态、绑定语义**。
-- 使社区实现可在**不修改 Boot / Kernel 调用约定**的前提下替换参考实现。
+- 使社区实现可在**不修改坐座主机源码**的前提下替换参考实现。
 - 第三方**不得以查阅 ZerOS-PRO 源码为前提**理解本文；仅依据本文即可判定是否兼容 ZVHP1。
 
 ### 0.2 与领域协议的关系
@@ -55,12 +55,12 @@
 
 ## 1. 概述
 
-ZVHP1 规定 Machine 层虚拟硬件的可插拔模型：
+ZVHP1 规定虚拟硬件的可插拔模型：
 
 - 每个子系统对应一个 **Slot**（插座）；
 - 每个 Slot 在同一时刻至多绑定一个 **Provider**（插头 / 实现）；
-- Boot（或主机绑定阶段）通过 **`Bind`** 选定实现，通过 **`GetActive`** 取得当前实现；
-- Boot / Kernel **只经领域协议门面**调用（如 ZMP1 的 `MachineMemory.MemoryInit.Initialize`），**禁止**把某一厂商私有类型写进引导契约。
+- 坐座主机通过 **`Bind`** 选定实现，通过 **`GetActive`** 取得当前实现；
+- 坐座主机**只经领域协议门面**调用（如 ZMP1 的 `MachineMemory.MemoryInit.Test` 与 `Initialize`），**禁止**把某一厂商私有类型写进引导契约。
 
 ---
 
@@ -142,7 +142,7 @@ ZVHP1 规定 Machine 层虚拟硬件的可插拔模型：
 
 | 规范属性名 | 约束 |
 |------------|------|
-| `MachineMemory` | **必须**符合 ZMP1 §4.14：含字段 `MemoryInit`，且 `MemoryInit` **必须**提供方法 `Initialize`（无参、无返回值、幂等语义见 ZMP1） |
+| `MachineMemory` | **必须**符合 ZMP1 §4.14 与 §4.22：含字段 `MemoryInit`，且 `MemoryInit` **必须**提供无参、无返回值的 `Test` 与 `Initialize` |
 
 **禁止**以 `memory` / `InitFacade` 等非规范名替代 `MachineMemory`。  
 **禁止**要求主机导入 Provider 私有类名才能完成引导。
@@ -160,14 +160,14 @@ ZVHP1 规定 Machine 层虚拟硬件的可插拔模型：
 
 - **禁止**以 `bind` / `SetProvider` / `Get` / `Current` 等非规范名替代后仍声称兼容 ZVHP1。
 - `Bind` 的参数**必须**满足 §4.2（及 Memory 时的 §4.2.1）；主机**可以**在 `Bind` 时校验并拒绝非法 Provider；若拒绝，**必须**使 Active 保持不变或变为空（实现自选其一，但**禁止**留下半绑定状态却声称绑定成功）。
-- 在已调用领域 `Initialize` 且 Kernel 侧领域实例已非空之后再次 `Bind` 不同 Provider 的行为：**本协议不规定**（见 §2.2）；主机**应**在文档中说明其策略，但不得把某一策略宣称为 ZVHP1 唯一合法策略。
+- 在已调用领域 `Initialize` 且 `MachineMemory.MemoryController` 已非空之后再次 `Bind` 不同 Provider 的行为：**本协议不规定**（见 §2.2）；主机**应**在文档中说明其策略，但不得把某一策略宣称为 ZVHP1 唯一合法策略。
 
 ### 4.4 访问角色
 
 | 角色 | 约束 |
 |------|------|
-| Boot（或主机明确的「绑定阶段」） | **可以**调用 `Bind`；**必须**在调用领域 `Initialize` 之前确保 MemorySlot 已有 Active Provider（自行 `Bind` 默认实现，或依赖启动前已绑定） |
-| Kernel | **应**只经领域对外实例（如 ZMP1 的 `MemoryController`）工作；**禁止**把 `Bind` 当作常规内核路径 |
+| 坐座主机 | **可以**调用 `Bind`；**必须**在调用领域 `Initialize` 之前确保 MemorySlot 已有 Active Provider。`MachineMemory.MemoryController` 仍为空时，**必须**先调用 ZMP1 的 `Test`，仅在裁定为通过后再调用 `Initialize`。参考实现的坐座主机是主板 |
+| Kernel | **禁止**把 `Bind` 当作内核路径。ZMP1 不把 `MemoryController` 交给 Kernel |
 | 其它子系统 / 用户态 | **禁止**擅自 `Bind` 替换 Active Provider，除非主机另有明确的特权通道（该通道**不是** ZVHP1 符合性条件） |
 
 ### 4.5 引导与替换关系（规范性链路）
@@ -176,14 +176,15 @@ ZVHP1 规定 Machine 层虚拟硬件的可插拔模型：
 
 1. 经 `MemorySlot.Bind(provider)` 选定 Memory Provider（若启动时已绑定可跳过）；
 2. 经 `MemorySlot.GetActive()` 取得 Active Provider（或经主机转发的、等价于 Active 的 `MachineMemory` 门面）；
-3. 调用 ZMP1 规定的 `MachineMemory.MemoryInit.Initialize()`；
-4. 初始化完成后，领域总控出现在 Kernel 侧规范字段 `MemoryController`（ZMP1 §4.14）。
+3. `MachineMemory.MemoryController` 仍为空时，调用 ZMP1 规定的 `MachineMemory.MemoryInit.Test()`，并完成全部已登记用例；
+4. 该次裁定为通过之后，调用 `MachineMemory.MemoryInit.Initialize()`；
+5. 初始化完成后，领域总控出现在 `MachineMemory.MemoryController`（ZMP1 §4.14）。
 
 **快速替换社区实现**的符合性含义（主机侧）：
 
-- **应（SHOULD）** 提供固定目录约定（见 §4.7），使替换者**只需替换该目录、不必修改 Boot/Kernel 源码**；
+- **应（SHOULD）** 提供固定目录约定（见 §4.7），使替换者**只需替换该目录、不必修改坐座主机源码**；
 - 更换的 Provider **必须**满足 §4.2 / §4.2.1 与 ZMP1；
-- **禁止**要求修改 Boot/Kernel 中的协议字段名或 `Initialize` 方法名。
+- **禁止**要求修改坐座主机中的协议字段名，或 `Test` / `Initialize` 方法名。
 
 ### 4.6 元数据只读性
 
@@ -196,11 +197,11 @@ ZVHP1 规定 Machine 层虚拟硬件的可插拔模型：
 
 | 约定项 | 要求 |
 |--------|------|
-| 目录路径 | 相对产品源码根：`Machine/Memory/ActiveProvider/`（PascalCase） |
+| 目录路径 | 相对产品源码根：`Hardware/Memory/ActiveProvider/`（PascalCase） |
 | 入口模块文件名 | **必须**为 `Provider.ts`（若主机使用 TypeScript；其它语言应提供等价固定入口名并在清单中写明） |
-| 规范导出名 | **必须**导出 `ActiveMemoryProvider`（位于主机约定命名空间下，参考实现为 `ZerOS.Machine.Memory.ActiveMemoryProvider`） |
+| 规范导出名 | **必须**导出 `ActiveMemoryProvider`（位于主机约定命名空间下，参考实现为 `ZerOS.Hardware.Memory.ActiveMemoryProvider`） |
 | 清单文件 | **应**提供 `ProviderManifest.json`，且含字段 `Schema` = `ZVHP1-ActiveProvider-Manifest`、`EntryModule`、`ExportName` |
-| Boot 行为 | **必须**仅从上述固定入口导入并 `Bind(ActiveMemoryProvider)`；**禁止**在 Boot 源码中写死某一社区厂商模块路径 |
+| 坐座行为 | **必须**仅从上述固定入口导入并 `Bind(ActiveMemoryProvider)`；**禁止**在坐座源码中写死某一社区厂商模块路径。参考实现的坐座源码是主板，不是 Boot |
 | 替换操作 | 用社区实现**整体替换** `ActiveProvider/` 目录内容（保持入口文件名与导出名），然后重新构建/加载 |
 
 本条为**主机交付约定**（使替换零改 Boot）；Provider 本身的符合性仍以 §4.2 与 ZMP1 为准。
@@ -211,13 +212,13 @@ ZVHP1 规定 Machine 层虚拟硬件的可插拔模型：
 
 1. 协议标识使用 `zvhp1` 或 `ZVHP-1`；
 2. 使用 `Get` / `CurrentProvider` 替代 `GetActive`；
-3. Memory Provider 缺少 `MachineMemory` 或 `Initialize`；
+3. Memory Provider 缺少 `MachineMemory`、`Test` 或 `Initialize`；
 4. `ActiveProtocol` 对内存 Provider 填 `ZVHP1` 而非 `ZMP1`；
 5. `ProviderId` 为空或含空格 / 非可打印 ASCII；
 6. 同时保持两个 Active Memory Provider；
-7. 声称「换实现必须改 Kernel 去 import 厂商类名」且仍称兼容 ZVHP1；
+7. 声称「换实现必须改坐座主机去 import 厂商类名」且仍称兼容 ZVHP1；
 8. 仅实现 ZMP1 配置面、未提供 `MemorySlot.Bind` / `GetActive`，却声称兼容 ZVHP1 可插拔；
-9. 主机宣称「文件夹即可替换」，但 Boot 仍硬编码某一非 `ActiveProvider` 路径。
+9. 主机宣称「文件夹即可替换」，但坐座源码仍硬编码某一非 `ActiveProvider` 路径。
 
 ---
 
@@ -226,3 +227,5 @@ ZVHP1 规定 Machine 层虚拟硬件的可插拔模型：
 | 版本 | 说明 |
 |------|------|
 | ZVHP1 | 首版：Slot / Provider / Bind·GetActive；§4.7 ActiveProvider 目录约定（文件夹替换） |
+| ZVHP1（修订） | 内存引导在发布总控之前必须先调用 ZMP1 的 `Test` |
+| ZVHP1（修订） | 坐座主机调用 `Bind` / `Test` / `Initialize`。发布后的总控在 `MachineMemory.MemoryController`。参考实现的坐座主机是主板 |

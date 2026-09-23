@@ -23,7 +23,6 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "rootDir": "../ZerOS-PRO",
-    "baseUrl": ".",
     "paths": {
       "@ZerOS-PRO/*": ["../ZerOS-PRO/*"]
     }

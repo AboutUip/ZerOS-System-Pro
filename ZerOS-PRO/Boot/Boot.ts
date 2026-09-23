@@ -1,28 +1,26 @@
 /**
  * @module ZerOS.Boot
- * @description Boot：绑定 ActiveProvider 目录中的内存插头并初始化
+ * @description Boot：给主板通电
  *
  * ---------------------------------------------------------------------------
  * 文件职责
  * ---------------------------------------------------------------------------
- * 固定从 `Machine/Memory/ActiveProvider/Provider` 读取 ActiveMemoryProvider。
- * 替换内存实现 = 替换 ActiveProvider 文件夹；本文件导入路径不变。
+ * 不导入内存插头，不调用 MemoryInit，也不把总控交给内核。
+ * 上电对象只有主板。内存座在主板里面。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
  * ---------------------------------------------------------------------------
- *   1. Slot / ActiveProvider / MachineMemory 导入
- *   2. Boot 命名空间
+ *   1. 主板导入
+ *   2. Boot.Run
  *   3. 模块加载执行 Run
  */
 
 /* -------------------------------------------------------------------------- */
-/* 1. 导入：ActiveProvider 路径固定，禁止改为厂商私有路径                       */
+/* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
-import { ZerOS as MemorySlotRoot } from "../Machine/Slots/Memory/MemorySlot";
-import { ZerOS as ActiveProviderRoot } from "../Machine/Memory/ActiveProvider/Provider";
-import { ZerOS as MachineMemoryRoot } from "../Machine/Memory/Bootstrap/MachineMemory";
+import { ZerOS as MotherboardRoot } from "../Hardware/Motherboard/Bootstrap/Motherboard";
 
 export namespace ZerOS {
   /* ------------------------------------------------------------------------ */
@@ -31,32 +29,17 @@ export namespace ZerOS {
 
   export namespace Boot {
     /**
-     * ZVHP1 内存插座。
+     * 当前这一块主板。Boot 不更换它。
      */
-    export const MemorySlot: typeof MemorySlotRoot.Machine.Slots.MemorySlot =
-      MemorySlotRoot.Machine.Slots.MemorySlot;
+    export const Motherboard: typeof MotherboardRoot.Hardware.Motherboard.Motherboard =
+      MotherboardRoot.Hardware.Motherboard.Motherboard;
 
     /**
-     * ZMP1 内存引导门面（转发 Active Provider）。
-     */
-    export const MachineMemory: typeof MachineMemoryRoot.Machine.Memory.MachineMemory =
-      MachineMemoryRoot.Machine.Memory.MachineMemory;
-
-    /**
-     * 执行最小启动引导。
-     *
-     * 流水线：
-     *   (1) Bind(ActiveProvider 目录导出的 ActiveMemoryProvider)
-     *   (2) MachineMemory.MemoryInit.Initialize()
+     * 通电。
+     * 主板自己决定坐哪些已支持的协议设备。
      */
     export function Run(): void {
-      // —— (1) 始终从固定目录绑定；换实现只换文件夹 ——
-      MemorySlot.Bind(
-        ActiveProviderRoot.Machine.Memory.ActiveMemoryProvider,
-      );
-
-      // —— (2) 领域初始化 ——
-      MachineMemory.MemoryInit.Initialize();
+      Motherboard.Power();
     }
   }
 }

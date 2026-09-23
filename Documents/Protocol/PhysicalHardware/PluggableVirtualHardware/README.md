@@ -11,5 +11,5 @@
 ## 约定
 
 - 内存领域契约见 [`../Memory/`](../Memory/)（ZMP1）。
-- 快速替换（推荐）：整体替换 `ZerOS-PRO/Machine/Memory/ActiveProvider/`（见 ZVHP1 §4.7），无需改 Boot 源码。
-- 参考实现：`ZerOS-PRO/Machine/Slots/`、`ZerOS-PRO/Machine/Memory/ActiveProvider/`（非规范）。
+- 快速替换（推荐）：整体替换 `ZerOS-PRO/Hardware/Memory/ActiveProvider/`（见 ZVHP1 §4.7），无需改主板源码。
+- 参考实现：`ZerOS-PRO/Hardware/Motherboard/Slot/`、`ZerOS-PRO/Hardware/Memory/ActiveProvider/`（非规范）。
