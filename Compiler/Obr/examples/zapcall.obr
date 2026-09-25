@@ -1,0 +1,17 @@
+/* __zap__ 里可以 call 导出的函数名。 */
+export deRfun add(int a, int b): int {
+  return a + b;
+}
+
+deRfun main(): int {
+  long* cell = (long*)4096;
+  __zap__ {
+    place r1, 20
+    place r2, 22
+    call add
+    place r5, 4096
+    sti.64 r0, r5
+  }
+  if (*cell != 42L) return 7;
+  return 70;
+}

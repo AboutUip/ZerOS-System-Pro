@@ -6,7 +6,7 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 只列出这块主板认的协议标识。这不是协议正文。
- * 内存目前只有 ZMP1。CPU 协议还没有，所以 CPU 名单为空。
+ * 内存目前只有 ZMP1。CPU 目前是 ZCP1。显卡目前是 ZGP1。核心数和帧尺寸由各自的实现声明，不写在这份名单里。
  * 以后同一类协议多了一个版本，把标识加进对应名单即可。
  *
  * ---------------------------------------------------------------------------
@@ -31,9 +31,21 @@ export namespace ZerOS {
 
       /**
        * 主板愿意坐上的 CPU 协议。
-       * 当前没有任何 CPU 协议。名单为空是事实，不是占位实现。
+       * 当前是 ZCP1。核心数不在这里写，由那份 CPU 实现自己声明。
        */
-      export const SupportedCpuProtocols: readonly string[] = [];
+      export const SupportedCpuProtocols: readonly string[] = ["ZCP1"];
+
+      /**
+       * 主板愿意坐上的显卡协议。
+       * 当前是 ZGP1。帧宽高不在这里写，由那份显卡实现自己声明。
+       */
+      export const SupportedGpuProtocols: readonly string[] = ["ZGP1"];
+
+      /** 主板扩展口协议。当前是 ZXP1。口的个数不在这里写。 */
+      export const SupportedExpansionProtocols: readonly string[] = ["ZXP1"];
+
+      /** 扩展口数据交换协议。当前是 ZXD1。 */
+      export const SupportedExchangeProtocols: readonly string[] = ["ZXD1"];
 
       /* ------------------------------------------------------------------ */
       /* 2. 核对                                                             */
@@ -45,6 +57,19 @@ export namespace ZerOS {
        */
       export function supportsMemoryProtocol(protocol: string): boolean {
         for (const supported of SupportedMemoryProtocols) {
+          if (supported === protocol) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      /**
+       * CPU 插头声称的协议是否在主板名单里。
+       * 核心数不在这里比较。
+       */
+      export function supportsCpuProtocol(protocol: string): boolean {
+        for (const supported of SupportedCpuProtocols) {
           if (supported === protocol) {
             return true;
           }

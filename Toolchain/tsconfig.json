@@ -27,5 +27,5 @@
       "@ZerOS-PRO/*": ["../ZerOS-PRO/*"]
     }
   },
-  "include": ["../ZerOS-PRO/**/*.ts"]
+  "include": ["../ZerOS-PRO/**/*.ts", "./zap-raw.d.ts"]
 }

@@ -1,0 +1,432 @@
+/* 固件主程序。用 while 和函数轮询键盘，F12 进入设置页。 */
+import firmware;
+import gpu;
+import board;
+
+/* 把字符串逐个字形写进已经建好的文本节点。 */
+deRfun write(long line, string text): void {
+  int index = 0;
+  while (index < length(text)) {
+    gpu::glyph(line, text[index]);
+    index = index + 1;
+  }
+}
+
+/* 递归写出十进制数字。先写高位，再写当前位。 */
+deRfun printnum(long line, long value): void {
+  if (value == 0L) {
+    gpu::glyph(line, 48L);
+    return;
+  }
+  long rest = value / 10L;
+  if (rest != 0L) {
+    printnum(line, rest);
+  }
+  gpu::glyph(line, value % 10L + 48L);
+}
+
+/* 按小端把键名的每个字节画成字形，遇到 0 停止。 */
+deRfun printcode(long line, long value): void {
+  while (value % 256L != 0L) {
+    gpu::glyph(line, value % 256L);
+    value = value / 256L;
+  }
+}
+
+/* 从查询起点连续读最多 64 个字节，读到 0 就结束。 */
+deRfun printfield(long line): void {
+  long* seat = (long*)4672;
+  long* field = (long*)4736;
+  long* start = (long*)4800;
+  long index = *start;
+  long limit = *start + 64L;
+  while (index != limit) {
+    long code = query(*seat, *field, index);
+    if (code == 0L) {
+      return;
+    }
+    gpu::glyph(line, code);
+    index = index + 1L;
+  }
+}
+
+/* 在当前纵坐标新建一行白字，并把纵坐标下移 8。 */
+deRfun makeline(): long {
+  long* box = (long*)4224;
+  long* y = (long*)4288;
+  long line = gpu::text(*box, 0L, *y, 640L, 8L);
+  gpu::paint(line, 16777215L, 0L);
+  *y = *y + 8L;
+  return line;
+}
+
+/* 丢掉旧画面，铺一块 640×480 的黑底，纵坐标归零。 */
+deRfun openframe(): void {
+  long* box = (long*)4224;
+  long* y = (long*)4288;
+  if (*box != 0L) {
+    gpu::drop(*box);
+  }
+  *box = gpu::box(0L, 0L, 0L, 640L, 480L, 0L);
+  *y = 0L;
+}
+
+/* 主板页：口数量和协议标识。 */
+deRfun pageboard(): void {
+  long* seat = (long*)4672;
+  long* field = (long*)4736;
+  long* start = (long*)4800;
+  long line = makeline();
+  write(line, "BOARD");
+  line = makeline();
+  write(line, "PORTS ");
+  printnum(line, query(0L, 0L, 0L));
+  line = makeline();
+  write(line, "PROTO ");
+  *seat = 0L;
+  *field = 2L;
+  *start = 0L;
+  printfield(line);
+  write(line, " ");
+  *start = 8L;
+  printfield(line);
+  write(line, " ");
+  *start = 16L;
+  printfield(line);
+  write(line, " ");
+  *start = 24L;
+  printfield(line);
+  write(line, " ");
+  *start = 32L;
+  printfield(line);
+}
+
+/* 处理器页：标识、核心数，以及每颗核心的运行数。 */
+deRfun pagecpu(): void {
+  long* seat = (long*)4672;
+  long* field = (long*)4736;
+  long* start = (long*)4800;
+  long* core = (long*)4608;
+  long line = makeline();
+  write(line, "CPU");
+  line = makeline();
+  write(line, "ID ");
+  *seat = 1L;
+  *field = 2L;
+  *start = 0L;
+  printfield(line);
+  line = makeline();
+  write(line, "VENDOR ");
+  *field = 3L;
+  printfield(line);
+  line = makeline();
+  write(line, "PROTOCOL ");
+  *field = 4L;
+  printfield(line);
+  line = makeline();
+  write(line, "CORES ");
+  printnum(line, query(1L, 0L, 0L));
+  line = makeline();
+  write(line, "REGISTERS ");
+  printnum(line, query(1L, 1L, 0L));
+  *core = 0L;
+  while (query(1L, 0L, *core) != *core) {
+    line = makeline();
+    write(line, "CORE ");
+    printnum(line, *core);
+    write(line, " RUN ");
+    printnum(line, query(1L, 5L, *core));
+    write(line, " HZ ");
+    printnum(line, query(1L, 6L, *core));
+    write(line, " EXEC ");
+    printnum(line, query(1L, 7L, *core));
+    *core = *core + 1L;
+  }
+}
+
+/* 内存页：标识、初始化状态和容量。 */
+deRfun pagemem(): void {
+  long* seat = (long*)4672;
+  long* field = (long*)4736;
+  long* start = (long*)4800;
+  long line = makeline();
+  write(line, "MEMORY");
+  line = makeline();
+  write(line, "ID ");
+  *seat = 2L;
+  *field = 2L;
+  *start = 0L;
+  printfield(line);
+  line = makeline();
+  write(line, "VENDOR ");
+  *field = 3L;
+  printfield(line);
+  line = makeline();
+  write(line, "PROTOCOL ");
+  *field = 4L;
+  printfield(line);
+  line = makeline();
+  write(line, "INIT ");
+  printnum(line, query(2L, 0L, 0L));
+  line = makeline();
+  write(line, "MEMORYID ");
+  printnum(line, query(2L, 1L, 0L));
+}
+
+/* 显卡页：标识和当前能读到的字段。 */
+deRfun pagegpu(): void {
+  long* seat = (long*)4672;
+  long* field = (long*)4736;
+  long* start = (long*)4800;
+  long line = makeline();
+  write(line, "GPU");
+  line = makeline();
+  write(line, "ID ");
+  *seat = 3L;
+  *field = 2L;
+  *start = 0L;
+  printfield(line);
+  line = makeline();
+  write(line, "VENDOR ");
+  *field = 3L;
+  printfield(line);
+  line = makeline();
+  write(line, "PROTOCOL ");
+  *field = 4L;
+  printfield(line);
+  line = makeline();
+  write(line, "WIDTH ");
+  printnum(line, query(3L, 0L, 0L));
+  line = makeline();
+  write(line, "HEIGHT ");
+  printnum(line, query(3L, 1L, 0L));
+}
+
+/* 显示器页。显示器不插在主板上，这里只列出能查询到的数。 */
+deRfun pagedisplay(): void {
+  long line = makeline();
+  write(line, "DISPLAY");
+  line = makeline();
+  write(line, "WIDTH ");
+  printnum(line, query(4L, 0L, 0L));
+  line = makeline();
+  write(line, "HEIGHT ");
+  printnum(line, query(4L, 1L, 0L));
+  line = makeline();
+  write(line, "HERTZ ");
+  printnum(line, query(4L, 2L, 0L));
+}
+
+/* 扩展口页。页号 5 到 8 对应口 0 到 3。 */
+deRfun pageport(): void {
+  long* page = (long*)4160;
+  long* kept = (long*)4992;
+  long* state = (long*)5120;
+  long* seat = (long*)4672;
+  long* field = (long*)4736;
+  long* start = (long*)4800;
+  long index = *page - 5L;
+  *kept = index;
+  if (index != 0L && index != 1L && index != 2L && index != 3L) {
+    return;
+  }
+  long line = makeline();
+  write(line, "PORT ");
+  printnum(line, index);
+  line = makeline();
+  write(line, "STATE ");
+  long now = query(5L, 0L, index);
+  *state = now;
+  printnum(line, now);
+  if (now == 0L) {
+    return;
+  }
+  long cursor = 0L;
+  long step = 0L;
+  while (step != index) {
+    cursor = cursor + 64L;
+    step = step + 1L;
+  }
+  *start = cursor;
+  *seat = 5L;
+  line = makeline();
+  write(line, "PROTOCOL ");
+  *field = 1L;
+  printfield(line);
+  line = makeline();
+  write(line, "ID ");
+  *field = 2L;
+  printfield(line);
+  line = makeline();
+  write(line, "VENDOR ");
+  *field = 3L;
+  printfield(line);
+}
+
+/* 键盘测试页。显示最近一次交换读回的计数、种类、键和键名。 */
+deRfun pagekey(): void {
+  long* port = (long*)4480;
+  long line = makeline();
+  write(line, "KEYBOARD");
+  line = makeline();
+  write(line, "PORT ");
+  printnum(line, *port);
+  line = makeline();
+  write(line, "COUNT ");
+  printnum(line, xchg(*port, 1L, 0L));
+  line = makeline();
+  write(line, "KIND ");
+  printnum(line, xchg(*port, 1L, 1L));
+  line = makeline();
+  write(line, "KEY ");
+  printnum(line, xchg(*port, 1L, 2L));
+  line = makeline();
+  write(line, "CODE ");
+  printcode(line, xchg(*port, 1L, 3L));
+}
+
+/* 按当前页号重画一整页。 */
+deRfun drawpage(): void {
+  long* page = (long*)4160;
+  openframe();
+  if (*page == 0L) {
+    pageboard();
+  } else if (*page == 1L) {
+    pagecpu();
+  } else if (*page == 2L) {
+    pagemem();
+  } else if (*page == 3L) {
+    pagegpu();
+  } else if (*page == 4L) {
+    pagedisplay();
+  } else if (*page == 9L) {
+    pagekey();
+  } else {
+    pageport();
+  }
+}
+
+/* 从收件箱取出一次按键。0 没有事件，1 是可导航的按下，2 是其它已收完的事件。 */
+deRfun poll(): int {
+  long* port = (long*)4480;
+  long* count = (long*)4352;
+  long* name = (long*)4864;
+  long* mods = (long*)4928;
+  while (1) {
+    long word = 0L;
+    long found = inbox(&word);
+    if (found == 0L) {
+      return 0;
+    }
+    if (*port == 4L) {
+      return 0;
+    }
+    long next = xchg(*port, 0L, word);
+    if (next != *count) {
+      *count = next;
+      if (xchg(*port, 1L, 1L) != 0L) {
+        return 2;
+      }
+      if (xchg(*port, 1L, 4L) != 0L) {
+        return 2;
+      }
+      *name = xchg(*port, 1L, 3L);
+      *mods = xchg(*port, 1L, 6L);
+      return 1;
+    }
+  }
+}
+
+/* F12 进入设置，Esc 回到黑屏，Tab 翻页，Shift+Tab 往回。 */
+deRfun onkey(): void {
+  long* mode = (long*)4096;
+  long* page = (long*)4160;
+  long* pages = (long*)4544;
+  long* name = (long*)4864;
+  long* mods = (long*)4928;
+  if (*name == 0x323146L) {
+    if (*mode != 2L) {
+      *mode = 2L;
+      *page = 0L;
+    }
+    return;
+  }
+  if (*mode != 2L) {
+    return;
+  }
+  if (*name == 0x657061637345) {
+    clear();
+    *mode = 1L;
+    return;
+  }
+  if (*name != 0x626154L) {
+    return;
+  }
+  if (*mods % 2L == 0L) {
+    long next = *page + 1L;
+    if (next == *pages) {
+      *page = 0L;
+    } else {
+      *page = next;
+    }
+  } else if (*page == 0L) {
+    *page = *pages - 1L;
+  } else {
+    *page = *page - 1L;
+  }
+}
+
+/* 找键盘口，画出 F12 提示，然后一直轮询。键盘页只在收到事件时重画。 */
+deRfun main(): int {
+  long* mode = (long*)4096;
+  long* count = (long*)4352;
+  long* wait = (long*)4416;
+  long* port = (long*)4480;
+  long* pages = (long*)4544;
+  long* page = (long*)4160;
+  long* box = (long*)4224;
+  *mode = 0L;
+  *count = 0L;
+  *wait = 800L;
+  long index = 0L;
+  long matched = 0L;
+  while (index != 4L && matched == 0L) {
+    if (port::state(index) == 2L && port::char(index, 0L) == 0x5AL && port::char(index, 1L) == 0x4BL && port::char(index, 2L) == 0x50L && port::char(index, 3L) == 0x31L) {
+      *port = index;
+      *pages = 10L;
+      matched = 1L;
+    } else {
+      index = index + 1L;
+    }
+  }
+  if (matched == 0L) {
+    *port = 4L;
+    clear();
+    halt();
+    return 0;
+  }
+  long text = gpu::text(*box, 232L, 360L, 176L, 16L);
+  gpu::paint(text, 16777215L, 0L);
+  write(text, "F12 BIOS");
+  gpu::compose();
+  gpu::present();
+  while (1) {
+    int event = poll();
+    if (event == 1) {
+      onkey();
+    }
+    if (*mode == 2L) {
+      if (*page != 9L || event != 0) {
+        drawpage();
+        gpu::compose();
+        gpu::present();
+      }
+    } else if (*mode == 0L) {
+      *wait = *wait - 1L;
+      if (*wait == 0L) {
+        clear();
+        *mode = 1L;
+      }
+    }
+  }
+}

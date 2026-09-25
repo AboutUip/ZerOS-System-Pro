@@ -1,0 +1,11 @@
+/* 超过三个的参数放在栈上。 */
+deRfun pack(int a, int b, int c, int d): int {
+  return a + b + c + d;
+}
+
+deRfun main(): int {
+  static var[int] kept = 3;
+  float part = 5.0F % 3.0F;
+  if (part == 2.0F) return pack(kept, 1, 1, 2);
+  return 0;
+}

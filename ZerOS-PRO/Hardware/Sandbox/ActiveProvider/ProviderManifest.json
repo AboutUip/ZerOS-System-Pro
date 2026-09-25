@@ -1,0 +1,5 @@
+{
+  "Schema": "ZVHP1-ActiveProvider-Manifest",
+  "EntryModule": "Provider.ts",
+  "ExportName": "ActiveSandboxProvider"
+}

@@ -1,0 +1,11 @@
+/* 显卡指令。每次调用收成一条已有的 gpu.* ，不建栈帧。 */
+namespace gpu {
+deRfun box(long parent, long x, long y, long width, long height, long fill): long;
+deRfun text(long parent, long x, long y, long width, long height): long;
+deRfun align(long node, long x, long y): void;
+deRfun paint(long node, long foreground, long background): void;
+deRfun glyph(long node, long code): void;
+deRfun drop(long node): void;
+deRfun compose(): void;
+deRfun present(): void;
+}

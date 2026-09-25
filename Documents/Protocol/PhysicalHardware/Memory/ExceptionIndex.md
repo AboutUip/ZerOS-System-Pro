@@ -73,7 +73,7 @@
 | `LinearBitIndexOutOfRange` | `0x0013` | 线性位元地址越出整机位元线 |
 | `IllegalIntegerWidth` | `0x0014` | 整数宽度不是 2、4 或 8 |
 | `IntegerSpanOutOfRange` | `0x0015` | 整数跨度越出八位组范围 |
-| `IllegalIntegerValue` | `0x0016` | 整数值超出该宽度 |
+| `IllegalIntegerValue` | `0x0016` | 补码或有限浮点超出该宽度 |
 | `BlockOctetIndexOutOfRange` | `0x0017` | 块内八位组下标越界 |
 | `BlockIndexOutOfRange` | `0x0018` | 浅切根下标越界 |
 | `AlreadyClaimed` | `0x0019` | 浅切根已经有主人 |

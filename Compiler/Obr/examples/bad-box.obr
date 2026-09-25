@@ -1,0 +1,5 @@
+/* 指令不能再写函数体，编译应当失败。 */
+import gpu;
+deRfun gpu::box(long parent, long x, long y, long width, long height, long fill): long {
+  return 0;
+}

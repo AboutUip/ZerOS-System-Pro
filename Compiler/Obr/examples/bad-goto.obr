@@ -1,0 +1,3 @@
+/* 跳到不存在的标号，编译应当失败。 */
+deRfun main(): int { goto missing; return 0; }
+

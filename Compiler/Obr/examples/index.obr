@@ -1,0 +1,11 @@
+/* 字符串下标取出一个 char。 */
+deRfun main(): int {
+  string word = "Ab";
+  if (length(word) != 2) return 4;
+  if (word[0] != 'A') return 5;
+  if (word[1] != 'b') return 6;
+  string empty = "";
+  if (length(empty) != 0) return 7;
+  if (length(word) == 0) return 8;
+  return 70;
+}

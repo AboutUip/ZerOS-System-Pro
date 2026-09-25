@@ -4,7 +4,7 @@
 
 | 文档 | 类型 | 说明 |
 |------|------|------|
-| [ZMP1.md](./ZMP1.md) | 协议正文 | 配置、异常、单元状态、颗粒存储体、端口、浅切、加深、线性地址、小端整数、块内八位组、所有权、初始化前测试、侧信道；可插拔见 [ZVHP1](../PluggableVirtualHardware/ZVHP1.md) |
+| [ZMP1.md](./ZMP1.md) | 协议正文 | 配置、异常、单元状态、颗粒存储体、端口、浅切、加深、线性地址、小端整数、块内八位组、所有权、内存频率、初始化前测试、侧信道；可插拔见 [ZVHP1](../PluggableVirtualHardware/ZVHP1.md) |
 | [TestCaseRegistry.md](./TestCaseRegistry.md) | 专一登记 | `Test` 必选用例的规范名、顺序与通过条件 |
 | [TestCaseIndex.md](./TestCaseIndex.md) | 专一索引 | 用例按顺序 / 规范名 / 主题词检索 |
 | [ExceptionCodeRegistry.md](./ExceptionCodeRegistry.md) | 专一登记 | `ExceptionCode` 标号编码 |

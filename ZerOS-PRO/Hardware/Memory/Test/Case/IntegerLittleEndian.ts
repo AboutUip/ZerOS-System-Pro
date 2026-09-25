@@ -99,6 +99,16 @@ export namespace ZerOS {
           const high = unit.ReadOctet(one);
           const packed = unit.ReadInteger(zero, 2);
           unit.WriteInteger(zero, 2, 0n);
+          unit.WriteInteger(zero, 2, -1n);
+          if (unit.ReadOctet(zero) !== 0xff || unit.ReadOctet(one) !== 0xff || unit.ReadInteger(zero, 2) !== -1n) {
+            return ResultRoot.Hardware.Memory.memoryTestCaseResult(name, 0, "宽度 2 的 -1 没有按补码往返");
+          }
+          unit.WriteInteger(zero, 2, 0n);
+          controller.WriteLinearFloat(0n, 8, 1.5);
+          if (controller.ReadLinearFloat(0n, 8) !== 1.5) {
+            return ResultRoot.Hardware.Memory.memoryTestCaseResult(name, 0, "二进制 64 的 1.5 没有读回");
+          }
+          controller.WriteLinearFloat(0n, 8, 0);
           if (low !== 0x81 || high !== 0x01 || packed !== 0x0181n || unit.ReadOctet(zero) !== 0) {
             return ResultRoot.Hardware.Memory.memoryTestCaseResult(
               name,

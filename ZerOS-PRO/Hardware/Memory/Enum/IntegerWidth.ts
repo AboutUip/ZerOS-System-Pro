@@ -35,10 +35,21 @@ export namespace ZerOS {
       }
 
       /**
-       * 该宽度能表示的最大整数：2^(8×宽度) − 1。
+       * 该宽度的全部位型个数：2^(8×宽度)。
+       * 补码把高于一半的位型读成负数，这个模数用来在位型和数学值之间折返。
        */
-      export function integerValueMax(width: IntegerWidth): bigint {
-        return (1n << (BigInt(width) * 8n)) - 1n;
+      export function integerModulus(width: IntegerWidth): bigint {
+        return 1n << (BigInt(width) * 8n);
+      }
+
+      /** 该宽度补码的最小整数：−2^(8×宽度−1)。 */
+      export function integerSignedMin(width: IntegerWidth): bigint {
+        return -(integerModulus(width) / 2n);
+      }
+
+      /** 该宽度补码的最大整数：2^(8×宽度−1) − 1。 */
+      export function integerSignedMax(width: IntegerWidth): bigint {
+        return integerModulus(width) / 2n - 1n;
       }
     }
   }

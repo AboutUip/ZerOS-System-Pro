@@ -1,0 +1,14 @@
+/* 同时导入 program 和 math，调用 math::add。 */
+import program;
+import math;
+
+deRfun main(): int {
+  int n = 0;
+  while (n < 3) {
+    n = n + 1;
+  }
+  if (n == 3) {
+    return math::add(n, 4);
+  }
+  return 0;
+}

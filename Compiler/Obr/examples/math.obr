@@ -1,0 +1,6 @@
+/* math::add 的定义，必须和 math.mr 里的函数头一致。 */
+import math;
+
+deRfun math::add(int a, int b): int {
+  return a + b;
+}

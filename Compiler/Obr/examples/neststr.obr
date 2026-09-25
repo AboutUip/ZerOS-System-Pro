@@ -1,0 +1,8 @@
+/* 嵌套的字符串拼接。 */
+deRfun main(): int {
+  string deep = ("a" + "b") + "c";
+  string same = "abc";
+  if (!deep) return 7;
+  if (deep == same) return 8;
+  return 70;
+}

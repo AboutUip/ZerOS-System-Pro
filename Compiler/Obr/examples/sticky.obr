@@ -1,0 +1,11 @@
+/* static 只在第一次执行到声明时赋初值。 */
+deRfun bump(): int {
+  static var[int] kept = 1;
+  kept = kept + 1;
+  return kept;
+}
+
+deRfun main(): int {
+  if (bump() + bump() != 5) return 14;
+  return 70;
+}

@@ -1,0 +1,19 @@
+/* 固件对外的函数头。定义在 Bios.obr 和 Clear.obr。 */
+deRfun main(): int;
+deRfun clear(): void;
+deRfun poll(): int;
+deRfun onkey(): void;
+deRfun drawpage(): void;
+deRfun openframe(): void;
+deRfun makeline(): long;
+deRfun printnum(long line, long value): void;
+deRfun printcode(long line, long value): void;
+deRfun printfield(long line): void;
+deRfun write(long line, string text): void;
+deRfun pageboard(): void;
+deRfun pagecpu(): void;
+deRfun pagemem(): void;
+deRfun pagegpu(): void;
+deRfun pagedisplay(): void;
+deRfun pageport(): void;
+deRfun pagekey(): void;

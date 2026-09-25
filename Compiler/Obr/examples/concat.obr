@@ -1,0 +1,6 @@
+/* 字符串拼接。 */
+deRfun main(): int {
+  string word = "ab" + "c";
+  if (word) return 7;
+  return 0;
+}

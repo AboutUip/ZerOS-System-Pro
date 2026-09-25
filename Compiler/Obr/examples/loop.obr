@@ -1,0 +1,17 @@
+/* while、break 和 continue。 */
+deRfun main(): int {
+  int acc = 0;
+  int n = 0;
+  while (n < 5) {
+    if (n == 2) {
+      n = n + 1;
+      continue;
+    }
+    if (n == 4) break;
+    acc = acc + n;
+    n = n + 1;
+  }
+  if (acc != 4) return 1;
+  if (n != 4) return 2;
+  return 70;
+}

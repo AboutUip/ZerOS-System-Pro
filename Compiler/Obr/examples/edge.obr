@@ -1,0 +1,8 @@
+/* 边界上的整数和移位。 */
+deRfun main(): int {
+  string left = "ab";
+  string mid = left + "c";
+  if (mid == left) return 2;
+  if (!mid) return 6;
+  return 70;
+}

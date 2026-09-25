@@ -5,7 +5,7 @@
  * ---------------------------------------------------------------------------
  * 文件职责
  * ---------------------------------------------------------------------------
- * 本文件是主机**唯一**静态导入的内存插头入口。
+ * 本文件是内存线程**唯一**静态导入的内存插头入口。
  * 替换内存实现 = 替换整个 `ActiveProvider/` 目录（保持本文件导出名不变），
  * **不必**修改主板、Boot 或 Kernel 源码。
  *
@@ -35,7 +35,7 @@ export namespace ZerOS {
 
       /**
        * 当前生效的 Memory Provider（ZVHP1）。
-       * 导出名必须为 `ActiveMemoryProvider`；主板只认此名。
+       * 导出名必须为 `ActiveMemoryProvider`。内存线程坐座时只认此名。
        */
       export const ActiveMemoryProvider: MemoryProviderRoot.Hardware.Motherboard.Slot.MemoryProvider =
         ReferenceProviderRoot.Hardware.Memory.ReferenceMemoryProvider;

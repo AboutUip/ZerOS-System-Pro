@@ -1,0 +1,10 @@
+/* 只取第四个参数。 */
+deRfun fourth(int a, int b, int c, int d): int {
+  int* p = &d;
+  return *p;
+}
+
+deRfun main(): int {
+  if (fourth(1, 2, 3, 40) != 40) return 1;
+  return 70;
+}

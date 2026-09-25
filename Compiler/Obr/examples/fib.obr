@@ -1,0 +1,10 @@
+/* 递归斐波那契。 */
+deRfun fib(int n): int {
+  if (n < 2) return n;
+  return fib(n - 1) + fib(n - 2);
+}
+
+deRfun main(): int {
+  if (fib(6) != 8) return 13;
+  return 70;
+}

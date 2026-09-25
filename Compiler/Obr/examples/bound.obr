@@ -1,0 +1,8 @@
+/* 整数除以 0 会在运行时失败。 */
+deRfun main(): int {
+  string kept = "ab" + "";
+  string none = "" + "";
+  if (!kept) return 4;
+  if (none) return 5;
+  return 70;
+}

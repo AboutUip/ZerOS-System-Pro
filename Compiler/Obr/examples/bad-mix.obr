@@ -1,0 +1,7 @@
+/* byte 不能和别的数值混算，编译应当失败。 */
+deRfun main(): int {
+  int n = 1;
+  int* p = &n;
+  int x = p;
+  return x;
+}

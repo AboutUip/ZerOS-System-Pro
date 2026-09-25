@@ -1,0 +1,20 @@
+/* 取址、解引用，以及把整数当成位地址。 */
+deRfun main(): int {
+  int n = 7;
+  int* p = &n;
+  if (*p != 7) return 1;
+  *p = 4;
+  if (n != 4) return 2;
+  long* cell = (long*)4096;
+  *cell = 0x2A;
+  if (*cell != 42L) return 3;
+  long mark = 0x657061637345;
+  if (mark != 0x657061637345) return 9;
+  int color = 0xFFFFFF;
+  if (color != 16777215) return 10;
+  static var[int] kept = 1;
+  int* s = &kept;
+  *s = 9;
+  if (kept != 9) return 11;
+  return 70;
+}

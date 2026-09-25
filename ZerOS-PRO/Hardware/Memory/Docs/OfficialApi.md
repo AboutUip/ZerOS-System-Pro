@@ -164,3 +164,26 @@ ZMP1 已经写明总容量公式、`MemoryId` 抽取、线性地址、小端整�
 - 操作系统页表、进程虚拟地址空间、调度与权限
 
 这些留下的事项属于内核，或者属于协议已经声明不管的宿主细节。
+
+## 6. Obr 函数头
+
+文件是 [`memory.mr`](../memory.mr)。这是官方实现给 Obr 程序的声明，不是 ZMP1 必选导出。其它实现不必沿用这些名字。`import memory` 之后，下表里的每次调用收成一条已有 ZAP，不建栈帧。
+
+| 声明 | 发出的指令 |
+|------|------------|
+| `memory::loadOctet(long address): long` | `ldi.octet` |
+| `memory::load16(long address): long` | `ldi.16` |
+| `memory::load32(long address): long` | `ldi.32` |
+| `memory::load64(long address): long` | `ldi.64` |
+| `memory::loadFloat32(long address): long` | `ldi.f32`。读回的是二进制 32 的位型，类型仍是 `long` |
+| `memory::loadFloat64(long address): double` | `ldi.f64` |
+| `memory::storeOctet(long value, long address): void` | `sti.octet` |
+| `memory::store16(long value, long address): void` | `sti.16` |
+| `memory::store32(long value, long address): void` | `sti.32` |
+| `memory::store64(long value, long address): void` | `sti.64` |
+| `memory::storeFloat32(long value, long address): void` | `sti.f32`。`value` 是二进制 32 的位型 |
+| `memory::storeFloat64(double value, long address): void` | `sti.f64` |
+| `memory::hertz(long hertz): void` | `mem.hertz` |
+| `memory::metric(long kind): long` | `mem.metric` |
+
+读出的数在 `r0`，地址在 `r1`。写入时值在 `r0`、地址在 `r1`，和 `sti` 的操作数顺序一致。带 `::` 的名字不能做导出标号。

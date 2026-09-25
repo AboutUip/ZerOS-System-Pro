@@ -1,0 +1,9 @@
+/* 主板指令。端口、查询、收件箱、交换和停机各是一条已有指令。 */
+namespace port {
+deRfun state(long index): long;
+deRfun char(long index, long offset): long;
+}
+deRfun query(long seat, long field, long index): long;
+deRfun inbox(long* word): long;
+deRfun xchg(long port, long direction, long data): long;
+deRfun halt(): void;

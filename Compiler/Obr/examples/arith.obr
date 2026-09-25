@@ -1,0 +1,11 @@
+/* 整数算术、除法和取余。 */
+deRfun main(): int {
+  if (-7 / 2 != -3) return 7;
+  if (-7 % 2 != -1) return 8;
+  if ((1 << 4) != 16) return 9;
+  if ((-8 >> 1) != -4) return 10;
+  int pick = 0;
+  int chosen = pick ? 0 : 20;
+  if (chosen != 20) return 15;
+  return 70;
+}

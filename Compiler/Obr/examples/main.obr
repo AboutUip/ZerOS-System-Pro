@@ -1,0 +1,15 @@
+/* 同一个文件里的两个函数。 */
+deRfun add(int a, int b): int {
+  return a + b;
+}
+
+deRfun main(): int {
+  int n = 0;
+  while (n < 3) {
+    n = n + 1;
+  }
+  if (n == 3) {
+    return add(n, 4);
+  }
+  return 0;
+}

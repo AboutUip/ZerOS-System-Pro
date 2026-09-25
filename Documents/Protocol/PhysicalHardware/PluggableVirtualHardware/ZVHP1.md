@@ -229,3 +229,5 @@ ZVHP1 规定虚拟硬件的可插拔模型：
 | ZVHP1 | 首版：Slot / Provider / Bind·GetActive；§4.7 ActiveProvider 目录约定（文件夹替换） |
 | ZVHP1（修订） | 内存引导在发布总控之前必须先调用 ZMP1 的 `Test` |
 | ZVHP1（修订） | 坐座主机调用 `Bind` / `Test` / `Initialize`。发布后的总控在 `MachineMemory.MemoryController`。参考实现的坐座主机是主板 |
+| ZVHP1（修订） | `Cpu` 槽启用。领域协议为 `ZCP1`。固定入口 `Hardware/Cpu/ActiveProvider/Provider.ts`，导出名 `ActiveCpuProvider` |
+| ZVHP1（修订） | `Gpu` 槽启用。领域协议为 `ZGP1`。固定入口 `Hardware/Gpu/ActiveProvider/Provider.ts`，导出名 `ActiveGpuProvider` |

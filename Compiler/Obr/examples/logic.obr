@@ -1,0 +1,14 @@
+/* 短路与、或，以及三元表达式。 */
+deRfun main(): int {
+  int hit = 0;
+  int guard = 0;
+  if (guard && (hit = 1)) return 3;
+  if (hit != 0) return 4;
+  guard = 1;
+  if (guard || (hit = 7)) {
+    if (hit != 0) return 6;
+  } else {
+    return 5;
+  }
+  return 70;
+}

@@ -1,0 +1,8 @@
+/* goto 跳到同一函数里的标号。 */
+deRfun main(): int {
+  int n = 0;
+  begin:
+  n = n + 1;
+  if (n < 3) goto begin;
+  return n;
+}

@@ -4,3 +4,16 @@
 # Toolchain
 Toolchain/node_modules/
 Toolchain/Dist/
+
+# Compiler host products
+Compiler/**/build/
+Compiler/**/*.exe
+Compiler/**/*.zap
+# g++ -o obrc on Linux. The source file is obrc.cpp and stays tracked.
+Compiler/**/obrc
+
+# Firmware text produced by Vite from Boot/*.obr
+Toolchain/Zap/
+
+# Vite dependency cache
+**/.vite/

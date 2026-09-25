@@ -1,0 +1,5 @@
+/* 非法的指针使用，编译应当失败。 */
+deRfun main(): int {
+  int** p = 0;
+  return 0;
+}

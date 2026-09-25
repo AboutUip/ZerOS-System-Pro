@@ -1,0 +1,17 @@
+/* 内存指令。读出的数在 r0，写入时值在 r0、地址在 r1。 */
+namespace memory {
+deRfun loadOctet(long address): long;
+deRfun load16(long address): long;
+deRfun load32(long address): long;
+deRfun load64(long address): long;
+deRfun loadFloat32(long address): long;
+deRfun loadFloat64(long address): double;
+deRfun storeOctet(long value, long address): void;
+deRfun store16(long value, long address): void;
+deRfun store32(long value, long address): void;
+deRfun store64(long value, long address): void;
+deRfun storeFloat32(long value, long address): void;
+deRfun storeFloat64(double value, long address): void;
+deRfun hertz(long hertz): void;
+deRfun metric(long kind): long;
+}

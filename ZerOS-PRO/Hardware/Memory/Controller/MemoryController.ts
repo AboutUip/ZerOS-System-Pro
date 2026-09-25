@@ -46,6 +46,7 @@ import type { ZerOS as MemoryEventRoot } from "../Structure/MemoryEvent";
 import type { ZerOS as MemorySignalRoot } from "../Structure/MemorySignal";
 import { ZerOS as SideChannelRoot } from "../Structure/SideChannel";
 import { ZerOS as Uint64Root } from "../Structure/Uint64";
+import { ZerOS as FloatBitsRoot } from "../Structure/FloatBits";
 import { ZerOS as LittleEndianRoot } from "../Structure/LittleEndian";
 import { ZerOS as IntegerWidthRoot } from "../Enum/IntegerWidth";
 
@@ -571,7 +572,7 @@ export namespace ZerOS {
          */
         public ReadLinearInteger(LinearOctetIndex: bigint, OctetWidth: number): bigint {
           const octets: readonly number[] = this.readLinearOctets(LinearOctetIndex, OctetWidth);
-          return LittleEndianRoot.Hardware.Memory.packLittleEndian(octets);
+          return LittleEndianRoot.Hardware.Memory.signedFromLittleEndian(octets);
         }
 
         /**
@@ -652,6 +653,59 @@ export namespace ZerOS {
           for (const item of planned) {
             this.requireUnit(item.unitOrdinal).WriteOctet(item.octetIndex, item.octet);
           }
+        }
+
+        /**
+         * 读一个有限浮点（ZMP1 §4.28）。
+         * 八位组先按补码整数读出，再按该宽度的浮点格式交回有限数。
+         */
+        public ReadLinearFloat(LinearOctetIndex: bigint, OctetWidth: number): number {
+          const width = FloatBitsRoot.Hardware.Memory.toFloatWidth(OctetWidth);
+          if (width === null) {
+            this.recordAndThrow({
+              ExceptionCode: ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IllegalIntegerWidth,
+              ExceptionCategory: ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
+              ExceptionSummary: `OctetWidth=${String(OctetWidth)} 不是 4 或 8`,
+              ExceptionChain: { Source: "ZerOS.Hardware.Memory.MemoryController.ReadLinearFloat" },
+            });
+          }
+          const bits = this.ReadLinearInteger(LinearOctetIndex, width);
+          const value = FloatBitsRoot.Hardware.Memory.signedBitsToFloat(bits, width);
+          if (value === null) {
+            this.recordAndThrow({
+              ExceptionCode: ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IllegalIntegerValue,
+              ExceptionCategory: ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
+              ExceptionSummary: "浮点位型不是有限数",
+              ExceptionChain: { Source: "ZerOS.Hardware.Memory.MemoryController.ReadLinearFloat" },
+            });
+          }
+          return value;
+        }
+
+        /**
+         * 写一个有限浮点（ZMP1 §4.28）。
+         * 先收成补码位型，再交给已经有的小端整数写入。失败时存储体不变。
+         */
+        public WriteLinearFloat(LinearOctetIndex: bigint, OctetWidth: number, Value: number): void {
+          const width = FloatBitsRoot.Hardware.Memory.toFloatWidth(OctetWidth);
+          if (width === null) {
+            this.recordAndThrow({
+              ExceptionCode: ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IllegalIntegerWidth,
+              ExceptionCategory: ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
+              ExceptionSummary: `OctetWidth=${String(OctetWidth)} 不是 4 或 8`,
+              ExceptionChain: { Source: "ZerOS.Hardware.Memory.MemoryController.WriteLinearFloat" },
+            });
+          }
+          const bits = FloatBitsRoot.Hardware.Memory.floatToSignedBits(Value, width);
+          if (bits === null) {
+            this.recordAndThrow({
+              ExceptionCode: ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IllegalIntegerValue,
+              ExceptionCategory: ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
+              ExceptionSummary: "浮点不是该宽度能表示的有限数",
+              ExceptionChain: { Source: "ZerOS.Hardware.Memory.MemoryController.WriteLinearFloat" },
+            });
+          }
+          this.WriteLinearInteger(LinearOctetIndex, width, bits);
         }
 
         /**

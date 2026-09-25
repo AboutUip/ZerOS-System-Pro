@@ -578,7 +578,7 @@ export namespace ZerOS {
             octets.push(this.ReadOctet(index));
             step += 1;
           }
-          return LittleEndianRoot.Hardware.Memory.packLittleEndian(octets);
+          return LittleEndianRoot.Hardware.Memory.signedFromLittleEndian(octets);
         }
 
         /**

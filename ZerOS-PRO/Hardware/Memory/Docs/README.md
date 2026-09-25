@@ -22,8 +22,10 @@
 
 换一套虚拟内存：整体替换 [`ActiveProvider/`](../ActiveProvider/README.md)。主板导入路径不变。替换后的实现遵守 ZMP1 与 ZVHP1，不遵守本目录里的官方方法名与标定值。
 
+官方这份实现上电时的内存 Hz 是 `100000000`。字宽不超过 8 的一次访问计 1 拍，更宽的按字节数计拍。一次访问只等待一次，短于 1 毫秒则不挂起。程序用 ZAP 的 `mem.hertz` 与 `mem.metric` 改读这个记录。Obr 侧的函数头在 [`memory.mr`](../memory.mr)，`import memory` 之后每次调用仍是一条已有的 `ldi` / `sti` 或 `mem.hertz` / `mem.metric`，不另建栈帧，也不增加 ZMP1 条款。
+
 ## 文档
 
 | 文档 | 内容 |
 |------|------|
-| [OfficialApi.md](./OfficialApi.md) | 官方实现当前导出的类型、常量、构造与 `Initialize` |
+| [OfficialApi.md](./OfficialApi.md) | 官方实现当前导出的类型、常量、构造、`Initialize`，以及 Obr 函数头 |

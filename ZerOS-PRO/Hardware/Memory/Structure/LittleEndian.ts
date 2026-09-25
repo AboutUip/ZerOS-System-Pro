@@ -46,11 +46,14 @@ export namespace ZerOS {
         value: bigint,
         width: IntegerWidthRoot.Hardware.Memory.IntegerWidth,
       ): number[] | null {
-        if (value < 0n || value > IntegerWidthRoot.Hardware.Memory.integerValueMax(width)) {
+        const min = IntegerWidthRoot.Hardware.Memory.integerSignedMin(width);
+        const max = IntegerWidthRoot.Hardware.Memory.integerSignedMax(width);
+        if (value < min || value > max) {
           return null;
         }
+        const modulus = IntegerWidthRoot.Hardware.Memory.integerModulus(width);
+        let rest = value < 0n ? value + modulus : value;
         const octets: number[] = [];
-        let rest = value;
         let index = 0;
         while (index < width) {
           octets.push(Number(rest & 0xffn));
@@ -58,6 +61,20 @@ export namespace ZerOS {
           index += 1;
         }
         return octets;
+      }
+
+      /**
+       * 把小端八位组读成补码整数。
+       * 最高位是 1 时，结果是负数，而不是把同一位型当成更大的非负整数。
+       */
+      export function signedFromLittleEndian(octets: readonly number[]): bigint {
+        const packed = packLittleEndian(octets);
+        const bits = BigInt(octets.length) * 8n;
+        const sign = 1n << (bits - 1n);
+        if (packed >= sign) {
+          return packed - (sign << 1n);
+        }
+        return packed;
       }
     }
   }

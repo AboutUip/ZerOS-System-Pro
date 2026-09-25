@@ -51,7 +51,7 @@
 | `0x0013` | `LinearBitIndexOutOfRange` | `0x04 Abort` | 线性位元地址不是 Uint64，或不满足 `0 ≤ LinearBitIndex <` 全部 `CellCount` 之和。记在总控 | 已登记 |
 | `0x0014` | `IllegalIntegerWidth` | `0x04 Abort` | `OctetWidth` 不是 `2`、`4` 或 `8`。颗粒端口记在颗粒；线性端口与块上整数端口记在总控 | 已登记 |
 | `0x0015` | `IntegerSpanOutOfRange` | `0x04 Abort` | 整数跨度越出该颗、该块的完整八位组，或越出整机线性八位组。颗粒端口记在颗粒；其余记在总控 | 已登记 |
-| `0x0016` | `IllegalIntegerValue` | `0x04 Abort` | 整数值不是该宽度能表示的非负整数 | 已登记 |
+| `0x0016` | `IllegalIntegerValue` | `0x04 Abort` | 整数不在该宽度的补码范围内，或浮点不是该宽度能表示的有限数 | 已登记 |
 | `0x0017` | `BlockOctetIndexOutOfRange` | `0x04 Abort` | 块内八位组下标不能覆盖完整的 8 个位元。记在总控。块内整数跨度越界必须用 `0x0015`，不得改用本标号 | 已登记 |
 | `0x0018` | `BlockIndexOutOfRange` | `0x04 Abort` | `Claim` / `Release` 的 `BlockIndex` 不是浅切根下标。记在总控 | 已登记 |
 | `0x0019` | `AlreadyClaimed` | `0x04 Abort` | `Claim` 时该浅切根的 `Owner` 已经不是 `null`。存储体不变 | 已登记 |

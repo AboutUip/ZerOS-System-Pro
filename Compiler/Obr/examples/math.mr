@@ -1,0 +1,4 @@
+/* math 模块的函数头。定义在 math.obr。 */
+namespace math {
+deRfun add(int a, int b): int;
+}
