@@ -6,8 +6,9 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 分辨率、刷新率和帧缓冲都在这条页面线程上。呈现直接画到画布。
- * 节拍按绝对时间轴：第 n 拍到期于起点 + n × 1000 / Hertz。错过的拍丢掉。
- * 不创建 Worker。内存和主板在各自的线程里，不会堵住这里的计时。
+         * 节拍按绝对时间轴：第 n 拍到期于起点 + n × 1000 / Hertz。错过的拍丢掉。
+         * 帧缓冲没有新内容时，这一拍只推进时间轴，不再把同一幅拆进画布。
+         * 不创建 Worker。内存和主板在各自的线程里，不会堵住这里的计时。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -24,7 +25,6 @@
 
 import { ZerOS as ConfigRoot } from "../Config/DisplayConfig";
 import { ZerOS as HertzRoot } from "../Structure/Hertz";
-import { ZerOS as PixelRoot } from "../Structure/Pixel";
 import { ZerOS as ResolutionRoot } from "../Structure/Resolution";
 
 export namespace ZerOS {
@@ -34,7 +34,6 @@ export namespace ZerOS {
       const DefaultHeight = ConfigRoot.Hardware.Display.Config.DefaultHeight;
       const DefaultHertz = ConfigRoot.Hardware.Display.Config.DefaultHertz;
       const isHertz = HertzRoot.Hardware.Display.isHertz;
-      const isPixel = PixelRoot.Hardware.Display.isPixel;
       const isResolution = ResolutionRoot.Hardware.Display.isResolution;
 
       const displayPrefix = "[ZerOS.Hardware.Display.Display]";
@@ -70,6 +69,12 @@ export namespace ZerOS {
 
         /** 已经排好的下一次宿主定时。改刷新率时先清掉。 */
         private timer: number | null = null;
+
+        /** 复用的画布位图。分辨率变了就丢掉，避免每一拍都重新分配。 */
+        private image: ImageData | null = null;
+
+        /** 当前帧缓冲已经画到画布上。节拍到期时不必再拆一遍同一幅。 */
+        private shown = false;
 
         /** 当前宽度。 */
         public get Width(): number {
@@ -167,7 +172,9 @@ export namespace ZerOS {
 
         /**
          * 拆开每个像素再写入画布。
+         * 任一像素不合法就在 putImageData 之前抛出，画布保持上一幅。
          * 不按宿主字节序整块拷贝。透明通道固定为 255，它不是协议像素的一部分。
+         * 位图对象按分辨率复用。检查和拆开放在同一趟，避免每一帧先走一遍再走一遍。
          */
         private paint(): void {
           const context = this.context;
@@ -175,16 +182,20 @@ export namespace ZerOS {
             throw new Error(`${displayPrefix} 面板还没有接上`);
           }
           const source = this.framebuffer;
-          const image = context.createImageData(this.width, this.height);
-          const data = image.data;
-          for (const pixel of source) {
-            if (!isPixel(pixel)) {
-              throw new Error(`${displayPrefix} 帧缓冲含有非法像素，本次不呈现`);
-            }
+          let image = this.image;
+          if (image === null) {
+            image = context.createImageData(this.width, this.height);
+            this.image = image;
+          } else if (image.width !== this.width || image.height !== this.height) {
+            image = context.createImageData(this.width, this.height);
+            this.image = image;
           }
-          for (let index = 0; index < source.length; index += 1) {
+          const data = image.data;
+          const length = source.length;
+          const pixelMax = ConfigRoot.Hardware.Display.Config.PixelMax;
+          for (let index = 0; index < length; index += 1) {
             const pixel = source[index];
-            if (pixel === undefined) {
+            if (pixel === undefined || !Number.isInteger(pixel) || pixel < 0 || pixel > pixelMax) {
               throw new Error(`${displayPrefix} 帧缓冲含有非法像素，本次不呈现`);
             }
             const offset = index * 4;
@@ -194,6 +205,7 @@ export namespace ZerOS {
             data[offset + 3] = 255;
           }
           context.putImageData(image, 0, 0);
+          this.shown = true;
         }
 
         /** 从现在起重新数拍。已经排好的定时作废。 */
@@ -221,6 +233,7 @@ export namespace ZerOS {
 
         /**
          * 到期则呈现一次，并跳过已经错过的序号。
+         * 这一幅已经在画布上时，只推进节拍，不再拆像素。
          * 这一拍的像素不合法时，面板保持上一幅，时间轴继续。
          */
         private onTick(): void {
@@ -241,10 +254,12 @@ export namespace ZerOS {
             guard += 1;
           }
           this.nextIndex += 1;
-          try {
-            this.paint();
-          } catch {
-            /* 这一拍的帧不合法时不呈现，面板保持上一幅。 */
+          if (!this.shown) {
+            try {
+              this.paint();
+            } catch {
+              /* 这一拍的帧不合法时不呈现，面板保持上一幅。 */
+            }
           }
           this.arm();
         }

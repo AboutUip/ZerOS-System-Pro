@@ -1,0 +1,6 @@
+/* ENTER 五字，步进 16，字距 4。5 * 16 + 4 * 4 = 96。 */
+import obr.ui;
+
+deRfun main(): long {
+  return obr::ui::textWidth(32L, 4L, "ENTER");
+}

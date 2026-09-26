@@ -1,0 +1,32 @@
+/* 居中的白方块，原点在中心。Enter 之后圆角在 48 帧里收到半边，方块变成圆。
+   整段循环超过沙盒 4096 个八位组。圆角和文字见 ui-flat，变圆和原点见 ui-round。 */
+import obr.ui;
+
+deRfun main(): long {
+  long box = 220L;
+  long radius = 28L;
+  long gone = 0L;
+  long start = 0L;
+  while (1) {
+    long tick = obr::ui::frame();
+    if (gone == 0L) {
+      if (obr::ui::enter() != 0L) {
+        gone = 1L;
+        start = tick;
+      }
+    }
+    if (gone != 0L) {
+      radius = obr::ui::ease(28L, box / 2L, tick - start, 48L);
+    }
+    obr::ui::clear(0L, 255L);
+    long cx = obr::ui::align(0L, obr::ui::width(), box, obr::ui::Align::Center) + box / 2L;
+    long cy = obr::ui::align(0L, obr::ui::height(), box, obr::ui::Align::Center) + box / 2L;
+    obr::ui::save();
+    obr::ui::translate(cx, cy);
+    obr::ui::round(0L - box / 2L, 0L - box / 2L, box, box, radius, 16777215L, 255L);
+    long letters = obr::ui::textWidth(32L, 4L, "ENTER");
+    obr::ui::text(0L - letters / 2L, 0L - 16L, 32L, 4L, "ENTER", 0L, 255L);
+    obr::ui::restore();
+    obr::ui::present();
+  }
+}

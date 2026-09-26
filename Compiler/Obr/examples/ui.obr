@@ -1,0 +1,9 @@
+/* 字宽 80 放进 640 里居中是 280，插值 50，步进 16。合计 346。 */
+import obr.ui;
+
+deRfun main(): long {
+  long x = obr::ui::alignCenter(0L, 640L, obr::ui::textWidth(32L, "ZerOS"));
+  long mid = obr::ui::lerp(0L, 100L, 1L, 2L);
+  long step = obr::ui::advance(32L);
+  return x + mid + step;
+}

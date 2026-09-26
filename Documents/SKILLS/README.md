@@ -1,6 +1,6 @@
 # Documents/SKILLS
 
-本目录存放 ZerOS-System-Pro **项目级 Agent Skills** 的**权威源码**（供人阅读与修订）。
+本目录存放协议文档写作和 ZerOS-PRO 编码规范的权威源。Obr 语法的权威源在 `.cursor/skills/obr-language/`。
 
 | 子目录 | Skill `name` | 用途 |
 |--------|--------------|------|
@@ -9,16 +9,15 @@
 
 ## Cursor 挂载
 
-Cursor 从项目根 **`.cursor/skills/`** 加载 Skills（该目录已被根 `.gitignore` 全面排除，仅本机使用）。
+Cursor 从项目根 **`.cursor/skills/`** 加载。根 `.gitignore` 忽略 `.cursor/*`，但保留 `.cursor/skills/`，所以技能随仓库走。
 
-本机可用 Junction 挂载（示例）：
-
-| Cursor 路径 | 指向 |
-|-------------|------|
+| Cursor 路径 | 权威源 |
+|-------------|--------|
 | `.cursor/skills/protocol-document-authoring/` | `Documents/SKILLS/ProtocolDocumentAuthoring/` |
 | `.cursor/skills/coding-standards/` | `Documents/SKILLS/CodingStandards/` |
+| `.cursor/skills/obr-language/` | 自身。Obr 语法以这份为准，不在本目录 |
 
-权威源与协作以 `Documents/SKILLS/**` 为准（纳入 Git）。
+协议写作和编码规范以 `Documents/SKILLS/**` 为准。Obr 语法以 `.cursor/skills/obr-language/SKILL.md` 为准。
 
 ## 使用说明
 
@@ -29,12 +28,13 @@ Cursor 从项目根 **`.cursor/skills/`** 加载 Skills（该目录已被根 `.g
 ## 目录约定
 
 ```
-Documents/SKILLS/                    ← 权威源
+Documents/SKILLS/                    ← 协议与编码规范的权威源
 ├── README.md
 ├── ProtocolDocumentAuthoring/
 └── CodingStandards/
 
-.cursor/skills/                      ← Cursor 挂载点
+.cursor/skills/                      ← Cursor 加载，纳入 Git
 ├── protocol-document-authoring/  → Documents/.../ProtocolDocumentAuthoring
-└── coding-standards/             → Documents/.../CodingStandards
+├── coding-standards/             → Documents/.../CodingStandards
+└── obr-language/                 ← Obr 语法权威源
 ```

@@ -222,6 +222,7 @@ export namespace ZerOS {
           || gpuOp === "metric"
           || gpuOp === "load"
           || gpuOp === "store"
+          || gpuOp === "accel"
         ) {
           worker.postMessage({ ...record, kind: gpuOp });
         } else {

@@ -47,10 +47,10 @@ export namespace ZerOS {
       let exchangeFail: ((error: Error) => void) | null = null;
 
       /** 引导开始时画出 logo 的指令。 */
-      let logoLines: readonly string[] | null = null;
+      let logoLines: readonly string[] | Uint8Array | null = null;
 
       /** 收尾之后交给 CPU 的指令。用来把入站整数转给扩展口，并在 F12 时进入设置画面。 */
-      let driveLines: readonly string[] | null = null;
+      let driveLines: readonly string[] | Uint8Array | null = null;
 
       function messageData(event: MessageEvent): unknown {
         return event.data as unknown;
@@ -197,13 +197,19 @@ export namespace ZerOS {
           frameListener = listener;
         },
 
-        /** 登记引导开始时的指令。必须在 Power 之前调用。 */
-        SetLogo(lines: readonly string[]): void {
+        /**
+         * 登记引导开始时的程序。必须在 Power 之前调用。
+         * 字符串数组是 ZAP。Uint8Array 是无扩展名二进制，CPU 不再解析助记符。
+         */
+        SetLogo(lines: readonly string[] | Uint8Array): void {
           logoLines = lines;
         },
 
-        /** 登记收尾之后继续执行的指令。必须在 Power 之前调用。 */
-        SetDrive(lines: readonly string[]): void {
+        /**
+         * 登记收尾之后继续执行的程序。必须在 Power 之前调用。
+         * 两种形态和 SetLogo 相同。
+         */
+        SetDrive(lines: readonly string[] | Uint8Array): void {
           driveLines = lines;
         },
 

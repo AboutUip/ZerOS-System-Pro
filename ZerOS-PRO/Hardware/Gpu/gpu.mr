@@ -8,4 +8,5 @@ deRfun glyph(long node, long code): void;
 deRfun drop(long node): void;
 deRfun compose(): void;
 deRfun present(): void;
+deRfun accel(long op, double a, double b, double c, double d): long;
 }

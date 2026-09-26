@@ -1,0 +1,6 @@
+/* 缓动走到一半。28 + 41 = 69。 */
+import obr.ui;
+
+deRfun main(): long {
+  return obr::ui::ease(28L, 110L, 24L, 48L);
+}

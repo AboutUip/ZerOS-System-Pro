@@ -85,6 +85,24 @@ export namespace ZerOS {
         words[index] = (current & ~mask) | (value << shift);
       }
 
+      /**
+       * 从显存连续读出字节。
+       * 起点或长度越界时失败，不返回半段。
+       */
+      export function readBytes(address: number, count: number): Uint8Array {
+        if (!Number.isInteger(address) || !Number.isInteger(count) || address < 0 || count < 1) {
+          fail("显存区间不合法");
+        }
+        if (address + count > words.length * MemoryByteAlign) {
+          fail("显存区间超出显存");
+        }
+        const out = new Uint8Array(count);
+        for (let index = 0; index < count; index += 1) {
+          out[index] = readByte(address + index);
+        }
+        return out;
+      }
+
       /** 帧占了多少个字。供频率计算整帧的拍数。 */
       export function frameWordCount(): number {
         return framePixels;

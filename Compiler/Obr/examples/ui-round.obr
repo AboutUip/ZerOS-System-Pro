@@ -1,0 +1,12 @@
+/* 原点移到画面中心后，半径收到半边，方块变成圆。返回 1。 */
+import obr.ui;
+
+deRfun main(): long {
+  obr::ui::clear(0L, 255L);
+  obr::ui::save();
+  obr::ui::translate(320L, 240L);
+  obr::ui::round(0L - 110L, 0L - 110L, 220L, 220L, 110L, 16777215L, 255L);
+  obr::ui::restore();
+  obr::ui::present();
+  return 1L;
+}

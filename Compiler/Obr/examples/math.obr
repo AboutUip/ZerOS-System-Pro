@@ -1,6 +1,6 @@
-/* math::add 的定义，必须和 math.mr 里的函数头一致。 */
-import math;
+/* int 与 long 的 abs、min、max、clamp。结果是 22。 */
+import obr.math;
 
-deRfun math::add(int a, int b): int {
-  return a + b;
+deRfun main(): long {
+  return obr::math::abs(-2) + obr::math::max(0, 2) + obr::math::clamp(-3, -1, 5) + obr::math::abs(-8L) + obr::math::min(9L, 4L) + obr::math::max(-2L, 1L) + obr::math::clamp(20L, 0L, 6L);
 }

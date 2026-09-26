@@ -38,7 +38,7 @@ export namespace ZerOS {
        * logo 会写内存，所以必须在内存坐稳之后执行。
        * 画面留在面板上，访存核对和扩展口启动都不清它。
        */
-      export async function powerBoard(logo: readonly string[]): Promise<void> {
+      export async function powerBoard(logo: readonly string[] | Uint8Array): Promise<void> {
         if (seated) {
           return;
         }
@@ -47,7 +47,11 @@ export namespace ZerOS {
         await GpuSeatRoot.Hardware.Motherboard.seatGpu();
         await CpuSeatRoot.Hardware.Motherboard.seatCpu();
         await MemorySeatRoot.Hardware.Motherboard.seatMemory();
-        await CpuSeatRoot.Hardware.Motherboard.runInstructionLines(logo);
+        if (logo instanceof Uint8Array) {
+          await CpuSeatRoot.Hardware.Motherboard.runInstructionBinary(logo);
+        } else {
+          await CpuSeatRoot.Hardware.Motherboard.runInstructionLines(logo);
+        }
         await CpuSeatRoot.Hardware.Motherboard.probeCpu();
         ExpansionSeatRoot.Hardware.Motherboard.bootExpansionPorts();
         seated = true;

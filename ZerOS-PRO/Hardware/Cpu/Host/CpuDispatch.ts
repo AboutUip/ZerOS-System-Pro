@@ -25,6 +25,7 @@ import { ZerOS as RuntimeRoot } from "../Bootstrap/CpuRuntime";
 import { ZerOS as CpuSlotRoot } from "../../Motherboard/Slot/Cpu/CpuSlot";
 import { ZerOS as CpuSelfCheckRoot } from "../Test/CpuSelfCheck";
 import { ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
+import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -38,6 +39,8 @@ export namespace ZerOS {
       const runCpuSelfCheck = CpuSelfCheckRoot.Hardware.Cpu.runCpuSelfCheck;
       const runCpuRegisterCheck = CpuSelfCheckRoot.Hardware.Cpu.runCpuRegisterCheck;
       const parseCpuInstruction = InstructionRoot.Hardware.Cpu.parseCpuInstruction;
+      const decodeProgramBinary = BinaryRoot.Hardware.Cpu.decodeProgramBinary;
+      const isProgramBinary = BinaryRoot.Hardware.Cpu.isProgramBinary;
       const runSequence = RuntimeRoot.Hardware.Cpu.runSequence;
       const runGuest = RuntimeRoot.Hardware.Cpu.runGuest;
       const seatPrefix = "[ZerOS.Hardware.Motherboard.CpuSeat]";
@@ -135,28 +138,49 @@ export namespace ZerOS {
         );
       }
 
-      function onRun(record: Record<string, unknown>): void {
+      /**
+       * 两种交付进同一条执行路径。
+       * `binary` 是无扩展名程序文件的字节，直接解码。
+       * `lines` 仍是 ZAP 文本，先做助记符解析。两者都缺才算不完整。
+       */
+      function stepsOf(record: Record<string, unknown>): InstructionRoot.Hardware.Cpu.CpuInstruction[] | null {
+        const binary = record["binary"];
+        if (binary instanceof Uint8Array) {
+          if (!isProgramBinary(binary)) {
+            return null;
+          }
+          return decodeProgramBinary(binary);
+        }
         const lines = record["lines"];
         if (!Array.isArray(lines)) {
-          postFault(`${seatPrefix} 指令序列不完整`);
-          return;
+          return null;
         }
         const steps: InstructionRoot.Hardware.Cpu.CpuInstruction[] = [];
         for (const line of lines) {
           if (typeof line !== "string") {
+            return null;
+          }
+          const step = parseCpuInstruction(line);
+          if (step !== null) {
+            steps.push(step);
+          }
+        }
+        return steps;
+      }
+
+      function onRun(record: Record<string, unknown>): void {
+        let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
+        try {
+          const parsed = stepsOf(record);
+          if (parsed === null) {
             postFault(`${seatPrefix} 指令序列不完整`);
             return;
           }
-          try {
-            const step = parseCpuInstruction(line);
-            if (step !== null) {
-              steps.push(step);
-            }
-          } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : `${seatPrefix} 指令无法解析`;
-            postFault(message);
-            return;
-          }
+          steps = parsed;
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : `${seatPrefix} 指令无法解析`;
+          postFault(message);
+          return;
         }
         void runSequence(0, steps).then(
           (): void => {
@@ -209,28 +233,23 @@ export namespace ZerOS {
        */
       function onGuest(record: Record<string, unknown>): void {
         const ordinal = record["ordinal"];
-        const lines = record["lines"];
         const ticket = record["ticket"];
-        if (typeof ordinal !== "number" || typeof ticket !== "number" || !Array.isArray(lines)) {
+        if (typeof ordinal !== "number" || typeof ticket !== "number") {
           postGuest(ticketOf(record), false, `${seatPrefix} 客程序不完整`, []);
           return;
         }
-        const steps: InstructionRoot.Hardware.Cpu.CpuInstruction[] = [];
-        for (const line of lines) {
-          if (typeof line !== "string") {
+        let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
+        try {
+          const parsed = stepsOf(record);
+          if (parsed === null) {
             postGuest(ticket, false, `${seatPrefix} 客程序不完整`, []);
             return;
           }
-          try {
-            const step = parseCpuInstruction(line);
-            if (step !== null) {
-              steps.push(step);
-            }
-          } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : `${seatPrefix} 指令无法解析`;
-            postGuest(ticket, false, message, []);
-            return;
-          }
+          steps = parsed;
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : `${seatPrefix} 指令无法解析`;
+          postGuest(ticket, false, message, []);
+          return;
         }
         void runGuest(ordinal, steps).then(
           (result): void => {

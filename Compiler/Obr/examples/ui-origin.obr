@@ -1,0 +1,13 @@
+/* 平移到 200,100，再平移后恢复。白块应落在 200,100。返回 1。 */
+import obr.ui;
+
+deRfun main(): long {
+  obr::ui::clear(0L, 255L);
+  obr::ui::translate(200L, 100L);
+  obr::ui::save();
+  obr::ui::translate(300L, 0L);
+  obr::ui::restore();
+  obr::ui::rect(0L, 0L, 4L, 4L, 16777215L, 255L);
+  obr::ui::present();
+  return 1L;
+}

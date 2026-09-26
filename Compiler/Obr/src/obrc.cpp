@@ -2,7 +2,9 @@
 #include "Diagnostic.hpp"
 #include "Parser.hpp"
 #include "Sema.hpp"
+#include "image/Write.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -41,6 +43,23 @@ bool exists(const std::string& path) {
   return static_cast<bool>(input);
 }
 
+bool samePath(const std::string& left, const std::string& right) {
+  std::error_code error;
+  if (std::filesystem::equivalent(left, right, error)) return true;
+  return left == right;
+}
+
+std::vector<std::string> builtinLibraries(const char* argv0) {
+  std::vector<std::string> directories;
+  std::error_code error;
+  const std::filesystem::path executable = std::filesystem::absolute(argv0, error);
+  if (error) return directories;
+  const std::filesystem::path parent = executable.parent_path();
+  directories.push_back((parent / "lib").string());
+  directories.push_back((parent.parent_path() / "lib").string());
+  return directories;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -61,7 +80,9 @@ int main(int argc, char** argv) {
       inputs.push_back(arg);
     }
     if (inputs.empty() || output.empty()) {
-      std::cerr << "用法: obrc 文件.obr [更多.obr ...] [-I 头文件目录 ...] -o 文件.zap\n";
+      std::cerr << "用法: obrc 文件.obr [更多.obr ...] [-I 头文件目录 ...] -o 程序\n";
+      std::cerr << "      默认写出无扩展名二进制。旁边的 .zap 是同一段程序的文本，用来对照调试。\n";
+      std::cerr << "      -o 以 .zap 结尾时，二进制写在去掉这个后缀的路径上。\n";
       return 2;
     }
     std::vector<obr::SourceFile> sources;
@@ -74,8 +95,8 @@ int main(int argc, char** argv) {
       source.path = input;
       sources.push_back(std::move(source));
     }
-    for (const obr::SourceFile& source : sources) {
-      for (const std::string& imported : source.imports) {
+    for (std::size_t index = 0; index < sources.size(); index += 1) {
+      for (const std::string& imported : sources[index].imports) {
         bool loaded = false;
         for (const obr::HeaderFile& header : headers) {
           if (header.name == imported) loaded = true;
@@ -85,10 +106,11 @@ int main(int argc, char** argv) {
         std::vector<std::string> directories;
         for (const std::string& input : inputs) directories.push_back(directoryOf(input));
         for (const std::string& include : includes) directories.push_back(include);
+        for (const std::string& builtin : builtinLibraries(argv[0])) directories.push_back(builtin);
         for (const std::string& directory : directories) {
           const std::string candidate = directory + "/" + imported + ".mr";
           if (!exists(candidate)) continue;
-          if (!found.empty() && found != candidate) obr::fail("模块名对应了两个头文件 " + imported);
+          if (!found.empty() && !samePath(found, candidate)) obr::fail("模块名对应了两个头文件 " + imported);
           found = candidate;
         }
         if (found.empty()) obr::fail("找不到 " + imported + ".mr");
@@ -96,12 +118,19 @@ int main(int argc, char** argv) {
         obr::HeaderFile file;
         file.name = imported;
         file.decls = std::move(header.functions);
+        file.structs = std::move(header.structs);
+        file.enums = std::move(header.enums);
         headers.push_back(std::move(file));
       }
     }
     obr::Unit unit = obr::combine(std::move(sources), headers);
     obr::check(unit);
-    writeFile(output, obr::generate(unit));
+    const std::string text = obr::generate(unit);
+    const bool namedZap = output.size() >= 4 && output.compare(output.size() - 4, 4, ".zap") == 0;
+    const std::string zapPath = namedZap ? output : output + ".zap";
+    const std::string binaryPath = namedZap ? output.substr(0, output.size() - 4) : output;
+    writeFile(zapPath, text);
+    obr::writeProgramBinary(binaryPath, text);
     return 0;
   } catch (const obr::Error& error) {
     std::cerr << error.what() << "\n";

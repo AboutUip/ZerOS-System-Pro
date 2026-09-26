@@ -216,6 +216,25 @@ export namespace ZerOS {
             port.postMessage({ kind: "port-result", ok: true, value: queryHardware(seat, field, index), message: "" });
             return;
           }
+          if (kind === "query-span") {
+            const seat = record["seat"];
+            const field = record["field"];
+            const index = record["index"];
+            const count = record["count"];
+            if (typeof seat !== "number" || typeof field !== "number" || typeof index !== "number" || typeof count !== "number") {
+              throw new Error(`${seatPrefix} 查询命令不完整`);
+            }
+            if (!Number.isInteger(count) || count < 1 || count > 32) {
+              throw new Error(`${seatPrefix} 查询跨度不在 1 到 32`);
+            }
+            const values: bigint[] = [];
+            for (let step = 0; step < count; step += 1) {
+              values.push(queryHardware(seat, field, index + step));
+            }
+            const first = values[0] ?? 0n;
+            port.postMessage({ kind: "port-result", ok: true, value: first, values, message: "" });
+            return;
+          }
           const index = record["port"];
           const direction = record["direction"];
           const data = record["data"];
@@ -287,7 +306,7 @@ export namespace ZerOS {
           onCoreMemoryClock(port, record);
           return;
         }
-        if (record?.["kind"] === "xchg" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query") {
+        if (record?.["kind"] === "xchg" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query" || record?.["kind"] === "query-span") {
           onCorePort(port, record);
           return;
         }
@@ -416,6 +435,29 @@ export namespace ZerOS {
        * 把一段指令文本交给 CPU。CPU 自己从第一条执行到 halt。
        * 主板不解释 ZAP。CPU 不再逐条把指令文本送出来。
        */
+      /**
+       * 把无扩展名程序二进制交给 CPU。CPU 按记录解码，不再解析助记符。
+       * 字节必须已经展开标号。主板不解释这些字节。
+       */
+      export async function runInstructionBinary(binary: Uint8Array): Promise<void> {
+        const worker = cpuWorker;
+        if (worker === null) {
+          throw new Error(`${seatPrefix} CPU 还没有坐上`);
+        }
+        worker.postMessage({ kind: "run", binary });
+        await waitMessage(
+          worker,
+          (record): boolean => record["kind"] === "ok",
+          `${seatPrefix} 指令序列没有完成`,
+          (record): void => {
+            const text = record["text"];
+            if (typeof text === "string") {
+              globalThis.postMessage({ kind: "trace", text });
+            }
+          },
+        );
+      }
+
       export async function runInstructionLines(lines: readonly string[]): Promise<void> {
         const worker = cpuWorker;
         if (worker === null) {
@@ -433,6 +475,28 @@ export namespace ZerOS {
             }
           },
         );
+      }
+
+      /** 交给 CPU 一段不主动 halt 的二进制固件。不等待结束。失败时调用 onFault。 */
+      export function startResidentBinary(binary: Uint8Array, onFault: (message: string) => void): void {
+        const worker = cpuWorker;
+        if (worker === null) {
+          throw new Error(`${seatPrefix} CPU 还没有坐上`);
+        }
+        worker.onmessage = (event: MessageEvent): void => {
+          const record = asRecord(event.data as unknown);
+          if (record === null) {
+            return;
+          }
+          if (record["kind"] === "guest-done") {
+            noteGuest(record);
+            return;
+          }
+          if (record["kind"] === "fault" && typeof record["message"] === "string") {
+            onFault(record["message"]);
+          }
+        };
+        worker.postMessage({ kind: "run", binary });
       }
 
       /**

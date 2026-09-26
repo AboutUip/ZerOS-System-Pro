@@ -1,0 +1,6 @@
+/* 160 的 40/100 是 64，空是 0，超出收到 160，100 的 1/3 是 33。合计 257。 */
+import obr.ui;
+
+deRfun main(): long {
+  return obr::ui::meter(160L, 40L, 100L) + obr::ui::meter(160L, 0L, 100L) + obr::ui::meter(160L, 150L, 100L) + obr::ui::meter(100L, 1L, 3L);
+}

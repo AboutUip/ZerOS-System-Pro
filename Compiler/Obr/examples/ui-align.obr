@@ -1,0 +1,6 @@
+/* 220 放进 640 的正中，起点是 210。 */
+import obr.ui;
+
+deRfun main(): long {
+  return obr::ui::align(0L, 640L, 220L, obr::ui::Align::Center);
+}

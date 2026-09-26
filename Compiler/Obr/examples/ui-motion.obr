@@ -1,0 +1,10 @@
+/* 字距后的 ENTER 宽 96，220 在 640 里居中是 210，缓动一半是 69。合计 375。
+   这三步合在一个程序里会超过沙盒 4096 个八位组，沙盒分别跑 ui-track、ui-align、ui-ease。 */
+import obr.ui;
+
+deRfun main(): long {
+  long width = obr::ui::textWidth(32L, 4L, "ENTER");
+  long x = obr::ui::align(0L, 640L, 220L, obr::ui::Align::Center);
+  long radius = obr::ui::ease(28L, 110L, 24L, 48L);
+  return width + x + radius;
+}

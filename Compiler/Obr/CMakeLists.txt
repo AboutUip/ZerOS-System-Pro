@@ -7,5 +7,15 @@ add_executable(obrc
   src/Lexer.cpp
   src/Parser.cpp
   src/Sema.cpp
-  src/Codegen.cpp
+  src/type/Type.cpp
+  src/intrinsic/Intrinsic.cpp
+  src/codegen/Generate.cpp
+  src/codegen/Emit.cpp
+  src/codegen/Fold.cpp
+  src/codegen/Runtime.cpp
+  src/codegen/Inline.cpp
+  src/codegen/Lower.cpp
+  src/codegen/Math.cpp
+  src/codegen/Ui.cpp
+  src/image/Write.cpp
 )

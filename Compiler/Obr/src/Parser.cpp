@@ -66,15 +66,56 @@ class Parser {
   struct ParsedType {
     TypeKind kind = TypeKind::None;
     TypeKind pointee = TypeKind::None;
+    std::string typeName;
   };
 
   bool typeName(const std::string& name) const {
     return name == "byte" || name == "short" || name == "int" || name == "long" || name == "float" || name == "double" || name == "boolean" || name == "char" || name == "string" || name == "void";
   }
 
+  std::string typeIdent() {
+    if (!check(Tok::Ident)) fail("缺少类型");
+    std::string name = take().text;
+    while (eat(Tok::Scope)) {
+      if (!check(Tok::Ident)) fail("类型名不完整");
+      name += "::";
+      name += take().text;
+    }
+    return name;
+  }
+
+  bool looksLikeDecl() const {
+    if (!check(Tok::Ident)) return false;
+    if (typeName(peek().text)) {
+      const int next = at_ + 1;
+      if (next >= static_cast<int>(tokens_.size()) || tokens_[static_cast<std::size_t>(next)].kind != Tok::Scope) return true;
+    }
+    int index = at_ + 1;
+    const int size = static_cast<int>(tokens_.size());
+    while (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Scope) {
+      index += 1;
+      if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::Ident) return false;
+      index += 1;
+    }
+    if (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star) index += 1;
+    return index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Ident;
+  }
+
   ParsedType parseType() {
-    if (!check(Tok::Ident) || !typeName(peek().text)) fail("缺少类型");
+    if (!check(Tok::Ident)) fail("缺少类型");
     ParsedType parsed;
+    const int next = at_ + 1;
+    const bool qualified = next < static_cast<int>(tokens_.size()) && tokens_[static_cast<std::size_t>(next)].kind == Tok::Scope;
+    if (!typeName(peek().text) || qualified) {
+      parsed.typeName = typeIdent();
+      if (check(Tok::Pow)) fail("这一版只接受一层指针");
+      if (eat(Tok::Star)) {
+        parsed.kind = TypeKind::Ptr;
+        parsed.pointee = TypeKind::Void;
+        if (check(Tok::Star) || check(Tok::Pow)) fail("这一版只接受一层指针");
+      }
+      return parsed;
+    }
     parsed.kind = typeOf(take().text);
     if (check(Tok::Pow)) fail("这一版只接受一层指针");
     if (eat(Tok::Star)) {
@@ -116,7 +157,13 @@ class Parser {
       if (header_) fail(".mr 不能 import");
       if (!space.empty()) fail("import 只能写在文件顶层");
       if (!check(Tok::Ident)) fail("import 缺少模块名");
-      file.imports.push_back(take().text);
+      std::string name = take().text;
+      while (eat(Tok::Dot)) {
+        if (!check(Tok::Ident)) fail("import 模块名不完整");
+        name += ".";
+        name += take().text;
+      }
+      file.imports.push_back(std::move(name));
       expect(Tok::Semi, "import 缺少 ;");
       return;
     }
@@ -132,16 +179,192 @@ class Parser {
       if (check(Tok::Semi)) fail("namespace 的 } 后面不能写 ;");
       return;
     }
-    file.functions.push_back(parseFunction(space));
+    if (eat(Tok::Class)) {
+      file.classes.push_back(parseClass(file, space));
+      return;
+    }
+    if (eat(Tok::Struct)) {
+      file.structs.push_back(parseStruct(space));
+      return;
+    }
+    if (eat(Tok::Enum)) {
+      file.enums.push_back(parseEnum(space));
+      return;
+    }
+    std::vector<std::string> callfun;
+    bool callfunNone = false;
+    if (eat(Tok::At)) {
+      if (!check(Tok::Ident) || take().text != "Callfun") fail("特性只接受 @Callfun");
+      expect(Tok::LParen, "@Callfun 缺少 (");
+      if (eat(Tok::Not)) {
+        expect(Tok::Star, "@Callfun(!*) 写法不对");
+        callfunNone = true;
+      } else if (!eat(Tok::Star)) {
+        while (!check(Tok::RParen) && !check(Tok::End)) {
+          std::string item;
+          if (!check(Tok::Ident)) fail("@Callfun 缺少文件名");
+          item = take().text;
+          while (eat(Tok::Dot)) {
+            if (!check(Tok::Ident)) fail("@Callfun 文件名不完整");
+            item += ".";
+            item += take().text;
+          }
+          callfun.push_back(item);
+          if (!eat(Tok::Comma)) break;
+        }
+      }
+      expect(Tok::RParen, "@Callfun 缺少 )");
+    }
+    Function function = parseFunction(space);
+    function.callfun = std::move(callfun);
+    function.callfunNone = callfunNone;
+    file.functions.push_back(std::move(function));
+  }
+
+  std::string declaredName(const std::string& space) {
+    if (!check(Tok::Ident)) fail("缺少名字");
+    std::string name = take().text;
+    if (!space.empty()) name = space + "::" + name;
+    return name;
+  }
+
+  StructDecl parseStruct(const std::string& space) {
+    StructDecl decl;
+    decl.name = declaredName(space);
+    expect(Tok::LBrace, "struct 缺少 {");
+    while (!check(Tok::RBrace) && !check(Tok::End)) {
+      if (check(Tok::DeRfun) || check(Tok::Async) || check(Tok::Class) || check(Tok::Struct) || check(Tok::Enum)) fail("结构体里只能写字段");
+      const ParsedType parsed = parseType();
+      if (!check(Tok::Ident)) fail("字段缺少名字");
+      Field field;
+      field.type = parsed.kind;
+      field.pointee = parsed.pointee;
+      field.typeName = parsed.typeName;
+      field.name = take().text;
+      for (const Field& earlier : decl.fields) {
+        if (earlier.name == field.name) fail("字段重复 " + field.name);
+      }
+      decl.fields.push_back(field);
+      expect(Tok::Semi, "字段缺少 ;");
+    }
+    if (decl.fields.empty()) fail("结构体至少要有一个字段");
+    expect(Tok::RBrace, "struct 缺少 }");
+    return decl;
+  }
+
+  EnumDecl parseEnum(const std::string& space) {
+    EnumDecl decl;
+    decl.name = declaredName(space);
+    decl.underlying = TypeKind::Int;
+    if (eat(Tok::Colon)) {
+      if (!check(Tok::Ident)) fail("enum 缺少底层类型");
+      const std::string underlying = take().text;
+      if (underlying == "int") decl.underlying = TypeKind::Int;
+      else if (underlying == "long") decl.underlying = TypeKind::Long;
+      else fail("枚举底层类型只能是 int 或 long");
+    }
+    expect(Tok::LBrace, "enum 缺少 {");
+    long long next = 0;
+    while (!check(Tok::RBrace) && !check(Tok::End)) {
+      if (!check(Tok::Ident)) fail("枚举值缺少名字");
+      EnumValue item;
+      item.name = take().text;
+      for (const EnumValue& earlier : decl.values) {
+        if (earlier.name == item.name) fail("枚举值重复 " + item.name);
+      }
+      if (eat(Tok::Assign)) {
+        const bool negative = eat(Tok::Minus);
+        if (!check(Tok::Int)) fail("枚举值必须是整数常量");
+        const Token token = take();
+        if (decl.underlying == TypeKind::Int && token.text == "L") fail("int 枚举不能写 long 常量");
+        if (negative && token.integer < 0) fail("枚举值超出范围");
+        next = negative ? -token.integer : token.integer;
+        if (decl.underlying == TypeKind::Int && (next < -2147483648LL || next > 2147483647LL)) fail("枚举值超出 int");
+      }
+      item.value = next;
+      decl.values.push_back(item);
+      if (next == 9223372036854775807LL) fail("枚举值溢出");
+      next += 1;
+      if (!eat(Tok::Comma)) break;
+    }
+    if (decl.values.empty()) fail("枚举至少要有一个值");
+    expect(Tok::RBrace, "enum 缺少 }");
+    return decl;
+  }
+
+  ClassDecl parseClass(SourceFile& file, const std::string& space) {
+    if (!check(Tok::Ident)) fail("class 缺少名字");
+    ClassDecl decl;
+    decl.name = declaredName(space);
+    if (eat(Tok::Colon)) {
+      if (!check(Tok::Ident)) fail("继承缺少基类名字");
+      decl.base = take().text;
+      if (check(Tok::Comma)) fail("不支持多重继承，多个基类不能同时从偏移 0 开始");
+    }
+    expect(Tok::LBrace, "class 缺少 {");
+    int offset = 0;
+    while (!check(Tok::RBrace) && !check(Tok::End)) {
+      std::vector<std::string> callfun;
+      bool callfunNone = false;
+      if (eat(Tok::At)) {
+        if (!check(Tok::Ident) || take().text != "Callfun") fail("特性只接受 @Callfun");
+        expect(Tok::LParen, "@Callfun 缺少 (");
+        if (eat(Tok::Not)) {
+          expect(Tok::Star, "@Callfun(!*) 写法不对");
+          callfunNone = true;
+        } else if (!eat(Tok::Star)) {
+          while (!check(Tok::RParen) && !check(Tok::End)) {
+            if (!check(Tok::Ident)) fail("@Callfun 缺少文件名");
+            std::string item = take().text;
+            while (eat(Tok::Dot)) {
+              if (!check(Tok::Ident)) fail("@Callfun 文件名不完整");
+              item += ".";
+              item += take().text;
+            }
+            callfun.push_back(item);
+            if (!eat(Tok::Comma)) break;
+          }
+        }
+        expect(Tok::RParen, "@Callfun 缺少 )");
+      }
+      if (check(Tok::DeRfun) || check(Tok::Async) || !callfun.empty() || callfunNone) {
+        Function method = parseFunction(decl.name);
+        method.owner = decl.name;
+        method.callfun = std::move(callfun);
+        method.callfunNone = callfunNone;
+        Param self;
+        self.type = TypeKind::None;
+        self.typeName = decl.name;
+        self.name = "this";
+        method.params.insert(method.params.begin(), self);
+        file.functions.push_back(std::move(method));
+        continue;
+      }
+      const ParsedType parsed = parseType();
+      if (!check(Tok::Ident)) fail("字段缺少名字");
+      Field field;
+      field.type = parsed.kind;
+      field.pointee = parsed.pointee;
+      field.typeName = parsed.typeName;
+      field.name = take().text;
+      field.offset = offset;
+      offset += 64;
+      decl.fields.push_back(field);
+      expect(Tok::Semi, "字段缺少 ;");
+    }
+    expect(Tok::RBrace, "class 缺少 }");
+    return decl;
   }
 
   Function parseFunction(const std::string& space) {
     const bool exported = eat(Tok::Export);
-    expect(Tok::DeRfun, header_ ? ".mr 里只能声明函数头或 namespace" : "顶层只能是 import、export 或 deRfun");
+    const bool asyncFun = eat(Tok::Async);
+    expect(Tok::DeRfun, header_ ? ".mr 里只能声明函数头、namespace、struct 或 enum" : "顶层只能是 import、class、struct、enum 或 deRfun");
     Function function;
     const std::string written = qualified();
     function.name = space.empty() ? written : space + "::" + written;
     function.exported = exported;
+    function.asyncFun = asyncFun;
     expect(Tok::LParen, "函数参数缺少 (");
     if (!check(Tok::RParen)) {
       do {
@@ -149,6 +372,7 @@ class Parser {
         const ParsedType parsed = parseType();
         param.type = parsed.kind;
         param.pointee = parsed.pointee;
+        param.typeName = parsed.typeName;
         if (param.type == TypeKind::Void) fail("参数不能是 void");
         if (!check(Tok::Ident)) fail("参数缺少名字");
         param.name = take().text;
@@ -159,6 +383,8 @@ class Parser {
     expect(Tok::Colon, "函数缺少返回类型");
     const ParsedType ret = parseType();
     function.ret = ret.kind;
+    function.retPointee = ret.pointee;
+    function.retName = ret.typeName;
     if (header_) {
       expect(Tok::Semi, "函数头必须以 ; 结束");
       return function;
@@ -195,6 +421,25 @@ class Parser {
       expect(Tok::LParen, "while 缺少 (");
       stmt.expr = parseExpr();
       expect(Tok::RParen, "while 缺少 )");
+      stmt.body.push_back(parseStmt());
+      return stmt;
+    }
+    if (eat(Tok::For)) {
+      Stmt stmt;
+      stmt.kind = Stmt::Kind::For;
+      expect(Tok::LParen, "for 缺少 (");
+      stmt.other.push_back(parseStmt());
+      if (!check(Tok::Semi)) stmt.expr = parseExpr();
+      expect(Tok::Semi, "for 缺少条件后的 ;");
+      if (!check(Tok::RParen)) {
+        Stmt step;
+        step.kind = Stmt::Kind::Expr;
+        step.expr = parseExpr();
+        stmt.other.push_back(step);
+      } else {
+        stmt.other.push_back(Stmt{});
+      }
+      expect(Tok::RParen, "for 缺少 )");
       stmt.body.push_back(parseStmt());
       return stmt;
     }
@@ -253,6 +498,7 @@ class Parser {
       const ParsedType parsed = parseType();
       stmt.type = parsed.kind;
       stmt.pointee = parsed.pointee;
+      stmt.typeName = parsed.typeName;
       if (stmt.type == TypeKind::Void) fail("变量不能是 void");
       expect(Tok::RBracket, "var 声明缺少 ]");
       stmt.name = take().text;
@@ -260,13 +506,14 @@ class Parser {
       expect(Tok::Semi, "声明缺少 ;");
       return stmt;
     }
-    if (check(Tok::Ident) && typeName(peek().text)) {
+    if (looksLikeDecl()) {
       Stmt stmt;
       stmt.kind = Stmt::Kind::Decl;
       stmt.isStatic = isStatic;
       const ParsedType parsed = parseType();
       stmt.type = parsed.kind;
       stmt.pointee = parsed.pointee;
+      stmt.typeName = parsed.typeName;
       if (stmt.type == TypeKind::Void) fail("变量不能是 void");
       stmt.name = take().text;
       if (eat(Tok::Assign)) stmt.expr = parseExpr();
@@ -356,6 +603,13 @@ class Parser {
 
   Expr parseUnary() {
     const Tok op = peek().kind;
+    if (op == Tok::Await) {
+      take();
+      Expr expr;
+      expr.kind = Expr::Kind::Await;
+      expr.kids.push_back(parseUnary());
+      return expr;
+    }
     if (op == Tok::Not || op == Tok::BitNot || op == Tok::BitAnd || op == Tok::Star || op == Tok::Plus || op == Tok::Minus || op == Tok::PlusPlus || op == Tok::MinusMinus) {
       take();
       Expr expr;
@@ -370,6 +624,30 @@ class Parser {
 
   Expr parsePost() {
     Expr expr = parsePrimary();
+    while (eat(Tok::Dot)) {
+      if (!check(Tok::Ident)) fail("成员缺少名字");
+      const std::string member = take().text;
+      if (eat(Tok::LParen)) {
+        Expr call;
+        call.kind = Expr::Kind::Call;
+        call.integer = -4;
+        call.text = member;
+        call.kids.push_back(std::move(expr));
+        if (!check(Tok::RParen)) {
+          do {
+            call.kids.push_back(parseExpr());
+          } while (eat(Tok::Comma));
+        }
+        expect(Tok::RParen, "成员调用缺少 )");
+        expr = std::move(call);
+        continue;
+      }
+      Expr field;
+      field.kind = Expr::Kind::Member;
+      field.text = member;
+      field.kids.push_back(std::move(expr));
+      expr = std::move(field);
+    }
     while (eat(Tok::LBracket)) {
       Expr index;
       index.kind = Expr::Kind::Binary;
@@ -438,6 +716,20 @@ class Parser {
       Expr expr;
       expr.kind = Expr::Kind::LitUndefined;
       expr.type = TypeKind::Undefined;
+      return expr;
+    }
+    if (eat(Tok::New)) {
+      if (!check(Tok::Ident)) fail("new 缺少类名");
+      Expr expr;
+      expr.kind = Expr::Kind::New;
+      expr.text = take().text;
+      expect(Tok::LParen, "new 缺少 (");
+      if (!check(Tok::RParen)) {
+        do {
+          expr.kids.push_back(parseExpr());
+        } while (eat(Tok::Comma));
+      }
+      expect(Tok::RParen, "new 缺少 )");
       return expr;
     }
     if (check(Tok::Ident)) {

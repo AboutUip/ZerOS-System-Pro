@@ -1,0 +1,233 @@
+/* 固件文字走节点树。OpenGL 立即模式每条调用收成一条 gpu::accel。 */
+import gl;
+import gpu;
+
+deRfun channel(long value): long {
+  if (value < 0L) {
+    return 0L;
+  }
+  if (value > 255L) {
+    return 255L;
+  }
+  return value;
+}
+
+deRfun pack(long red, long green, long blue): long {
+  long r = channel(red);
+  long g = channel(green);
+  long b = channel(blue);
+  return r * 65536L + g * 256L + b;
+}
+
+deRfun gl::load(): void {
+  long* kept = (long*)4224;
+  long* clearPixel = (long*)5440;
+  long* current = (long*)5504;
+  *kept = 0L;
+  *clearPixel = 0L;
+  *current = 16777215L;
+}
+
+deRfun gl::viewport(long x, long y, long width, long height): void {
+  gpu::accel(1L, x, y, width, height);
+}
+
+deRfun gl::scissor(long x, long y, long width, long height): void {
+  gpu::accel(2L, x, y, width, height);
+}
+
+deRfun gl::clearColor(long red, long green, long blue): void {
+  long* clearPixel = (long*)5440;
+  *clearPixel = pack(red, green, blue);
+}
+
+deRfun gl::clearColor(double red, double green, double blue, double alpha): void {
+  gpu::accel(3L, red, green, blue, alpha);
+}
+
+deRfun gl::clearDepth(double depth): void {
+  gpu::accel(4L, depth, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::color(long red, long green, long blue): void {
+  long* current = (long*)5504;
+  *current = pack(red, green, blue);
+}
+
+deRfun gl::color(double red, double green, double blue, double alpha): void {
+  gpu::accel(6L, red, green, blue, alpha);
+}
+
+deRfun gl::clear(): void {
+  long* kept = (long*)4224;
+  long* clearPixel = (long*)5440;
+  if (*kept != 0L) {
+    gpu::drop(*kept);
+    *kept = 0L;
+  }
+  *kept = gpu::box(0L, 0L, 0L, 640L, 480L, *clearPixel);
+}
+
+deRfun gl::clear(long mask): void {
+  gpu::accel(5L, mask, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::rect(long x1, long y1, long x2, long y2): void {
+  gpu::accel(10L, 6L, 0.0, 0.0, 0.0);
+  gpu::accel(7L, x1, y1, 0.0, 0.0);
+  gpu::accel(7L, x2, y1, 0.0, 0.0);
+  gpu::accel(7L, x2, y2, 0.0, 0.0);
+  gpu::accel(7L, x1, y2, 0.0, 0.0);
+  gpu::accel(11L, 0.0, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::begin(long mode): void {
+  gpu::accel(10L, mode, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::vertex(long x, long y): void {
+  gpu::accel(7L, x, y, 0.0, 0.0);
+}
+
+deRfun gl::vertex(double x, double y, double z): void {
+  gpu::accel(7L, x, y, z, 0.0);
+}
+
+deRfun gl::texCoord(double s, double t): void {
+  gpu::accel(8L, s, t, 0.0, 0.0);
+}
+
+deRfun gl::normal(double x, double y, double z): void {
+  gpu::accel(9L, x, y, z, 0.0);
+}
+
+deRfun gl::end(): void {
+  gpu::accel(11L, 0.0, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::matrixMode(long mode): void {
+  gpu::accel(12L, mode, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::loadIdentity(): void {
+  gpu::accel(13L, 0.0, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::pushMatrix(): void {
+  gpu::accel(14L, 0.0, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::popMatrix(): void {
+  gpu::accel(15L, 0.0, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::translate(double x, double y, double z): void {
+  gpu::accel(16L, x, y, z, 0.0);
+}
+
+deRfun gl::rotate(double angle, double x, double y, double z): void {
+  gpu::accel(17L, angle, x, y, z);
+}
+
+deRfun gl::scale(double x, double y, double z): void {
+  gpu::accel(18L, x, y, z, 0.0);
+}
+
+deRfun gl::ortho(double left, double right, double bottom, double top, double near, double far): void {
+  gpu::accel(20L, near, far, 0.0, 0.0);
+  gpu::accel(19L, left, right, bottom, top);
+}
+
+deRfun gl::frustum(double left, double right, double bottom, double top, double near, double far): void {
+  gpu::accel(22L, near, far, 0.0, 0.0);
+  gpu::accel(21L, left, right, bottom, top);
+}
+
+deRfun gl::enable(long cap): void {
+  gpu::accel(23L, cap, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::disable(long cap): void {
+  gpu::accel(24L, cap, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::blendFunc(long src, long dst): void {
+  gpu::accel(25L, src, dst, 0.0, 0.0);
+}
+
+deRfun gl::depthFunc(long func): void {
+  gpu::accel(26L, func, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::cullFace(long mode): void {
+  gpu::accel(27L, mode, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::frontFace(long mode): void {
+  gpu::accel(28L, mode, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::genTexture(): long {
+  return gpu::accel(29L, 0.0, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::bindTexture(long id): void {
+  gpu::accel(30L, id, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::texImage(long width, long height, long address): void {
+  gpu::accel(31L, width, height, address, 0.0);
+}
+
+deRfun gl::drawArrays(long mode, long first, long count): void {
+  gpu::accel(32L, mode, first, count, 0.0);
+}
+
+deRfun gl::fill(long x, long y, long width, long height): void {
+  gpu::accel(33L, x, y, width, height);
+}
+
+deRfun gl::screenGlyph(long code, long x, long y, long size): void {
+  gpu::accel(34L, code, x, y, size);
+}
+
+deRfun gl::corner(long radius): void {
+  gpu::accel(35L, radius, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::round(long x, long y, long width, long height): void {
+  gpu::accel(36L, x, y, width, height);
+}
+
+deRfun gl::ellipse(long x, long y, long width, long height): void {
+  gpu::accel(37L, x, y, width, height);
+}
+
+deRfun gl::frame(long edge): long {
+  return gpu::accel(38L, edge, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::raster(long x, long y, long width, long height): long {
+  long* kept = (long*)4224;
+  long* current = (long*)5504;
+  long node = gpu::text(*kept, x, y, width, height);
+  gpu::paint(node, *current, 0L);
+  return node;
+}
+
+deRfun gl::align(long node, long horizontal, long vertical): void {
+  gpu::align(node, horizontal, vertical);
+}
+
+deRfun gl::bitmap(long node, long code): void {
+  gpu::glyph(node, code);
+}
+
+deRfun gl::flush(): void {
+  gpu::compose();
+  gpu::present();
+}
+
+deRfun gl::finish(): void {
+  gpu::present();
+}

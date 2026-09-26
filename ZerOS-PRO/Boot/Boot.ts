@@ -20,10 +20,9 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
-import { ZerOS as AssembleRoot } from "./Assemble";
 import { ZerOS as BiosRoot } from "./Bios";
 import { ZerOS as MotherboardRoot } from "../Hardware/Motherboard/Bootstrap/Motherboard";
-import { logoLines } from "zeros-boot-firmware";
+import { logoProgram } from "zeros-boot-firmware";
 
 export namespace ZerOS {
   /* ------------------------------------------------------------------------ */
@@ -38,16 +37,16 @@ export namespace ZerOS {
       MotherboardRoot.Hardware.Motherboard.Motherboard;
 
     /**
-     * 引导一开始交给 CPU 的指令。正文在 Logo.obr，由工具链填进虚拟模块。
-     * 汇编展开标号和 call 之后才交给 CPU。黑底上居中写白色的 BOOT。
+     * 引导一开始交给 CPU 的程序。正文在 Logo.obr，由工具链编成二进制填进虚拟模块。
+     * 黑底中央是带向左阴影的 Starting 和六个点，第一颗点是红的。
      */
-    export const Logo: readonly string[] = AssembleRoot.Boot.assemble(logoLines);
+    export const Logo: Uint8Array = Uint8Array.from(logoProgram);
 
     /**
      * 收尾之后的固件循环。
-     * 先在 logo 上标出 F12。等待结束就清屏。按下 F12 进入设置画面。
+     * 等待期间红点按六个点的顺序往后换色。等待结束就清屏。按下 F12 进入设置画面：顶栏切换类别，左侧是子类，右侧是内容。
      */
-    export const Drive: readonly string[] = AssembleRoot.Boot.assemble(BiosRoot.Boot.BiosLines);
+    export const Drive: Uint8Array = BiosRoot.Boot.BiosProgram;
 
     /**
      * 登记 logo 和固件循环后通电。

@@ -1,0 +1,23 @@
+/* 单继承。n 在基类，extra 在派生类。3 + 1 = 4。 */
+class Unit {
+  int n;
+  deRfun value(): int {
+    return n;
+  }
+}
+
+class Box : Unit {
+  int extra;
+  deRfun Box(int start): void {
+    n = start;
+    extra = 1;
+  }
+  deRfun total(): int {
+    return value() + extra;
+  }
+}
+
+deRfun main(): int {
+  Box box = new Box(3);
+  return box.total();
+}

@@ -45,6 +45,9 @@ export namespace ZerOS {
       const SandboxStatusPassed = StatusRoot.Hardware.Sandbox.SandboxStatusPassed;
       const SandboxStatusFailed = StatusRoot.Hardware.Sandbox.SandboxStatusFailed;
       const assemble = AssembleRoot.Boot.assemble;
+      const GuestCore = ConfigRoot.Hardware.Sandbox.SandboxConfig.GuestCore;
+      const CoreSlotBits = ConfigRoot.Hardware.Sandbox.SandboxConfig.CoreSlotBits;
+      const DataFloor = ConfigRoot.Hardware.Sandbox.SandboxConfig.DataFloor;
       const runtimePrefix = "[ZerOS.Hardware.Sandbox.SandboxRuntime]";
 
       let status = SandboxStatusEmpty;
@@ -125,6 +128,22 @@ export namespace ZerOS {
       }
 
       /**
+       * 客核心和固件共用一块内存。
+       * 编译器默认的栈、帧、堆地址留给核心 0。交给客核心之前，只把不小于数据下界的立即数加上核心槽距。
+       * 收下的原文不动，读回的文本长度仍是调用方追加的长度。
+       */
+      function relocateGuestLine(line: string): string {
+        const shift = GuestCore * CoreSlotBits;
+        return line.replace(/\d+/g, (token) => {
+          const value = Number(token);
+          if (!Number.isSafeInteger(value) || value < DataFloor) {
+            return token;
+          }
+          return String(value + shift);
+        });
+      }
+
+      /**
        * 把文本展开成 CPU 能执行的行，并留下一次启动请求。
        * 展开失败时记成失败状态，不把异常抛出交换。
        */
@@ -139,7 +158,7 @@ export namespace ZerOS {
         }
         let lines: string[];
         try {
-          lines = assemble(text.split("\n"));
+          lines = assemble(text.split("\n").map(relocateGuestLine));
         } catch (error: unknown) {
           fault = error instanceof Error ? error.message : `${runtimePrefix} 程序文本无法展开`;
           if (fault.length > FaultMax) {

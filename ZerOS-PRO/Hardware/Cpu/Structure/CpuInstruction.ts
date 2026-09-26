@@ -69,6 +69,7 @@ export namespace ZerOS {
         | { readonly Op: "gpu.metric"; readonly Register: number; readonly Kind: number }
         | { readonly Op: "gpu.load"; readonly Register: number; readonly Address: number }
         | { readonly Op: "gpu.store"; readonly Address: number; readonly Value: number }
+        | { readonly Op: "gpu.accel"; readonly Register: number; readonly Operation: number; readonly A: number; readonly B: number; readonly C: number; readonly D: number }
         | { readonly Op: "mem.hertz"; readonly Hertz: number }
         | { readonly Op: "mem.metric"; readonly Register: number; readonly Kind: number }
         | { readonly Op: "hertz"; readonly Ordinal: number; readonly Hertz: number }
@@ -497,6 +498,18 @@ export namespace ZerOS {
           }
           return { Op: "store", Opcode: storeOpcode, Address: address, Register: register };
         }
+        if (head === "gpu.accel" && parts.length === 7) {
+          const register = registerOf(parts[1] ?? "");
+          const operation = registerOf(parts[2] ?? "");
+          const a = registerOf(parts[3] ?? "");
+          const b = registerOf(parts[4] ?? "");
+          const c = registerOf(parts[5] ?? "");
+          const d = registerOf(parts[6] ?? "");
+          if (register === null || operation === null || a === null || b === null || c === null || d === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "gpu.accel", Register: register, Operation: operation, A: a, B: b, C: c, D: d };
+        }
         if (head === "gpu.clear" && parts.length === 2) {
           const register = registerOf(parts[1] ?? "");
           if (register === null) {
@@ -678,6 +691,9 @@ export namespace ZerOS {
         }
         if (instruction.Op === "add") {
           return `add r${String(instruction.Destination)}, r${String(instruction.Left)}, r${String(instruction.Right)}`;
+        }
+        if (instruction.Op === "gpu.accel") {
+          return `gpu.accel r${String(instruction.Register)}, r${String(instruction.Operation)}, r${String(instruction.A)}, r${String(instruction.B)}, r${String(instruction.C)}, r${String(instruction.D)}`;
         }
         if (instruction.Op === "gpu.clear") {
           return `gpu.clear r${String(instruction.Register)}`;

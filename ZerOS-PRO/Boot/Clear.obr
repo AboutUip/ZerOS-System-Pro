@@ -1,14 +1,8 @@
 /* 清掉 4224 上记下的画面，再合成并送出一帧。 */
 import firmware;
-import gpu;
+import gl;
 
 export deRfun clear(): void {
-  long* kept = (long*)4224;
-  long box = *kept;
-  if (box != 0L) {
-    gpu::drop(box);
-    *kept = 0L;
-  }
-  gpu::compose();
-  gpu::present();
+  gl::clear();
+  gl::flush();
 }

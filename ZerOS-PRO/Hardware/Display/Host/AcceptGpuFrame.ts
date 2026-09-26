@@ -40,8 +40,10 @@ export namespace ZerOS {
         if (pixels.length !== frameWidth * frameHeight) {
           throw new Error(`${framePrefix} 帧长度不是宽乘高`);
         }
-        for (const pixel of pixels) {
-          if (!isPixel(pixel)) {
+        const count = pixels.length;
+        for (let index = 0; index < count; index += 1) {
+          const pixel = pixels[index];
+          if (pixel === undefined || !isPixel(pixel)) {
             throw new Error(`${framePrefix} 帧里有非法像素`);
           }
         }

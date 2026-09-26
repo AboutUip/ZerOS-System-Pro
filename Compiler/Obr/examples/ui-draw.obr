@@ -1,0 +1,12 @@
+/* 清成黑色，在 280,220 画 Z，下面画一条色带，然后呈现。返回 280。 */
+import obr.ui;
+
+deRfun main(): long {
+  /* 36095 是 140 * 256 + 255，色带是 64,140,255。 */
+  long accent = 64L * 65536L + 36095L;
+  obr::ui::clear(0L, 255L);
+  obr::ui::glyph(90L, 280L, 220L, 32L, 16777215L, 255L);
+  obr::ui::rect(280L, 260L, 16L, 6L, accent, 255L);
+  obr::ui::present();
+  return 280L;
+}

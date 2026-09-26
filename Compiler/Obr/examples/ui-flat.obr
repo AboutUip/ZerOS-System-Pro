@@ -1,0 +1,10 @@
+/* 白圆角矩形放在 640×480 的正中，里面是带字距的 ENTER。返回 1。 */
+import obr.ui;
+
+deRfun main(): long {
+  obr::ui::clear(0L, 255L);
+  obr::ui::round(210L, 130L, 220L, 220L, 28L, 16777215L, 255L);
+  obr::ui::text(272L, 224L, 32L, 4L, "ENTER", 0L, 255L);
+  obr::ui::present();
+  return 1L;
+}

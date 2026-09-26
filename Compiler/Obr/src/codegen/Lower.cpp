@@ -1,439 +1,40 @@
-#include "Codegen.hpp"
-
-#include "Diagnostic.hpp"
+#include "Generator.hpp"
 
 #include <cstdint>
 #include <cstring>
-#include <map>
-#include <sstream>
-#include <vector>
 
 namespace obr {
-namespace {
 
-constexpr int kSp = 1048576;
-constexpr int kStack = 2097152;
-constexpr int kFrame = 4653056;
-constexpr int kStatic = 5242880;
-constexpr int kHeapPtr = 4718592;
-constexpr int kHeap = 5767168;
-constexpr int kTemps = 8;
-
-class Generator {
- public:
-  std::string run(Unit& unit) {
-    int mainIndex = -1;
-    for (std::size_t index = 0; index < unit.functions.size(); index += 1) {
-      if (unit.functions[index].exported) unit.functions[index].label = unit.functions[index].name;
-      else unit.functions[index].label = "f" + std::to_string(index);
-      if (unit.functions[index].name == "main") mainIndex = static_cast<int>(index);
-    }
-    if (mainIndex < 0) fail("没有 main");
-    functions_ = &unit.functions;
-    const Function& entry = unit.functions[static_cast<std::size_t>(mainIndex)];
-    if (entry.body.size() == 1 && entry.body[0].kind == Stmt::Kind::Zap) {
-      emitZap(entry.body[0].name);
-      for (Function& function : unit.functions) {
-        if (&function == &entry || !function.opcode.empty()) continue;
-        emitFunction(function);
-      }
-      if (needString_) {
-        emitCopyRoutine();
-        emitConcatRoutine();
-      }
-      return out_.str();
-    }
-    emit("place r0, " + std::to_string(kStack));
-    emit("store.64 r0, " + std::to_string(kSp));
-    emit("call " + unit.functions[static_cast<std::size_t>(mainIndex)].label);
-    emit("halt");
-    for (Function& function : unit.functions) {
-      if (!function.opcode.empty()) continue;
-      emitFunction(function);
-    }
-    if (needString_) {
-      emitCopyRoutine();
-      emitConcatRoutine();
-    }
-    return out_.str();
+void Generator::emitAddress(const Expr& expr) {
+  if (expr.kind == Expr::Kind::Member) {
+    if (expr.prefix) emitAddress(expr.kids[0]);
+    else gen(expr.kids[0]);
+    emit("place r5, " + std::to_string(expr.integer));
+    emit("add r0, r0, r5");
+    return;
   }
-
- private:
-  std::ostringstream out_;
-  int labels_ = 0;
-  int words_ = 0;
-  int temp_ = 0;
-  std::vector<std::pair<std::string, std::string>> loops_;
-  bool needString_ = false;
-  bool frameHeld_ = false;
-  int userWords_ = 0;
-  int bias_ = 0;
-  std::string inlineReturn_;
-  std::string jumpPrefix_;
-  std::map<int, long long> knownAddr_;
-  std::vector<int> inlineOk_;
-  std::vector<int> extraMemo_;
-  const std::vector<Function>* functions_ = nullptr;
-
-  void emit(const std::string& line) {
-    out_ << line << "\n";
-    const bool call = line.rfind("call ", 0) == 0 || line == "ret" || (!line.empty() && line.back() == ':');
-    const std::size_t dest = line.find(" r");
-    const bool writesFrame = dest != std::string::npos && line.compare(dest, 3, " r4") == 0 && line.rfind("store", 0) != 0;
-    if (call || writesFrame) frameHeld_ = false;
+  if (expr.kind == Expr::Kind::Name && expr.type == TypeKind::Struct) {
+    address(static_cast<int>(expr.integer));
+    copy(0, 5);
+    return;
   }
-
-  void copy(int dest, int src) {
-    if (dest == src) return;
-    emit("or r" + std::to_string(dest) + ", r" + std::to_string(src) + ", r" + std::to_string(src));
+  if (expr.kind == Expr::Kind::Unary && expr.op == Tok::Star) {
+    gen(expr.kids[0]);
+    return;
   }
+  gen(expr);
+}
 
-  bool calm(const Expr& expr) const {
-    if (expr.kind == Expr::Kind::LitInt || expr.kind == Expr::Kind::LitBool || expr.kind == Expr::Kind::LitChar || expr.kind == Expr::Kind::LitNull || expr.kind == Expr::Kind::LitUndefined || expr.kind == Expr::Kind::Name) return true;
-    if (expr.kind == Expr::Kind::Cast) return calm(expr.kids[0]);
-    if (expr.kind == Expr::Kind::Unary && expr.op == Tok::Plus) return calm(expr.kids[0]);
-    if (expr.kind == Expr::Kind::Unary && expr.op == Tok::Star) return calm(expr.kids[0]);
-    if (expr.kind == Expr::Kind::Unary && expr.op == Tok::BitAnd) return expr.kids[0].kind == Expr::Kind::Name;
-    return false;
-  }
-  std::string fresh(const std::string& prefix) { return prefix + std::to_string(labels_++); }
-  int frameBits() const { return (words_ + kTemps) * 64; }
-
-  void frameBase() {
-    emit("load.64 r4, " + std::to_string(kFrame));
-  }
-
-  int locate(int slot) const {
-    if (slot < 0 || slot >= userWords_) return slot;
-    return slot + bias_;
-  }
-
-  bool constantPtr(const Expr& expr, long long& addr) const {
-    if (expr.kind == Expr::Kind::Cast && expr.type == TypeKind::Ptr && expr.kids[0].kind == Expr::Kind::LitInt) {
-      addr = expr.kids[0].integer;
-      return true;
-    }
-    if (expr.kind == Expr::Kind::Name && expr.type == TypeKind::Ptr) {
-      const auto found = knownAddr_.find(locate(static_cast<int>(expr.integer)));
-      if (found == knownAddr_.end()) return false;
-      addr = found->second;
-      return true;
-    }
-    return false;
-  }
-
-  void remember(int slot, const Expr& value) {
-    long long addr = 0;
-    const int located = locate(slot);
-    if (constantPtr(value, addr)) knownAddr_[located] = addr;
-    else knownAddr_.erase(located);
-  }
-
-  const char* loadAbs(TypeKind type) const {
-    if (type == TypeKind::Float || type == TypeKind::Double) return "load.f64";
-    if (type == TypeKind::Short) return "load.16";
-    if (type == TypeKind::Int || type == TypeKind::Char) return "load.32";
-    if (type == TypeKind::Byte) return "load.octet";
-    return "load.64";
-  }
-
-  const char* storeAbs(TypeKind type) const {
-    if (type == TypeKind::Float || type == TypeKind::Double) return "store.f64";
-    if (type == TypeKind::Short) return "store.16";
-    if (type == TypeKind::Int || type == TypeKind::Char) return "store.32";
-    if (type == TypeKind::Byte) return "store.octet";
-    return "store.64";
-  }
-
-  void address(int slot) {
-    slot = locate(slot);
-    if (slot < 0) {
-      const bool held = frameHeld_;
-      emit("place r5, " + std::to_string(kStatic + (-slot - 1) * 128 + 64));
-      frameHeld_ = held;
-      return;
-    }
-    if (!frameHeld_) frameBase();
-    emit("place r5, " + std::to_string(slot * 64));
-    emit("add r5, r4, r5");
-    frameHeld_ = true;
-  }
-
-  void emitStore(TypeKind type) {
-    if (type == TypeKind::Float || type == TypeKind::Double) emit("sti.f64 r0, r5");
-    else if (type == TypeKind::Short) emit("sti.16 r0, r5");
-    else if (type == TypeKind::Int || type == TypeKind::Char) emit("sti.32 r0, r5");
-    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::String) emit("sti.64 r0, r5");
-    else emit("sti.64 r0, r5");
-  }
-
-  void emitLoad(TypeKind type) {
-    if (type == TypeKind::Float || type == TypeKind::Double) emit("ldi.f64 r0, r5");
-    else if (type == TypeKind::Short) emit("ldi.16 r0, r5");
-    else if (type == TypeKind::Int || type == TypeKind::Char) emit("ldi.32 r0, r5");
-    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::String) emit("ldi.64 r0, r5");
-    else emit("ldi.64 r0, r5");
-  }
-
-  void emitZap(const std::string& body) {
-    std::size_t index = 0;
-    while (index < body.size()) {
-      std::size_t end = body.find('\n', index);
-      if (end == std::string::npos) end = body.size();
-      std::string line = body.substr(index, end - index);
-      const std::size_t trim = line.find_first_not_of(" \t");
-      if (trim == std::string::npos) line.clear();
-      else if (trim > 0) line = line.substr(trim);
-      if (!line.empty()) emit(line);
-      index = end < body.size() ? end + 1 : end;
-    }
-    frameHeld_ = false;
-  }
-  void storeSlot(int slot, TypeKind type) {
-    address(slot);
-    emitStore(type);
-  }
-
-  void loadSlot(int slot, TypeKind type) {
-    address(slot);
-    emitLoad(type);
-  }
-
-  int spill() {
-    const int slot = words_ + temp_;
-    temp_ += 1;
-    if (temp_ > kTemps) fail("表达式临时槽不够");
-    storeSlot(slot, TypeKind::Long);
-    temp_ -= 1;
-    return slot;
-  }
-
-  void hold() { temp_ += 1; }
-  void release() { temp_ -= 1; }
-
-  static std::string floatBits(double value) {
-    std::int64_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    return std::to_string(bits);
-  }
-
-  int keep(int reg) {
-    copy(0, reg);
-    const int slot = words_ + temp_;
-    hold();
-    storeSlot(slot, TypeKind::Long);
-    return slot;
-  }
-
-  void bump() {
-    const int size = words_ + temp_ - 1;
-    const std::string ready = fresh("e");
-    emit("load.64 r4, " + std::to_string(kHeapPtr));
-    emit("place r5, 0");
-    emit("eq r1, r4, r5");
-    emit("jz r1, " + ready);
-    emit("place r4, " + std::to_string(kHeap));
-    emit(ready + ":");
-    copy(0, 4);
-    const int dest = words_ + temp_;
-    hold();
-    storeSlot(dest, TypeKind::Long);
-    loadSlot(size, TypeKind::Long);
-    copy(5, 0);
-    emit("add r4, r4, r5");
-    emit("store.64 r4, " + std::to_string(kHeapPtr));
-    loadSlot(dest, TypeKind::Long);
-    release();
-  }
-
-  void emitString(const std::string& text) {
-    const std::string ready = fresh("e");
-    emit("load.64 r4, " + std::to_string(kHeapPtr));
-    emit("place r5, 0");
-    emit("eq r0, r4, r5");
-    emit("jz r0, " + ready);
-    emit("place r4, " + std::to_string(kHeap));
-    emit(ready + ":");
-    copy(0, 4);
-    emit("place r1, " + std::to_string(text.size()));
-    emit("sti.64 r1, r0");
-    emit("place r1, " + std::to_string(64 + static_cast<int>(text.size()) * 8));
-    emit("add r4, r4, r1");
-    emit("store.64 r4, " + std::to_string(kHeapPtr));
-    for (std::size_t index = 0; index < text.size(); index += 1) {
-      emit("place r1, " + std::to_string(static_cast<unsigned char>(text[index])));
-      emit("place r5, " + std::to_string(64 + static_cast<int>(index) * 8));
-      emit("add r5, r0, r5");
-      emit("sti.octet r1, r5");
+int Generator::structWords(const std::string& name) const {
+  if (structs_ != nullptr) {
+    for (const StructDecl& decl : *structs_) {
+      if (decl.name == name) return decl.words;
     }
   }
+  fail("没有结构体 " + name);
+}
 
-  void boxChar() {
-    const int code = words_ + temp_;
-    hold();
-    storeSlot(code, TypeKind::Long);
-    emit("place r0, 72");
-    const int size = words_ + temp_;
-    hold();
-    storeSlot(size, TypeKind::Long);
-    bump();
-    release();
-    const int dest = words_ + temp_;
-    hold();
-    storeSlot(dest, TypeKind::Long);
-    loadSlot(code, TypeKind::Long);
-    copy(1, 0);
-    loadSlot(dest, TypeKind::Long);
-    emit("place r2, 1");
-    emit("sti.64 r2, r0");
-    emit("place r5, 64");
-    emit("add r5, r0, r5");
-    emit("sti.octet r1, r5");
-    loadSlot(dest, TypeKind::Long);
-    release();
-    release();
-  }
-
-  void concat() {
-    needString_ = true;
-    emit("call sconcat");
-    emit("load.64 r4, " + std::to_string(kSp));
-    emit("place r5, " + std::to_string(frameBits()));
-    emit("sub r4, r4, r5");
-    emit("store.64 r4, " + std::to_string(kFrame));
-    frameHeld_ = true;
-  }
-
-  void emitConcatRoutine() {
-    emit("sconcat:");
-    emit("store.64 r7, 4521984");
-    emit("store.64 r1, 4522048");
-    emit("store.64 r2, 4522112");
-    emit("ldi.64 r4, r1");
-    emit("ldi.64 r5, r2");
-    emit("store.64 r4, 4522176");
-    emit("store.64 r5, 4522240");
-    emit("add r0, r4, r5");
-    emit("place r1, 8");
-    emit("mul r0, r0, r1");
-    emit("place r1, 64");
-    emit("add r0, r0, r1");
-    emit("load.64 r4, " + std::to_string(kHeapPtr));
-    emit("place r5, 0");
-    emit("eq r1, r4, r5");
-    emit("jz r1, shave");
-    emit("place r4, " + std::to_string(kHeap));
-    emit("shave:");
-    copy(1, 4);
-    emit("add r4, r4, r0");
-    emit("store.64 r4, " + std::to_string(kHeapPtr));
-    emit("store.64 r1, 4522304");
-    emit("load.64 r4, 4522176");
-    emit("load.64 r5, 4522240");
-    emit("add r4, r4, r5");
-    emit("sti.64 r4, r1");
-    emit("load.64 r4, 4522048");
-    emit("place r5, 64");
-    emit("add r1, r4, r5");
-    emit("load.64 r2, 4522176");
-    emit("load.64 r4, 4522304");
-    emit("add r3, r4, r5");
-    emit("call scopy");
-    emit("load.64 r4, 4522112");
-    emit("place r5, 64");
-    emit("add r1, r4, r5");
-    emit("load.64 r2, 4522240");
-    emit("load.64 r4, 4522304");
-    emit("add r3, r4, r5");
-    emit("load.64 r4, 4522176");
-    emit("place r5, 8");
-    emit("mul r4, r4, r5");
-    emit("add r3, r3, r4");
-    emit("call scopy");
-    emit("load.64 r0, 4522304");
-    emit("load.64 r7, 4521984");
-    emit("ret");
-  }
-
-  void emitCopyRoutine() {
-    emit("scopy:");
-    emit("store.64 r7, 4587520");
-    emit("place r0, 0");
-    emit("schead:");
-    emit("lt r4, r0, r2");
-    emit("jz r4, sdone");
-    emit("place r5, 8");
-    emit("mul r4, r0, r5");
-    emit("add r4, r1, r4");
-    emit("ldi.octet r5, r4");
-    emit("place r4, 8");
-    emit("mul r4, r0, r4");
-    emit("add r4, r3, r4");
-    emit("sti.octet r5, r4");
-    emit("place r4, 1");
-    emit("add r0, r0, r4");
-    emit("place r4, 1");
-    emit("jnz r4, schead");
-    emit("sdone:");
-    emit("load.64 r7, 4587520");
-    emit("ret");
-  }
-
-  void asFloat() {
-    if (true) {
-      emit("itof r0, r0");
-    }
-  }
-
-  void truth(TypeKind type) {
-    if (type == TypeKind::Boolean || type == TypeKind::Byte) return;
-    if (type == TypeKind::String) {
-      const std::string empty = fresh("e");
-      const std::string done = fresh("e");
-      emit("place r1, 0");
-      emit("eq r2, r0, r1");
-      emit("jnz r2, " + empty);
-      emit("ldi.64 r0, r0");
-      emit("eq r0, r0, r1");
-      emit("place r1, 1");
-      emit("sub r0, r1, r0");
-      emit("place r1, 1");
-      emit("jnz r1, " + done);
-      emit(empty + ":");
-      emit("place r0, 0");
-      emit(done + ":");
-      return;
-    }
-    if (type == TypeKind::Undefined) {
-      emit("place r0, 0");
-      return;
-    }
-    if (type == TypeKind::Float || type == TypeKind::Double) {
-      emit("place r1, " + floatBits(0));
-      emit("feq r0, r0, r1");
-    } else {
-      emit("place r1, 0");
-      emit("eq r0, r0, r1");
-    }
-    emit("place r1, 1");
-    emit("sub r0, r1, r0");
-  }
-
-  void narrow(TypeKind type) {
-    if (type == TypeKind::Byte) {
-      emit("place r1, 1");
-      emit("and r0, r0, r1");
-      return;
-    }
-    if (type == TypeKind::Boolean) {
-      emit("place r1, 0");
-      emit("eq r2, r0, r1");
-      emit("place r1, 1");
-      emit("sub r0, r1, r2");
-    }
-  }
-
-  void gen(const Expr& expr) {
+void Generator::gen(const Expr& expr) {
     if (expr.kind == Expr::Kind::LitInt) {
       emit("place r0, " + std::to_string(expr.integer));
       return;
@@ -452,6 +53,98 @@ class Generator {
     }
     if (expr.kind == Expr::Kind::LitNull || expr.kind == Expr::Kind::LitUndefined) {
       emit("place r0, 0");
+      return;
+    }
+    if (expr.kind == Expr::Kind::Await) {
+      gen(expr.kids[0]);
+      return;
+    }
+    if (expr.kind == Expr::Kind::New) {
+      const ClassDecl* decl = nullptr;
+      if (classes_ != nullptr) {
+        for (const ClassDecl& item : *classes_) {
+          if (item.name == expr.text) decl = &item;
+        }
+      }
+      if (decl == nullptr) fail("没有类 " + expr.text);
+      const int bits = decl->fields.empty() ? 64 : static_cast<int>(decl->fields.size()) * 64;
+      const std::string ready = fresh("e");
+      emit("load.64 r4, " + std::to_string(kHeapPtr));
+      emit("place r5, 0");
+      emit("eq r0, r4, r5");
+      emit("jz r0, " + ready);
+      emit("place r4, " + std::to_string(kHeap));
+      emit(ready + ":");
+      copy(0, 4);
+      emit("place r1, " + std::to_string(bits));
+      emit("add r4, r4, r1");
+      emit("store.64 r4, " + std::to_string(kHeapPtr));
+      const int base = words_ + temp_;
+      hold();
+      storeSlot(base, TypeKind::Long);
+      const int words = bits / 64;
+      for (int index = 0; index < words; index += 1) {
+        loadSlot(base, TypeKind::Long);
+        emit("place r1, 0");
+        emit("place r5, " + std::to_string(index * 64));
+        emit("add r5, r0, r5");
+        emit("sti.64 r1, r5");
+      }
+      if (expr.integer >= 0) {
+        const Function& target = (*functions_)[static_cast<std::size_t>(expr.integer)];
+        std::vector<int> argSlots;
+        for (const Expr& argument : expr.kids) {
+          gen(argument);
+          const int saved = words_ + temp_;
+          hold();
+          storeSlot(saved, TypeKind::Long);
+          argSlots.push_back(saved);
+        }
+        loadSlot(base, TypeKind::Long);
+        copy(1, 0);
+        if (!argSlots.empty()) {
+          loadSlot(argSlots[0], TypeKind::Long);
+          copy(2, 0);
+        }
+        if (argSlots.size() > 1) {
+          loadSlot(argSlots[1], TypeKind::Long);
+          copy(3, 0);
+        }
+        int extra = 0;
+        for (std::size_t index = 2; index < argSlots.size(); index += 1) {
+          loadSlot(argSlots[index], TypeKind::Long);
+          emit("load.64 r4, " + std::to_string(kSp));
+          emit("sti.64 r0, r4");
+          emit("place r5, 64");
+          emit("add r4, r4, r5");
+          emit("store.64 r4, " + std::to_string(kSp));
+          extra += 1;
+        }
+        emit("call " + target.label);
+        if (extra > 0) {
+          emit("load.64 r4, " + std::to_string(kSp));
+          emit("place r5, " + std::to_string(extra * 64));
+          emit("sub r4, r4, r5");
+          emit("store.64 r4, " + std::to_string(kSp));
+        }
+        emit("load.64 r4, " + std::to_string(kSp));
+        emit("place r5, " + std::to_string(frameBits()));
+        emit("sub r4, r4, r5");
+        emit("store.64 r4, " + std::to_string(kFrame));
+        frameHeld_ = true;
+        temp_ -= static_cast<int>(argSlots.size());
+      }
+      loadSlot(base, TypeKind::Long);
+      release();
+      frameHeld_ = false;
+      return;
+    }
+    if (expr.kind == Expr::Kind::Member) {
+      if (expr.type == TypeKind::Struct) fail("结构体要按字段读写");
+      emitAddress(expr);
+      copy(5, 0);
+      emit("ldi.64 r0, r5");
+      frameHeld_ = false;
       return;
     }
     if (expr.kind == Expr::Kind::Cast) {
@@ -481,6 +174,7 @@ class Generator {
         return;
       }
       if (expr.op == Tok::Star) {
+        if (expr.type == TypeKind::Struct) fail("结构体要按字段读写");
         long long addr = 0;
         if (constantPtr(expr.kids[0], addr)) {
           emit(std::string(loadAbs(expr.type)) + " r0, " + std::to_string(addr));
@@ -546,6 +240,30 @@ class Generator {
       return;
     }
     if (expr.kind == Expr::Kind::Assign) {
+      if (expr.type == TypeKind::Struct) {
+        const int words = structWords(expr.kids[0].typeName);
+        const int dest = static_cast<int>(expr.kids[0].integer);
+        const int src = static_cast<int>(expr.kids[1].integer);
+        for (int index = 0; index < words; index += 1) {
+          loadSlot(src + index, TypeKind::Long);
+          storeSlot(dest + index, TypeKind::Long);
+        }
+        return;
+      }
+      if (expr.kids[0].kind == Expr::Kind::Member) {
+        gen(expr.kids[1]);
+        const int saved = words_ + temp_;
+        hold();
+        storeSlot(saved, TypeKind::Long);
+        emitAddress(expr.kids[0]);
+        copy(1, 0);
+        loadSlot(saved, TypeKind::Long);
+        release();
+        copy(5, 1);
+        emit("sti.64 r0, r5");
+        frameHeld_ = false;
+        return;
+      }
       if (expr.kids[0].kind == Expr::Kind::Unary && expr.kids[0].op == Tok::Star) {
         long long addr = 0;
         if (constantPtr(expr.kids[0].kids[0], addr)) {
@@ -622,6 +340,10 @@ class Generator {
         return;
       }
       const Function& target = (*functions_)[static_cast<std::size_t>(expr.integer)];
+      if (target.opcode == "library") {
+        emitLibrary(expr, target);
+        return;
+      }
       if (target.opcode.empty() && inlineable(static_cast<int>(expr.integer))) {
         emitInline(expr, target);
         return;
@@ -641,7 +363,7 @@ class Generator {
         const Expr& argument = expr.kids[index];
         const TypeKind want = target.params[index].type;
         kinds[index] = want == TypeKind::Float || want == TypeKind::Double ? want : TypeKind::Long;
-        if (!target.opcode.empty() && argument.kind == Expr::Kind::LitInt) {
+        if (!target.opcode.empty() && argument.kind == Expr::Kind::LitInt && want != TypeKind::Float && want != TypeKind::Double) {
           direct[index] = 1;
           continue;
         }
@@ -796,7 +518,7 @@ class Generator {
     arith(expr.op, expr.kids[0].type, expr.kids[1].type, expr.type);
   }
 
-  void arith(Tok op, TypeKind left, TypeKind right, TypeKind result) {
+void Generator::arith(Tok op, TypeKind left, TypeKind right, TypeKind result) {
     if (result == TypeKind::String && op == Tok::Plus) {
       if (left == TypeKind::Char) {
         copy(0, 1);
@@ -880,139 +602,7 @@ class Generator {
     }
   }
 
-  void collectExpr(const Expr& expr, std::vector<int>& calls, bool& zap) const {
-    if (expr.kind == Expr::Kind::Call && expr.integer >= 0) calls.push_back(static_cast<int>(expr.integer));
-    for (const Expr& kid : expr.kids) collectExpr(kid, calls, zap);
-  }
-
-  void collectStmt(const Stmt& stmt, std::vector<int>& calls, bool& zap) const {
-    if (stmt.kind == Stmt::Kind::Zap) zap = true;
-    collectExpr(stmt.expr, calls, zap);
-    for (const Stmt& inner : stmt.body) collectStmt(inner, calls, zap);
-    for (const Stmt& inner : stmt.other) collectStmt(inner, calls, zap);
-  }
-
-  int functionIndex(const Function& function) const {
-    for (int index = 0; index < static_cast<int>(functions_->size()); index += 1) {
-      if (&(*functions_)[static_cast<std::size_t>(index)] == &function) return index;
-    }
-    return -1;
-  }
-
-  void markCycle(int index, std::vector<int>& color, std::vector<int>& stack, const std::vector<std::vector<int>>& calls, std::vector<int>& cyclic) {
-    color[static_cast<std::size_t>(index)] = 1;
-    stack.push_back(index);
-    for (const int callee : calls[static_cast<std::size_t>(index)]) {
-      if (color[static_cast<std::size_t>(callee)] == 1) {
-        for (int cursor = static_cast<int>(stack.size()) - 1; cursor >= 0; cursor -= 1) {
-          cyclic[static_cast<std::size_t>(stack[static_cast<std::size_t>(cursor)])] = 1;
-          if (stack[static_cast<std::size_t>(cursor)] == callee) break;
-        }
-      } else if (color[static_cast<std::size_t>(callee)] == 0) {
-        markCycle(callee, color, stack, calls, cyclic);
-      }
-    }
-    stack.pop_back();
-    color[static_cast<std::size_t>(index)] = 2;
-  }
-
-  void prepareInline() {
-    if (!inlineOk_.empty()) return;
-    const int count = static_cast<int>(functions_->size());
-    inlineOk_.assign(static_cast<std::size_t>(count), 0);
-    extraMemo_.assign(static_cast<std::size_t>(count), -2);
-    std::vector<std::vector<int>> calls(static_cast<std::size_t>(count));
-    std::vector<int> zap(static_cast<std::size_t>(count), 0);
-    for (int index = 0; index < count; index += 1) {
-      bool seenZap = false;
-      collectStmtList((*functions_)[static_cast<std::size_t>(index)].body, calls[static_cast<std::size_t>(index)], seenZap);
-      if (seenZap || !(*functions_)[static_cast<std::size_t>(index)].opcode.empty()) zap[static_cast<std::size_t>(index)] = 1;
-    }
-    std::vector<int> color(static_cast<std::size_t>(count), 0);
-    std::vector<int> stack;
-    std::vector<int> cyclic(static_cast<std::size_t>(count), 0);
-    for (int index = 0; index < count; index += 1) {
-      if (color[static_cast<std::size_t>(index)] == 0) markCycle(index, color, stack, calls, cyclic);
-    }
-    for (int index = 0; index < count; index += 1) {
-      if (zap[static_cast<std::size_t>(index)] == 0 && cyclic[static_cast<std::size_t>(index)] == 0) inlineOk_[static_cast<std::size_t>(index)] = 1;
-    }
-  }
-
-  void collectStmtList(const std::vector<Stmt>& body, std::vector<int>& calls, bool& zap) const {
-    for (const Stmt& stmt : body) collectStmt(stmt, calls, zap);
-  }
-
-  bool inlineable(int index) {
-    prepareInline();
-    return inlineOk_[static_cast<std::size_t>(index)] == 1;
-  }
-
-  int extraWords(int index) {
-    prepareInline();
-    if (extraMemo_[static_cast<std::size_t>(index)] != -2) return extraMemo_[static_cast<std::size_t>(index)] < 0 ? 0 : extraMemo_[static_cast<std::size_t>(index)];
-    extraMemo_[static_cast<std::size_t>(index)] = -1;
-    int best = 0;
-    std::vector<int> calls;
-    bool zap = false;
-    collectStmtList((*functions_)[static_cast<std::size_t>(index)].body, calls, zap);
-    for (const int callee : calls) {
-      if (inlineOk_[static_cast<std::size_t>(callee)] != 1) continue;
-      const int need = (*functions_)[static_cast<std::size_t>(callee)].words + extraWords(callee);
-      if (need > best) best = need;
-    }
-    extraMemo_[static_cast<std::size_t>(index)] = best;
-    return best;
-  }
-
-  void emitInline(const Expr& expr, const Function& target) {
-    std::vector<int> held;
-    std::vector<TypeKind> kinds;
-    std::vector<int> knownFlag(expr.kids.size(), 0);
-    std::vector<long long> knownVal(expr.kids.size(), 0);
-    for (std::size_t index = 0; index < expr.kids.size(); index += 1) {
-      const Expr& argument = expr.kids[index];
-      gen(argument);
-      const TypeKind want = target.params[index].type;
-      if ((want == TypeKind::Float || want == TypeKind::Double) && argument.type != TypeKind::Float && argument.type != TypeKind::Double) {
-        emit("itof r0, r0");
-      }
-      const int saved = words_ + temp_;
-      const TypeKind kept = want == TypeKind::Float || want == TypeKind::Double ? want : TypeKind::Long;
-      hold();
-      storeSlot(saved, kept);
-      held.push_back(saved);
-      kinds.push_back(kept);
-      long long addr = 0;
-      if (constantPtr(argument, addr)) {
-        knownFlag[index] = 1;
-        knownVal[index] = addr;
-      }
-    }
-    const int savedBias = bias_;
-    const int savedUser = userWords_;
-    const std::string savedReturn = inlineReturn_;
-    bias_ = savedBias + savedUser;
-    userWords_ = target.words;
-    for (int slot = 0; slot < target.words; slot += 1) knownAddr_.erase(locate(slot));
-    for (std::size_t index = 0; index < held.size(); index += 1) {
-      loadSlot(held[index], kinds[index]);
-      release();
-      storeSlot(target.params[index].slot, target.params[index].type);
-      const int located = locate(target.params[index].slot);
-      if (knownFlag[index] == 1) knownAddr_[located] = knownVal[index];
-      else knownAddr_.erase(located);
-    }
-    const std::string end = fresh("e");
-    inlineReturn_ = end;
-    for (const Stmt& stmt : target.body) emitStmt(stmt, target.ret);
-    emit(end + ":");
-    inlineReturn_ = savedReturn;
-    bias_ = savedBias;
-    userWords_ = savedUser;
-  }
-
-  void emitFunction(Function& function) {
+void Generator::emitFunction(Function& function) {
     prepareInline();
     userWords_ = function.words;
     bias_ = 0;
@@ -1051,7 +641,7 @@ class Generator {
     }
   }
 
-  bool endsWithReturn(const std::vector<Stmt>& body) {
+bool Generator::endsWithReturn(const std::vector<Stmt>& body) {
     if (body.empty()) return false;
     const Stmt& stmt = body.back();
     if (stmt.kind == Stmt::Kind::Return) return true;
@@ -1060,7 +650,7 @@ class Generator {
     return false;
   }
 
-  void emitReturn() {
+void Generator::emitReturn() {
     if (!inlineReturn_.empty()) {
       emit("place r1, 1");
       emit("jnz r1, " + inlineReturn_);
@@ -1072,7 +662,7 @@ class Generator {
     emit("ret");
   }
 
-  void emitStmt(const Stmt& stmt, TypeKind ret) {
+void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
     if (stmt.kind == Stmt::Kind::Zap) {
       emitZap(stmt.name);
       emit("load.64 r4, " + std::to_string(kSp));
@@ -1088,6 +678,13 @@ class Generator {
       return;
     }
     if (stmt.kind == Stmt::Kind::Decl) {
+      if (stmt.type == TypeKind::Struct) {
+        for (int index = 0; index < stmt.words; index += 1) {
+          emit("place r0, 0");
+          storeSlot(stmt.slot + index, TypeKind::Long);
+        }
+        return;
+      }
       const bool hasInit = !(stmt.expr.kind == Expr::Kind::LitInt && stmt.expr.type == TypeKind::None && stmt.expr.kids.empty());
       if (stmt.isStatic) {
         const std::string skip = fresh("e");
@@ -1159,6 +756,25 @@ class Generator {
       loops_.pop_back();
       return;
     }
+    if (stmt.kind == Stmt::Kind::For) {
+      if (!stmt.other.empty()) emitStmt(stmt.other[0], ret);
+      const std::string head = fresh("w");
+      const std::string step = fresh("w");
+      const std::string end = fresh("d");
+      loops_.push_back({end, step});
+      emit(head + ":");
+      gen(stmt.expr);
+      truth(stmt.expr.type);
+      emit("jz r0, " + end);
+      for (const Stmt& inner : stmt.body) emitStmt(inner, ret);
+      emit(step + ":");
+      if (stmt.other.size() > 1) emitStmt(stmt.other[1], ret);
+      emit("place r1, 1");
+      emit("jnz r1, " + head);
+      emit(end + ":");
+      loops_.pop_back();
+      return;
+    }
     if (stmt.kind == Stmt::Kind::Break) {
       emit("place r1, 1");
       emit("jnz r1, " + loops_.back().first);
@@ -1193,13 +809,5 @@ class Generator {
     }
     gen(stmt.expr);
   }
-};
-
-}  // namespace
-
-std::string generate(Unit& unit) {
-  Generator generator;
-  return generator.run(unit);
-}
 
 }  // namespace obr

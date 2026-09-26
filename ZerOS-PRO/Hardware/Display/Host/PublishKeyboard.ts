@@ -19,6 +19,28 @@ export namespace ZerOS {
       const page = MotherboardRoot.Hardware.Motherboard.Motherboard;
 
       /**
+       * ZKP1 的键位名最多 8 个可打印 ASCII。
+       * ArrowDown、ArrowLeft、ArrowRight 和 NumpadEnter 都更长。
+       * 直接丢掉的话，固件收不到方向键，也收不到小键盘回车。
+       * 这里收成仍然合法的短名，字长和协议都不变。ArrowUp 正好 7 个字符，不必改。
+       */
+      function fitName(code: string): string {
+        if (code === "ArrowDown") {
+          return "Down";
+        }
+        if (code === "ArrowLeft") {
+          return "Left";
+        }
+        if (code === "ArrowRight") {
+          return "Right";
+        }
+        if (code === "NumpadEnter") {
+          return "Enter";
+        }
+        return code;
+      }
+
+      /**
        * 键位名收成一个无符号字：最多 8 个 ASCII，小端。
        * 超长或出现不可打印字符时整段作废，调用方不发布这次事件。
        */
@@ -42,7 +64,7 @@ export namespace ZerOS {
        * 种类只区分是哪一种监听被触发，不决定这个键做什么。
        */
       function packEvent(kind: number, event: KeyboardEvent): readonly bigint[] | null {
-        const name = packCode(event.code);
+        const name = packCode(fitName(event.code));
         if (name === null) {
           return null;
         }

@@ -1,0 +1,13 @@
+/* 编译器自带的数学库。只有函数头。调用在编译器里收成 ZAP。 */
+namespace obr {
+namespace math {
+deRfun abs(int value): int;
+deRfun abs(long value): long;
+deRfun min(int left, int right): int;
+deRfun min(long left, long right): long;
+deRfun max(int left, int right): int;
+deRfun max(long left, long right): long;
+deRfun clamp(int value, int low, int high): int;
+deRfun clamp(long value, long low, long high): long;
+}
+}

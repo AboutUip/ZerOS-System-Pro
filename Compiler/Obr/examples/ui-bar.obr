@@ -1,0 +1,9 @@
+/* 160×16 的横条放在 (80,200)，圆角 6，进度 40/100，填充宽 64。轨道是 rgb(0,80,40)。返回 1。 */
+import obr.ui;
+
+deRfun main(): long {
+  obr::ui::clear(0L, 255L);
+  obr::ui::bar(80L, 200L, 160L, 16L, 6L, 40L, 100L, 20520L, 16777215L, 255L);
+  obr::ui::present();
+  return 1L;
+}

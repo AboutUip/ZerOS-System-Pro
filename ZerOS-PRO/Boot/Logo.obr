@@ -1,19 +1,34 @@
-/* 上电画面。居中写出 BOOT，把盒子编号留在位地址 4224。 */
-import firmware;
-import gpu;
+/* 启动画面。Starting 带向左阴影，后面六个点从左起第一颗是红的。固件循环再把红点往后换。 */
+import obr.ui;
 
 deRfun main(): int {
-  long box = gpu::box(0, 0, 0, 640, 480, 0);
-  long* kept = (long*)4224;
-  *kept = box;
-  long text = gpu::text(box, 0, 0, 640, 480);
-  gpu::align(text, 1, 1);
-  gpu::paint(text, 0xFFFFFF, 0);
-  gpu::glyph(text, 0x42);
-  gpu::glyph(text, 0x4F);
-  gpu::glyph(text, 0x4F);
-  gpu::glyph(text, 0x54);
-  gpu::compose();
-  gpu::present();
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long titleSize = 48L;
+  long step = obr::ui::advance(titleSize);
+  long word = obr::ui::textWidth(titleSize, "Starting");
+  long titleX = obr::ui::align(0L, wide, word + step * 6L, obr::ui::Align::Center) + 8L;
+  long titleY = obr::ui::align(0L, high, titleSize, obr::ui::Align::Center);
+  long hintSize = 16L;
+  long hintWide = obr::ui::textWidth(hintSize, "Press F12 to enter BIOS");
+  long hintX = obr::ui::align(0L, wide, hintWide, obr::ui::Align::Center);
+  long hintY = obr::ui::alignEnd(0L, high, obr::ui::pad(hintSize, 36L));
+  long white = obr::ui::rgb(255L, 255L, 255L);
+  long red = obr::ui::rgb(255L, 0L, 0L);
+  obr::ui::clear(0L, 255L);
+  obr::ui::shadow(-4L, 0L, 4L, obr::ui::rgb(140L, 140L, 140L), 255L);
+  obr::ui::text(titleX, titleY, titleSize, "Starting", white, 255L);
+  obr::ui::noshadow();
+  long index = 0L;
+  while (index != 6L) {
+    long color = white;
+    if (index == 0L) {
+      color = red;
+    }
+    obr::ui::glyph(46L, titleX + word + index * step, titleY, titleSize, color, 255L);
+    index = index + 1L;
+  }
+  obr::ui::text(hintX, hintY, hintSize, "Press F12 to enter BIOS", obr::ui::rgb(176L, 176L, 176L), 255L);
+  obr::ui::present();
   return 0;
 }

@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
@@ -78,35 +78,50 @@ const firmwareModule = "zeros-boot-firmware";
 const firmwareResolved = "\0zeros-boot-firmware";
 
 /**
- * 用已经编好的宿主编译器把 Boot 旁的 .obr 收成工具链目录里的文本。
+ * 当前系统上的宿主编译器。
+ * CMake 的目标名是 obrc：Windows 产出 obrc.exe，其它系统产出不带扩展名的 obrc。
+ */
+function hostCompilerPath(): string {
+  const fileName = process.platform === "win32" ? "obrc.exe" : "obrc";
+  return path.resolve(repoRoot, "Compiler/Obr", fileName);
+}
+
+/**
+ * 用已经编好的宿主编译器把 Boot 旁的 .obr 收成程序。
+ * 交给页面的是无扩展名二进制。旁边的 .zap 只留在工具链目录里，用来对照指令。
  * Vite 不调用 g++。产品源码只导入虚拟模块，不写产物路径。
  * 源文件变了就再编译并整页重载。
  */
 function obrFirmwarePlugin(): Plugin {
-  const compiler = path.resolve(repoRoot, "Compiler/Obr/obrc.exe");
   const outputDir = path.resolve(toolchainDir, "Zap");
   const gpuHeader = path.resolve(productRoot, "Hardware/Gpu");
+  const driverHeader = path.resolve(repoRoot, "Driver/Gpu");
   const boardHeader = path.resolve(productRoot, "Hardware/Motherboard");
   const memoryHeader = path.resolve(productRoot, "Hardware/Memory");
+  const gpuDriver = path.resolve(driverHeader, "gl.obr");
   const jobs: readonly { readonly sources: readonly string[]; readonly output: string; readonly exportName: string }[] = [
     {
-      sources: [path.resolve(productRoot, "Boot/Bios.obr"), path.resolve(productRoot, "Boot/Clear.obr")],
-      output: path.resolve(outputDir, "Bios.zap"),
-      exportName: "biosLines",
+      sources: [path.resolve(productRoot, "Boot/Bios.obr"), path.resolve(productRoot, "Boot/Clear.obr"), gpuDriver],
+      output: path.resolve(outputDir, "Bios"),
+      exportName: "biosProgram",
     },
     {
-      sources: [path.resolve(productRoot, "Boot/Logo.obr")],
-      output: path.resolve(outputDir, "Logo.zap"),
-      exportName: "logoLines",
+      sources: [path.resolve(productRoot, "Boot/Logo.obr"), gpuDriver],
+      output: path.resolve(outputDir, "Logo"),
+      exportName: "logoProgram",
     },
   ];
 
   const compile = (): void => {
+    const compiler = hostCompilerPath();
+    if (!existsSync(compiler)) {
+      throw new Error(`找不到宿主编译器 ${compiler}。请在当前系统用 C++20 编译 Compiler/Obr。`);
+    }
     mkdirSync(outputDir, { recursive: true });
     for (const job of jobs) {
       const result = spawnSync(
         compiler,
-        [...job.sources, "-I", gpuHeader, "-I", boardHeader, "-I", memoryHeader, "-o", job.output],
+        [...job.sources, "-I", gpuHeader, "-I", driverHeader, "-I", boardHeader, "-I", memoryHeader, "-o", job.output],
         { encoding: "utf8" },
       );
       if (result.status !== 0) {
@@ -116,17 +131,7 @@ function obrFirmwarePlugin(): Plugin {
     }
   };
 
-  const linesOf = (file: string): string[] => {
-    const text = readFileSync(file, "utf8");
-    const lines: string[] = [];
-    for (const raw of text.split("\n")) {
-      const line = raw.endsWith("\r") ? raw.slice(0, -1).trim() : raw.trim();
-      if (line.length > 0) {
-        lines.push(line);
-      }
-    }
-    return lines;
-  };
+  const bytesOf = (file: string): number[] => Array.from(readFileSync(file));
 
   return {
     name: "zeros-obr-firmware",
@@ -136,7 +141,7 @@ function obrFirmwarePlugin(): Plugin {
     configureServer(server): void {
       compile();
       const watched = jobs.flatMap((job): readonly string[] => job.sources);
-      watched.push(path.resolve(gpuHeader, "gpu.mr"), path.resolve(boardHeader, "board.mr"), path.resolve(memoryHeader, "memory.mr"), path.resolve(productRoot, "Boot/firmware.mr"));
+      watched.push(path.resolve(gpuHeader, "gpu.mr"), path.resolve(driverHeader, "gl.mr"), path.resolve(boardHeader, "board.mr"), path.resolve(memoryHeader, "memory.mr"), path.resolve(productRoot, "Boot/firmware.mr"));
       server.watcher.add(watched);
     },
     resolveId(id: string): string | null {
@@ -151,7 +156,7 @@ function obrFirmwarePlugin(): Plugin {
       }
       compile();
       return jobs
-        .map((job): string => `export const ${job.exportName} = ${JSON.stringify(linesOf(job.output))};`)
+        .map((job): string => `export const ${job.exportName} = ${JSON.stringify(bytesOf(job.output))};`)
         .join("\n");
     },
     handleHotUpdate(context) {

@@ -26,6 +26,7 @@ import { ZerOS as MemoryRoot } from "./VideoMemory";
 import { ZerOS as GlyphRoot } from "../Structure/Glyph";
 import { ZerOS as PixelRoot } from "../Structure/Pixel";
 import { ZerOS as SceneRoot } from "../Structure/SceneTree";
+import { ZerOS as AccelRoot } from "./WebGpuAccel";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -38,6 +39,8 @@ export namespace ZerOS {
       const GlyphWidth = GlyphRoot.Hardware.Gpu.GlyphWidth;
       const GlyphHeight = GlyphRoot.Hardware.Gpu.GlyphHeight;
       const spend = ClockRoot.Hardware.Gpu.spend;
+      const resizeAccel = AccelRoot.Hardware.Gpu.resize;
+      const blitAccel = AccelRoot.Hardware.Gpu.blit;
       const runtimePrefix = "[ZerOS.Hardware.Gpu.GpuRuntime]";
 
       let frameWidth = 0;
@@ -69,6 +72,7 @@ export namespace ZerOS {
         frameHeight = height;
         frame = MemoryRoot.Hardware.Gpu.declareMemory(memoryBytes, count);
         SceneRoot.Hardware.Gpu.resetScene(width, height);
+        resizeAccel(width, height);
       }
 
       export function videoBytes(): number {
@@ -179,11 +183,13 @@ export namespace ZerOS {
 
       /**
        * 交出当前帧的副本。
+       * 加速器若刚画过，先把颜色目标写入帧，再复制。没画过则保留节点树合成的像素。
        * 帧存储仍留在显卡线程，随后的 Clear / Plot / Image / Character 改不到这份副本。
        */
       export async function present(): Promise<Uint32Array> {
         begin();
         try {
+          await blitAccel(frame, frameWidth, frameHeight);
           const copy = frame.slice();
           await spend(frame.length);
           return copy;

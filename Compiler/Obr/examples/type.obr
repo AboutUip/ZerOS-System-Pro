@@ -1,0 +1,24 @@
+/* 结构体按字段排布，枚举是 long 常量。10 + 3 + 4 = 17。 */
+enum Axis: long { X, Y = 3 }
+
+struct Pair {
+  long a;
+  long b;
+}
+
+struct Wrap {
+  Pair inner;
+  long c;
+}
+
+deRfun main(): long {
+  Wrap w;
+  w.inner.a = 10L;
+  w.inner.b = Axis::Y;
+  w.c = 4L;
+  Wrap z;
+  z = w;
+  Wrap* view;
+  view = &z;
+  return view.inner.a + view.inner.b + view.c;
+}

@@ -1,0 +1,75 @@
+/* 界面库。只有函数头。布局和动画在编译器里收成整数运算，绘制收成 gpu.accel。 */
+namespace obr {
+namespace ui {
+/* 一段空间里靠哪一头。0 起点，1 正中，2 终点。 */
+enum Align: long { Start, Center, End }
+/* 边加上内边距。 */
+deRfun pad(long edge, long amount): long;
+/* 起点加下标乘步进。纵向、横向排子项时用。 */
+deRfun span(long start, long step, long index): long;
+/* 靠起点对齐，结果就是起点。space 和 item 仍会求值。 */
+deRfun alignStart(long origin, long space, long item): long;
+/* 在一段空间里居中。 */
+deRfun alignCenter(long origin, long space, long item): long;
+/* 靠终点对齐。 */
+deRfun alignEnd(long origin, long space, long item): long;
+/* 按 Align 把 item 放进 space。mode 不是 0、1、2 时失败。 */
+deRfun align(long origin, long space, long item, long mode): long;
+/* 一个字形的像素步进。字号小于 1 时失败。字号小于 2 时步进是 1，否则是字号除以 2。 */
+deRfun advance(long size): long;
+/* 字符串的像素宽度，等于字数乘步进。 */
+deRfun textWidth(long size, string text): long;
+/* 加上字距。步进小于 1 时失败。空串宽度是 0。 */
+deRfun textWidth(long size, long tracking, string text): long;
+/* 从 from 走到 to。numer 小于等于 0 得到 from，大于等于 denom 得到 to，denom 为 0 时失败。 */
+deRfun lerp(long from, long to, long numer, long denom): long;
+/* 先慢后快再慢。先乘后除，denom 为 0 时失败。 */
+deRfun ease(long from, long to, long numer, long denom): long;
+/* 进度占了多少像素。span 小于 0、或 maximum 小于 1 时失败。value 小于等于 0 得到 0，大于等于 maximum 得到 span，否则先乘后除。 */
+deRfun meter(long span, long value, long maximum): long;
+/* 三个 0 到 255 的通道收成 0xRRGGBB。超出的通道收到 0 或 255。 */
+deRfun rgb(long red, long green, long blue): long;
+/* 把加速颜色目标清成这个颜色。透明度也是 0 到 255。 */
+deRfun clear(long color, long alpha): void;
+/* 屏幕像素矩形。左上是原点，y 向下。会加上当前局部原点。 */
+deRfun rect(long x, long y, long width, long height, long color, long alpha): void;
+/* 圆角矩形。半径收到不超过较短边的一半，0 是直角。 */
+deRfun round(long x, long y, long width, long height, long radius, long color, long alpha): void;
+/* 内切椭圆。宽高相等时是圆。 */
+deRfun ellipse(long x, long y, long width, long height, long color, long alpha): void;
+/* 横条。先画整条轨道，再从左边盖上填充。宽、高或半径小于 0，或 maximum 小于 1 时失败。填充宽度是 0 时只留轨道。 */
+deRfun bar(long x, long y, long width, long height, long radius, long value, long maximum, long track, long fill, long alpha): void;
+/* 一个码点。0x20 到 0x7E。 */
+deRfun glyph(long code, long x, long y, long size, long color, long alpha): void;
+/* 从左往右画一串字形。字距是 0。 */
+deRfun text(long x, long y, long size, string value, long color, long alpha): void;
+/* 字距加在每个字形步进上。步进小于 1 时失败。 */
+deRfun text(long x, long y, long size, long tracking, string value, long color, long alpha): void;
+/* 之后的 text 和 glyph 先向偏移方向连画 count 层。dx 向右为正。越远越淡。count 不在 1 到 8 时失败。 */
+deRfun shadow(long dx, long dy, long count, long color, long alpha): void;
+/* 关掉文字阴影。 */
+deRfun noshadow(): void;
+/* 打开剪裁并设置矩形。 */
+deRfun clip(long x, long y, long width, long height): void;
+/* 关掉剪裁。 */
+deRfun unclip(): void;
+/* 记下当前原点。栈深超过 32 时失败。 */
+deRfun save(): void;
+/* 把之后的绘制原点平移这么多像素。 */
+deRfun translate(long x, long y): void;
+/* 回到最近一次 save 的原点。栈空时失败。 */
+deRfun restore(): void;
+/* 呈现这一帧。加速画过的颜色目标会写入帧存储。 */
+deRfun present(): void;
+/* 颜色目标的宽。 */
+deRfun width(): long;
+/* 颜色目标的高。 */
+deRfun height(): long;
+/* 每次调用加 1，第一次返回 1。 */
+deRfun frame(): long;
+/* 新的按下或重复的键位名。没有新事件、抬起、或没有键盘时是 0。第一次调用只记下次数。 */
+deRfun key(): long;
+/* 这次新事件是 Enter 时返回 1。 */
+deRfun enter(): long;
+}
+}

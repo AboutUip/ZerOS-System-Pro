@@ -9,7 +9,7 @@
  * 连续的寄存器运算在这里一次做完，碰到访存、端口或停机才把控制交回去。
  * 不写回寄存器的显卡命令也在这里按出现顺序排成一队，一次送给主板。
  * 要回节点编号的命令，以及 Present，仍单独等待，好让后面的指令看见结果。
- * Load / Store 才把访存交给主板。
+ * 这一核心写过的对齐字节留在核心里，没写过的 Load / Store 才去主板。
  * 不导入内存实现，也不自己决定挂载。
  *
  * ---------------------------------------------------------------------------
@@ -61,6 +61,29 @@ export namespace ZerOS {
       const FrameAddress = 4653056n;
       const Load64 = 9;
       const Store64 = 10;
+      /**
+       * 界面库的临时槽。编译器把它们放在帧指针下面，只有这一颗核心自己读写。
+       * 每个字形都要来回读十几次。若每次都去内存，一页设置画面要等很久，按键就被堵住。
+       * 这些 64 位字留在核心里。范围之外的访存仍走内存。
+       */
+      const ScratchBase = 4603904n;
+      const ScratchLimit = 4653056n;
+      const scratchWords = new Array<bigint>(Number((ScratchLimit - ScratchBase) / 64n)).fill(0n);
+      /**
+       * 这一核心已经写过的八位组。键是位地址除以 8。
+       * 设置画面每次重画都要再读同一批字符串、行表和栈上的局部变量。写过之后就在这里读，不再每个字节都问一次内存。
+       * 没写过的地址仍走内存，所以别的设备事先放好的数据还在。这不是协议里的缓存。
+       */
+      const keptOctets = new Map<bigint, number>();
+      /** 固件单元格。栈指针那一个字不在这段里，它仍交给内存。 */
+      const KeptLow = 4096n;
+      const KeptLowEnd = 1048576n;
+      /** 0 号核心的调用栈。编译器从 2097152 往上长，一帧远小于这段。 */
+      const KeptStack = 2097152n;
+      const KeptStackEnd = 2621440n;
+      /** 字符串堆。只盖住从堆底起的一段，再往上的分配仍走内存。 */
+      const KeptHeap = 5767168n;
+      const KeptHeapEnd = 6815744n;
       let frameWord: bigint | null = null;
       let pendingFrame = false;
       /** 还没到必须看见画面的指令。访存可以穿插在中间，队列继续往后排。 */
@@ -90,6 +113,311 @@ export namespace ZerOS {
        */
       function isQueuedGpu(op: string): boolean {
         return op === "gpu.align" || op === "gpu.paint" || op === "gpu.glyph" || op === "gpu.drop" || op === "gpu.compose" || op === "gpu.clear" || op === "gpu.plot" || op === "gpu.character" || op === "gpu.hertz" || op === "gpu.store";
+      }
+
+      /**
+       * 下一条指令会不会读 r6。
+       * 加速绘制把结果放进 r6，但字形和矩形接着就不管它了。
+       * 这种可以先攒进队列。紧跟着用 r6 的查询必须当场做完，不能攒。
+       */
+      function readsSix(step: Record<string, unknown> | undefined): boolean {
+        if (step === undefined) {
+          return false;
+        }
+        const op = step["Op"];
+        if (typeof op !== "string") {
+          return true;
+        }
+        const sources = ["Left", "Right", "Condition", "Source", "A", "B", "C", "D", "Operation", "X", "Y", "Pixel", "Code", "Foreground", "Background", "Node", "AlignX", "AlignY", "Hertz", "Kind", "Parent", "Width", "Height", "Fill", "Value"];
+        for (const key of sources) {
+          if (step[key] === 6) {
+            return true;
+          }
+        }
+        if ((op === "store" || op === "sti") && (step["Register"] === 6 || step["Address"] === 6)) {
+          return true;
+        }
+        if (op === "ldi" && step["Address"] === 6) {
+          return true;
+        }
+        if (op.startsWith("gpu.") && op !== "gpu.accel" && op !== "gpu.present" && op !== "gpu.compose" && step["Register"] === 6) {
+          return true;
+        }
+        return false;
+      }
+
+      /** 把一条不读回 r6 的加速命令抄成整数。参数仍是寄存器里的二进制 64 位。 */
+      function captureAccel(step: Record<string, unknown>): Record<string, unknown> | null {
+        const operation = registerIndex(step["Operation"]);
+        const a = registerIndex(step["A"]);
+        const b = registerIndex(step["B"]);
+        const c = registerIndex(step["C"]);
+        const d = registerIndex(step["D"]);
+        if (operation === null || a === null || b === null || c === null || d === null) {
+          quietFault = `${corePrefix} 加速命令的寄存器不在 0 到 7`;
+          return null;
+        }
+        return {
+          gpuOp: "accel",
+          operation: Number(readRegister(operation)),
+          a: readRegister(a),
+          b: readRegister(b),
+          c: readRegister(c),
+          d: readRegister(d),
+        };
+      }
+
+      /**
+       * 界面临时槽的 load.64 / store.64 在核心里完成。
+       * 不是这个范围，或不是 64 位整字，就返回 false，仍交给内存。
+       */
+      function absorbScratch(step: Record<string, unknown>): boolean {
+        const op = step["Op"];
+        if (op !== "load" && op !== "store") {
+          return false;
+        }
+        const opcode = step["Opcode"];
+        if (op === "load" && opcode !== Load64) {
+          return false;
+        }
+        if (op === "store" && opcode !== Store64) {
+          return false;
+        }
+        const address = step["Address"];
+        if (typeof address !== "bigint" || address < ScratchBase || address >= ScratchLimit) {
+          return false;
+        }
+        if ((address - ScratchBase) % 64n !== 0n) {
+          return false;
+        }
+        const index = Number((address - ScratchBase) / 64n);
+        const register = registerIndex(step["Register"]);
+        if (!Number.isInteger(index) || index < 0 || index >= scratchWords.length || register === null) {
+          quietFault = `${corePrefix} 界面临时槽不完整`;
+          return true;
+        }
+        if (op === "load") {
+          registers[register] = scratchWords[index] ?? 0n;
+          return true;
+        }
+        scratchWords[index] = readRegister(register);
+        return true;
+      }
+
+      /** 操作码对应的八位组个数。位访问和认不出的操作码返回 0，仍交给内存。 */
+      function linearWidth(opcode: number): number {
+        if (opcode === 3 || opcode === 4) {
+          return 1;
+        }
+        if (opcode === 5 || opcode === 6) {
+          return 2;
+        }
+        if (opcode === 7 || opcode === 8 || opcode === 11 || opcode === 12) {
+          return 4;
+        }
+        if (opcode === 9 || opcode === 10 || opcode === 13 || opcode === 14) {
+          return 8;
+        }
+        return 0;
+      }
+
+      function linearStore(opcode: number): boolean {
+        return opcode === 4 || opcode === 6 || opcode === 8 || opcode === 10 || opcode === 12 || opcode === 14;
+      }
+
+      /**
+       * 读这一核心写过的对齐字节。八个位里只要有一个没写过，就返回 false，整次改走内存。
+       * 帧指针和界面临时槽另有记录，这里不碰。
+       */
+      function absorbLinear(step: Record<string, unknown>): boolean {
+        const op = step["Op"];
+        if (op !== "load" && op !== "store" && op !== "ldi" && op !== "sti") {
+          return false;
+        }
+        const opcode = step["Opcode"];
+        if (typeof opcode !== "number") {
+          return false;
+        }
+        const width = linearWidth(opcode);
+        if (width === 0) {
+          return false;
+        }
+        let address: bigint;
+        if (op === "load" || op === "store") {
+          const direct = step["Address"];
+          if (typeof direct !== "bigint") {
+            return false;
+          }
+          address = direct;
+        } else {
+          const pointer = registerIndex(step["Address"]);
+          if (pointer === null) {
+            quietFault = `${corePrefix} 间接访存的地址寄存器不在 0 到 7`;
+            return true;
+          }
+          address = readRegister(pointer);
+        }
+        if (address < 0n || address % 8n !== 0n || address === FrameAddress) {
+          return false;
+        }
+        const inLow = address >= KeptLow && address < KeptLowEnd;
+        const inStack = address >= KeptStack && address < KeptStackEnd;
+        const inHeap = address >= KeptHeap && address < KeptHeapEnd;
+        const last = address + BigInt((width - 1) * 8);
+        if (inLow && last >= KeptLowEnd) {
+          return false;
+        }
+        if (inStack && last >= KeptStackEnd) {
+          return false;
+        }
+        if (inHeap && last >= KeptHeapEnd) {
+          return false;
+        }
+        if (!inLow && !inStack && !inHeap) {
+          return false;
+        }
+        if (address < ScratchLimit && last >= ScratchBase) {
+          return false;
+        }
+        const register = registerIndex(step["Register"]);
+        if (register === null) {
+          quietFault = `${corePrefix} 访存的数据寄存器不在 0 到 7`;
+          return true;
+        }
+        const base = address / 8n;
+        const bits = BigInt(width * 8);
+        const modulus = 1n << bits;
+        if (linearStore(opcode)) {
+          const value = readRegister(register);
+          const min = width === 1 ? 0n : -(modulus >> 1n);
+          const max = width === 1 ? modulus - 1n : (modulus >> 1n) - 1n;
+          if (value < min || value > max) {
+            for (let index = 0; index < width; index += 1) {
+              keptOctets.delete(base + BigInt(index));
+            }
+            return false;
+          }
+          let rest = value < 0n ? value + modulus : value;
+          for (let index = 0; index < width; index += 1) {
+            keptOctets.set(base + BigInt(index), Number(rest & 0xffn));
+            rest >>= 8n;
+          }
+          return true;
+        }
+        for (let index = 0; index < width; index += 1) {
+          if (!keptOctets.has(base + BigInt(index))) {
+            return false;
+          }
+        }
+        let loaded = 0n;
+        for (let index = width - 1; index >= 0; index -= 1) {
+          loaded = (loaded << 8n) | BigInt(keptOctets.get(base + BigInt(index)) ?? 0);
+        }
+        if (width > 1) {
+          const sign = modulus >> 1n;
+          if (loaded >= sign) {
+            loaded -= modulus;
+          }
+        }
+        registers[register] = loaded;
+        return true;
+      }
+
+      /**
+       * 标识字符串和不变的个数。Hz、执行条数、口状态每次仍去问。
+       * 同一页会把同一个字符问很多遍。问过的留在核心里，这段不是协议里的缓存。
+       */
+      const queryCache = new Map<string, bigint>();
+
+      function queryKey(seat: number, field: number, index: number): string {
+        return `${String(seat)}:${String(field)}:${String(index)}`;
+      }
+
+      /** 把一组查询结果写进记录。列表里有非整数就一个都不留，并返回 false。 */
+      function rememberSpan(seat: number, field: number, index: number, list: unknown, single: bigint | null): boolean {
+        if (!Array.isArray(list)) {
+          if (single !== null) {
+            queryCache.set(queryKey(seat, field, index), single);
+          }
+          return single !== null;
+        }
+        const stored: bigint[] = [];
+        for (const item of list) {
+          if (typeof item !== "bigint") {
+            return false;
+          }
+          stored.push(item);
+        }
+        for (let step = 0; step < stored.length; step += 1) {
+          const item = stored[step];
+          if (item === undefined) {
+            return false;
+          }
+          queryCache.set(queryKey(seat, field, index + step), item);
+        }
+        return true;
+      }
+
+      function charQuery(seat: number, field: number): boolean {
+        if (seat === 0) {
+          return field === 2;
+        }
+        if (seat === 1 || seat === 2 || seat === 3) {
+          return field === 2 || field === 3 || field === 4;
+        }
+        if (seat === 5) {
+          return field === 1 || field === 2 || field === 3;
+        }
+        return false;
+      }
+
+      function liveQuery(seat: number, field: number): boolean {
+        if (seat === 1) {
+          return field === 5 || field === 6 || field === 7;
+        }
+        if (seat === 2) {
+          return field === 5 || field === 6;
+        }
+        if (seat === 3) {
+          return field === 6 || field === 7;
+        }
+        if (seat === 5) {
+          return field === 0;
+        }
+        return false;
+      }
+
+      let pendingQuery: { readonly seat: number; readonly field: number; readonly index: number; readonly live: boolean } | null = null;
+
+      /**
+       * 这条查询的结果已经在核心里时，直接写入寄存器并继续往下执行。
+       * 没有记录就返回 false，仍停下来去问主板。
+       */
+      function absorbQuery(step: Record<string, unknown>): boolean {
+        if (step["Op"] !== "query") {
+          return false;
+        }
+        const destination = registerIndex(step["Register"]);
+        const seatRegister = registerIndex(step["Seat"]);
+        const fieldRegister = registerIndex(step["Field"]);
+        const indexRegister = registerIndex(step["Index"]);
+        if (destination === null || seatRegister === null || fieldRegister === null || indexRegister === null) {
+          quietFault = `${corePrefix} 查询命令不完整`;
+          return true;
+        }
+        const seat = readNumber(seatRegister);
+        const field = readNumber(fieldRegister);
+        const index = readNumber(indexRegister);
+        if (seat === null || field === null || index === null) {
+          quietFault = `${corePrefix} 查询命令的整数超出范围`;
+          return true;
+        }
+        const hit = queryCache.get(queryKey(seat, field, index));
+        if (hit === undefined) {
+          return false;
+        }
+        registers[destination] = hit;
+        return true;
       }
 
       function readStepNumber(step: Record<string, unknown>, key: string): number | null {
@@ -208,6 +536,40 @@ export namespace ZerOS {
             if (quietFault !== "") {
               break;
             }
+            cursor += 1;
+            executed += 1;
+            continue;
+          }
+          if (absorbScratch(step)) {
+            if (quietFault !== "") {
+              break;
+            }
+            cursor += 1;
+            executed += 1;
+            continue;
+          }
+          if (absorbLinear(step)) {
+            if (quietFault !== "") {
+              break;
+            }
+            cursor += 1;
+            executed += 1;
+            continue;
+          }
+          if (absorbQuery(step)) {
+            if (quietFault !== "") {
+              break;
+            }
+            cursor += 1;
+            executed += 1;
+            continue;
+          }
+          if (op === "gpu.accel" && !readsSix(steps[cursor + 1])) {
+            const capturedAccel = captureAccel(step);
+            if (capturedAccel === null) {
+              break;
+            }
+            heldQueue.push(capturedAccel);
             cursor += 1;
             executed += 1;
             continue;
@@ -399,6 +761,11 @@ export namespace ZerOS {
         if (kind === "port-result") {
           if (ok && target !== null) {
             registers[target] = loaded;
+          }
+          const asked = pendingQuery;
+          pendingQuery = null;
+          if (ok && asked !== null && !asked.live) {
+            rememberSpan(asked.seat, asked.field, asked.index, record?.["values"], loaded);
           }
           reply(ok, false, loaded, typeof message === "string" ? message : "");
           return;
@@ -812,6 +1179,18 @@ export namespace ZerOS {
         }
         pendingRegister = destination;
         waiting = true;
+        pendingQuery = { seat: seatNumber, field: fieldNumber, index: indexNumber, live: liveQuery(seatNumber, fieldNumber) };
+        if (charQuery(seatNumber, fieldNumber)) {
+          let count = 32;
+          if (seatNumber === 5) {
+            const room = 64 - (indexNumber % 64);
+            if (room < count) {
+              count = room;
+            }
+          }
+          port.postMessage({ kind: "query-span", seat: seatNumber, field: fieldNumber, index: indexNumber, count });
+          return;
+        }
         port.postMessage({ kind: "query", seat: seatNumber, field: fieldNumber, index: indexNumber });
       }
 
@@ -979,6 +1358,23 @@ export namespace ZerOS {
           if (!copyRegisters(record, ["address", "value"], payload)) {
             return;
           }
+        } else if (gpuOp === "accel") {
+          const register = registerIndex(record["register"]);
+          const operation = registerIndex(record["operation"]);
+          const a = registerIndex(record["a"]);
+          const b = registerIndex(record["b"]);
+          const c = registerIndex(record["c"]);
+          const d = registerIndex(record["d"]);
+          if (register === null || operation === null || a === null || b === null || c === null || d === null) {
+            fail("显卡命令的寄存器不在 0 到 7");
+            return;
+          }
+          pendingRegister = register;
+          payload["operation"] = Number(readRegister(operation));
+          payload["a"] = readRegister(a);
+          payload["b"] = readRegister(b);
+          payload["c"] = readRegister(c);
+          payload["d"] = readRegister(d);
         } else if (gpuOp !== "present" && gpuOp !== "compose") {
           fail("显卡命令无法识别");
           return;
@@ -1077,6 +1473,26 @@ export namespace ZerOS {
             return;
           }
           port.postMessage({ kind: "peek", ok: true, value: readRegister(register) });
+          return;
+        }
+        if (kind === "query-fill") {
+          const seat = record["seat"];
+          const field = record["field"];
+          const index = record["index"];
+          const values = record["values"];
+          const fillPort = cpu;
+          if (fillPort === null) {
+            return;
+          }
+          if (typeof seat !== "number" || typeof field !== "number" || typeof index !== "number" || !Array.isArray(values)) {
+            fillPort.postMessage({ kind: "filled", ok: false, message: `${corePrefix} 查询记录不完整` });
+            return;
+          }
+          if (!rememberSpan(seat, field, index, values, null)) {
+            fillPort.postMessage({ kind: "filled", ok: false, message: `${corePrefix} 查询记录不完整` });
+            return;
+          }
+          fillPort.postMessage({ kind: "filled", ok: true });
           return;
         }
         if (kind === "pass" || kind === "take") {

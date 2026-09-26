@@ -1,18 +1,20 @@
-# Cursor
-.cursor/
+# Cursor local state. Project skills stay tracked so Obr syntax can be maintained here.
+.cursor/*
+!.cursor/skills/
 
 # Toolchain
 Toolchain/node_modules/
 Toolchain/Dist/
 
-# Compiler host products
+# Compiler host products. obrc writes an extensionless program and a .zap sibling.
 Compiler/**/build/
 Compiler/**/*.exe
 Compiler/**/*.zap
 # g++ -o obrc on Linux. The source file is obrc.cpp and stays tracked.
 Compiler/**/obrc
 
-# Firmware text produced by Vite from Boot/*.obr
+# Preview firmware from Boot/*.obr. The extensionless file is what the CPU runs.
+# The .zap beside it is the same program as text, kept for debugging.
 Toolchain/Zap/
 
 # Vite dependency cache

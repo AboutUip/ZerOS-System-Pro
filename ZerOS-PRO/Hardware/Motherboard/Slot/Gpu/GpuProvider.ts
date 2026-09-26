@@ -50,6 +50,7 @@ export namespace ZerOS {
           Drop(node: number): Promise<void>;
           Compose(): Promise<void>;
           Present(): Promise<Uint32Array>;
+          Accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number>;
           SetHertz(hertz: number): Promise<void>;
           Metric(kind: number): Promise<number>;
           ReadByte(address: number): Promise<number>;

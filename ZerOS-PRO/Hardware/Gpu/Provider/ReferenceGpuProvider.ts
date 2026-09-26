@@ -21,6 +21,7 @@
 
 import { ZerOS as ConfigRoot } from "../Config/GpuConfig";
 import { ZerOS as RuntimeRoot } from "../Bootstrap/GpuRuntime";
+import { ZerOS as AccelRoot } from "../Bootstrap/WebGpuAccel";
 import type { ZerOS as GpuProviderRoot } from "../../Motherboard/Slot/Gpu/GpuProvider";
 
 export namespace ZerOS {
@@ -42,6 +43,7 @@ export namespace ZerOS {
       const drop = RuntimeRoot.Hardware.Gpu.drop;
       const compose = RuntimeRoot.Hardware.Gpu.compose;
       const present = RuntimeRoot.Hardware.Gpu.present;
+      const accel = AccelRoot.Hardware.Gpu.accel;
       const setGpuHertz = RuntimeRoot.Hardware.Gpu.setGpuHertz;
       const metric = RuntimeRoot.Hardware.Gpu.metric;
       const readByte = RuntimeRoot.Hardware.Gpu.readByte;
@@ -103,6 +105,9 @@ export namespace ZerOS {
         },
         Present(): Promise<Uint32Array> {
           return present();
+        },
+        Accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number> {
+          return accel(op, a, b, c, d);
         },
         SetHertz(hertz: number): Promise<void> {
           return setGpuHertz(hertz);

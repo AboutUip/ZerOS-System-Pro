@@ -1,0 +1,6 @@
+/* 最大值是 0，必须失败。 */
+import obr.ui;
+
+deRfun main(): long {
+  return obr::ui::meter(10L, 1L, 0L);
+}

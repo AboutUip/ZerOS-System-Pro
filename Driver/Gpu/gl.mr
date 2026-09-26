@@ -1,0 +1,69 @@
+/* 显卡驱动。固件文字仍走节点树；OpenGL 立即模式每条调用收成一条 gpu.accel。 */
+namespace gl {
+deRfun load(): void;
+/* 视口，像素。对应 glViewport。 */
+deRfun viewport(long x, long y, long width, long height): void;
+/* 剪裁矩形。对应 glScissor。 */
+deRfun scissor(long x, long y, long width, long height): void;
+/* 固件清屏色，三通道 0 到 255，给节点树的 clear 用。 */
+deRfun clearColor(long red, long green, long blue): void;
+/* OpenGL 清屏色，各通道 0 到 1。 */
+deRfun clearColor(double red, double green, double blue, double alpha): void;
+deRfun clearDepth(double depth): void;
+/* 固件前景色，三通道 0 到 255，给文字用。 */
+deRfun color(long red, long green, long blue): void;
+deRfun color(double red, double green, double blue, double alpha): void;
+/* 固件清屏：铺一块节点盒子。 */
+deRfun clear(): void;
+/* OpenGL glClear。1 颜色，2 深度，可相加。 */
+deRfun clear(long mask): void;
+/* 当前矩阵下的矩形，对应 glRect。 */
+deRfun rect(long x1, long y1, long x2, long y2): void;
+/* 0 点，1 线段，2 折线，3 三角形，4 三角带，5 三角扇，6 四边形。 */
+deRfun begin(long mode): void;
+deRfun vertex(long x, long y): void;
+deRfun vertex(double x, double y, double z): void;
+deRfun texCoord(double s, double t): void;
+deRfun normal(double x, double y, double z): void;
+deRfun end(): void;
+/* 0 模型视图，1 投影。 */
+deRfun matrixMode(long mode): void;
+deRfun loadIdentity(): void;
+deRfun pushMatrix(): void;
+deRfun popMatrix(): void;
+deRfun translate(double x, double y, double z): void;
+deRfun rotate(double angle, double x, double y, double z): void;
+deRfun scale(double x, double y, double z): void;
+deRfun ortho(double left, double right, double bottom, double top, double near, double far): void;
+deRfun frustum(double left, double right, double bottom, double top, double near, double far): void;
+/* 1 深度，2 混合，3 剔除，4 剪裁，5 纹理，6 光照。 */
+deRfun enable(long cap): void;
+deRfun disable(long cap): void;
+deRfun blendFunc(long src, long dst): void;
+deRfun depthFunc(long func): void;
+deRfun cullFace(long mode): void;
+deRfun frontFace(long mode): void;
+deRfun genTexture(): long;
+deRfun bindTexture(long id): void;
+deRfun texImage(long width, long height, long address): void;
+deRfun drawArrays(long mode, long first, long count): void;
+/* 屏幕像素矩形。左上为原点，y 向下，用当前 OpenGL 颜色。 */
+deRfun fill(long x, long y, long width, long height): void;
+/* 屏幕像素字形。码点 0x20 到 0x7E，字号是像素高。 */
+deRfun screenGlyph(long code, long x, long y, long size): void;
+/* 记下圆角半径，像素。之后的 round 使用它。负数失败。 */
+deRfun corner(long radius): void;
+/* 屏幕像素圆角矩形。用当前颜色和当前圆角。 */
+deRfun round(long x, long y, long width, long height): void;
+/* 屏幕像素内切椭圆。用当前颜色，不读圆角。 */
+deRfun ellipse(long x, long y, long width, long height): void;
+/* 0 返回颜色目标的宽，1 返回高。 */
+deRfun frame(long edge): long;
+deRfun raster(long x, long y, long width, long height): long;
+deRfun align(long node, long horizontal, long vertical): void;
+deRfun bitmap(long node, long code): void;
+/* 固件提交：先合成节点树，再呈现。加速绘制过的颜色目标会盖上这一帧。 */
+deRfun flush(): void;
+/* 只呈现，不合成节点树。 */
+deRfun finish(): void;
+}

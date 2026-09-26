@@ -1,309 +1,765 @@
-/* 固件主程序。用 while 和函数轮询键盘，F12 进入设置页。 */
+/* 固件主程序。F12 进入设置：顶栏两个类别，左侧子类，右侧内容。Tab 在三块之间移动焦点。
+   子页是 13312 起的行表，字符串在 8192。进入设置时写一次，之后只读地址。地址表在 Bios.ts。 */
 import firmware;
-import gpu;
+import gl;
 import board;
+import obr.ui;
 
-/* 把字符串逐个字形写进已经建好的文本节点。 */
-deRfun write(long line, string text): void {
-  int index = 0;
-  while (index < length(text)) {
-    gpu::glyph(line, text[index]);
-    index = index + 1;
+/* 从高位往低位把一个非负整数画成字形，返回写完后的横坐标。 */
+deRfun putnum(long x, long y, long value, long color): long {
+  if (value < 0L) {
+    value = 0L;
   }
+  if (value < 10L) {
+    obr::ui::glyph(48L + value, x, y, 16L, color, 255L);
+    return x + 8L;
+  }
+  long next = putnum(x, y, value / 10L, color);
+  obr::ui::glyph(48L + value % 10L, next, y, 16L, color, 255L);
+  return next + 8L;
 }
 
-/* 递归写出十进制数字。先写高位，再写当前位。 */
-deRfun printnum(long line, long value): void {
-  if (value == 0L) {
-    gpu::glyph(line, 48L);
-    return;
-  }
-  long rest = value / 10L;
-  if (rest != 0L) {
-    printnum(line, rest);
-  }
-  gpu::glyph(line, value % 10L + 48L);
-}
-
-/* 按小端把键名的每个字节画成字形，遇到 0 停止。 */
-deRfun printcode(long line, long value): void {
-  while (value % 256L != 0L) {
-    gpu::glyph(line, value % 256L);
-    value = value / 256L;
-  }
-}
-
-/* 从查询起点连续读最多 64 个字节，读到 0 就结束。 */
-deRfun printfield(long line): void {
-  long* seat = (long*)4672;
-  long* field = (long*)4736;
-  long* start = (long*)4800;
-  long index = *start;
-  long limit = *start + 64L;
-  while (index != limit) {
-    long code = query(*seat, *field, index);
+/* 从查询字段连续读字符，遇到 0 停止。最多 32 个，避免没有结尾时一直画。 */
+deRfun putfield(long x, long y, long seat, long field, long start, long color): long {
+  long index = 0L;
+  while (index != 32L) {
+    long code = query(seat, field, start + index);
     if (code == 0L) {
-      return;
+      return x;
     }
-    gpu::glyph(line, code);
+    obr::ui::glyph(code, x, y, 16L, color, 255L);
+    x = x + 8L;
     index = index + 1L;
   }
+  return x;
 }
 
-/* 在当前纵坐标新建一行白字，并把纵坐标下移 8。 */
-deRfun makeline(): long {
-  long* box = (long*)4224;
-  long* y = (long*)4288;
-  long line = gpu::text(*box, 0L, *y, 640L, 8L);
-  gpu::paint(line, 16777215L, 0L);
-  *y = *y + 8L;
-  return line;
-}
-
-/* 丢掉旧画面，铺一块 640×480 的黑底，纵坐标归零。 */
-deRfun openframe(): void {
-  long* box = (long*)4224;
-  long* y = (long*)4288;
-  if (*box != 0L) {
-    gpu::drop(*box);
-  }
-  *box = gpu::box(0L, 0L, 0L, 640L, 480L, 0L);
-  *y = 0L;
-}
-
-/* 主板页：口数量和协议标识。 */
-deRfun pageboard(): void {
-  long* seat = (long*)4672;
-  long* field = (long*)4736;
-  long* start = (long*)4800;
-  long line = makeline();
-  write(line, "BOARD");
-  line = makeline();
-  write(line, "PORTS ");
-  printnum(line, query(0L, 0L, 0L));
-  line = makeline();
-  write(line, "PROTO ");
-  *seat = 0L;
-  *field = 2L;
-  *start = 0L;
-  printfield(line);
-  write(line, " ");
-  *start = 8L;
-  printfield(line);
-  write(line, " ");
-  *start = 16L;
-  printfield(line);
-  write(line, " ");
-  *start = 24L;
-  printfield(line);
-  write(line, " ");
-  *start = 32L;
-  printfield(line);
-}
-
-/* 处理器页：标识、核心数，以及每颗核心的运行数。 */
-deRfun pagecpu(): void {
-  long* seat = (long*)4672;
-  long* field = (long*)4736;
-  long* start = (long*)4800;
-  long* core = (long*)4608;
-  long line = makeline();
-  write(line, "CPU");
-  line = makeline();
-  write(line, "ID ");
-  *seat = 1L;
-  *field = 2L;
-  *start = 0L;
-  printfield(line);
-  line = makeline();
-  write(line, "VENDOR ");
-  *field = 3L;
-  printfield(line);
-  line = makeline();
-  write(line, "PROTOCOL ");
-  *field = 4L;
-  printfield(line);
-  line = makeline();
-  write(line, "CORES ");
-  printnum(line, query(1L, 0L, 0L));
-  line = makeline();
-  write(line, "REGISTERS ");
-  printnum(line, query(1L, 1L, 0L));
-  *core = 0L;
-  while (query(1L, 0L, *core) != *core) {
-    line = makeline();
-    write(line, "CORE ");
-    printnum(line, *core);
-    write(line, " RUN ");
-    printnum(line, query(1L, 5L, *core));
-    write(line, " HZ ");
-    printnum(line, query(1L, 6L, *core));
-    write(line, " EXEC ");
-    printnum(line, query(1L, 7L, *core));
-    *core = *core + 1L;
+/* 横条表示 value / maximum。填充里有一条亮线，跟这一次重画的相位走。数值本身仍是查询结果。 */
+deRfun meterbar(long x, long y, long wide, long value, long maximum, long fill): void {
+  long track = obr::ui::rgb(24L, 30L, 40L);
+  obr::ui::bar(x, y, wide, 12L, 5L, value, maximum, track, fill, 255L);
+  long span = obr::ui::meter(wide, value, maximum);
+  if (span > 6L) {
+    long* phase = (long*)5888;
+    long pip = (*phase * 4L) % span;
+    obr::ui::rect(x + pip, y + 2L, 3L, 8L, obr::ui::rgb(236L, 244L, 255L), 255L);
   }
 }
 
-/* 内存页：标识、初始化状态和容量。 */
-deRfun pagemem(): void {
-  long* seat = (long*)4672;
-  long* field = (long*)4736;
-  long* start = (long*)4800;
-  long line = makeline();
-  write(line, "MEMORY");
-  line = makeline();
-  write(line, "ID ");
-  *seat = 2L;
-  *field = 2L;
-  *start = 0L;
-  printfield(line);
-  line = makeline();
-  write(line, "VENDOR ");
-  *field = 3L;
-  printfield(line);
-  line = makeline();
-  write(line, "PROTOCOL ");
-  *field = 4L;
-  printfield(line);
-  line = makeline();
-  write(line, "INIT ");
-  printnum(line, query(2L, 0L, 0L));
-  line = makeline();
-  write(line, "MEMORYID ");
-  printnum(line, query(2L, 1L, 0L));
-}
-
-/* 显卡页：标识和当前能读到的字段。 */
-deRfun pagegpu(): void {
-  long* seat = (long*)4672;
-  long* field = (long*)4736;
-  long* start = (long*)4800;
-  long line = makeline();
-  write(line, "GPU");
-  line = makeline();
-  write(line, "ID ");
-  *seat = 3L;
-  *field = 2L;
-  *start = 0L;
-  printfield(line);
-  line = makeline();
-  write(line, "VENDOR ");
-  *field = 3L;
-  printfield(line);
-  line = makeline();
-  write(line, "PROTOCOL ");
-  *field = 4L;
-  printfield(line);
-  line = makeline();
-  write(line, "WIDTH ");
-  printnum(line, query(3L, 0L, 0L));
-  line = makeline();
-  write(line, "HEIGHT ");
-  printnum(line, query(3L, 1L, 0L));
-}
-
-/* 显示器页。显示器不插在主板上，这里只列出能查询到的数。 */
-deRfun pagedisplay(): void {
-  long line = makeline();
-  write(line, "DISPLAY");
-  line = makeline();
-  write(line, "WIDTH ");
-  printnum(line, query(4L, 0L, 0L));
-  line = makeline();
-  write(line, "HEIGHT ");
-  printnum(line, query(4L, 1L, 0L));
-  line = makeline();
-  write(line, "HERTZ ");
-  printnum(line, query(4L, 2L, 0L));
-}
-
-/* 扩展口页。页号 5 到 8 对应口 0 到 3。 */
-deRfun pageport(): void {
-  long* page = (long*)4160;
-  long* kept = (long*)4992;
-  long* state = (long*)5120;
-  long* seat = (long*)4672;
-  long* field = (long*)4736;
-  long* start = (long*)4800;
-  long index = *page - 5L;
-  *kept = index;
-  if (index != 0L && index != 1L && index != 2L && index != 3L) {
-    return;
+/* 当前类别有几个子类。固件 6 个，关于 3 个。 */
+deRfun subcount(): long {
+  long* category = (long*)5248;
+  if (*category == 0L) {
+    return 6L;
   }
-  long line = makeline();
-  write(line, "PORT ");
-  printnum(line, index);
-  line = makeline();
-  write(line, "STATE ");
-  long now = query(5L, 0L, index);
-  *state = now;
-  printnum(line, now);
-  if (now == 0L) {
-    return;
+  return 3L;
+}
+
+/* 在 count 项里按 dir 进一格，两头相接。dir 是 1 或 -1。 */
+deRfun bump(long current, long dir, long count): long {
+  long next = current + dir;
+  if (next < 0L) {
+    return count - 1L;
   }
-  long cursor = 0L;
+  if (next == count) {
+    return 0L;
+  }
+  return next;
+}
+
+/* ArrowUp、Left，以及小键盘 8 和 4。 */
+deRfun backward(long name): int {
+  if (name == 0x7055776f727241L) {
+    return 1;
+  }
+  if (name == 0x7466654cL) {
+    return 1;
+  }
+  if (name == 0x386461706d754eL) {
+    return 1;
+  }
+  if (name == 0x346461706d754eL) {
+    return 1;
+  }
+  return 0;
+}
+
+/* ArrowDown 收成 Down，ArrowRight 收成 Right。小键盘 2 和 6 同样往前。 */
+deRfun forward(long name): int {
+  if (name == 0x6e776f44L) {
+    return 1;
+  }
+  if (name == 0x7468676952L) {
+    return 1;
+  }
+  if (name == 0x326461706d754eL) {
+    return 1;
+  }
+  if (name == 0x366461706d754eL) {
+    return 1;
+  }
+  return 0;
+}
+
+/* 右侧内容往上或往下移一截。limit 是上一帧算出的最大滚动量。 */
+deRfun nudge(long dir): void {
+  long* scroll = (long*)5312;
+  long* limit = (long*)5632;
+  *scroll = *scroll + dir * 20L;
+  if (*scroll < 0L) {
+    *scroll = 0L;
+  }
+  if (*scroll > *limit) {
+    *scroll = *limit;
+  }
+}
+
+/* 字表在 8192，每项 64 位，存的是字符串指针。下标见 Bios.ts。 */
+deRfun keep(long index, string text): void {
+  string* cell = (string*)(8192L + index * 64L);
+  *cell = text;
+}
+
+deRfun say(long x, long y, long size, long index, long color): void {
+  string* cell = (string*)(8192L + index * 64L);
+  obr::ui::text(x, y, size, *cell, color, 255L);
+}
+
+deRfun at(long address): long {
+  long* cell = (long*)address;
+  return *cell;
+}
+
+deRfun set(long address, long value): void {
+  long* cell = (long*)address;
+  *cell = value;
+}
+
+/* 字段放低 3 位，数值横坐标是其余部分。 */
+deRfun pack(long field, long off): long {
+  return field + off * 8L;
+}
+
+/* 频率条：字段、颜色、满刻度、数值横坐标。颜色 0 处理器，1 内存，2 显卡，3 显示器。满刻度 0 是 10 亿，1 是 1000。 */
+deRfun barPack(long field, long color, long maxCode, long off): long {
+  return field + color * 8L + maxCode * 64L + off * 128L;
+}
+
+/* 一行四个字：种类、甲、乙、丙。种类 0 结束这一页。 */
+deRfun plant(long kind, long a, long b, long c): void {
+  long cursor = at(5824L);
+  set(cursor, kind);
+  set(cursor + 64L, a);
+  set(cursor + 128L, b);
+  set(cursor + 192L, c);
+  set(5824L, cursor + 256L);
+}
+
+deRfun mark(long page): void {
+  set(12288L + page * 64L, at(5824L));
+}
+
+/* 进入设置时写一次。5760 记下已经写过。页目录在 12288，行从图 13312 起。 */
+deRfun fill(): void {
+  set(5824L, 13312L);
+  keep(0L, "FIRMWARE");
+  keep(1L, "ABOUT");
+  keep(2L, "TOP");
+  keep(3L, "SIDE");
+  keep(4L, "MAIN");
+  keep(5L, "OVERVIEW");
+  keep(6L, "CPU");
+  keep(7L, "GPU");
+  keep(8L, "MEMORY");
+  keep(9L, "DISPLAY");
+  keep(10L, "PORTS");
+  keep(11L, "TAB");
+  keep(12L, "SYSTEM");
+  keep(13L, "PROTOCOLS");
+  keep(14L, "DRIVERS");
+  keep(15L, "HZ");
+  keep(16L, "RUN");
+  keep(17L, "ACCESS");
+  keep(18L, "BYTES");
+  keep(19L, "FRAME");
+  keep(20L, "ID");
+  keep(21L, "VENDOR");
+  keep(22L, "PROTOCOL");
+  keep(23L, "CORES");
+  keep(24L, "REGISTERS");
+  keep(25L, "STATE");
+  keep(26L, "EXEC");
+  keep(27L, "WIDTH");
+  keep(28L, "HEIGHT");
+  keep(29L, "HERTZ");
+  keep(30L, "PORT");
+  keep(31L, "EMPTY");
+  keep(32L, "BOOT");
+  keep(33L, "SHELL");
+  keep(34L, "GL");
+  keep(35L, "LOADED");
+  keep(36L, "DEVICE");
+  keep(37L, "MEM");
+  keep(38L, "XCHG");
+  keep(39L, "KEYBOARD ZKP1");
+  keep(40L, "PANEL");
+  keep(41L, "CORE");
+  keep(42L, "ENTER OPENS  ESC BACK");
+  keep(43L, "ESC RETURNS");
+  keep(44L, "HZ MAX");
+  keep(45L, "STOP");
+  keep(46L, "COMMANDS");
+  keep(47L, "INIT");
+  keep(48L, "MEMORYID");
+  keep(49L, "DISPLAY ZDP1");
+  mark(0L);
+  plant(1L, 5L, 28L, 0L);
+  plant(1L, 6L, 22L, 0L);
+  plant(8L, 15L, 1L, barPack(6L, 0L, 0L, 40L));
+  plant(15L, 0L, 0L, 0L);
+  plant(1L, 8L, 22L, 0L);
+  plant(8L, 15L, 2L, barPack(5L, 1L, 0L, 40L));
+  plant(4L, 17L, 2L, pack(6L, 72L));
+  plant(3L, 6L, 0L, 0L);
+  plant(1L, 7L, 22L, 0L);
+  plant(8L, 15L, 3L, barPack(6L, 2L, 0L, 40L));
+  plant(4L, 18L, 3L, pack(5L, 64L));
+  plant(18L, 19L, 3L, 64L);
+  plant(0L, 0L, 0L, 0L);
+  mark(1L);
+  plant(1L, 6L, 26L, 0L);
+  plant(5L, 20L, 1L, pack(2L, 40L));
+  plant(5L, 21L, 1L, pack(3L, 72L));
+  plant(5L, 22L, 1L, pack(4L, 88L));
+  plant(4L, 23L, 1L, pack(0L, 64L));
+  plant(4L, 24L, 1L, pack(1L, 104L));
+  plant(9L, 44L, 1000000000L, 72L);
+  plant(10L, 0L, 0L, 0L);
+  plant(20L, 0L, 0L, 0L);
+  plant(21L, 0L, 0L, 0L);
+  plant(8L, 15L, 1L, barPack(6L, 0L, 0L, 40L));
+  plant(4L, 26L, 1L, pack(7L, 56L));
+  plant(11L, 0L, 0L, 0L);
+  plant(3L, 8L, 0L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  mark(2L);
+  plant(1L, 7L, 26L, 0L);
+  plant(5L, 20L, 3L, pack(2L, 40L));
+  plant(5L, 21L, 3L, pack(3L, 72L));
+  plant(5L, 22L, 3L, pack(4L, 88L));
+  plant(4L, 27L, 3L, pack(0L, 64L));
+  plant(4L, 28L, 3L, pack(1L, 72L));
+  plant(4L, 18L, 3L, pack(5L, 64L));
+  plant(8L, 15L, 3L, barPack(6L, 2L, 0L, 40L));
+  plant(4L, 46L, 3L, pack(7L, 96L));
+  plant(0L, 0L, 0L, 0L);
+  mark(3L);
+  plant(1L, 8L, 26L, 0L);
+  plant(5L, 20L, 2L, pack(2L, 40L));
+  plant(5L, 21L, 2L, pack(3L, 72L));
+  plant(5L, 22L, 2L, pack(4L, 88L));
+  plant(4L, 47L, 2L, pack(0L, 56L));
+  plant(4L, 48L, 2L, pack(1L, 96L));
+  plant(8L, 15L, 2L, barPack(5L, 1L, 0L, 40L));
+  plant(4L, 17L, 2L, pack(6L, 72L));
+  plant(0L, 0L, 0L, 0L);
+  mark(4L);
+  plant(1L, 9L, 26L, 0L);
+  plant(4L, 27L, 4L, pack(0L, 64L));
+  plant(4L, 28L, 4L, pack(1L, 72L));
+  plant(8L, 29L, 4L, barPack(2L, 3L, 1L, 64L));
+  plant(2L, 40L, 28L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  mark(5L);
+  plant(1L, 10L, 24L, 0L);
+  plant(2L, 42L, 28L, 0L);
+  plant(12L, 0L, 0L, 0L);
+  plant(14L, 0L, 0L, 0L);
+  plant(13L, 0L, 0L, 0L);
+  plant(3L, 8L, 0L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  mark(6L);
+  plant(23L, 0L, 0L, 0L);
+  plant(24L, 0L, 0L, 0L);
+  plant(25L, 22L, 0L, pack(1L, 88L));
+  plant(25L, 20L, 0L, pack(2L, 40L));
+  plant(25L, 21L, 0L, pack(3L, 72L));
+  plant(2L, 43L, 28L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  mark(7L);
+  plant(1L, 12L, 26L, 0L);
+  plant(9L, 32L, 1L, 56L);
+  plant(17L, 33L, 0L, 64L);
+  plant(3L, 4L, 0L, 0L);
+  plant(5L, 6L, 1L, pack(4L, 48L));
+  plant(8L, -1L, 1L, barPack(6L, 0L, 0L, 0L));
+  plant(3L, 8L, 0L, 0L);
+  plant(5L, 8L, 2L, pack(4L, 72L));
+  plant(8L, -1L, 2L, barPack(5L, 1L, 0L, 0L));
+  plant(3L, 8L, 0L, 0L);
+  plant(5L, 7L, 3L, pack(4L, 48L));
+  plant(8L, -1L, 3L, barPack(6L, 2L, 0L, 0L));
+  plant(3L, 8L, 0L, 0L);
+  plant(19L, 0L, 0L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  mark(8L);
+  plant(1L, 13L, 28L, 0L);
+  plant(16L, 0L, 0L, 0L);
+  plant(3L, 8L, 0L, 0L);
+  plant(1L, 49L, 24L, 0L);
+  plant(1L, 39L, 28L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  mark(9L);
+  plant(1L, 14L, 26L, 0L);
+  plant(17L, 34L, 35L, 40L);
+  plant(5L, 7L, 3L, pack(4L, 48L));
+  plant(3L, 4L, 0L, 0L);
+  plant(12L, 0L, 0L, 0L);
+  plant(22L, 0L, 0L, 0L);
+  plant(13L, 0L, 0L, 0L);
+  plant(3L, 8L, 0L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  set(5760L, 1L);
+}
+
+/* 画表里的一行。index 是核心或扩展口的循环下标。 */
+deRfun show(long x, long y, long wide, long kind, long a, long b, long c, long index): long {
+  long ink = obr::ui::rgb(232L, 236L, 242L);
+  long dim = obr::ui::rgb(132L, 144L, 162L);
+  if (kind == 1L) {
+    say(x, y, 16L, a, ink);
+    return y + b;
+  }
+  if (kind == 2L) {
+    say(x, y, 16L, a, dim);
+    return y + b;
+  }
+  if (kind == 3L) {
+    return y + a;
+  }
+  if (kind == 4L || kind == 5L) {
+    long field = c % 8L;
+    long off = c / 8L;
+    say(x, y, 16L, a, dim);
+    if (kind == 4L) {
+      putnum(x + off, y, query(b, field, index), ink);
+    } else {
+      putfield(x + off, y, b, field, 0L, ink);
+    }
+    return y + 24L;
+  }
+  if (kind == 8L) {
+    long field = c % 8L;
+    long color = (c / 8L) % 8L;
+    long maxCode = (c / 64L) % 2L;
+    long off = c / 128L;
+    long maximum = 1000000000L;
+    long fill = obr::ui::rgb(72L, 156L, 255L);
+    long value = 0L;
+    if (maxCode == 1L) {
+      maximum = 1000L;
+    }
+    if (color == 1L) {
+      fill = obr::ui::rgb(72L, 196L, 150L);
+    } else if (color == 2L) {
+      fill = obr::ui::rgb(214L, 164L, 72L);
+    } else if (color == 3L) {
+      fill = obr::ui::rgb(120L, 160L, 220L);
+    }
+    if (b == 1L && field == 6L && query(1L, 0L, 0L) == 0L) {
+      value = 0L;
+    } else {
+      value = query(b, field, index);
+    }
+    if (a >= 0L) {
+      say(x, y, 16L, a, dim);
+      putnum(x + off, y, value, ink);
+      y = y + 22L;
+    }
+    meterbar(x, y, wide, value, maximum, fill);
+    return y + 22L;
+  }
+  if (kind == 9L) {
+    say(x, y, 16L, a, dim);
+    putnum(x + c, y, b, ink);
+    return y + 24L;
+  }
+  if (kind == 15L) {
+    long cores = query(1L, 0L, 0L);
+    long run = 0L;
+    long cursor = 0L;
+    while (cursor != cores) {
+      if (query(1L, 5L, cursor) != 0L) {
+        run = run + 1L;
+      }
+      cursor = cursor + 1L;
+    }
+    say(x, y, 16L, 16L, dim);
+    cursor = putnum(x + 40L, y, run, ink);
+    obr::ui::glyph(47L, cursor, y, 16L, dim, 255L);
+    putnum(cursor + 8L, y, cores, ink);
+    y = y + 20L;
+    if (cores > 0L) {
+      meterbar(x, y, wide, run, cores, obr::ui::rgb(72L, 156L, 255L));
+      y = y + 22L;
+    }
+    return y + 8L;
+  }
+  if (kind == 16L) {
+    long count = query(0L, 1L, 0L);
+    long cursor = 0L;
+    while (cursor != count) {
+      long tag = 38L;
+      if (cursor == 0L) {
+        tag = 37L;
+      } else if (cursor == 1L) {
+        tag = 6L;
+      } else if (cursor == 2L) {
+        tag = 7L;
+      } else if (cursor == 3L) {
+        tag = 30L;
+      }
+      say(x, y, 16L, tag, dim);
+      putfield(x + 56L, y, 0L, 2L, cursor * 8L, ink);
+      y = y + 24L;
+      cursor = cursor + 1L;
+    }
+    return y;
+  }
+  if (kind == 17L) {
+    say(x, y, 16L, a, dim);
+    say(x + c, y, 16L, b, ink);
+    return y + 24L;
+  }
+  if (kind == 18L) {
+    long cursor = 0L;
+    say(x, y, 16L, a, dim);
+    cursor = putnum(x + c, y, query(b, 0L, 0L), ink);
+    obr::ui::glyph(120L, cursor + 8L, y, 16L, dim, 255L);
+    putnum(cursor + 24L, y, query(b, 1L, 0L), ink);
+    return y + 24L;
+  }
+  if (kind == 19L) {
+    long cursor = 0L;
+    say(x, y, 16L, 9L, dim);
+    cursor = putnum(x + 80L, y, query(4L, 0L, 0L), ink);
+    obr::ui::glyph(120L, cursor + 8L, y, 16L, dim, 255L);
+    cursor = putnum(cursor + 24L, y, query(4L, 1L, 0L), ink);
+    say(cursor + 12L, y, 16L, 15L, dim);
+    putnum(cursor + 40L, y, query(4L, 2L, 0L), ink);
+    return y + 36L;
+  }
+  if (kind == 20L) {
+    y = y + 16L;
+    say(x, y, 16L, 41L, ink);
+    putnum(x + 56L, y, index, ink);
+    return y + 24L;
+  }
+  if (kind == 21L) {
+    say(x, y, 16L, 25L, dim);
+    if (query(1L, 5L, index) == 0L) {
+      say(x + 64L, y, 16L, 45L, obr::ui::rgb(196L, 96L, 96L));
+    } else {
+      say(x + 64L, y, 16L, 16L, obr::ui::rgb(96L, 196L, 140L));
+    }
+    return y + 24L;
+  }
+  if (kind == 14L) {
+    long* selection = (long*)5568;
+    long state = query(5L, 0L, index);
+    if (index == *selection) {
+      obr::ui::rect(x - 8L, y - 4L, 280L, 48L, obr::ui::rgb(24L, 44L, 72L), 255L);
+      obr::ui::rect(x - 8L, y - 4L, 3L, 48L, obr::ui::rgb(88L, 168L, 255L), 255L);
+    }
+    say(x, y, 16L, 30L, ink);
+    putnum(x + 56L, y, index, ink);
+    y = y + 22L;
+    say(x, y, 16L, 25L, dim);
+    putnum(x + 64L, y, state, ink);
+    if (state != 0L) {
+      putfield(x + 96L, y, 5L, 1L, index * 64L, ink);
+    } else {
+      say(x + 96L, y, 16L, 31L, dim);
+    }
+    return y + 32L;
+  }
+  if (kind == 22L) {
+    long state = query(5L, 0L, index);
+    say(x, y, 16L, 30L, ink);
+    putnum(x + 56L, y, index, ink);
+    y = y + 22L;
+    say(x, y, 16L, 25L, dim);
+    putnum(x + 64L, y, state, ink);
+    y = y + 22L;
+    if (state != 0L) {
+      say(x, y, 16L, 36L, dim);
+      putfield(x + 72L, y, 5L, 1L, index * 64L, ink);
+      y = y + 22L;
+      putfield(x, y, 5L, 2L, index * 64L, ink);
+      return y + 28L;
+    }
+    say(x, y, 16L, 31L, dim);
+    return y + 28L;
+  }
+  if (kind == 23L) {
+    long* selection = (long*)5568;
+    say(x, y, 16L, 30L, ink);
+    putnum(x + 56L, y, *selection, ink);
+    return y + 28L;
+  }
+  if (kind == 24L) {
+    long* selection = (long*)5568;
+    say(x, y, 16L, 25L, dim);
+    putnum(x + 64L, y, query(5L, 0L, *selection), ink);
+    return y + 24L;
+  }
+  if (kind == 25L) {
+    long* selection = (long*)5568;
+    long field = c % 8L;
+    long off = c / 8L;
+    say(x, y, 16L, a, dim);
+    putfield(x + off, y, 5L, field, *selection * 64L, ink);
+    return y + 24L;
+  }
+  return y;
+}
+
+/* 顺着当前页的行往下画。10 到 11 按核心重复，12 到 13 按四个扩展口重复。 */
+deRfun rows(long x, long y, long wide, long page): long {
+  long pc = at(12288L + page * 64L);
+  long back = 0L;
+  long index = 0L;
+  long count = 0L;
   long step = 0L;
-  while (step != index) {
-    cursor = cursor + 64L;
+  while (step != 400L) {
+    long kind = at(pc);
     step = step + 1L;
+    if (kind == 0L) {
+      return y;
+    }
+    if (kind == 10L) {
+      back = pc + 256L;
+      index = 0L;
+      count = query(1L, 0L, 0L);
+      pc = back;
+      if (count == 0L) {
+        while (at(pc) != 11L && at(pc) != 0L) {
+          pc = pc + 256L;
+        }
+        if (at(pc) == 11L) {
+          pc = pc + 256L;
+        }
+      }
+      continue;
+    }
+    if (kind == 11L || kind == 13L) {
+      index = index + 1L;
+      if (index == count) {
+        pc = pc + 256L;
+        index = 0L;
+      } else {
+        pc = back;
+      }
+      continue;
+    }
+    if (kind == 12L) {
+      back = pc + 256L;
+      index = 0L;
+      count = 4L;
+      pc = back;
+      continue;
+    }
+    y = show(x, y, wide, kind, at(pc + 64L), at(pc + 128L), at(pc + 192L), index);
+    pc = pc + 256L;
   }
-  *start = cursor;
-  *seat = 5L;
-  line = makeline();
-  write(line, "PROTOCOL ");
-  *field = 1L;
-  printfield(line);
-  line = makeline();
-  write(line, "ID ");
-  *field = 2L;
-  printfield(line);
-  line = makeline();
-  write(line, "VENDOR ");
-  *field = 3L;
-  printfield(line);
+  return y;
 }
 
-/* 键盘测试页。显示最近一次交换读回的计数、种类、键和键名。 */
-deRfun pagekey(): void {
-  long* port = (long*)4480;
-  long line = makeline();
-  write(line, "KEYBOARD");
-  line = makeline();
-  write(line, "PORT ");
-  printnum(line, *port);
-  line = makeline();
-  write(line, "COUNT ");
-  printnum(line, xchg(*port, 1L, 0L));
-  line = makeline();
-  write(line, "KIND ");
-  printnum(line, xchg(*port, 1L, 1L));
-  line = makeline();
-  write(line, "KEY ");
-  printnum(line, xchg(*port, 1L, 2L));
-  line = makeline();
-  write(line, "CODE ");
-  printcode(line, xchg(*port, 1L, 3L));
+deRfun pageOf(): long {
+  long* category = (long*)5248;
+  long* sub = (long*)4160;
+  long* depth = (long*)5376;
+  if (*category == 0L) {
+    if (*sub == 5L && *depth != 0L) {
+      return 6L;
+    }
+    return *sub;
+  }
+  return 7L + *sub;
 }
 
-/* 按当前页号重画一整页。 */
-deRfun drawpage(): void {
-  long* page = (long*)4160;
-  openframe();
-  if (*page == 0L) {
-    pageboard();
-  } else if (*page == 1L) {
-    pagecpu();
-  } else if (*page == 2L) {
-    pagemem();
-  } else if (*page == 3L) {
-    pagegpu();
-  } else if (*page == 4L) {
-    pagedisplay();
-  } else if (*page == 9L) {
-    pagekey();
+/* 左侧一项。on 不是 0 时铺高亮，并在左缘留一条强调色。 */
+deRfun sideRow(long y, long wide, long on, string name): void {
+  long ink = obr::ui::rgb(132L, 144L, 162L);
+  if (on != 0L) {
+    obr::ui::rect(4L, y, wide - 8L, 30L, obr::ui::rgb(24L, 44L, 72L), 255L);
+    obr::ui::rect(4L, y, 3L, 30L, obr::ui::rgb(88L, 168L, 255L), 255L);
+    ink = obr::ui::rgb(232L, 236L, 242L);
+  }
+  obr::ui::text(16L, y + 7L, 16L, name, ink, 255L);
+}
+
+deRfun sideAt(long y, long wide, long on, long index): void {
+  string* cell = (string*)(8192L + index * 64L);
+  sideRow(y, wide, on, *cell);
+}
+
+/* 顶栏、左侧和右侧。滚动只平移右侧文字，栏本身不动。字和子页都从固定内存读。 */
+deRfun paint(): void {
+  if (at(5760L) == 0L) {
+    fill();
+  }
+  long* phase = (long*)5888;
+  *phase = *phase + 1L;
+  long* focus = (long*)5184;
+  long* category = (long*)5248;
+  long* sub = (long*)4160;
+  long* scroll = (long*)5312;
+  long* limit = (long*)5632;
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long top = 40L;
+  long side = 136L;
+  if (*scroll < 0L) {
+    *scroll = 0L;
+  }
+  if (*scroll > *limit) {
+    *scroll = *limit;
+  }
+  long panel = obr::ui::rgb(16L, 20L, 28L);
+  long main = obr::ui::rgb(10L, 14L, 20L);
+  long line = obr::ui::rgb(48L, 58L, 74L);
+  long accent = obr::ui::rgb(88L, 168L, 255L);
+  long ink = obr::ui::rgb(232L, 236L, 242L);
+  long dim = obr::ui::rgb(132L, 144L, 162L);
+  obr::ui::clear(obr::ui::rgb(8L, 10L, 14L), 255L);
+  obr::ui::rect(0L, 0L, wide, top, panel, 255L);
+  obr::ui::rect(0L, top, side, high - top, panel, 255L);
+  obr::ui::rect(side, top, wide - side, high - top, main, 255L);
+  obr::ui::rect(0L, top - 1L, wide, 1L, line, 255L);
+  obr::ui::rect(side - 1L, top, 1L, high - top, line, 255L);
+  long edge = line;
+  if (*focus == 0L) {
+    edge = accent;
+  }
+  obr::ui::rect(0L, 0L, wide, 2L, edge, 255L);
+  obr::ui::rect(0L, top - 2L, wide, 2L, edge, 255L);
+  edge = line;
+  if (*focus == 1L) {
+    edge = accent;
+  }
+  obr::ui::rect(0L, top, 2L, high - top, edge, 255L);
+  obr::ui::rect(side - 2L, top, 2L, high - top, edge, 255L);
+  edge = line;
+  if (*focus == 2L) {
+    edge = accent;
+  }
+  obr::ui::rect(side, top, wide - side, 2L, edge, 255L);
+  obr::ui::rect(wide - 2L, top, 2L, high - top, edge, 255L);
+  obr::ui::rect(side, high - 2L, wide - side, 2L, edge, 255L);
+  long half = wide / 2L;
+  long firm = dim;
+  long about = dim;
+  if (*category == 0L) {
+    firm = ink;
+    obr::ui::rect(12L, top - 4L, half - 24L, 2L, accent, 255L);
   } else {
-    pageport();
+    about = ink;
+    obr::ui::rect(half + 12L, top - 4L, half - 24L, 2L, accent, 255L);
   }
+  say(20L, 12L, 16L, 0L, firm);
+  say(half + 20L, 12L, 16L, 1L, about);
+  if (*focus == 0L) {
+    say(wide - 48L, 12L, 16L, 2L, accent);
+  } else if (*focus == 1L) {
+    say(wide - 56L, 12L, 16L, 3L, accent);
+  } else {
+    say(wide - 56L, 12L, 16L, 4L, accent);
+  }
+  long row = top + 10L;
+  if (*category == 0L) {
+    long on = 0L;
+    if (*sub == 0L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 5L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 1L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 6L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 2L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 7L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 3L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 8L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 4L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 9L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 5L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 10L);
+  } else {
+    long on = 0L;
+    if (*sub == 0L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 12L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 1L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 13L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 2L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 14L);
+  }
+  say(16L, high - 22L, 12L, 11L, dim);
+  long body = wide - side - 36L;
+  if (body < 40L) {
+    body = 40L;
+  }
+  obr::ui::clip(side + 4L, top + 4L, wide - side - 12L, high - top - 8L);
+  obr::ui::save();
+  obr::ui::translate(0L, 0L - *scroll);
+  long bottom = rows(side + 16L, top + 14L, body, pageOf());
+  obr::ui::restore();
+  obr::ui::unclip();
+  long max = bottom - (high - 4L);
+  if (max < 0L) {
+    max = 0L;
+  }
+  *limit = max;
+  if (max > 0L) {
+    long track = high - top - 16L;
+    long thumb = 28L;
+    long travel = track - thumb;
+    if (travel < 1L) {
+      travel = 1L;
+    }
+    long thumbY = top + 8L + *scroll * travel / max;
+    obr::ui::rect(wide - 7L, top + 8L, 3L, track, line, 255L);
+    obr::ui::rect(wide - 7L, thumbY, 3L, thumb, accent, 255L);
+  }
+  obr::ui::present();
 }
 
 /* 从收件箱取出一次按键。0 没有事件，1 是可导航的按下，2 是其它已收完的事件。 */
@@ -337,63 +793,137 @@ deRfun poll(): int {
   }
 }
 
-/* F12 进入设置，Esc 回到黑屏，Tab 翻页，Shift+Tab 往回。 */
+/* F12 进入设置。Tab 轮换焦点。方向键在当前块里移动。Esc 先退出详情，再离开设置。 */
 deRfun onkey(): void {
   long* mode = (long*)4096;
-  long* page = (long*)4160;
-  long* pages = (long*)4544;
   long* name = (long*)4864;
   long* mods = (long*)4928;
+  long* focus = (long*)5184;
+  long* category = (long*)5248;
+  long* sub = (long*)4160;
+  long* scroll = (long*)5312;
+  long* depth = (long*)5376;
+  long* selection = (long*)5568;
   if (*name == 0x323146L) {
     if (*mode != 2L) {
       *mode = 2L;
-      *page = 0L;
+      *focus = 0L;
+      *category = 0L;
+      *sub = 0L;
+      *scroll = 0L;
+      *depth = 0L;
+      *selection = 0L;
+      if (at(5760L) == 0L) {
+        fill();
+      }
     }
     return;
   }
   if (*mode != 2L) {
     return;
   }
-  if (*name == 0x657061637345) {
+  if (*name == 0x657061637345L) {
+    if (*depth != 0L) {
+      *depth = 0L;
+      *scroll = 0L;
+      return;
+    }
     clear();
     *mode = 1L;
     return;
   }
-  if (*name != 0x626154L) {
+  if (*name == 0x626154L) {
+    long dir = 1L;
+    if (*mods % 2L != 0L) {
+      dir = 0L - 1L;
+    }
+    *focus = bump(*focus, dir, 3L);
     return;
   }
-  if (*mods % 2L == 0L) {
-    long next = *page + 1L;
-    if (next == *pages) {
-      *page = 0L;
-    } else {
-      *page = next;
+  if (*name == 0x7265746e45L) {
+    if (*category == 0L && *sub == 5L && *depth == 0L) {
+      if (query(5L, 0L, *selection) != 0L) {
+        *depth = 1L;
+        *scroll = 0L;
+      }
     }
-  } else if (*page == 0L) {
-    *page = *pages - 1L;
-  } else {
-    *page = *page - 1L;
+    return;
+  }
+  if (backward(*name) == 1) {
+    if (*focus == 0L) {
+      *category = bump(*category, 0L - 1L, 2L);
+      *sub = 0L;
+      *scroll = 0L;
+      *depth = 0L;
+    } else if (*focus == 1L) {
+      *sub = bump(*sub, 0L - 1L, subcount());
+      *scroll = 0L;
+      *depth = 0L;
+    } else if (*category == 0L && *sub == 5L && *depth == 0L) {
+      *selection = bump(*selection, 0L - 1L, 4L);
+    } else {
+      nudge(0L - 1L);
+    }
+    return;
+  }
+  if (forward(*name) == 1) {
+    if (*focus == 0L) {
+      *category = bump(*category, 1L, 2L);
+      *sub = 0L;
+      *scroll = 0L;
+      *depth = 0L;
+    } else if (*focus == 1L) {
+      *sub = bump(*sub, 1L, subcount());
+      *scroll = 0L;
+      *depth = 0L;
+    } else if (*category == 0L && *sub == 5L && *depth == 0L) {
+      *selection = bump(*selection, 1L, 4L);
+    } else {
+      nudge(1L);
+    }
   }
 }
 
-/* 找键盘口，画出 F12 提示，然后一直轮询。键盘页只在收到事件时重画。 */
+/* 把六个点重画一遍。hot 那颗是红的，其余是白的。点本身不动，颜色往后换。 */
+deRfun dots(long hot): void {
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long size = 48L;
+  long step = obr::ui::advance(size);
+  long word = obr::ui::textWidth(size, "Starting");
+  long origin = obr::ui::align(0L, wide, word + step * 6L, obr::ui::Align::Center) + 8L;
+  long y = obr::ui::align(0L, high, size, obr::ui::Align::Center);
+  long white = obr::ui::rgb(255L, 255L, 255L);
+  long red = obr::ui::rgb(255L, 0L, 0L);
+  long index = 0L;
+  while (index != 6L) {
+    long color = white;
+    if (index == hot) {
+      color = red;
+    }
+    obr::ui::glyph(46L, origin + word + index * step, y, size, color, 255L);
+    index = index + 1L;
+  }
+  obr::ui::present();
+}
+
+/* 找键盘口，然后一直轮询。等待时每 24 次把红点换到下一颗。设置画面按键立刻重画，空闲时少刷几次，让频率条上的亮线还能动。 */
 deRfun main(): int {
   long* mode = (long*)4096;
   long* count = (long*)4352;
   long* wait = (long*)4416;
   long* port = (long*)4480;
-  long* pages = (long*)4544;
-  long* page = (long*)4160;
-  long* box = (long*)4224;
+  long* tick = (long*)5696;
+  gl::load();
   *mode = 0L;
   *count = 0L;
   *wait = 800L;
+  *tick = 0L;
   long index = 0L;
   long matched = 0L;
   while (index != 4L && matched == 0L) {
     if (port::state(index) == 2L && port::char(index, 0L) == 0x5AL && port::char(index, 1L) == 0x4BL && port::char(index, 2L) == 0x50L && port::char(index, 3L) == 0x31L) {
       *port = index;
-      *pages = 10L;
       matched = 1L;
     } else {
       index = index + 1L;
@@ -405,27 +935,29 @@ deRfun main(): int {
     halt();
     return 0;
   }
-  long text = gpu::text(*box, 232L, 360L, 176L, 16L);
-  gpu::paint(text, 16777215L, 0L);
-  write(text, "F12 BIOS");
-  gpu::compose();
-  gpu::present();
   while (1) {
     int event = poll();
     if (event == 1) {
       onkey();
     }
     if (*mode == 2L) {
-      if (*page != 9L || event != 0) {
-        drawpage();
-        gpu::compose();
-        gpu::present();
+      if (event == 1) {
+        paint();
+        *tick = 0L;
+      } else {
+        *tick = *tick + 1L;
+        if (*tick == 80L) {
+          *tick = 0L;
+          paint();
+        }
       }
     } else if (*mode == 0L) {
       *wait = *wait - 1L;
       if (*wait == 0L) {
         clear();
         *mode = 1L;
+      } else if (*wait % 24L == 0L) {
+        dots((obr::ui::frame() - 1L) % 6L);
       }
     }
   }

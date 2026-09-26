@@ -33,13 +33,14 @@
 - `Clear`、`Plot`、`Image`、`Character`、`Present`；
 - `ReadByte`、`WriteByte`、`SetHertz`、`Metric`；
 - 节点树：`SpawnBox`、`SpawnText`、`Align`、`Paint`、`Glyph`、`Drop`、`Compose`；
-- 封闭字形 `0x20` 至 `0x7E`，见 [Glyph.md](./Glyph.md)。
+- `Accel`：一条命令完成固定功能绘制的一步。操作码见 [AccelRegistry.md](./AccelRegistry.md)；
+- 封闭字形 `0x20` 至 `0x7E`，见 [Glyph.md](./Glyph.md)。`ScreenGlyph` 的 5×7 位图见 [AccelGlyph.md](./AccelGlyph.md)。
 - 坐座主机转交帧时不解释像素。
 
 ### 2.2 本协议明确不规定
 
 - 面板、面板刷新率、画布、扫描；
-- 着色器、纹理、矩阵、窗口、光标；
+- 可编程着色器、多重采样、窗口、光标。固定功能的矩阵、纹理和绘制在 [AccelRegistry.md](./AccelRegistry.md)；
 - 把帧放进系统内存；
 - ZAP 的写法。坐座主机若转发，一次只对应本文的一条命令，指令见 ZCP1。`Image` 仍只作为本协议命令；
 - 一次发出多条绘图命令；
@@ -148,7 +149,7 @@
 
 ### 4.5 必选成员
 
-`FrameWidth`、`FrameHeight`、`MemoryBytes`、`Clear`、`Plot`、`Image`、`Character`、`SpawnBox`、`SpawnText`、`Align`、`Paint`、`Glyph`、`Drop`、`Compose`、`Present`、`ReadByte`、`WriteByte`、`SetHertz`、`Metric`，以及元数据 `ProviderId`、`ProviderVendor`、`ActiveProtocol`（取值 `ZGP1`）。可插拔形态同时符合 ZVHP1。字形字节以 [Glyph.md](./Glyph.md) 为准。
+`FrameWidth`、`FrameHeight`、`MemoryBytes`、`Clear`、`Plot`、`Image`、`Character`、`SpawnBox`、`SpawnText`、`Align`、`Paint`、`Glyph`、`Drop`、`Compose`、`Present`、`Accel`、`ReadByte`、`WriteByte`、`SetHertz`、`Metric`，以及元数据 `ProviderId`、`ProviderVendor`、`ActiveProtocol`（取值 `ZGP1`）。可插拔形态同时符合 ZVHP1。节点树字形字节以 [Glyph.md](./Glyph.md) 为准。屏幕字形以 [AccelGlyph.md](./AccelGlyph.md) 为准。操作码以 [AccelRegistry.md](./AccelRegistry.md) 为准。
 
 ### 4.6 显存
 
@@ -177,6 +178,20 @@
 
 到期时刻是本次频率起点 + 累计拍数 × 1000 / Hz 毫秒。一次命令只等待一次。已经错过的时间不补做。这不是面板的刷新率。
 
+### 4.8 加速
+
+实现必须提供 `Accel`。操作码、图元种类、能力号、混合因子、深度比较、剔除面与绕序以 [AccelRegistry.md](./AccelRegistry.md) 为准。
+
+`Accel` 的四个参数是二进制 64 位浮点的位型。不是有限数、操作码不在登记表、或参数使该操作无法完成时，必须失败，且不得改写帧存储。
+
+`Accel` 画进独立的颜色目标，不直接改帧存储。`Present` 在复制帧存储之前：若自帧尺寸建立或上一次成功的 `Present` 以来，有成功的颜色 `Clear`，或成功画出了图元，必须先把颜色目标写入帧存储，第 0 行是屏幕最上边，再交出副本。没有这类绘制时，`Present` 禁止因为加速器改写帧存储。
+
+`GenTexture` 把新编号写入该命令的结果。编号从 1 起，成功一次加 1。
+
+`Fill` 与 `ScreenGlyph` 画在颜色目标的像素坐标里，原点在左上，y 向下。格子、失败条件和是否算一次图元绘制以 [AccelRegistry.md](./AccelRegistry.md) 为准。`ScreenGlyph` 的墨以 [AccelGlyph.md](./AccelGlyph.md) 为准。
+
+`Corner` 记下圆角半径。`Round` 用该半径画圆角矩形，`Ellipse` 画内切椭圆，`Frame` 返回颜色目标的宽或高。失败条件、覆盖判定和是否算一次图元绘制以 [AccelRegistry.md](./AccelRegistry.md) 为准。`Metric` 不得用来查询帧边。
+
 ## 5. 不符合示例
 
 1. 协议标识使用 `zgp1` 或 `ZGP-1`；
@@ -202,3 +217,6 @@
 | ZGP1 | `Image` 写入像素矩形。`Character` 写入封闭字形 `0x20` 至 `0x7E` |
 | ZGP1 | 节点树。`Compose` 把盒子与文本画进帧。文本可居中。编号不回收 |
 | ZGP1 | 显存按字节寻址，帧占最前面的一段。命令按显卡自己的 Hz 推进，一次命令只等待一次 |
+| ZGP1 | `Accel` 固定功能绘制。颜色目标只在发生过绘制时，于 `Present` 写入帧存储 |
+| ZGP1 | `Fill` 与 `ScreenGlyph`。屏幕像素坐标，5×7 字形见 AccelGlyph |
+| ZGP1 | `Corner`、`Round`、`Ellipse`、`Frame`。圆角、内切椭圆，以及颜色目标的宽高 |

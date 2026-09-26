@@ -23,6 +23,8 @@
 import { ZerOS as StateRoot } from "../Enum/CoreRunState";
 import { ZerOS as RuntimeRoot } from "../Bootstrap/CpuRuntime";
 import { ZerOS as OpcodeRoot } from "../../Motherboard/Enum/MemoryOpcode";
+import { ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
+import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -44,6 +46,11 @@ export namespace ZerOS {
       const MemoryOpcodeStoreOctet = OpcodeRoot.Hardware.Motherboard.MemoryOpcodeStoreOctet;
       const MemoryOpcodeLoad64 = OpcodeRoot.Hardware.Motherboard.MemoryOpcodeLoad64;
       const MemoryOpcodeStore64 = OpcodeRoot.Hardware.Motherboard.MemoryOpcodeStore64;
+      const parseCpuInstruction = InstructionRoot.Hardware.Cpu.parseCpuInstruction;
+      const formatCpuInstruction = InstructionRoot.Hardware.Cpu.formatCpuInstruction;
+      const encodeProgramBinary = BinaryRoot.Hardware.Cpu.encodeProgramBinary;
+      const decodeProgramBinary = BinaryRoot.Hardware.Cpu.decodeProgramBinary;
+      const runGuest = RuntimeRoot.Hardware.Cpu.runGuest;
       const checkPrefix = "[ZerOS.Hardware.Cpu.CpuSelfCheck]";
 
       function fail(message: string): never {
@@ -93,7 +100,50 @@ export namespace ZerOS {
        * 0 号核心在调用前处于停止。这里把它调起来。
        * place 两个整数，相加后写入内存，再读回，最后把该八位组恢复为 0。
        */
+      /**
+       * 二进制往返必须和助记符解析得到同一条指令，并且核心能直接执行解码结果。
+       * 大立即数覆盖不小于 2^63 的那一档，避免和负数补码混在一起。
+       */
+      async function checkProgramBinary(): Promise<void> {
+        const lines = [
+          "place r0, 20",
+          "place r1, 22",
+          "add r2, r0, r1",
+          "halt",
+          "place r3, 9223372036854775808",
+          "load.64 r4, 1048576",
+          "jz r0, 3",
+        ];
+        const parsed: InstructionRoot.Hardware.Cpu.CpuInstruction[] = [];
+        for (const line of lines) {
+          const step = parseCpuInstruction(line);
+          if (step === null) {
+            fail("样例指令是空的");
+          }
+          parsed.push(step);
+        }
+        const decoded = decodeProgramBinary(encodeProgramBinary(parsed));
+        if (decoded.length !== parsed.length) {
+          fail("程序二进制的条数和原文不一致");
+        }
+        for (let index = 0; index < parsed.length; index += 1) {
+          const before = parsed[index];
+          const after = decoded[index];
+          if (before === undefined || after === undefined) {
+            fail("程序二进制缺了一条");
+          }
+          if (formatCpuInstruction(before) !== formatCpuInstruction(after)) {
+            fail("程序二进制读回的指令和原文不一致");
+          }
+        }
+        const guest = await runGuest(0, decoded.slice(0, 4));
+        if (!guest.Ok || guest.Registers[2] !== 42n) {
+          fail("核心没有直接执行程序二进制");
+        }
+      }
+
       export async function runCpuRegisterCheck(): Promise<void> {
+        await checkProgramBinary();
         schedule(0);
         const placedLeft = await place(0, 0, 1n);
         const placedRight = await place(0, 1, 2n);

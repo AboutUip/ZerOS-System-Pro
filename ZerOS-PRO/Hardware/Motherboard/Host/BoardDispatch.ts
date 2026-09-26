@@ -35,7 +35,9 @@ export namespace ZerOS {
       const powerBoard = BoardRuntimeRoot.Hardware.Motherboard.powerBoard;
       const presentFrame = GpuSeatRoot.Hardware.Motherboard.presentFrame;
       const runInstructionLines = CpuSeatRoot.Hardware.Motherboard.runInstructionLines;
+      const runInstructionBinary = CpuSeatRoot.Hardware.Motherboard.runInstructionBinary;
       const startResidentLines = CpuSeatRoot.Hardware.Motherboard.startResidentLines;
+      const startResidentBinary = CpuSeatRoot.Hardware.Motherboard.startResidentBinary;
       const pushInbox = InboxRoot.Hardware.Motherboard.pushInbox;
       const notePanel = QueryRoot.Hardware.Motherboard.notePanel;
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
@@ -80,13 +82,16 @@ export namespace ZerOS {
         });
       }
 
-      function readLines(record: Record<string, unknown>, key: string): string[] | null {
-        const lines = record[key];
-        if (!Array.isArray(lines)) {
+      /** ZAP 行或程序二进制。二进制原样交给 CPU，文本仍走助记符解析。 */
+      function readProgram(value: unknown): readonly string[] | Uint8Array | null {
+        if (value instanceof Uint8Array) {
+          return value;
+        }
+        if (!Array.isArray(value)) {
           return null;
         }
         const text: string[] = [];
-        for (const line of lines) {
+        for (const line of value) {
           if (typeof line !== "string") {
             return null;
           }
@@ -95,21 +100,20 @@ export namespace ZerOS {
         return text;
       }
 
+      function runProgram(program: readonly string[] | Uint8Array): Promise<void> {
+        if (program instanceof Uint8Array) {
+          return runInstructionBinary(program);
+        }
+        return runInstructionLines(program);
+      }
+
       function onRun(record: Record<string, unknown>): void {
-        const lines = record["lines"];
-        if (!Array.isArray(lines)) {
+        const program = readProgram(record["binary"] ?? record["lines"]);
+        if (program === null) {
           reportFault("指令序列不完整");
           return;
         }
-        const text: string[] = [];
-        for (const line of lines) {
-          if (typeof line !== "string") {
-            reportFault("指令序列不完整");
-            return;
-          }
-          text.push(line);
-        }
-        void runInstructionLines(text).catch((error: unknown): void => {
+        void runProgram(program).catch((error: unknown): void => {
           const message = error instanceof Error ? error.message : "指令序列失败";
           reportFault(message);
         });
@@ -235,8 +239,8 @@ export namespace ZerOS {
         if (powering) {
           return;
         }
-        const logo = readLines(record, "logo");
-        const drive = readLines(record, "drive");
+        const logo = readProgram(record["logo"]);
+        const drive = readProgram(record["drive"]);
         if (logo === null || drive === null) {
           reportFault("引导指令不完整");
           return;
@@ -247,10 +251,15 @@ export namespace ZerOS {
             powering = false;
             globalThis.postMessage({ kind: MailMessage.Checked });
             try {
-              startResidentLines(drive, (message): void => {
+              const onFault = (message: string): void => {
                 reportFault(message);
                 showError(message);
-              });
+              };
+              if (drive instanceof Uint8Array) {
+                startResidentBinary(drive, onFault);
+              } else {
+                startResidentLines(drive, onFault);
+              }
             } catch (error: unknown) {
               const message = error instanceof Error ? error.message : "指令序列失败";
               reportFault(message);

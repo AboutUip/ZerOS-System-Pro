@@ -199,6 +199,7 @@ CPU 实现必须提供：
 | 指令 | 作用 |
 |--------|------|
 | `place rN, 整数` | 写入寄存器 |
+| `core rD` | 把正在执行这条指令的核心编号写入 `rD`。编号从 `0` 起。任何程序都能用它找到自己的数据，不依赖调用者事先放入寄存器 |
 | `add rD, rL, rR` | 精确相加 |
 | `load.bit` / `load.octet` / `load.16` / `load.32` / `load.64` / `load.f32` / `load.f64` `rN, 地址` | 读访存进寄存器。`load.f32` 与 `load.f64` 读出的是浮点位型的补码整数 |
 | `store.bit` / `store.octet` / `store.16` / `store.32` / `store.64` / `store.f32` / `store.f64` `rN, 地址` | 寄存器写入存储。宽度 2、4、8 个八位组以及两种浮点写入，使用该宽度的补码 |
@@ -259,6 +260,7 @@ CPU 实现必须提供：
 | `gpu.metric rD, rK` | 把显卡指标 `rK` 写入 `rD`。`0` 是 Hz，`1` 是已完成条数 |
 | `gpu.load rD, rA` | 把显存地址 `rA` 上的一个字节写入 `rD` |
 | `gpu.store rA, rV` | 把 `rV` 的低 8 位写到显存地址 `rA` |
+| `gpu.accel rD, rOp, rA, rB, rC, rE` | 按 `rOp` 做一次 WebGPU 加速的固定功能绘制。四个参数是二进制 64 位型。操作码见 [AccelRegistry.md](../Gpu/AccelRegistry.md)。结果写入 `rD` |
 | `mem.hertz rH` | 把 `rH` 里的整数设为内存 Hz |
 | `mem.metric rD, rK` | 把内存指标 `rK` 写入 `rD`。`0` 是 Hz，`1` 是已完成条数 |
 

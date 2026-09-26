@@ -330,6 +330,34 @@ export namespace ZerOS {
         }
       }
 
+      function readBits(record: Record<string, unknown>, key: string): bigint | null {
+        const value = record[key];
+        if (typeof value !== "bigint") {
+          return null;
+        }
+        return value;
+      }
+
+      /** 一条 WebGPU 加速命令。结果编号通过 ok 的 id 交回核心。 */
+      async function onAccel(record: Record<string, unknown>): Promise<void> {
+        const op = readNumber(record, "operation");
+        const a = readBits(record, "a");
+        const b = readBits(record, "b");
+        const c = readBits(record, "c");
+        const d = readBits(record, "d");
+        if (op === null || a === null || b === null || c === null || d === null) {
+          postFault(`${seatPrefix} 加速命令缺少参数`);
+          return;
+        }
+        try {
+          const id = await provider.Accel(op, a, b, c, d);
+          postOk({ id });
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : `${seatPrefix} 加速命令失败`;
+          postFault(message);
+        }
+      }
+
       /**
        * 一队不返回编号的命令在这条线程里按顺序做完，只回答一次。
        * 中途失败就停，后面的命令不再画，和一条一条送时停在失败那条一样。
@@ -417,6 +445,17 @@ export namespace ZerOS {
                 return;
               }
               await provider.SetHertz(hertz);
+            } else if (gpuOp === "accel") {
+              const op = readNumber(command, "operation");
+              const a = readBits(command, "a");
+              const b = readBits(command, "b");
+              const c = readBits(command, "c");
+              const d = readBits(command, "d");
+              if (op === null || a === null || b === null || c === null || d === null) {
+                postFault(`${seatPrefix} 加速命令缺少参数`);
+                return;
+              }
+              await provider.Accel(op, a, b, c, d);
             } else if (gpuOp === "store") {
               const address = readNumber(command, "address");
               const value = readNumber(command, "value");
@@ -481,6 +520,10 @@ export namespace ZerOS {
         }
         if (kind === "store") {
           void onStoreByte(record);
+          return;
+        }
+        if (kind === "accel") {
+          void onAccel(record);
           return;
         }
         if (kind === "batch") {

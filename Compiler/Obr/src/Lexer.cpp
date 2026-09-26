@@ -17,6 +17,13 @@ Tok keyword(const std::string& text) {
   if (text == "if") return Tok::If;
   if (text == "else") return Tok::Else;
   if (text == "while") return Tok::While;
+  if (text == "for") return Tok::For;
+  if (text == "class") return Tok::Class;
+  if (text == "struct") return Tok::Struct;
+  if (text == "enum") return Tok::Enum;
+  if (text == "new") return Tok::New;
+  if (text == "async") return Tok::Async;
+  if (text == "await") return Tok::Await;
   if (text == "break") return Tok::Break;
   if (text == "continue") return Tok::Continue;
   if (text == "return") return Tok::Return;
@@ -278,6 +285,8 @@ std::vector<Token> lex(const std::string& source) {
     else if (unit == ':' && next == ':') take(Tok::Scope, 2);
     else if (unit == ':') take(Tok::Colon, 1);
     else if (unit == ';') take(Tok::Semi, 1);
+    else if (unit == '.') take(Tok::Dot, 1);
+    else if (unit == '@') take(Tok::At, 1);
     else fail(std::string("无法识别的字符 ") + unit);
     tokens.push_back(token);
   }

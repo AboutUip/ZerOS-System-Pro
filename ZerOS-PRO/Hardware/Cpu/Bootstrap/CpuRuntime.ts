@@ -65,6 +65,9 @@ export namespace ZerOS {
         pending: ((result: CpuCommandResult) => void) | null;
         pendingReject: ((error: Error) => void) | null;
         peek: ((value: bigint) => void) | null;
+        /** 把一段查询结果交给核心记住。不计入已完成命令。 */
+        fill: (() => void) | null;
+        fillReject: ((error: Error) => void) | null;
         /** 宿主读取寄存器映像。与命令完成分开，停止后也能读。 */
         image: ((values: readonly bigint[]) => void) | null;
         /** 一段只碰寄存器的指令在核心里跑完后的回答。 */
@@ -181,6 +184,8 @@ export namespace ZerOS {
           pending: null,
           pendingReject: null,
           peek: null,
+          fill: null,
+          fillReject: null,
           image: null,
           burst: null,
           burstReject: null,
@@ -201,7 +206,7 @@ export namespace ZerOS {
         if (core === undefined) {
           return;
         }
-        const reject = core.pendingReject;
+        const reject = core.pendingReject ?? core.fillReject;
         cores.delete(ordinal);
         if (reject !== null) {
           reject(new Error(`${runtimePrefix} 核心已被强制卸载`));
@@ -268,6 +273,22 @@ export namespace ZerOS {
           resolve(value);
           return;
         }
+        if (record["kind"] === "filled") {
+          const resolve = core.fill;
+          const reject = core.fillReject;
+          core.fill = null;
+          core.fillReject = null;
+          if (resolve === null || reject === null) {
+            return;
+          }
+          if (record["ok"] !== true) {
+            const message = record["message"];
+            reject(new Error(typeof message === "string" ? message : `${runtimePrefix} 查询记录失败`));
+            return;
+          }
+          resolve();
+          return;
+        }
         const resolve = core.pending;
         const reject = core.pendingReject;
         core.pending = null;
@@ -327,6 +348,31 @@ export namespace ZerOS {
         return new Promise((resolve): void => {
           core.peek = resolve;
           core.port.postMessage({ kind: "peek", register });
+        });
+      }
+
+      /**
+       * 把一批查询结果交给核心。
+       * 标识字符问过一次之后，后面的同页重画不再逐字停下来。不计入命令条数。
+       */
+      function rememberQuery(
+        ordinal: number,
+        seat: number,
+        field: number,
+        index: number,
+        values: readonly bigint[],
+      ): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.state !== CoreStateRunning) {
+          fail("核心不在执行中");
+        }
+        if (core.pending !== null || core.peek !== null || core.fill !== null) {
+          fail("核心还有一条命令没做完");
+        }
+        return new Promise((resolve, reject): void => {
+          core.fill = resolve;
+          core.fillReject = reject;
+          core.port.postMessage({ kind: "query-fill", seat, field, index, values });
         });
       }
 
@@ -649,7 +695,17 @@ export namespace ZerOS {
             const field = numberFromRegister(await peekRegister(ordinal, step.Field));
             const index = numberFromRegister(await peekRegister(ordinal, step.Index));
             if (seat === 1) {
-              await place(ordinal, step.Register, queryCpu(field, index));
+              const value = queryCpu(field, index);
+              if (field === 2 || field === 3 || field === 4) {
+                const values: bigint[] = [];
+                for (let stepIndex = 0; stepIndex < 32; stepIndex += 1) {
+                  values.push(queryCpu(field, index + stepIndex));
+                }
+                await rememberQuery(ordinal, seat, field, index, values);
+              } else if (field === 0 || field === 1) {
+                await rememberQuery(ordinal, seat, field, index, [value]);
+              }
+              await place(ordinal, step.Register, value);
             } else {
               await beginCommand(ordinal, {
                 kind: "query",
@@ -720,6 +776,17 @@ export namespace ZerOS {
             await gpu(ordinal, { kind: "gpu", gpuOp: "metric", register: step.Register, metric: step.Kind });
           } else if (step.Op === "gpu.load") {
             await gpu(ordinal, { kind: "gpu", gpuOp: "load", register: step.Register, address: step.Address });
+          } else if (step.Op === "gpu.accel") {
+            await gpu(ordinal, {
+              kind: "gpu",
+              gpuOp: "accel",
+              register: step.Register,
+              operation: step.Operation,
+              a: step.A,
+              b: step.B,
+              c: step.C,
+              d: step.D,
+            });
           } else if (step.Op === "gpu.store") {
             await gpu(ordinal, { kind: "gpu", gpuOp: "store", address: step.Address, value: step.Value });
           } else if (step.Op === "mem.hertz") {
@@ -752,6 +819,8 @@ export namespace ZerOS {
             core.pending = null;
             core.pendingReject = null;
             core.peek = null;
+            core.fill = null;
+            core.fillReject = null;
             core.image = null;
             core.burst = null;
             core.burstReject = null;

@@ -1,42 +1,36 @@
 #pragma once
 
+#include "token/Token.hpp"
+#include "type/TypeKind.hpp"
+
 #include <string>
 #include <vector>
 
 namespace obr {
 
-enum class TypeKind { Byte, Short, Int, Long, Float, Double, Boolean, Char, String, Ptr, Void, Undefined, None };
-
-enum class Tok {
-  End, Ident, Int, Float, StringLit, CharLit, True, False, Null, Undefined,
-  LParen, RParen, LBrace, RBrace, LBracket, RBracket, Comma, Colon, Semi, Question,
-  Plus, Minus, Star, Slash, Percent, Pow, Not, BitNot,
-  Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor,
-  Shl, Shr, UShr, Assign, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
-  PlusPlus, MinusMinus,
-  If, Else, While, Break, Continue, Return, Goto, DeRfun, Import, Namespace, Static, Public, Private, Var, Export, Zap, Version, Link, Scope
-};
-
 struct Expr {
-  enum class Kind { LitInt, LitFloat, LitBool, LitChar, LitString, LitNull, LitUndefined, Name, Unary, Binary, Assign, Update, Ternary, Call, Cast };
+  enum class Kind { LitInt, LitFloat, LitBool, LitChar, LitString, LitNull, LitUndefined, Name, Unary, Binary, Assign, Update, Ternary, Call, Cast, New, Member, Await };
   Kind kind = Kind::LitInt;
   Tok op = Tok::End;
   bool prefix = true;
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
   std::string text;
+  std::string typeName;
   long long integer = 0;
   double number = 0;
   std::vector<Expr> kids;
 };
 
 struct Stmt {
-  enum class Kind { Block, Decl, If, While, Break, Continue, Return, Goto, Label, Expr, Zap, Nop };
+  enum class Kind { Block, Decl, If, While, For, Break, Continue, Return, Goto, Label, Expr, Zap, Nop };
   Kind kind = Kind::Nop;
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
   std::string name;
+  std::string typeName;
   int slot = -1;
+  int words = 1;
   bool isStatic = false;
   Expr expr;
   std::vector<Stmt> body;
@@ -47,15 +41,54 @@ struct Param {
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
   std::string name;
+  std::string typeName;
   int slot = -1;
+};
+
+struct Field {
+  TypeKind type = TypeKind::None;
+  TypeKind pointee = TypeKind::None;
+  std::string name;
+  std::string typeName;
+  int offset = 0;
+  int words = 1;
+};
+
+struct ClassDecl {
+  std::string name;
+  std::string base;
+  std::vector<Field> fields;
+};
+
+struct StructDecl {
+  std::string name;
+  std::vector<Field> fields;
+  int words = 0;
+};
+
+struct EnumValue {
+  std::string name;
+  long long value = 0;
+};
+
+struct EnumDecl {
+  std::string name;
+  TypeKind underlying = TypeKind::Int;
+  std::vector<EnumValue> values;
 };
 
 struct Function {
   TypeKind ret = TypeKind::Void;
+  TypeKind retPointee = TypeKind::None;
+  std::string retName;
   std::string name;
   std::string label;
   std::string origin;
   bool exported = false;
+  bool asyncFun = false;
+  bool callfunNone = false;
+  std::string owner;
+  std::vector<std::string> callfun;
   std::string opcode;
   int opcodeArg0 = 0;
   bool opcodeResultR6 = false;
@@ -72,15 +105,23 @@ struct SourceFile {
   std::vector<std::string> imports;
   std::vector<std::string> links;
   std::vector<Function> functions;
+  std::vector<ClassDecl> classes;
+  std::vector<StructDecl> structs;
+  std::vector<EnumDecl> enums;
 };
 
 struct HeaderFile {
   std::string name;
   std::vector<Function> decls;
+  std::vector<StructDecl> structs;
+  std::vector<EnumDecl> enums;
 };
 
 struct Unit {
   std::vector<Function> functions;
+  std::vector<ClassDecl> classes;
+  std::vector<StructDecl> structs;
+  std::vector<EnumDecl> enums;
 };
 
 }  // namespace obr
