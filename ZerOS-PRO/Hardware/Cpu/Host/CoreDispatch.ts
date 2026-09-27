@@ -30,6 +30,7 @@ export namespace ZerOS {
   export namespace Hardware {
     export namespace Cpu {
       const RegisterCount = ConfigRoot.Hardware.Cpu.Config.RegisterCount;
+      const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const corePrefix = "[ZerOS.Hardware.Cpu.Core]";
 
       let running = false;
@@ -58,7 +59,11 @@ export namespace ZerOS {
        * 编译器反复从这里读当前帧的基址。
        * 核心记下最近一次写进去的 64 位，同一地址的 load.64 就不必再去内存。
        */
-      const FrameAddress = 4653056n;
+      /**
+       * 帧指针所在的那个字。0 号核心是 4653056。
+       * 其它核心在挂载时加上 核心号 × 槽距，与 obrc -slot 一致。
+       */
+      let FrameAddress = 4653056n;
       const Load64 = 9;
       const Store64 = 10;
       /**
@@ -66,25 +71,49 @@ export namespace ZerOS {
        * 每个字形都要来回读十几次。若每次都去内存，一页设置画面要等很久，按键就被堵住。
        * 这些 64 位字留在核心里。范围之外的访存仍走内存。
        */
-      const ScratchBase = 4603904n;
-      const ScratchLimit = 4653056n;
+      let ScratchBase = 4603904n;
+      let ScratchLimit = 4653056n;
       const scratchWords = new Array<bigint>(Number((ScratchLimit - ScratchBase) / 64n)).fill(0n);
       /**
-       * 这一核心已经写过的八位组。键是位地址除以 8。
+       * 这一核心已经写过、别的核心读不到的八位组。键是位地址除以 8。
        * 设置画面每次重画都要再读同一批字符串、行表和栈上的局部变量。写过之后就在这里读，不再每个字节都问一次内存。
-       * 没写过的地址仍走内存，所以别的设备事先放好的数据还在。这不是协议里的缓存。
+       * 没写过的地址仍走内存，所以别的设备事先放好的数据还在。
+       * capture 把这张表、临时字和帧字一起抄走，restore 整份换上。install 与 release 成功时清掉，下一份程序才不会读到上一份留下的栈。
        */
       const keptOctets = new Map<bigint, number>();
       /** 固件单元格。栈指针那一个字不在这段里，它仍交给内存。 */
       const KeptLow = 4096n;
       const KeptLowEnd = 1048576n;
-      /** 0 号核心的调用栈。编译器从 2097152 往上长，一帧远小于这段。 */
-      const KeptStack = 2097152n;
-      const KeptStackEnd = 2621440n;
+      /**
+       * 启动结束标志。核心 0 读，核心 2 或 3 写。
+       * 落在固件格子里，但这一字必须进共享内存，不能只留在写它的那颗核心上。
+       */
+      const SharedBootFlag = 5952n;
+      /**
+       * 0 号核心的调用栈。编译器从 2097152 往上长，一帧远小于这段。
+       * 挂载后按核心号挪到 -slot 的窗口，局部变量才不必每个字都去问内存。
+       */
+      let KeptStack = 2097152n;
+      let KeptStackEnd = 2621440n;
+      /** 栈指针那个字。它贴在数据下限上，不在固件格子里。 */
+      let KeptSp = 1048576n;
+      let KeptSpEnd = 1048640n;
+      /** 堆指针那个字。造字符串时每次都要读它。 */
+      let KeptHeapPtr = 4718592n;
+      let KeptHeapPtrEnd = 4718656n;
+      /** 编译器静态区。一槽 65536 个位元。 */
+      let KeptStatic = 5242880n;
+      let KeptStaticEnd = 5308416n;
       /** 字符串堆。只盖住从堆底起的一段，再往上的分配仍走内存。 */
-      const KeptHeap = 5767168n;
-      const KeptHeapEnd = 6815744n;
+      let KeptHeap = 5767168n;
+      let KeptHeapEnd = 6815744n;
       let frameWord: bigint | null = null;
+      /** 装入正在按八位组把一段映像读走。这不是下一条取指。 */
+      let spanActive = false;
+      let spanBytes: Uint8Array | null = null;
+      let spanAt = 0;
+      let spanBit = 0n;
+      const InstallOctetLimit = 16777216;
       let pendingFrame = false;
       /** 还没到必须看见画面的指令。访存可以穿插在中间，队列继续往后排。 */
       let heldQueue: Record<string, unknown>[] = [];
@@ -140,6 +169,12 @@ export namespace ZerOS {
         if (op === "ldi" && step["Address"] === 6) {
           return true;
         }
+        if (op === "install" && (step["Core"] === 6 || step["Address"] === 6 || step["Length"] === 6)) {
+          return true;
+        }
+        if ((op === "capture" || op === "restore") && (step["Core"] === 6 || step["Slot"] === 6)) {
+          return true;
+        }
         if (op.startsWith("gpu.") && op !== "gpu.accel" && op !== "gpu.present" && op !== "gpu.compose" && step["Register"] === 6) {
           return true;
         }
@@ -185,6 +220,9 @@ export namespace ZerOS {
         }
         const address = step["Address"];
         if (typeof address !== "bigint" || address < ScratchBase || address >= ScratchLimit) {
+          return false;
+        }
+        if (outsideBound(address, 64n)) {
           return false;
         }
         if ((address - ScratchBase) % 64n !== 0n) {
@@ -260,9 +298,18 @@ export namespace ZerOS {
         if (address < 0n || address % 8n !== 0n || address === FrameAddress) {
           return false;
         }
+        if (address <= SharedBootFlag && address + BigInt(width * 8) > SharedBootFlag) {
+          return false;
+        }
+        if (outsideBound(address, BigInt(width * 8))) {
+          return false;
+        }
         const inLow = address >= KeptLow && address < KeptLowEnd;
         const inStack = address >= KeptStack && address < KeptStackEnd;
         const inHeap = address >= KeptHeap && address < KeptHeapEnd;
+        const inSp = address >= KeptSp && address < KeptSpEnd;
+        const inHeapPtr = address >= KeptHeapPtr && address < KeptHeapPtrEnd;
+        const inStatic = address >= KeptStatic && address < KeptStaticEnd;
         const last = address + BigInt((width - 1) * 8);
         if (inLow && last >= KeptLowEnd) {
           return false;
@@ -273,7 +320,16 @@ export namespace ZerOS {
         if (inHeap && last >= KeptHeapEnd) {
           return false;
         }
-        if (!inLow && !inStack && !inHeap) {
+        if (inSp && last >= KeptSpEnd) {
+          return false;
+        }
+        if (inHeapPtr && last >= KeptHeapPtrEnd) {
+          return false;
+        }
+        if (inStatic && last >= KeptStaticEnd) {
+          return false;
+        }
+        if (!inLow && !inStack && !inHeap && !inSp && !inHeapPtr && !inStatic) {
           return false;
         }
         if (address < ScratchLimit && last >= ScratchBase) {
@@ -495,6 +551,9 @@ export namespace ZerOS {
         if (step["Op"] !== "load" || step["Opcode"] !== Load64 || step["Address"] !== FrameAddress || frameWord === null) {
           return false;
         }
+        if (outsideBound(FrameAddress, 64n)) {
+          return false;
+        }
         const register = registerIndex(step["Register"]);
         if (register === null) {
           quietFault = `${corePrefix} Load 命令不完整`;
@@ -502,6 +561,20 @@ export namespace ZerOS {
         }
         registers[register] = frameWord;
         return true;
+      }
+
+      let boundOrigin = 0n;
+      let boundLength = -1n;
+      let burstLimit = 100000;
+
+      function outsideBound(address: bigint, bits: bigint): boolean {
+        if (boundLength < 0n) {
+          return false;
+        }
+        if (address < boundOrigin) {
+          return true;
+        }
+        return address + bits > boundOrigin + boundLength;
       }
 
       function runBurst(start: number): { readonly cursor: number; readonly executed: number; readonly flush: boolean } {
@@ -514,7 +587,7 @@ export namespace ZerOS {
         quietFault = "";
         let cursor = start;
         let executed = 0;
-        while (cursor < steps.length && executed < 100000) {
+        while (cursor < steps.length && executed < burstLimit) {
           const step = steps[cursor];
           if (step === undefined) {
             break;
@@ -701,6 +774,62 @@ export namespace ZerOS {
         return value;
       }
 
+      function finishSpan(ok: boolean, message: string): void {
+        spanActive = false;
+        const payload = spanBytes;
+        spanBytes = null;
+        const port = cpu;
+        if (port === null) {
+          return;
+        }
+        port.postMessage({ kind: "span", ok, bytes: payload, message });
+      }
+
+      /**
+       * 先用这一核心已经写过的八位组。没写过的一段一次问主板。
+       * 装入必须看见和 load 一样的字节，包括还留在核心里的那些。
+       */
+      function stepSpan(): void {
+        const bytes = spanBytes;
+        if (bytes === null) {
+          return;
+        }
+        while (spanAt < bytes.length) {
+          const bit = spanBit + BigInt(spanAt) * 8n;
+          const key = bit / 8n;
+          if (keptOctets.has(key)) {
+            bytes[spanAt] = keptOctets.get(key) ?? 0;
+            spanAt += 1;
+            continue;
+          }
+          const boardPort = board;
+          if (boardPort === null) {
+            finishSpan(false, `${corePrefix} install 访存没有主板`);
+            return;
+          }
+          const room = bytes.length - spanAt;
+          const cap = room < 262144 ? room : 262144;
+          const startKey = bit / 8n;
+          const endKey = startKey + BigInt(cap);
+          let run = cap;
+          for (const key of keptOctets.keys()) {
+            if (key > startKey && key < endKey) {
+              const distance = Number(key - startKey);
+              if (distance < run) {
+                run = distance;
+              }
+            }
+          }
+          if (run < 1) {
+            finishSpan(false, `${corePrefix} install 访存`);
+            return;
+          }
+          boardPort.postMessage({ kind: "load-span", address: bit, length: run });
+          return;
+        }
+        finishSpan(true, "");
+      }
+
       function onBoard(data: unknown): void {
         const record = asRecord(data);
         const kind = record?.["kind"];
@@ -734,6 +863,19 @@ export namespace ZerOS {
             return;
           }
           cpuPort.postMessage({ kind: "burst", ok: true, cursor: pending.cursor, executed: pending.executed });
+          return;
+        }
+        if (kind === "load-span-result" && spanActive) {
+          const spanOk = record?.["ok"] !== false;
+          const chunk = record?.["bytes"];
+          const spanMessage = record?.["message"];
+          if (!spanOk || !(chunk instanceof Uint8Array) || spanBytes === null || spanAt + chunk.length > spanBytes.length) {
+            finishSpan(false, typeof spanMessage === "string" ? spanMessage : `${corePrefix} install 访存`);
+            return;
+          }
+          spanBytes.set(chunk, spanAt);
+          spanAt += chunk.length;
+          stepSpan();
           return;
         }
         if (kind !== "exec-result" && kind !== "inbox-result" && kind !== "port-result") {
@@ -1100,6 +1242,54 @@ export namespace ZerOS {
         port.postMessage({ kind: "xchg", port: portNumber, direction: directionNumber, data: word });
       }
 
+      function onFill(record: Record<string, unknown>): void {
+        const port = board;
+        const destination = registerIndex(record["destination"]);
+        const index = registerIndex(record["port"]);
+        const addressRegister = registerIndex(record["address"]);
+        const countRegister = registerIndex(record["count"]);
+        if (port === null || destination === null || index === null || addressRegister === null || countRegister === null) {
+          fail("一次拉回命令不完整");
+          return;
+        }
+        const portNumber = readNumber(index);
+        const address = readRegister(addressRegister);
+        const count = readNumber(countRegister);
+        if (portNumber === null || count === null || address < 0n || address % 8n !== 0n || count < 0 || count > 4096) {
+          fail("一次拉回的整数超出范围");
+          return;
+        }
+        pendingRegister = destination;
+        waiting = true;
+        port.postMessage({ kind: "fill", port: portNumber, address, count });
+      }
+
+      function onCarry(record: Record<string, unknown>): void {
+        const port = board;
+        const destination = registerIndex(record["destination"]);
+        const index = registerIndex(record["port"]);
+        const handleRegister = registerIndex(record["handle"]);
+        const offsetRegister = registerIndex(record["offset"]);
+        const addressRegister = registerIndex(record["address"]);
+        const countRegister = registerIndex(record["count"]);
+        if (port === null || destination === null || index === null || handleRegister === null || offsetRegister === null || addressRegister === null || countRegister === null) {
+          fail("按句柄读取命令不完整");
+          return;
+        }
+        const portNumber = readNumber(index);
+        const handle = readNumber(handleRegister);
+        const offset = readNumber(offsetRegister);
+        const address = readRegister(addressRegister);
+        const count = readNumber(countRegister);
+        if (portNumber === null || handle === null || offset === null || count === null || address < 0n || address % 8n !== 0n || count < 0 || count > 268435456) {
+          fail("按句柄读取的整数超出范围");
+          return;
+        }
+        pendingRegister = destination;
+        waiting = true;
+        port.postMessage({ kind: "carry", port: portNumber, handle, offset, address, count });
+      }
+
       function onPortState(record: Record<string, unknown>): void {
         const port = board;
         const destination = registerIndex(record["destination"]);
@@ -1424,6 +1614,12 @@ export namespace ZerOS {
             refuse("本地执行的起点不合法");
             return;
           }
+          const limit = record["limit"];
+          burstLimit = typeof limit === "number" && limit > 0 ? limit : 100000;
+          const origin = record["boundOrigin"];
+          const length = record["boundLength"];
+          boundOrigin = typeof origin === "bigint" ? origin : 0n;
+          boundLength = typeof length === "bigint" ? length : -1n;
           const outcome = runBurst(start);
           const fault = quietFault;
           quietFault = "";
@@ -1462,6 +1658,93 @@ export namespace ZerOS {
           port.postMessage({ kind: "image", registers: registers.slice() });
           return;
         }
+        if (kind === "wipe") {
+          for (let index = 0; index < RegisterCount; index += 1) {
+            registers[index] = 0n;
+          }
+          frameWord = null;
+          const wipePort = cpu;
+          if (wipePort !== null) {
+            wipePort.postMessage({ kind: "wiped" });
+          }
+          return;
+        }
+        if (kind === "plant") {
+          const words = record["words"];
+          const plantPort = cpu;
+          if (plantPort === null) {
+            return;
+          }
+          if (!Array.isArray(words) || words.length !== RegisterCount) {
+            plantPort.postMessage({ kind: "planted", ok: false });
+            return;
+          }
+          const next: bigint[] = [];
+          for (const item of words) {
+            if (typeof item !== "bigint") {
+              plantPort.postMessage({ kind: "planted", ok: false });
+              return;
+            }
+            next.push(item);
+          }
+          for (let index = 0; index < RegisterCount; index += 1) {
+            registers[index] = next[index] ?? 0n;
+          }
+          frameWord = null;
+          plantPort.postMessage({ kind: "planted", ok: true });
+          return;
+        }
+        if (kind === "cache") {
+          const cachePort = cpu;
+          if (cachePort === null) {
+            return;
+          }
+          const snap = copyPrivate();
+          cachePort.postMessage({
+            kind: "cached",
+            ok: true,
+            addresses: snap.addresses,
+            bytes: snap.bytes,
+            scratch: snap.scratch,
+            frameHeld: snap.frameHeld,
+            frame: snap.frame,
+          });
+          return;
+        }
+        if (kind === "cache-clear") {
+          clearPrivate();
+          const clearPort = cpu;
+          if (clearPort !== null) {
+            clearPort.postMessage({ kind: "cache-planted", ok: true });
+          }
+          return;
+        }
+        if (kind === "cache-plant") {
+          const plantedOk = replacePrivate(record);
+          const plantCachePort = cpu;
+          if (plantCachePort !== null) {
+            plantCachePort.postMessage({ kind: "cache-planted", ok: plantedOk });
+          }
+          return;
+        }
+        if (kind === "span") {
+          const address = record["address"];
+          const length = record["length"];
+          const spanPort = cpu;
+          if (spanPort === null) {
+            return;
+          }
+          if (spanActive || typeof address !== "bigint" || typeof length !== "number" || !Number.isInteger(length) || length < 0 || length > InstallOctetLimit || address < 0n || address % 8n !== 0n) {
+            spanPort.postMessage({ kind: "span", ok: false, bytes: null, message: `${corePrefix} install 访存` });
+            return;
+          }
+          spanBytes = new Uint8Array(length);
+          spanAt = 0;
+          spanBit = address;
+          spanActive = true;
+          stepSpan();
+          return;
+        }
         if (kind === "peek") {
           const register = registerIndex(record["register"]);
           if (register === null) {
@@ -1498,7 +1781,7 @@ export namespace ZerOS {
         if (kind === "pass" || kind === "take") {
           return;
         }
-        if (kind !== "place" && kind !== "add" && kind !== "eq" && kind !== "sub" && kind !== "udiv" && kind !== "umod" && kind !== "mul" && kind !== "div" && kind !== "mod" && kind !== "and" && kind !== "or" && kind !== "xor" && kind !== "shl" && kind !== "shr" && kind !== "lt" && kind !== "le" && kind !== "gt" && kind !== "ge" && kind !== "not" && kind !== "itof" && kind !== "fadd" && kind !== "fsub" && kind !== "fmul" && kind !== "fdiv" && kind !== "fpow" && kind !== "fmod" && kind !== "feq" && kind !== "load" && kind !== "store" && kind !== "gpu" && kind !== "inbox" && kind !== "xchg" && kind !== "port-state" && kind !== "port-char" && kind !== "port-byte" && kind !== "query" && kind !== "mem-hertz" && kind !== "mem-metric") {
+        if (kind !== "place" && kind !== "add" && kind !== "eq" && kind !== "sub" && kind !== "udiv" && kind !== "umod" && kind !== "mul" && kind !== "div" && kind !== "mod" && kind !== "and" && kind !== "or" && kind !== "xor" && kind !== "shl" && kind !== "shr" && kind !== "lt" && kind !== "le" && kind !== "gt" && kind !== "ge" && kind !== "not" && kind !== "itof" && kind !== "fadd" && kind !== "fsub" && kind !== "fmul" && kind !== "fdiv" && kind !== "fpow" && kind !== "fmod" && kind !== "feq" && kind !== "load" && kind !== "store" && kind !== "gpu" && kind !== "inbox" && kind !== "xchg" && kind !== "fill" && kind !== "carry" && kind !== "port-state" && kind !== "port-char" && kind !== "port-byte" && kind !== "query" && kind !== "mem-hertz" && kind !== "mem-metric") {
           return;
         }
         if (!running) {
@@ -1561,6 +1844,14 @@ export namespace ZerOS {
           onExchange(record);
           return;
         }
+        if (kind === "fill") {
+          onFill(record);
+          return;
+        }
+        if (kind === "carry") {
+          onCarry(record);
+          return;
+        }
         if (kind === "mem-hertz") {
           onMemoryHertz(record);
           return;
@@ -1592,10 +1883,129 @@ export namespace ZerOS {
        * 接收主板交来的第一条消息，接上两条端口。
        * 寄存器从全 0 开始。主板端口只用于访存结果。
        */
+      /**
+       * 把编译器窗口挪到这颗核心的槽上。
+       * obrc -slot 加的是 核心号 × 槽距。0 号保持原地址。
+       * 固件格子不加，5952 那个结束标志仍然进共享内存。
+       */
+      function adoptSlot(ordinal: number): void {
+        if (!Number.isInteger(ordinal) || ordinal <= 0 || ordinal > 255) {
+          return;
+        }
+        const delta = BigInt(ordinal) * BigInt(RelocateSlotBits);
+        FrameAddress += delta;
+        ScratchBase += delta;
+        ScratchLimit += delta;
+        KeptStack += delta;
+        KeptStackEnd += delta;
+        KeptHeap += delta;
+        KeptHeapEnd += delta;
+        KeptSp += delta;
+        KeptSpEnd += delta;
+        KeptHeapPtr += delta;
+        KeptHeapPtrEnd += delta;
+        KeptStatic += delta;
+        KeptStaticEnd += delta;
+      }
+
+      /**
+       * 抄出这颗核心上别人读不到的写入。
+       * 地址保持原来的位地址，放回时不换算到另一颗核心。临时字和帧字一并带走。
+       */
+      function copyPrivate(): { addresses: bigint[]; bytes: number[]; scratch: bigint[]; frameHeld: boolean; frame: bigint } {
+        const addresses: bigint[] = [];
+        const bytes: number[] = [];
+        for (const [key, value] of keptOctets) {
+          addresses.push(key);
+          bytes.push(value);
+        }
+        return {
+          addresses,
+          bytes,
+          scratch: scratchWords.slice(),
+          frameHeld: frameWord !== null,
+          frame: frameWord ?? 0n,
+        };
+      }
+
+      /** 新映像或卸下之后，上一份程序的栈、静态区和帧字都不再留下。 */
+      function clearPrivate(): void {
+        keptOctets.clear();
+        scratchWords.fill(0n);
+        frameWord = null;
+      }
+
+      /**
+       * 用槽里的一份替换当前私有写入。
+       * 先核对长度和每个八位组，核对失败时原表不动。
+       */
+      function replacePrivate(record: Record<string, unknown>): boolean {
+        const addresses = record["addresses"];
+        const bytes = record["bytes"];
+        const scratch = record["scratch"];
+        const frameHeld = record["frameHeld"] === true;
+        const frame = record["frame"];
+        if (!Array.isArray(addresses) || !Array.isArray(bytes) || addresses.length !== bytes.length) {
+          return false;
+        }
+        if (!Array.isArray(scratch) || scratch.length !== scratchWords.length) {
+          return false;
+        }
+        if (typeof frame !== "bigint") {
+          return false;
+        }
+        const next = new Map<bigint, number>();
+        const keys: bigint[] = [];
+        for (const item of addresses) {
+          if (typeof item !== "bigint") {
+            return false;
+          }
+          keys.push(item);
+        }
+        const octets: number[] = [];
+        for (const item of bytes) {
+          if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > 255) {
+            return false;
+          }
+          octets.push(item);
+        }
+        for (let index = 0; index < keys.length; index += 1) {
+          const key = keys[index];
+          const value = octets[index];
+          if (key === undefined || value === undefined) {
+            return false;
+          }
+          next.set(key, value);
+        }
+        const words: bigint[] = [];
+        for (const item of scratch) {
+          if (typeof item !== "bigint") {
+            return false;
+          }
+          words.push(item);
+        }
+        if (words.length !== scratchWords.length) {
+          return false;
+        }
+        keptOctets.clear();
+        for (const [key, value] of next) {
+          keptOctets.set(key, value);
+        }
+        for (let index = 0; index < scratchWords.length; index += 1) {
+          scratchWords[index] = words[index] ?? 0n;
+        }
+        frameWord = frameHeld ? frame : null;
+        return true;
+      }
+
       export function acceptCoreMessage(data: unknown): void {
         const record = asRecord(data);
         if (record?.["kind"] !== "core") {
           return;
+        }
+        const ordinal = record["ordinal"];
+        if (typeof ordinal === "number") {
+          adoptSlot(ordinal);
         }
         const boardPort = record["boardPort"];
         const cpuPort = record["cpuPort"];

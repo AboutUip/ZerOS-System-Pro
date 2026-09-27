@@ -1,0 +1,2 @@
+/* 系统调用的回复。进程和文件在等待结束时调用，入口自己也调用。 */
+deRfun reply(long caller, long value): void;

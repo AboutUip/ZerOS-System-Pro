@@ -1,0 +1,161 @@
+/* 入口。引导、系统调用分发和回复。回复只给进程层和文件层。 */
+#LINK /task.obr, /vfs.obr
+import proc;
+import mm;
+import sched;
+import fs;
+import exec;
+import trap;
+import board;
+import memory;
+import obr.nas;
+import obr.os;
+
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio */
+
+deRfun pack(): long {
+  return 4294967296L;
+}
+
+deRfun word(long address): long {
+  return memory::load64(address);
+}
+
+deRfun reply(long caller, long value): void {
+  obr::os::pass(caller, value);
+  obr::os::schedule(caller);
+  long index = taskFind(caller);
+  if (index >= 0L) {
+    taskAt(index).state = TaskState::Running;
+  }
+}
+
+deRfun noteDone(): void {
+  long* done = (long*)5952;
+  *done = 1L;
+}
+
+deRfun spawnOn(long core, long uid, long gid, long cap, long state): long {
+  return taskSpawn(core, nextPid(), uid, gid, cap, state);
+}
+
+deRfun boot(): void {
+  obr::os::gate();
+  long me = obr::os::core();
+  obr::os::bound(me, kArena(me), kSpan());
+  taskClear();
+  vfsInit();
+  /* 监督核自己是 1 号任务，根，持有管理权。当前目录是根。 */
+  spawnOn(me, 0L, 0L, 1L, TaskState::Running);
+  if (obr::nas::ready() == 1L) {
+    drvLoad();
+  }
+  noteDone();
+}
+
+deRfun dispatch(long caller, long service): void {
+  if (taskAllows(caller, service) == 0L) {
+    reply(caller, -1L);
+    return;
+  }
+  long home = query(1L, 8L, caller);
+  if (service == 1L) {
+    reply(caller, 0L);
+    return;
+  }
+  if (service == 2L) {
+    reply(caller, mmAlloc(caller, word(home)));
+    return;
+  }
+  if (service == 3L) {
+    reply(caller, mmFree(caller, word(home), word(home + 64L)));
+    return;
+  }
+  if (service == 12L) {
+    long core = word(home);
+    long size = 0L;
+    if (core < 6L || core > 7L || query(1L, 5L, core) != 0L) {
+      reply(caller, 0L);
+      return;
+    }
+    long status = pull("/kernel/drv/pulse", &size);
+    if (status != 0L) {
+      reply(caller, 0L);
+      return;
+    }
+    while (taskFind(core) >= 0L) {
+      taskDrop(core);
+    }
+    obr::os::install(core, imageAt(), size);
+    obr::os::bound(core, kArena(core), kSpan());
+    /* 新装入的程序是普通用户，不继承调用者的根凭证。 */
+    long pid = spawnOn(core, 1L, 1L, 0L, TaskState::Ready);
+    if (pid == 0L) {
+      reply(caller, 0L);
+      return;
+    }
+    obr::os::hertz(core, 30L);
+    schedWake(core);
+    reply(caller, core);
+    return;
+  }
+  if (service == 13L) {
+    long core = word(home);
+    if (core < 6L || core > 7L || query(1L, 5L, core) != 0L) {
+      reply(caller, 0L);
+      return;
+    }
+    procExit(core, 0L);
+    while (taskFind(core) >= 0L) {
+      taskDrop(core);
+    }
+    obr::os::release(core);
+    reply(caller, 1L);
+    return;
+  }
+  if (service == 17L) {
+    reply(caller, execSpawn(caller, home));
+    return;
+  }
+  if (service == 18L) {
+    reply(caller, sigRaise(caller, word(home + 128L), word(home + 192L)));
+    return;
+  }
+  if (service == 19L) {
+    reply(caller, sigTake(caller));
+    return;
+  }
+  if (service == 21L) {
+    long waited = procWait(caller, home);
+    if (waited != -2L) {
+      reply(caller, waited);
+    }
+    return;
+  }
+  if (service == 22L) {
+    reply(caller, loadLib(caller, home));
+    return;
+  }
+  if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L) {
+    long filed = vfsCall(caller, service);
+    if (filed != -2L) {
+      reply(caller, filed);
+    }
+    return;
+  }
+  reply(caller, 0L);
+}
+
+deRfun main(): int {
+  boot();
+  while (1) {
+    schedSweep();
+    long value = 0L;
+    long found = obr::os::take(&value);
+    if (found == 1L) {
+      dispatch(value / pack(), value % pack());
+    }
+    obr::os::yield();
+  }
+  return 0;
+}

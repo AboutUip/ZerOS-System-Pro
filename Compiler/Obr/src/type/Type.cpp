@@ -64,9 +64,27 @@ const char* nameOf(TypeKind type) {
   if (type == TypeKind::String) return "string";
   if (type == TypeKind::Ptr) return "指针";
   if (type == TypeKind::Struct) return "结构体";
+  if (type == TypeKind::Array) return "array";
+  if (type == TypeKind::List) return "list";
+  if (type == TypeKind::Set) return "set";
+  if (type == TypeKind::Map) return "map";
   if (type == TypeKind::Undefined) return "undefined";
   if (type == TypeKind::Void) return "void";
   return "未知";
+}
+
+bool collection(TypeKind type) {
+  return type == TypeKind::Array || type == TypeKind::List || type == TypeKind::Set || type == TypeKind::Map;
+}
+
+std::string typeText(TypeKind kind, const std::string& typeName, TypeKind alt, const std::string& altName) {
+  (void)alt;
+  if (kind == TypeKind::Array) return "array[" + typeName + "]";
+  if (kind == TypeKind::List) return "list[" + typeName + "]";
+  if (kind == TypeKind::Set) return "set[" + typeName + "]";
+  if (kind == TypeKind::Map) return "map[" + typeName + "," + altName + "]";
+  if (kind == TypeKind::Struct || kind == TypeKind::Ptr) return typeName.empty() ? nameOf(kind) : typeName;
+  return nameOf(kind);
 }
 
 }  // namespace obr

@@ -38,6 +38,7 @@ export namespace ZerOS {
       const runInstructionBinary = CpuSeatRoot.Hardware.Motherboard.runInstructionBinary;
       const startResidentLines = CpuSeatRoot.Hardware.Motherboard.startResidentLines;
       const startResidentBinary = CpuSeatRoot.Hardware.Motherboard.startResidentBinary;
+      const seatBinary = CpuSeatRoot.Hardware.Motherboard.seatBinary;
       const pushInbox = InboxRoot.Hardware.Motherboard.pushInbox;
       const notePanel = QueryRoot.Hardware.Motherboard.notePanel;
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
@@ -166,24 +167,35 @@ export namespace ZerOS {
           payload[octet] = Number(rest & 0xffn);
           rest >>= 8n;
         }
-        try {
-          const result = exchangePort(index, direction, payload);
+        const deliver = (packed: bigint, message: string): void => {
+          globalThis.postMessage({
+            kind: MailMessage.ExchangeResult,
+            word: packed,
+            message,
+          });
+        };
+        const packOctets = (result: Uint8Array): bigint => {
           let packed = 0n;
           for (let octet = 0; octet < result.length && octet < 8; octet += 1) {
             packed += BigInt(result[octet] ?? 0) << BigInt(octet * 8);
           }
-          globalThis.postMessage({
-            kind: MailMessage.ExchangeResult,
-            word: packed,
-            message: "",
-          });
+          return packed;
+        };
+        try {
+          const result = exchangePort(index, direction, payload);
+          if (result instanceof Promise) {
+            void result.then((value: Uint8Array) => {
+              deliver(packOctets(value), "");
+            }).catch((error: unknown) => {
+              const text = error instanceof Error ? error.message : "扩展口交换失败";
+              deliver(0n, text);
+            });
+            return;
+          }
+          deliver(packOctets(result), "");
         } catch (error: unknown) {
           const text = error instanceof Error ? error.message : "扩展口交换失败";
-          globalThis.postMessage({
-            kind: MailMessage.ExchangeResult,
-            word: 0n,
-            message: text,
-          });
+          deliver(0n, text);
         }
       }
 
@@ -241,13 +253,14 @@ export namespace ZerOS {
         }
         const logo = readProgram(record["logo"]);
         const drive = readProgram(record["drive"]);
-        if (logo === null || drive === null) {
+        const loader = record["loader"];
+        if (logo === null || drive === null || !(loader instanceof Uint8Array)) {
           reportFault("引导指令不完整");
           return;
         }
         powering = true;
         void powerBoard(logo).then(
-          (): void => {
+          async (): Promise<void> => {
             powering = false;
             globalThis.postMessage({ kind: MailMessage.Checked });
             try {
@@ -255,6 +268,8 @@ export namespace ZerOS {
                 reportFault(message);
                 showError(message);
               };
+              /* 核心 3 与 Load.obr 的 -slot、固件的 schedule(3) 是同一个编号。先装上，等固件自己启动。 */
+              await seatBinary(3, loader);
               if (drive instanceof Uint8Array) {
                 startResidentBinary(drive, onFault);
               } else {

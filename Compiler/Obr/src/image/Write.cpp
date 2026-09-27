@@ -79,6 +79,22 @@ const NamedCode kNamed[] = {
     {"gpu.text", 53, 6},
     {"gpu.accel", 54, 6},
     {"gpu.box", 55, 7},
+    {"install", 65, 3},
+    {"schedule", 66, 1},
+    {"slice", 67, 1},
+    {"pass", 68, 2},
+    {"take", 69, 2},
+    {"svc", 70, 2},
+    {"bound", 71, 3},
+    {"gate", 72, 0},
+    {"release", 73, 1},
+    {"yield", 74, 0},
+    {"core", 75, 1},
+    {"fill", 76, 4},
+    {"carry", 77, 6},
+    {"capture", 78, 2},
+    {"restore", 79, 2},
+    {"attach", 80, 4},
 };
 
 struct MemoryName {
@@ -110,6 +126,12 @@ void append16(std::vector<uint8_t>& out, uint16_t value) {
 
 void append32(std::vector<uint8_t>& out, uint32_t value) {
   for (int shift = 0; shift < 32; shift += 8) {
+    out.push_back(static_cast<uint8_t>((value >> shift) & 0xff));
+  }
+}
+
+void append64(std::vector<uint8_t>& out, uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
     out.push_back(static_cast<uint8_t>((value >> shift) & 0xff));
   }
 }
@@ -165,12 +187,14 @@ std::vector<std::string> tokensOf(const std::string& line) {
 
 bool isLabel(const std::string& line) {
   if (line.size() < 2 || line.back() != ':') return false;
-  if (line[0] < 'A' || (line[0] > 'Z' && line[0] < 'a') || line[0] > 'z') return false;
-  for (std::size_t index = 1; index + 1 < line.size(); index += 1) {
-    const char item = line[index];
+  const auto mark = [](char item, bool first) {
     const bool digit = item >= '0' && item <= '9';
-    const bool alpha = (item >= 'A' && item <= 'Z') || (item >= 'a' && item <= 'z');
-    if (!digit && !alpha) return false;
+    const bool alpha = (item >= 'A' && item <= 'Z') || (item >= 'a' && item <= 'z') || item == '_';
+    return first ? alpha : digit || alpha;
+  };
+  if (!mark(line[0], true)) return false;
+  for (std::size_t index = 1; index + 1 < line.size(); index += 1) {
+    if (!mark(line[index], false)) return false;
   }
   return true;
 }
@@ -327,7 +351,38 @@ bool isPseudoCall(const std::string& line) {
   return line.rfind("call ", 0) == 0 && !isMachineCall(line);
 }
 
-std::vector<std::string> expand(const std::string& zapText) {
+struct Expanded {
+  std::vector<std::string> lines;
+  std::map<std::string, uint32_t> labels;
+  std::vector<std::string> body;
+};
+
+struct LinkSite {
+  std::string name;
+  uint32_t index = 0;
+};
+
+struct LinkReloc {
+  uint32_t index = 0;
+  uint8_t field = 0;
+  int64_t addend = 0;
+};
+
+constexpr uint64_t kDataFloor = 1048576;
+
+bool dataImmediate(const std::string& head) {
+  return head == "place" || head.rfind("load.", 0) == 0 || head.rfind("store.", 0) == 0;
+}
+
+const LinkName* importNamed(const Unit& unit, const std::string& label) {
+  for (const LinkName& item : unit.imports) {
+    if (item.label == label) return &item;
+  }
+  return nullptr;
+}
+
+Expanded expand(const std::string& zapText) {
+  Expanded image;
   std::vector<std::string> expanded;
   for (const std::string& raw : splitLines(zapText)) {
     const std::string line = trim(raw);
@@ -361,49 +416,107 @@ std::vector<std::string> expand(const std::string& zapText) {
     expanded.push_back(line);
   }
 
-  std::map<std::string, uint32_t> labels;
-  std::vector<std::string> body;
   for (const std::string& line : expanded) {
     if (isLabel(line)) {
-      labels.emplace(line.substr(0, line.size() - 1), static_cast<uint32_t>(body.size()));
+      image.labels.emplace(line.substr(0, line.size() - 1), static_cast<uint32_t>(image.body.size()));
       continue;
     }
-    body.push_back(line);
+    image.body.push_back(line);
   }
 
-  std::vector<std::string> resolved;
-  for (const std::string& line : body) {
+  for (const std::string& line : image.body) {
     const std::vector<std::string> parts = tokensOf(line);
     if (parts.empty()) fail("空指令");
     const std::string& head = parts[0];
     const std::string& target = parts.back();
     const bool jump = head == "jz" || head == "jnz" || head == "link" || head == "call";
     if (!jump || parts.size() < 2 || isRegisterToken(target) || isNumberToken(target)) {
-      resolved.push_back(line);
+      image.lines.push_back(line);
       continue;
     }
-    const auto found = labels.find(target);
-    if (found == labels.end()) fail("没有标号 " + target);
-    resolved.push_back(head + " " + parts[1] + ", " + std::to_string(found->second));
+    const auto found = image.labels.find(target);
+    if (found == image.labels.end()) fail("没有标号 " + target);
+    image.lines.push_back(head + " " + parts[1] + ", " + std::to_string(found->second));
   }
-  return resolved;
+  return image;
+}
+
+void writeName(std::vector<uint8_t>& out, const std::string& name) {
+  if (name.empty() || name.size() > 64) fail("符号名超出范围");
+  for (unsigned char item : name) {
+    if (item < 0x21 || item > 0x7e) fail("符号名超出范围");
+  }
+  appendByte(out, static_cast<uint8_t>(name.size()));
+  for (unsigned char item : name) appendByte(out, item);
 }
 
 }  // namespace
 
-void writeProgramBinary(const std::string& path, const std::string& zapText) {
-  const std::vector<std::string> lines = expand(zapText);
+void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit) {
+  const Expanded image = expand(zapText);
+  std::vector<LinkSite> exports;
+  std::vector<LinkSite> imports;
+  std::vector<LinkReloc> relocs;
+  for (const LinkName& item : unit.exports) {
+    const auto found = image.labels.find(item.label);
+    if (found == image.labels.end()) fail("没有导出 " + item.name);
+    exports.push_back(LinkSite{item.name, found->second});
+  }
+  uint32_t cursor = 0;
+  for (const std::string& line : image.body) {
+    const std::vector<std::string> parts = tokensOf(line);
+    if (parts.empty()) fail("空指令");
+    const std::string& head = parts[0];
+    const std::string& target = parts.back();
+    const bool jump = head == "jz" || head == "jnz" || head == "link" || head == "call";
+    if (jump && parts.size() >= 2 && !isRegisterToken(target) && !isNumberToken(target)) {
+      const auto found = image.labels.find(target);
+      if (found == image.labels.end()) fail("没有标号 " + target);
+      const LinkName* imported = importNamed(unit, target);
+      if (imported != nullptr) imports.push_back(LinkSite{imported->name, cursor});
+      else if (unit.shared) relocs.push_back(LinkReloc{cursor, 1, static_cast<int64_t>(found->second)});
+    } else if ((unit.shared || unit.pie) && dataImmediate(head) && isNumberToken(target)) {
+      uint64_t value = 0;
+      if (!parseUnsigned(target, value)) fail("立即数无法解析");
+      if (value >= kDataFloor) relocs.push_back(LinkReloc{cursor, 0, static_cast<int64_t>(value)});
+    }
+    cursor += 1;
+  }
+  if (exports.size() > 256 || imports.size() > 256) fail("符号太多");
+  if (relocs.size() > 4096) fail("重定位太多");
+  const bool linked = unit.shared || unit.pie || !exports.empty() || !imports.empty();
   std::vector<uint8_t> payload;
-  for (const std::string& line : lines) encodeLine(payload, line);
+  for (const std::string& line : image.lines) encodeLine(payload, line);
   std::vector<uint8_t> bytes;
   bytes.push_back(kMagic0);
   bytes.push_back(kMagic1);
   bytes.push_back(kMagic2);
   bytes.push_back(kMagic3);
+  append16(bytes, linked ? 2 : 1);
   append16(bytes, 1);
-  append16(bytes, 1);
-  append32(bytes, static_cast<uint32_t>(lines.size()));
+  append32(bytes, static_cast<uint32_t>(image.lines.size()));
   bytes.insert(bytes.end(), payload.begin(), payload.end());
+  if (linked) {
+    append16(bytes, unit.shared ? 2 : 1);
+    append16(bytes, 0);
+    append32(bytes, static_cast<uint32_t>(exports.size()));
+    append32(bytes, static_cast<uint32_t>(imports.size()));
+    append32(bytes, static_cast<uint32_t>(relocs.size()));
+    for (const LinkSite& item : exports) {
+      writeName(bytes, item.name);
+      append32(bytes, item.index);
+    }
+    for (const LinkSite& item : imports) {
+      writeName(bytes, item.name);
+      append32(bytes, item.index);
+    }
+    for (const LinkReloc& item : relocs) {
+      append32(bytes, item.index);
+      appendByte(bytes, item.field);
+      appendByte(bytes, 0);
+      append64(bytes, static_cast<uint64_t>(item.addend));
+    }
+  }
   std::ofstream output(path, std::ios::binary);
   if (!output) fail("写不出 " + path);
   output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));

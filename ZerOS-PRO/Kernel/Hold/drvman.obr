@@ -1,0 +1,16 @@
+/* 驱动目录的旧样例。内核引导时自己枚举 /kernel/drv，不再装入这份映像。 */
+import board;
+import memory;
+import obr.nas;
+import obr.os;
+
+deRfun main(): int {
+  obr::os::slice(64L);
+  long home = query(1L, 8L, obr::os::core());
+  long got = 0L;
+  long status = obr::nas::readdir("/kernel/drv", 0L, home + 4096L, 240L, &got);
+  memory::store64(status, home);
+  memory::store64(got, home + 64L);
+  halt();
+  return 0;
+}

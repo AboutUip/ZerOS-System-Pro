@@ -43,6 +43,7 @@ export namespace ZerOS {
       const isProgramBinary = BinaryRoot.Hardware.Cpu.isProgramBinary;
       const runSequence = RuntimeRoot.Hardware.Cpu.runSequence;
       const runGuest = RuntimeRoot.Hardware.Cpu.runGuest;
+      const seatImage = RuntimeRoot.Hardware.Cpu.seatImage;
       const seatPrefix = "[ZerOS.Hardware.Motherboard.CpuSeat]";
 
       function asRecord(data: unknown): Record<string, unknown> | null {
@@ -168,6 +169,39 @@ export namespace ZerOS {
         return steps;
       }
 
+      /**
+       * 把程序装进一颗已停止的核心，不从第一条开始跑。
+       * 成功回 ok。核心编号或映像不合格时回 fault，不改那颗核心。
+       */
+      function onSeat(record: Record<string, unknown>): void {
+        const ordinal = record["ordinal"];
+        if (typeof ordinal !== "number") {
+          postFault(`${seatPrefix} 装入目标不完整`);
+          return;
+        }
+        let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
+        try {
+          const parsed = stepsOf(record);
+          if (parsed === null) {
+            postFault(`${seatPrefix} 装入程序不完整`);
+            return;
+          }
+          steps = parsed;
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : `${seatPrefix} 装入程序无法解析`;
+          postFault(message);
+          return;
+        }
+        try {
+          seatImage(ordinal, steps);
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : `${seatPrefix} 装入失败`;
+          postFault(message);
+          return;
+        }
+        globalThis.postMessage({ kind: "ok" });
+      }
+
       function onRun(record: Record<string, unknown>): void {
         let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
         try {
@@ -220,6 +254,10 @@ export namespace ZerOS {
         }
         if (kind === "run") {
           onRun(record);
+          return;
+        }
+        if (kind === "seat") {
+          onSeat(record);
           return;
         }
         if (kind === "guest") {

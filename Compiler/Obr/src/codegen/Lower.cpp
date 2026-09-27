@@ -1,4 +1,5 @@
 #include "Generator.hpp"
+#include "../type/Type.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -60,6 +61,10 @@ void Generator::gen(const Expr& expr) {
       return;
     }
     if (expr.kind == Expr::Kind::New) {
+      if (expr.integer == -6) {
+        emitCollectNew(expr);
+        return;
+      }
       const ClassDecl* decl = nullptr;
       if (classes_ != nullptr) {
         for (const ClassDecl& item : *classes_) {
@@ -250,6 +255,26 @@ void Generator::gen(const Expr& expr) {
         }
         return;
       }
+      if (expr.kids[0].kind == Expr::Kind::Binary && expr.kids[0].op == Tok::LBracket) {
+        gen(expr.kids[1]);
+        const int saved = words_ + temp_;
+        hold();
+        storeSlot(saved, TypeKind::Long);
+        emitElementAddress(expr.kids[0].kids[0], expr.kids[0].kids[1]);
+        const int address = words_ + temp_;
+        hold();
+        storeSlot(address, TypeKind::Long);
+        loadSlot(saved, TypeKind::Long);
+        copy(1, 0);
+        loadSlot(address, TypeKind::Long);
+        copy(5, 0);
+        copy(0, 1);
+        release();
+        release();
+        emit("sti.64 r0, r5");
+        frameHeld_ = false;
+        return;
+      }
       if (expr.kids[0].kind == Expr::Kind::Member) {
         gen(expr.kids[1]);
         const int saved = words_ + temp_;
@@ -336,7 +361,17 @@ void Generator::gen(const Expr& expr) {
     if (expr.kind == Expr::Kind::Call) {
       if (expr.integer == -2) {
         gen(expr.kids[0]);
+        if (collection(expr.kids[0].type)) {
+          markCollect();
+          emit("place r1, 0");
+          emit("eq r1, r0, r1");
+          emit("jnz r1, obrhalt");
+        }
         emit("ldi.64 r0, r0");
+        return;
+      }
+      if (expr.integer <= -20 && expr.integer >= -26) {
+        emitCollectMethod(expr);
         return;
       }
       const Function& target = (*functions_)[static_cast<std::size_t>(expr.integer)];
@@ -348,10 +383,10 @@ void Generator::gen(const Expr& expr) {
         emitInline(expr, target);
         return;
       }
-      if (target.opcode == "inbox") {
+      if (target.opcode == "inbox" || target.opcode == "take") {
         gen(expr.kids[0]);
         copy(2, 0);
-        emit("inbox r0, r1");
+        emit(target.opcode + " r0, r1");
         emit("sti.64 r1, r2");
         frameHeld_ = false;
         return;
@@ -488,6 +523,11 @@ void Generator::gen(const Expr& expr) {
       gen(expr.kids[1]);
       copy(2, 0);
       arith(expr.op, expr.kids[0].type, expr.kids[1].type, expr.type);
+      return;
+    }
+    if (expr.op == Tok::LBracket && collection(expr.kids[0].type)) {
+      emitElementAddress(expr.kids[0], expr.kids[1]);
+      emit("ldi.64 r0, r0");
       return;
     }
     gen(expr.kids[0]);

@@ -1,0 +1,83 @@
+/* 调度。用户核上至多两份任务。时间片用尽时，若另一份已经在槽里，就换上它。停机的交给进程层。 */
+#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr
+import proc;
+import board;
+import obr.os;
+
+deRfun schedWake(long core): void {
+  long index = taskFind(core);
+  if (index < 0L) {
+    return;
+  }
+  Task* task = taskAt(index);
+  task.state = TaskState::Running;
+  obr::os::schedule(core);
+}
+
+deRfun schedSleep(long core): void {
+  long index = taskFind(core);
+  if (index < 0L) {
+    return;
+  }
+  taskAt(index).state = TaskState::Sleeping;
+}
+
+deRfun schedStop(long core): void {
+  long index = taskFind(core);
+  if (index < 0L) {
+    return;
+  }
+  taskAt(index).state = TaskState::Stopped;
+}
+
+/* 槽号就是任务表下标。放回后仍要 schedule 才会跑。没有就绪的兄弟就什么也不做。 */
+deRfun schedResume(long core): void {
+  long next = taskReady(core, -1L);
+  if (next < 0L) {
+    return;
+  }
+  obr::os::restore(core, next);
+  taskAt(next).state = TaskState::Running;
+  obr::os::schedule(core);
+}
+
+deRfun schedSweep(): void {
+  procCollect();
+  long core = 3L;
+  while (core < 8L) {
+    long index = taskFind(core);
+    if (index >= 0L) {
+      long running = query(1L, 5L, core);
+      long why = query(1L, 11L, core);
+      long state = taskAt(index).state;
+      if (running == 0L && sigPendingKill(core) == 1L) {
+        procExit(core, 9L);
+        /* 停在系统调用里时不能换任务，否则稍后的回复会落到另一份上。 */
+        if (why != 2L) {
+          schedResume(core);
+        }
+      } else if (running == 0L && why == 0L && state == TaskState::Running) {
+        procExit(core, 0L);
+        schedResume(core);
+      } else if (running == 0L && why == 1L && state != TaskState::Sleeping && state != TaskState::Zombie && state != TaskState::Empty) {
+        long next = -1L;
+        if (state == TaskState::Running) {
+          next = taskReady(core, index);
+        }
+        if (next >= 0L) {
+          obr::os::capture(core, index);
+          taskAt(index).held = 1L;
+          taskAt(index).state = TaskState::Ready;
+          obr::os::restore(core, next);
+          taskAt(next).state = TaskState::Running;
+          obr::os::schedule(core);
+        } else {
+          taskAt(index).state = TaskState::Ready;
+          obr::os::schedule(core);
+          taskAt(index).state = TaskState::Running;
+        }
+      }
+    }
+    core = core + 1L;
+  }
+}

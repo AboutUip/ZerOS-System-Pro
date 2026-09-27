@@ -1,0 +1,27 @@
+/* 字符设备。用 -pie -slot 0 编译。装上之后出现在 /dev/pulse。用户写进去的字节原样送回。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  obr::os::slice(16L);
+  long home = query(1L, 8L, obr::os::core());
+  while (1) {
+    memory::store64(0L, home + 128L);
+    memory::store64(64L, home + 256L);
+    long status = obr::os::svc(23L);
+    if (status != 0L) {
+      return 0;
+    }
+    long got = memory::load64(home + 320L);
+    if (got > 0L) {
+      memory::store64(1L, home + 128L);
+      memory::store64(got, home + 256L);
+      status = obr::os::svc(23L);
+      if (status != 0L) {
+        return 0;
+      }
+    }
+  }
+  return 0;
+}

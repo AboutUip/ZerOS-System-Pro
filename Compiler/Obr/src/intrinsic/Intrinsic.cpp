@@ -23,6 +23,8 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"query", "query", TypeKind::Long, 3, 1, false, false},
       {"inbox", "inbox", TypeKind::Long, 1, 0, false, false},
       {"xchg", "xchg", TypeKind::Long, 3, 1, false, true},
+      {"bulk", "fill", TypeKind::Long, 3, 1, false, false},
+      {"carry", "carry", TypeKind::Long, 5, 1, false, false},
       {"halt", "halt", TypeKind::Void, 0, 0, false, false},
       {"memory::loadOctet", "ldi.octet", TypeKind::Long, 1, 1, false, false},
       {"memory::load16", "ldi.16", TypeKind::Long, 1, 1, false, false},
@@ -38,6 +40,21 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"memory::storeFloat64", "sti.f64", TypeKind::Void, 2, 0, false, false},
       {"memory::hertz", "mem.hertz", TypeKind::Void, 1, 0, false, false},
       {"memory::metric", "mem.metric", TypeKind::Long, 1, 1, false, false},
+      {"obr::os::schedule", "schedule", TypeKind::Void, 1, 0, false, false},
+      {"obr::os::slice", "slice", TypeKind::Void, 1, 0, false, false},
+      {"obr::os::pass", "pass", TypeKind::Void, 2, 0, false, false},
+      {"obr::os::take", "take", TypeKind::Long, 1, 0, false, false},
+      {"obr::os::svc", "svc", TypeKind::Long, 1, 1, false, false},
+      {"obr::os::bound", "bound", TypeKind::Void, 3, 0, false, false},
+      {"obr::os::gate", "gate", TypeKind::Void, 0, 0, false, false},
+      {"obr::os::release", "release", TypeKind::Void, 1, 0, false, false},
+      {"obr::os::yield", "yield", TypeKind::Void, 0, 0, false, false},
+      {"obr::os::core", "core", TypeKind::Long, 0, 1, false, false},
+      {"obr::os::install", "install", TypeKind::Void, 3, 0, false, false},
+      {"obr::os::hertz", "hertz", TypeKind::Void, 2, 0, false, false},
+      {"obr::os::capture", "capture", TypeKind::Void, 2, 0, false, false},
+      {"obr::os::restore", "restore", TypeKind::Void, 2, 0, false, false},
+      {"obr::os::attach", "attach", TypeKind::Long, 3, 1, false, false},
   };
   for (const OpcodeSpec& spec : table) {
     if (name == spec.name) return &spec;
@@ -113,7 +130,7 @@ bool libraryFunction(const Function& function) {
 void bindOpcode(Function& function) {
   const OpcodeSpec* spec = opcodeSpec(function.name);
   if (spec == nullptr) return;
-  if (std::string(spec->opcode) == "inbox") {
+  if (std::string(spec->opcode) == "inbox" || std::string(spec->opcode) == "take") {
     if (function.ret != TypeKind::Long || function.params.size() != 1 || function.params[0].type != TypeKind::Ptr || function.params[0].pointee != TypeKind::Long) {
       fail("指令声明与通用指令不一致 " + function.name);
     }

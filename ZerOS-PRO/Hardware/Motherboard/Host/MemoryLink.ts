@@ -34,6 +34,7 @@ export namespace ZerOS {
       const MailStatus = MailboxRoot.Hardware.Motherboard.MailStatus;
       const MailMessage = MailboxRoot.Hardware.Motherboard.MailMessage;
       const createMailbox = MailboxRoot.Hardware.Motherboard.createMailbox;
+      const MailboxSpanBytes = MailboxRoot.Hardware.Motherboard.MailboxSpanBytes;
       const mailboxControl = MailboxRoot.Hardware.Motherboard.mailboxControl;
       const mailboxWords = MailboxRoot.Hardware.Motherboard.mailboxWords;
       const writeMailboxText = MailboxRoot.Hardware.Motherboard.writeMailboxText;
@@ -54,6 +55,9 @@ export namespace ZerOS {
         private readonly words: BigInt64Array;
 
         private readonly worker: Worker;
+
+        /** 和内存线程共用的搬运区。一段八位组只同步一次。 */
+        private readonly span: Uint8Array;
 
         private seq = 0;
 
@@ -79,6 +83,7 @@ export namespace ZerOS {
           this.buffer = createMailbox();
           this.control = mailboxControl(this.buffer);
           this.words = mailboxWords(this.buffer);
+          this.span = new Uint8Array(new SharedArrayBuffer(MailboxSpanBytes));
           this.worker = QueuedWorkerRoot.Hardware.Motherboard.openMemoryWorker();
           this.whenReady = this.listenForReady();
         }
@@ -93,6 +98,7 @@ export namespace ZerOS {
             this.worker.postMessage({
               kind: MailMessage.Bind,
               mailbox: this.buffer,
+              span: this.span.buffer,
               clockOrigin: ClockRoot.Hardware.Clock.clockOrigin(),
             });
             this.waitUntil(MailStatus.Bound, 0, 10000, `${linkPrefix} 内存线程没有接上信箱`);
@@ -174,6 +180,50 @@ export namespace ZerOS {
             Atomics.store(this.control, MailSlot.Width, width);
           }, null, 5000);
           noteMemoryPace(readMailboxText(this.buffer));
+        }
+
+        /**
+         * 把一整段八位组写入连续的线性地址。相邻八位组相隔 8 个位元。
+         * 内存线程在本地写完，主板只等一次。比下界更长的段拆开送。
+         */
+        public writeSpan(address: bigint, bytes: Uint8Array): void {
+          let offset = 0;
+          while (offset < bytes.length) {
+            const run = Math.min(MailboxSpanBytes, bytes.length - offset);
+            this.span.set(bytes.subarray(offset, offset + run));
+            const bit = address + BigInt(offset) * 8n;
+            this.transact(MailOp.WriteSpan, (): void => {
+              this.storeWord(0, bit);
+              Atomics.store(this.control, MailSlot.Width, run);
+            }, null, 30000);
+            offset += run;
+          }
+          if (bytes.length > 0) {
+            noteMemoryPace(readMailboxText(this.buffer));
+          }
+        }
+
+        /**
+         * 从连续的线性地址读出一整段八位组。
+         * 返回的是拷贝，搬运区可以立刻再给下一次用。
+         */
+        public readSpan(address: bigint, length: number): Uint8Array {
+          const out = new Uint8Array(length);
+          let offset = 0;
+          while (offset < length) {
+            const run = Math.min(MailboxSpanBytes, length - offset);
+            const bit = address + BigInt(offset) * 8n;
+            this.transact(MailOp.ReadSpan, (): void => {
+              this.storeWord(0, bit);
+              Atomics.store(this.control, MailSlot.Width, run);
+            }, null, 30000);
+            out.set(this.span.subarray(0, run), offset);
+            offset += run;
+          }
+          if (length > 0) {
+            noteMemoryPace(readMailboxText(this.buffer));
+          }
+          return out;
         }
 
         /** 改内存 Hz。非法值由内存线程拒绝，已记下的频率不动。 */

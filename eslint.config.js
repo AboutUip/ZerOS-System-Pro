@@ -27,6 +27,7 @@ export default tseslint.config(
       "Toolchain/Dist/**",
       "Toolchain/vite.config.ts",
       "eslint.config.js",
+      "ZerOS-PRO/Hardware/Nas/Server/**",
     ],
   },
   eslint.configs.recommended,

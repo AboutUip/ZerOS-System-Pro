@@ -26,6 +26,12 @@ export namespace ZerOS {
       /** 整块信箱的字节数。前 32 字节是控制字，接着三个 64 位整数，后面是文本。 */
       export const MailboxBytes = 320;
 
+      /**
+       * 一次跨线程搬运的八位组数。
+       * 再长的访问拆成几段。一段只同步一次，不再每个八位组各等一次。
+       */
+      export const MailboxSpanBytes = 262144;
+
       /** 文本区起点。必须 8 字节对齐，好让前面的 bigint 视图合法。 */
       export const MailboxTextOffset = 64;
 
@@ -53,6 +59,10 @@ export namespace ZerOS {
         Write: 3,
         Hertz: 4,
         Metric: 5,
+        /** 把搬运区里的一段八位组写入线性地址。Width 槽是个数，不是通道字宽。 */
+        WriteSpan: 6,
+        /** 从线性地址读出一段八位组，放进搬运区。Width 槽是个数。 */
+        ReadSpan: 7,
       } as const;
 
       /**

@@ -2,7 +2,7 @@
 
 浏览器里的教学向虚拟机。分层可以拆开看，兼容性以协议为准，实现代码不是规范。
 
-与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件，内核和系统层还是空的挂载点。
+与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件。系统层还是空的。内核映像放在 NAS 的 `/kernel/`，由固件在倒计时结束时装到核心 2。
 
 许可证：[GNU Affero GPL v3](./LICENSE)（AGPLv3）。
 
@@ -12,12 +12,12 @@
 ZerOS-System-Pro/
 ├── ZerOS-PRO/
 │   ├── Boot/                 # 通电、启动画面、F12 进入设置
-│   ├── Kernel/               # 空命名空间
+│   ├── Kernel/               # 客程序 .obr，编译进 NAS 的 /kernel/
 │   ├── System/               # 空命名空间
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板与插座
 │       ├── Cpu/  Gpu/  Memory/
-│       ├── Display/  Keyboard/  Sandbox/
+│       ├── Display/  Keyboard/  Sandbox/  Nas/
 ├── Driver/Gpu/               # OpenGL 切片驱动（.mr 头 + .obr 体）
 ├── Compiler/Obr/             # 宿主编译器，.obr → ZAP
 ├── Toolchain/                # Vite、TypeScript、ESLint；不放产品源码
@@ -46,7 +46,7 @@ npm run dev
 | `npm run check` | 类型检查 + Lint |
 | `npm run build` | 校验后产出到 `Toolchain/Dist/` |
 
-开发服的根是 `ZerOS-PRO/Hardware/Display`。引导在页面里给主板通电，再把启动画面和固件交给 CPU。`Kernel` 与 `System` 不参与这一段。
+开发服的根是 `ZerOS-PRO/Hardware/Display`。引导在页面里给主板通电，再把启动画面和固件交给 CPU。浏览器包里没有内核映像。`System` 不参与这一段。
 
 ## 协议
 
@@ -62,6 +62,7 @@ npm run dev
 | **ZKP1** | 键盘 | [Keyboard](./Documents/Protocol/PhysicalHardware/Keyboard/README.md) |
 | **ZXP1 / ZXD1** | 扩展口与交换 | [Expansion](./Documents/Protocol/PhysicalHardware/Expansion/README.md) |
 | **ZSP1** | 沙盒 | [Sandbox](./Documents/Protocol/PhysicalHardware/Sandbox/README.md) |
+| **ZNP1** | NAS | [Nas](./Documents/Protocol/PhysicalHardware/Nas/README.md) |
 
 ## 参考实现现在在哪
 
@@ -70,18 +71,21 @@ npm run dev
 | 引导 | `ZerOS-PRO/Boot/` | 启动画面，F12 进入三栏设置 |
 | 主板 | `Hardware/Motherboard/` | 插座、查询、扩展口 |
 | CPU / GPU / 内存 | 同名目录 | 官方插头在各自的 `ActiveProvider/` |
-| 显示器 / 键盘 / 沙盒 | 同名目录 | 显示器不经插座；键盘和沙盒坐在扩展口上 |
+| 显示器 / 键盘 / 沙盒 / NAS | 同名目录 | 显示器不经插座；键盘、沙盒和 NAS 坐在扩展口上。NAS 进程要单独启动 |
 | 驱动 | `Driver/Gpu/` | 固件调用的 OpenGL 切片 |
 | 语言 | `Compiler/Obr/` | 默认交出无扩展名二进制。同一次编译另写 `.zap` 供对照。语法见 [编译器说明](./Compiler/Obr/README.md) |
-| 内核 / 系统 | `Kernel/`、`System/` | 空命名空间，还没有进程和用户态 |
+| 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
+| 系统 | `System/` | 空命名空间 |
 
-设置画面只展示查询得到的状态，不改配置，也不进入内核。
+设置画面只展示查询得到的状态，不改配置。内核由固件在倒计时结束时装入，不从设置画面进入。
 
 ## 换插头
 
 内存的步骤写在 [ActiveProvider/README](./ZerOS-PRO/Hardware/Memory/ActiveProvider/README.md)：整体替换该目录，保留 `Provider.ts` 和导出名。主板从固定路径导入，不要改 `Boot/Boot.ts`。
 
-CPU、GPU、键盘、沙盒同样各有一个 `ActiveProvider/`。换哪一块就换哪一个目录。
+CPU、GPU、键盘、沙盒、NAS 同样各有一个 `ActiveProvider/`。换哪一块就换哪一个目录。
+
+NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO/Hardware/Nas/Server/serve.mjs`。客路径 `/` 是 `ZerOS-PRO/Hardware/Nas/Root`。进程没起来时，引导仍然成功，交换返回未就绪。
 
 ## 技能
 

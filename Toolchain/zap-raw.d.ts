@@ -5,4 +5,5 @@
 declare module "zeros-boot-firmware" {
   export const biosProgram: readonly number[];
   export const logoProgram: readonly number[];
+  export const loadProgram: readonly number[];
 }

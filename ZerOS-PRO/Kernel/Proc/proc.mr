@@ -1,0 +1,59 @@
+/* 进程层。任务、凭证、地址和信号。堆、调度、文件、执行和入口按 #LINK 调用。 */
+
+/* 一颗核心上的任务。空、正在跑、时间片用尽、等着、已经停机、等父任务收尸。 */
+enum TaskState: long { Empty, Running, Ready, Sleeping, Stopped, Zombie }
+
+/* 凭证。euid 为 0 的是根。cap 的最低位是管理权，能装入和卸下。 */
+struct Cred {
+  long uid;
+  long gid;
+  long euid;
+  long egid;
+}
+
+/* 这块核心的地址空间。heap 是可分配区的起点，brk 是下一次递增的位置。 */
+struct Mm {
+  long origin;
+  long length;
+  long brk;
+  long freeHead;
+  long heap;
+}
+
+/* 19 个 64 位字。taskStride 必须等于 19×64。改字段时两处一起改。cwd 是当前目录。sig 从第 1 号信号起，每位一个信号。code 是退出码。waitFor 为 0 表示没在等，-1 表示等任意子任务，正数是指定的 pid。held 为 0 表示槽里还没有这份任务，为 1 表示槽号（任务表下标）里是它。 */
+struct Task {
+  long pid;
+  long ppid;
+  long state;
+  long core;
+  Cred cred;
+  Mm mm;
+  long cap;
+  long cwd;
+  long sig;
+  long code;
+  long waitFor;
+  long held;
+}
+
+deRfun kSlot(): long;
+deRfun kSpan(): long;
+deRfun kArena(long core): long;
+deRfun taskStride(): long;
+deRfun tableBase(): long;
+deRfun taskAt(long index): Task*;
+deRfun taskFind(long core): long;
+deRfun taskCount(long core): long;
+deRfun taskReady(long core, long except): long;
+deRfun taskClear(): void;
+deRfun taskDrop(long core): void;
+deRfun nextPid(): long;
+deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state): long;
+deRfun taskAllows(long core, long service): long;
+deRfun taskByPid(long pid): long;
+deRfun sigRaise(long caller, long pid, long sig): long;
+deRfun sigTake(long caller): long;
+deRfun sigPendingKill(long core): long;
+deRfun procExit(long core, long code): void;
+deRfun procWait(long caller, long home): long;
+deRfun procCollect(): void;

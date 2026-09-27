@@ -99,9 +99,18 @@ function obrFirmwarePlugin(): Plugin {
   const boardHeader = path.resolve(productRoot, "Hardware/Motherboard");
   const memoryHeader = path.resolve(productRoot, "Hardware/Memory");
   const gpuDriver = path.resolve(driverHeader, "gl.obr");
-  const jobs: readonly { readonly sources: readonly string[]; readonly output: string; readonly exportName: string }[] = [
+  const jobs: readonly {
+    readonly sources: readonly string[];
+    readonly output: string;
+    readonly exportName: string;
+    readonly slot?: number;
+  }[] = [
     {
-      sources: [path.resolve(productRoot, "Boot/Bios.obr"), path.resolve(productRoot, "Boot/Clear.obr"), gpuDriver],
+      sources: [
+        path.resolve(productRoot, "Boot/Bios.obr"),
+        path.resolve(productRoot, "Boot/Clear.obr"),
+        gpuDriver,
+      ],
       output: path.resolve(outputDir, "Bios"),
       exportName: "biosProgram",
     },
@@ -109,6 +118,15 @@ function obrFirmwarePlugin(): Plugin {
       sources: [path.resolve(productRoot, "Boot/Logo.obr"), gpuDriver],
       output: path.resolve(outputDir, "Logo"),
       exportName: "logoProgram",
+    },
+    {
+      sources: [
+        path.resolve(productRoot, "Boot/Load.obr"),
+        path.resolve(repoRoot, "Compiler/Obr/lib/obr.nas.obr"),
+      ],
+      output: path.resolve(outputDir, "Load"),
+      exportName: "loadProgram",
+      slot: 3,
     },
   ];
 
@@ -121,7 +139,21 @@ function obrFirmwarePlugin(): Plugin {
     for (const job of jobs) {
       const result = spawnSync(
         compiler,
-        [...job.sources, "-I", gpuHeader, "-I", driverHeader, "-I", boardHeader, "-I", memoryHeader, "-o", job.output],
+        [
+          ...job.sources,
+          "-I",
+          gpuHeader,
+          "-I",
+          driverHeader,
+          "-I",
+          boardHeader,
+          "-I",
+          memoryHeader,
+          ...(job.slot === undefined ? [] : ["-slot", String(job.slot)]),
+          "-zap",
+          "-o",
+          job.output,
+        ],
         { encoding: "utf8" },
       );
       if (result.status !== 0) {
@@ -165,6 +197,10 @@ function obrFirmwarePlugin(): Plugin {
         return undefined;
       }
       compile();
+      const firmware = context.server.moduleGraph.getModuleById(firmwareResolved);
+      if (firmware) {
+        context.server.moduleGraph.invalidateModule(firmware);
+      }
       context.server.ws.send({ type: "full-reload" });
       return [];
     },

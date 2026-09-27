@@ -1,0 +1,2 @@
+/* 给别的程序 import 的动态库头。函数体在 add.obr。引导不把这份库放进 NAS。 */
+deRfun add(long left, long right): long;

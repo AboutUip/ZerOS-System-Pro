@@ -47,6 +47,8 @@ export namespace ZerOS {
       const applyGpuBatch = GpuSeatRoot.Hardware.Motherboard.applyGpuBatch;
       const pullInbox = InboxRoot.Hardware.Motherboard.pullInbox;
       const Exchange = PortRoot.Hardware.Motherboard.Slot.Exchange;
+      const Drain = PortRoot.Hardware.Motherboard.Slot.Drain;
+      const Carry = PortRoot.Hardware.Motherboard.Slot.Carry;
       const Identity = PortRoot.Hardware.Motherboard.Slot.Identity;
       const FieldChar = PortRoot.Hardware.Motherboard.Slot.FieldChar;
       const State = PortRoot.Hardware.Motherboard.Slot.State;
@@ -103,6 +105,18 @@ export namespace ZerOS {
             resolve(record);
           };
         });
+      }
+
+      function postExchangeResult(port: MessagePort, result: Uint8Array): void {
+        if (result.length !== 8) {
+          port.postMessage({ kind: "port-result", ok: false, value: 0n, message: `${seatPrefix} 交换结果不是 8 个八位组` });
+          return;
+        }
+        let value = 0n;
+        for (let octet = 0; octet < 8; octet += 1) {
+          value += BigInt(result[octet] ?? 0) << BigInt(octet * 8);
+        }
+        port.postMessage({ kind: "port-result", ok: true, value, message: "" });
       }
 
       function replyCore(port: MessagePort, ok: boolean, isStore: boolean, value: bigint, message: string): void {
@@ -179,6 +193,56 @@ export namespace ZerOS {
       function onCorePort(port: MessagePort, record: Record<string, unknown>): void {
         const kind = record["kind"];
         try {
+          if (kind === "carry") {
+            const index = record["port"];
+            const handle = record["handle"];
+            const offset = record["offset"];
+            const address = record["address"];
+            const count = record["count"];
+            if (typeof index !== "number" || typeof handle !== "number" || typeof offset !== "number" || typeof address !== "bigint" || typeof count !== "number") {
+              throw new Error(`${seatPrefix} 按句柄读取命令不完整`);
+            }
+            void Carry(index, handle, offset, count).then((carried) => {
+              if (carried === null) {
+                port.postMessage({ kind: "port-result", ok: false, value: 0n, message: `${seatPrefix} 这个扩展口不能按句柄读取` });
+                return;
+              }
+              if (carried.status !== 0) {
+                port.postMessage({ kind: "port-result", ok: true, value: BigInt(-carried.status), message: "" });
+                return;
+              }
+              try {
+                sharedMemoryLink().writeSpan(address, carried.bytes);
+                port.postMessage({ kind: "port-result", ok: true, value: BigInt(carried.bytes.length), message: "" });
+              } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : `${seatPrefix} 按句柄读取失败`;
+                port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
+              }
+            }).catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : `${seatPrefix} 按句柄读取失败`;
+              port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
+            });
+            return;
+          }
+          if (kind === "fill") {
+            const index = record["port"];
+            const address = record["address"];
+            const count = record["count"];
+            if (typeof index !== "number" || typeof address !== "bigint" || typeof count !== "number") {
+              throw new Error(`${seatPrefix} 一次拉回命令不完整`);
+            }
+            const drained = Drain(index, count);
+            if (drained === null) {
+              throw new Error(`${seatPrefix} 这个扩展口不能一次拉回`);
+            }
+            if (drained.status !== 0) {
+              port.postMessage({ kind: "port-result", ok: true, value: BigInt(-drained.status), message: "" });
+              return;
+            }
+            sharedMemoryLink().writeSpan(address, drained.bytes);
+            port.postMessage({ kind: "port-result", ok: true, value: BigInt(drained.bytes.length), message: "" });
+            return;
+          }
           if (kind === "port-state") {
             const index = record["port"];
             if (typeof index !== "number") {
@@ -251,14 +315,16 @@ export namespace ZerOS {
             rest >>= 8n;
           }
           const result = Exchange(index, direction, payload);
-          if (result.length !== 8) {
-            throw new Error(`${seatPrefix} 交换结果不是 8 个八位组`);
+          if (result instanceof Promise) {
+            void result.then((value: Uint8Array) => {
+              postExchangeResult(port, value);
+            }).catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : `${seatPrefix} 扩展口访问失败`;
+              port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
+            });
+            return;
           }
-          let value = 0n;
-          for (let octet = 0; octet < 8; octet += 1) {
-            value += BigInt(result[octet] ?? 0) << BigInt(octet * 8);
-          }
-          port.postMessage({ kind: "port-result", ok: true, value, message: "" });
+          postExchangeResult(port, result);
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} 扩展口访问失败`;
           port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
@@ -306,7 +372,7 @@ export namespace ZerOS {
           onCoreMemoryClock(port, record);
           return;
         }
-        if (record?.["kind"] === "xchg" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query" || record?.["kind"] === "query-span") {
+        if (record?.["kind"] === "xchg" || record?.["kind"] === "fill" || record?.["kind"] === "carry" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query" || record?.["kind"] === "query-span") {
           onCorePort(port, record);
           return;
         }
@@ -316,6 +382,22 @@ export namespace ZerOS {
         }
         if (record?.["kind"] === "gpu-batch") {
           onCoreGpuBatch(port, record);
+          return;
+        }
+        if (record?.["kind"] === "load-span") {
+          const address = record["address"];
+          const length = record["length"];
+          if (typeof address !== "bigint" || typeof length !== "number" || !Number.isInteger(length) || length < 1 || length > 262144 || address < 0n || address % 8n !== 0n) {
+            port.postMessage({ kind: "load-span-result", ok: false, bytes: null, message: `${seatPrefix} install 访存` });
+            return;
+          }
+          try {
+            const bytes = sharedMemoryLink().readSpan(address, length);
+            port.postMessage({ kind: "load-span-result", ok: true, bytes, message: "" });
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : `${seatPrefix} install 访存`;
+            port.postMessage({ kind: "load-span-result", ok: false, bytes: null, message });
+          }
           return;
         }
         if (record?.["kind"] !== "exec") {
@@ -475,6 +557,25 @@ export namespace ZerOS {
             }
           },
         );
+      }
+
+      /**
+       * 把二进制装进一颗已停止的核心，不启动。
+       * 等 CPU 回 ok。固件循环再 schedule 这一核，读盘和换红点因此不绑在同一次循环上。
+       */
+      export async function seatBinary(ordinal: number, binary: Uint8Array): Promise<void> {
+        const worker = cpuWorker;
+        if (worker === null) {
+          throw new Error(`${seatPrefix} CPU 还没有坐上`);
+        }
+        /* 先接上回答，再把程序送过去。核心线程和这条线程并行，倒过来的话 ok 会被上一次等待的处理函数吃掉。 */
+        const seated = waitMessage(
+          worker,
+          (record): boolean => record["kind"] === "ok",
+          `${seatPrefix} 装入程序没有完成`,
+        );
+        worker.postMessage({ kind: "seat", ordinal, binary });
+        await seated;
       }
 
       /** 交给 CPU 一段不主动 halt 的二进制固件。不等待结束。失败时调用 onFault。 */

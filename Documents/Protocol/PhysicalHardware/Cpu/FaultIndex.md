@@ -21,6 +21,16 @@
 | `9` | [Query](./FaultRegistry.md#2-错误码) |
 | `10` | [Gpu](./FaultRegistry.md#2-错误码) |
 | `11` | [Memory](./FaultRegistry.md#2-错误码) |
+| `12` | [Install](./FaultRegistry.md#2-错误码) |
+| `13` | [Bound](./FaultRegistry.md#2-错误码) |
+| `14` | [Schedule](./FaultRegistry.md#2-错误码) |
+| `15` | [Pass](./FaultRegistry.md#2-错误码) |
+| `16` | [Syscall](./FaultRegistry.md#2-错误码) |
+| `17` | [Gate](./FaultRegistry.md#2-错误码) |
+| `18` | [Release](./FaultRegistry.md#2-错误码) |
+| `19` | [Slice](./FaultRegistry.md#2-错误码) |
+| `20` | [Context](./FaultRegistry.md#2-错误码) |
+| `21` | [Attach](./FaultRegistry.md#2-错误码) |
 
 ## 2. 按来源
 
@@ -47,3 +57,10 @@
 | 扩展口与键盘 | 错误码 `8`，来源 `5`、`6` |
 | 查询 | 错误码 `9` |
 | 显卡 | 错误码 `10`，来源 `3` |
+| 装入 | 错误码 `12` |
+| 动态库 | 错误码 `21` |
+| 范围 | 错误码 `13` |
+| 调度与时间片 | 错误码 `14`、`19` |
+| 上下文槽 | 错误码 `20` |
+| 保持位与系统调用 | 错误码 `15`、`16` |
+| 监督核 | 错误码 `17`、`18` |

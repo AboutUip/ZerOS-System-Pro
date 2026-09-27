@@ -66,7 +66,8 @@ std::vector<Token> lex(const std::string& source) {
     if (unit == '#') {
       std::size_t end = index;
       while (end < source.size() && source[end] != '\n') end += 1;
-      const std::string line = source.substr(index, end - index);
+      const std::string raw = source.substr(index, end - index);
+      const std::string line = !raw.empty() && raw.back() == '\r' ? raw.substr(0, raw.size() - 1) : raw;
       if (line.rfind("#VERSION", 0) == 0) {
         Token token;
         token.kind = Tok::Version;
@@ -75,6 +76,11 @@ std::vector<Token> lex(const std::string& source) {
       } else if (line.rfind("#LINK", 0) == 0) {
         Token token;
         token.kind = Tok::Link;
+        token.text = line;
+        tokens.push_back(token);
+      } else if (line.rfind("#DYN", 0) == 0) {
+        Token token;
+        token.kind = Tok::Dyn;
         token.text = line;
         tokens.push_back(token);
       } else {

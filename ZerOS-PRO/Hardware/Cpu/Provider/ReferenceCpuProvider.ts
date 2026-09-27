@@ -6,7 +6,7 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 把官方运行时包成可 Bind 的 CpuProvider。
- * CoreCount 使用官方标定 4。社区单核实现替换 ActiveProvider 即可，不必改主板。
+ * CoreCount 使用官方标定 8。社区单核实现替换 ActiveProvider 即可，不必改主板。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -46,7 +46,7 @@ export namespace ZerOS {
 
       /**
        * 官方 CPU。
-       * 声明 4 个核心。这是标定，不是协议规定的唯一合法个数。
+       * 声明 8 个核心。这是标定，不是协议规定的唯一合法个数。
        */
       export const ReferenceCpuProvider: CpuProviderRoot.Hardware.Motherboard.Slot.CpuProvider = {
         ProviderId: "ZerOS-Reference-Cpu",

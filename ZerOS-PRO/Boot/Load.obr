@@ -1,0 +1,61 @@
+/* 核心 3。用 obrc -slot 3 编译。固件倒计时结束时才 schedule 这一核。
+   读 /kernel/start 留在这里。成功时不写 5952：核心 2 还要装上其余映像。
+   失败时写成 1，固件才清屏，避免一直停在 Starting。 */
+import board;
+import obr.nas;
+import obr.os;
+
+deRfun main(): int {
+  long* done = (long*)5952;
+  if (obr::nas::ready() != 1L) {
+    *done = 1L;
+    halt();
+    return 0;
+  }
+  long kind = 0L;
+  long size = 0L;
+  if (obr::nas::stat("/kernel/start", &kind, &size) != 0L) {
+    *done = 1L;
+    halt();
+    return 0;
+  }
+  if (kind != 1L || size < 1L || size > 327680L) {
+    *done = 1L;
+    halt();
+    return 0;
+  }
+  long handle = 0L;
+  if (obr::nas::open("/kernel/start", 0L, &handle) != 0L) {
+    *done = 1L;
+    halt();
+    return 0;
+  }
+  long stage = 31981568L;
+  long offset = 0L;
+  long span = 256L * 1024L;
+  while (offset < size) {
+    long count = size - offset;
+    if (count > span) {
+      count = span;
+    }
+    long got = 0L;
+    long status = obr::nas::read(handle, offset, stage + offset * 8L, count, &got);
+    if (status != 0L || got < 1L) {
+      obr::nas::close(handle);
+      *done = 1L;
+      halt();
+      return 0;
+    }
+    offset = offset + got;
+    if (got == span && span < 256L * 1024L * 1024L) {
+      span = span * 2L;
+    } else {
+      span = 256L * 1024L;
+    }
+  }
+  obr::nas::close(handle);
+  obr::os::install(2L, stage, size);
+  obr::os::schedule(2L);
+  halt();
+  return 0;
+}

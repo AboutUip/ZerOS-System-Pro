@@ -1,0 +1,12 @@
+/* 把整数当成结构体指针。10 + 7 = 17。 */
+struct Pair {
+  long a;
+  long b;
+}
+
+deRfun main(): long {
+  Pair* view = (Pair*)4096;
+  view.a = 10L;
+  view.b = 7L;
+  return view.a + view.b;
+}

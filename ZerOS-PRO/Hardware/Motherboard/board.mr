@@ -6,4 +6,8 @@ deRfun char(long index, long offset): long;
 deRfun query(long seat, long field, long index): long;
 deRfun inbox(long* word): long;
 deRfun xchg(long port, long direction, long data): long;
+/* 把扩展口上已经准备好的应答一次写到位元线。发出的指令是 fill。返回写入的个数；设备状态不是 0 时返回相反数。 */
+deRfun bulk(long port, long address, long count): long;
+/* 按句柄读一段，一次做完。发出的指令是 carry。成功时返回写入个数，失败时返回状态的相反数。 */
+deRfun carry(long port, long handle, long offset, long address, long count): long;
 deRfun halt(): void;

@@ -90,6 +90,8 @@ void Generator::emitUi(const Expr& expr, const Function& target) {
     emit("or r1, r0, r0");
     emit("place r2, 2");
     emit("div r0, r1, r2");
+    emit("place r1, 1");
+    emit("add r0, r0, r1");
     emit(done + ":");
   };
   auto plant = [&](std::size_t kid, int arg) {
@@ -872,6 +874,8 @@ void Generator::emitUiRoutines() {
     emit("load.64 r0, " + at(UiArg + 2));
     emit("place r1, 2");
     emit("div r0, r0, r1");
+    emit("place r1, 1");
+    emit("add r0, r0, r1");
     emit("txadv:");
     emit("load.64 r1, " + at(UiArg + 3));
     emit("add r0, r0, r1");
@@ -1093,6 +1097,8 @@ void Generator::emitUiRoutines() {
     emit("load.64 r0, " + at(UiArg + 2));
     emit("place r1, 2");
     emit("div r0, r0, r1");
+    emit("place r1, 1");
+    emit("add r0, r0, r1");
     emit("txadv:");
     emit("load.64 r1, " + at(UiArg + 3));
     emit("add r0, r0, r1");

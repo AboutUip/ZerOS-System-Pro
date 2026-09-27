@@ -1,7 +1,7 @@
 ---
 name: obr-language
 description: >-
-  维护 ZerOS Obr 方言的语法规则。改 Compiler/Obr 的词法、语法、语义或可接受的语言表面时必须同步本技能；编写或审查 .obr、.mr、类、继承、for、async、import、@Callfun 时也要先读本技能。Objective-R 原仓库只作背景，冲突时以本技能和 Compiler/Obr 为准。
+  维护 ZerOS Obr 方言的语法规则。改 Compiler/Obr 的词法、语法、语义或可接受的语言表面时必须同步本技能；编写或审查 .obr、.mr、类、继承、for、async、import、@Callfun、array、list、set、map 时也要先读本技能。Objective-R 原仓库只作背景，冲突时以本技能和 Compiler/Obr 为准。
 ---
 
 # Obr 语法
@@ -24,21 +24,35 @@ Objective-R 原仓库（`D:\Project\Algorithm\Objective-R`）太远，不作为�
 
 ## 现在接受
 
-语言版本只有 `1`。`#VERSION` 可缺省。`#LINK` 用 `/` 或 `/文件名.obr` 限制跨文件调用。
+语言版本只有 `1`。`#VERSION` 可缺省。`#LINK` 用 `/` 或 `/文件名.obr` 限制跨文件调用，按调用方的文件名匹配，行尾的回车不参与匹配。
 
 注释是 `//` 到行尾，以及 `/* */`。字符串里的 `/` 不是注释。块注释没结束则失败。
 
 顶层是 `import 模块名;`、`class`、`struct`、`enum`、`deRfun`。模块名可以是 `gpu`，也可以是 `obr.math` 这种点分名，对应文件 `obr.math.mr`。`.mr` 只放函数头、`struct`、`enum`。查找顺序是各输入 `.obr` 的目录、每个 `-I` 目录，然后是编译器旁的 `lib/`（以及上一级的 `lib/`）。某文件写了 `import` 时，和头文件签名相同的 `deRfun` 就是该声明的实现，重复签名会失败。对不上任何函数头的 `deRfun` 仍是本文件自己的函数，所以程序可以 `import obr.math` 再写自己的 `main`。没有 `import` 的文件可以单独编译，函数只在该文件内可见。`.mr` 里是函数头、`namespace`、`struct` 或 `enum`，不能 `import`。头文件里的结构体和枚举，导入后和本文件声明的类型放在同一张表里，名字不能和类、结构体、枚举重复。
 
+`import obr.os;` 之后可以调用 `obr::os` 的 `schedule`、`slice`、`pass`、`take`、`svc`、`bound`、`gate`、`release`、`yield`、`core`、`install`、`hertz`、`capture`、`restore`、`attach`。这些函数没有函数体，调用处各变成一条同名 ZAP。`capture` 把已停止核心抄进 0 至 7 号槽，连同这颗核心上别人读不到的已写入八位组，以及导出和还没接上的导入；`restore` 从槽放回并按原地址换上这些八位组，放回后仍停止。没有这种私有写入时集合是空的。`install` 与 `release` 成功会清掉目标上的这份写入。`attach` 把动态库接到另一颗已停止核心的指令末尾，返回第一个导出的指令编号。`take` 和 `inbox` 一样，把取到的整数写进指针。`obrc -slot N` 把编译器自己的栈、帧、静态区和堆加上 `N × 8388608`，用户写出的小立即数不动。`N` 为 0 时地址和以前相同。
+
+文件开头的 `#DYN` 不带参数，可以和 `#LINK` 谁先谁后。写了它的文件，`import` 的头文件里那些没有函数体、也不是指令的声明会变成导入：调用处仍是 `call`，先跳到一条 `halt`。`attach` 再把这条调用改到库里的同名导出。没写 `#DYN` 时，这种声明不会变成可调用的函数。导入不会在调用处展开。
+
+`obrc -shared` 编动态库。不能有 `main`，必须 `-slot 0`，至少要有一个 `export deRfun`。只输出这些导出和它们需要的函数。库里不小于 `1048576` 的立即数记成数据重定位，跳转记成代码重定位；不要把这么大的整数当普通常数。动态库不能用 `install` 换掉整段程序。
+
+`obrc -pie` 编可重定位的可执行程序。必须 `-slot 0`，不能和 `-shared` 一起写。不小于 `1048576` 的 `place`、`load`、`store` 立即数记成数据重定位，跳转仍是指令编号，不再另记代码重定位。`install` 换上整段时，数据加数加上目标核心相对 0 号的窗口位移，代码加数就是新编号。版本 1 的程序仍按 `-slot` 把地址写死。
+
 `import obr.math;` 之后可以调用 `obr::math::abs`、`min`、`max`、`clamp`。每一组都有 `int` 和 `long` 两个重载，参数和结果是同一整数类型。实参类型完全一致时选这个重载；`int` 字面量可以加宽去配 `long`。这些函数没有 Obr 函数体。编译器在调用处直接写出比较、分支和减法，不生成 `call`。`abs` 对负数取相反数。`min` 取较小值，`max` 取较大值。`clamp` 先和 `low` 比，小于 `low` 就得到 `low`；否则再和 `high` 比，大于 `high` 就得到 `high`；两边都没超出则得到原值。`low` 大于 `high` 时，小于 `low` 得到 `low`，否则得到 `high`。库函数不能再写函数体。
 
-`import obr.ui;` 之后可以调用 `obr::ui` 的布局、样式、文字、原点和按键。这些函数没有 Obr 函数体。`pad` 把边加上内边距。`span(起点, 步进, 下标)` 得到 `起点 + 下标 * 步进`，用来排纵向或横向的下一项。`alignStart` 得到起点，`alignCenter` 在一段空间里居中，`alignEnd` 靠终点。`Align` 是 `long` 枚举：`Start` 是 0，`Center` 是 1，`End` 是 2。`align(起点, 空间, 项, 方式)` 按这三档摆放；方式不是 0、1、2 时失败。`advance(字号)` 是一个字形的像素宽：字号小于 1 时失败，小于 2 时是 1，否则是字号除以 2。`textWidth(字号, 字符串)` 是字数乘这个步进。`textWidth(字号, 字距, 字符串)` 是 `字数 * 步进 + (字数 > 0 ? 字数 - 1 : 0) * 字距`；`步进 + 字距` 小于 1 时失败，空串宽度是 0。`lerp` 按比例取整；`numer` 小于等于 0 得到 `from`，大于等于 `denom` 得到 `to`，`denom` 为 0 时失败。`ease` 是先慢后快再慢的整数平滑：先算 `(to - from) * numer * numer * (3 * denom - 2 * numer)`，再除以 `denom` 的三次方，最后加回 `from`。边界和 `denom` 为 0 的规则与 `lerp` 相同。`meter(跨度, 当前值, 最大值)` 是进度占了多少像素：跨度小于 0、或最大值小于 1 时失败；当前值小于等于 0 得到 0，大于等于最大值得到跨度，否则是跨度乘当前值再除以最大值。`bar` 画一条横条：先按半径画整条轨道，再从左边用填充色盖上和 `meter` 同一段子程序算出的宽度。宽、高或半径小于 0，或最大值小于 1 时失败。填充宽度是 0 时只留轨道。填充自己也是圆角矩形，半径收到不超过它较短边的一半。`rgb` 把三个 0 到 255 的通道收成 `0xRRGGBB`，超出的收到 0 或 255。
+`import obr.ui;` 之后可以调用 `obr::ui` 的布局、样式、文字、原点和按键。这些函数没有 Obr 函数体。`pad` 把边加上内边距。`span(起点, 步进, 下标)` 得到 `起点 + 下标 * 步进`，用来排纵向或横向的下一项。`alignStart` 得到起点，`alignCenter` 在一段空间里居中，`alignEnd` 靠终点。`Align` 是 `long` 枚举：`Start` 是 0，`Center` 是 1，`End` 是 2。`align(起点, 空间, 项, 方式)` 按这三档摆放；方式不是 0、1、2 时失败。`advance(字号)` 是排下一个字的步进：字号小于 1 时失败，小于 2 时是 1，否则是字号除以 2 再加 1。多出的 1 像素是字与字之间的空隙。格子里的墨仍只占字号的一半。`textWidth(字号, 字符串)` 是字数乘这个步进。`textWidth(字号, 字距, 字符串)` 是 `字数 * 步进 + (字数 > 0 ? 字数 - 1 : 0) * 字距`；`步进 + 字距` 小于 1 时失败，空串宽度是 0。`lerp` 按比例取整；`numer` 小于等于 0 得到 `from`，大于等于 `denom` 得到 `to`，`denom` 为 0 时失败。`ease` 是先慢后快再慢的整数平滑：先算 `(to - from) * numer * numer * (3 * denom - 2 * numer)`，再除以 `denom` 的三次方，最后加回 `from`。边界和 `denom` 为 0 的规则与 `lerp` 相同。`meter(跨度, 当前值, 最大值)` 是进度占了多少像素：跨度小于 0、或最大值小于 1 时失败；当前值小于等于 0 得到 0，大于等于最大值得到跨度，否则是跨度乘当前值再除以最大值。`bar` 画一条横条：先按半径画整条轨道，再从左边用填充色盖上和 `meter` 同一段子程序算出的宽度。宽、高或半径小于 0，或最大值小于 1 时失败。填充宽度是 0 时只留轨道。填充自己也是圆角矩形，半径收到不超过它较短边的一半。`rgb` 把三个 0 到 255 的通道收成 `0xRRGGBB`，超出的收到 0 或 255。
 
 `clear`、`rect`、`round`、`ellipse`、`glyph`、`text`、`clip`、`unclip`、`present`、`width`、`height` 收成已有的显卡指令，不新增中央处理器指令。屏幕像素左上是原点，y 向下。`save` 记下当前原点，栈深超过 32 时失败。`translate` 把之后的绘制原点平移。`restore` 回到最近一次 `save`，栈空时失败。`rect`、`round`、`ellipse`、`glyph`、`text`、`clip` 都会加上这个原点。`round` 的半径收到不超过较短边的一半，0 是直角。`ellipse` 是内切椭圆。`text` 有六参和七参两档；七参在字号步进上再加字距，步进小于 1 时失败。`shadow(dx, dy, count, color, alpha)` 让之后的 `text` 和 `glyph` 先沿偏移连画 `count` 层，`dx` 向右为正。层号从 1 到 `count`，`count` 最远，画在 `层号 * dx`、`层号 * dy`，透明度是 `alpha * (count - 层号 + 1) / count`，越远越淡。`count` 小于 1 或大于 8 时失败。`noshadow` 把层数清成 0。没调用过 `shadow` 的程序，文字绘制和以前相同。`width` 和 `height` 是颜色目标的边。`frame` 每次加 1，第一次返回 1。`key` 返回新的按下或重复的键位名；没有新事件、抬起、或找不到键盘时是 0，第一次调用只记下已完成次数。`enter` 在这次新事件的键位名是 Enter 时返回 1。`clip` 打开剪裁并设置矩形，`unclip` 关掉剪裁。`present` 就是 `gpu.present`。矩形宽高为负、码点不在 `0x20` 至 `0x7E`、圆角半径为负，由显卡拒绝。字号、步进和 5×7 字形与 AccelRegistry、AccelGlyph 一致。
 
 `namespace 名 { ... }` 与 `::` 用来写成 `gpu::glyph` 这种限定名。带 `::` 的函数名不能 `export`。`export deRfun` 的标号就是函数名。
 
-类型：`byte` `short` `int` `long` `float` `double` `boolean` `char` `string` `void`，以及一层 `类型*`。`int**` 拒绝。类名是指针类型，指向该类的对象，再写 `类名*` 会拒绝。结构体名是值类型。枚举名是它的底层整数，并记住这个枚举。指针的值是 ZMP1 线性位地址。`(long*)4096` 把整数当成位地址。`&` 取变量地址，`*` 读写那个地址。对结构体变量取地址得到 `结构体*`，字段写成 `指针.字段`。
+类型：`byte` `short` `int` `long` `float` `double` `boolean` `char` `string` `void`，以及一层 `类型*`。`int**` 拒绝。类名是指针类型，指向该类的对象，再写 `类名*` 会拒绝。结构体名是值类型。枚举名是它的底层整数，并记住这个枚举。指针的值是 ZMP1 线性位地址。`(long*)4096` 把整数当成位地址。结构体、枚举也可以写成 `(Pair*)地址`、`(Axis*)地址`，来源必须是整数。`(名字)` 没有 `*` 时仍是括号，不是转换。类名本身是指针，再写 `(类名*)` 会拒绝。`&` 取变量地址，`*` 读写那个地址。对结构体变量取地址得到 `结构体*`，字段写成 `指针.字段`。
+
+`array`、`list`、`set`、`map` 不是关键字，只在类型位置写成 `array[long]`、`list[string]`、`set[long]`、`map[string, long]`。后面紧跟名字才是声明，所以 `set(地址, 值)` 仍是函数调用。集合已经是一个 64 位堆引用，再写 `array[long]*` 会拒绝。元素可以是标量、枚举、类、指针，或另一层集合。结构体不能放进集合。`null` 可以赋给集合，未写初值的局部变量是 0，拿去用会在运行时停机。`==` 和 `!=` 比的是引用，包括和 `null` 比。没有垃圾回收，堆只往后长。
+
+`new array[long](n)` 要一个整数长度，负数停机，0 只有头。`new list[string]()`、`new set[long]()`、`new map[string, long]()` 不要参数。`length` 读字 0 的个数。`下标` 只给数组和列表，越界停机；字符串下标仍是只读的 `char`。列表有 `push` 和 `pop`，空列表 `pop` 停机。集合和映射有 `has`、`add` 或 `put`、`remove`；映射还有 `get`，没有这个键就停机。`add` 遇到已有的键什么都不做。`put` 换掉原值，个数不增加。`remove` 没有这个键也成功。它们没有下标。
+
+数组在堆上先放长度，元素从后面每 64 位一个。列表再放容量和缓冲区指针，满了就加倍。集合和映射用开放寻址：头上是个数、容量和槽指针，槽里是状态、键，映射再加值。状态 0 是空，1 是在用，2 是删过。整数键按位混合，字符串键按码点累加，其余按引用相等。
 
 `byte` 不与其他数值混合。关系运算两侧必须是同一整数类型。`==` 两侧类型相同；`string` 的 `==` 是引用相等。`+` 碰到 `string` 或 `char` 是拼接。`&&` 与 `||` 短路。`?:` 右结合。移位先把值收成 32 位，计数对 32 取模。整数 `/` 和 `%` 除以 0 是运行时错误。浮点 `/` 除以 0 失败。浮点 `%` 是 `fmod`。`int` 可以加宽成 `long`。不带后缀、放得进 `int` 的整数字面量（含合适的 `0x`）是 `int`。`long` 比较要用 `0L`。`char` 可以加宽成 `int` 或 `long`。
 
@@ -98,12 +112,12 @@ class 派生 : 基类 { }
 
 ## 指令头
 
-`gpu.mr`、`memory.mr` 以及主板上的头文件里，与指令表同名同参的声明收成一条已有 ZAP，不建栈帧，也不能再写函数体。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double`、`inbox(long* word): long` 以外，这些参数是 `long`。`gpu::accel(long op, double a, double b, double c, double d): long` 收成 `gpu.accel r6, r0, r1, r2, r3, r4`，再把 `r6` 拷回 `r0`。`op` 是整数操作码，四个 `double` 按二进制 64 位型传入。不要为 Obr 增加只给编译器使用的 CPU 指令。新指令必须是通用的 ZCP1 指令。
+`gpu.mr`、`memory.mr` 以及主板上的头文件里，与指令表同名同参的声明收成一条已有 ZAP，不建栈帧，也不能再写函数体。`bulk(long port, long address, long count): long` 收成 `fill r0, r1, r2, r3`，把扩展口上已经准备好的应答一次写到位元线。函数名不用 `fill`，避免和画面填充重名。`carry(long port, long handle, long offset, long address, long count): long` 收成 `carry r0, r1, r2, r3, r4, r5`，按句柄一次读完至多 268435456 个八位组。一次实际读多少由 ZNP1 在这个上界里从 262144 起加倍。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double`、`inbox(long* word): long` 以外，这些参数是 `long`。`gpu::accel(long op, double a, double b, double c, double d): long` 收成 `gpu.accel r6, r0, r1, r2, r3, r4`，再把 `r6` 拷回 `r0`。`op` 是整数操作码，四个 `double` 按二进制 64 位型传入。不要为 Obr 增加只给编译器使用的 CPU 指令。新指令必须是通用的 ZCP1 指令。
 
 ## 产出
 
-默认 `-o 程序` 写出无扩展名二进制，CPU 直接解码。同一次编译写 `程序.zap`，是同一段程序的文本，用来对照调试。`-o` 以 `.zap` 结尾时，二进制写在去掉这个后缀的路径上。二进制在写入前展开标号和 `call`。它不是新的 CPU 指令，也不是 ZCP1 机器码。沙盒仍只接受 ZAP 文本。
+默认 `-o 程序` 只写无扩展名二进制，CPU 直接解码。`-zap` 才在旁边写 `程序.zap`，是同一段程序的文本，用来对照调试。`-o` 以 `.zap` 结尾时，二进制写在去掉这个后缀的路径上。没有导出、导入，也没有 `-pie` 时，二进制是版本 1，字节正好到最后一条指令。动态库、带 `#DYN` 导入的程序，或 `-pie` 的程序，是版本 2，指令后面有链接目录。二进制在写入前展开标号和 `call`。它不是新的 CPU 指令，也不是 ZCP1 机器码。沙盒仍只接受 ZAP 文本。
 
 ## 还没有
 
-`@Overwrite`、`system.mr`、`std::rout`、宏。`await` 不挂起。`public` / `private` 不做访问控制。没有多重继承，没有虚函数。
+`@Overwrite`、`system.mr`、`std::rout`、宏。`await` 不挂起。`public` / `private` 不做访问控制。没有多重继承，没有虚函数。集合没有垃圾回收，不能放下结构体，集合和映射也没有下标。没有通用的 JSON 对象模型。

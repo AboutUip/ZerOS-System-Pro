@@ -1,0 +1,43 @@
+/* 动态库调用样例。不放进 NAS。要用时自己 -slot 0 再 -pie，或写死某一颗核心。先接上 add.lib，再算 20+22。 */
+#DYN
+import add;
+import board;
+import memory;
+import obr.os;
+
+deRfun putPath(long home, long index, long value): void {
+  memory::storeOctet(value, home + 512L + 64L + index * 8L);
+}
+
+deRfun main(): int {
+  long home = query(1L, 8L, obr::os::core());
+  memory::store64(19L, home + 512L);
+  /* /kernel/lib/add.lib */
+  putPath(home, 0L, 47L);
+  putPath(home, 1L, 107L);
+  putPath(home, 2L, 101L);
+  putPath(home, 3L, 114L);
+  putPath(home, 4L, 110L);
+  putPath(home, 5L, 101L);
+  putPath(home, 6L, 108L);
+  putPath(home, 7L, 47L);
+  putPath(home, 8L, 108L);
+  putPath(home, 9L, 105L);
+  putPath(home, 10L, 98L);
+  putPath(home, 11L, 47L);
+  putPath(home, 12L, 97L);
+  putPath(home, 13L, 100L);
+  putPath(home, 14L, 100L);
+  putPath(home, 15L, 46L);
+  putPath(home, 16L, 108L);
+  putPath(home, 17L, 105L);
+  putPath(home, 18L, 98L);
+  long status = obr::os::svc(22L);
+  if (status != 0L) {
+    memory::store64(status, home);
+    return 1;
+  }
+  long sum = add(20L, 22L);
+  memory::store64(sum, home);
+  return 0;
+}

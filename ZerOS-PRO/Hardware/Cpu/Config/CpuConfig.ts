@@ -46,9 +46,22 @@ export namespace ZerOS {
 
         /**
          * 官方实现声明的核心数。
-         * 主板只会挂载 0 .. 3 这四个核心。这不是协议要求的个数。
+         * 0 固件，1 沙盒，2 内核，3 起给内核自己的服务和驱动。这不是协议要求的个数。
          */
-        export const OfficialCoreCount = 4;
+        export const OfficialCoreCount = 8;
+
+        /**
+         * 版本 1 装入不改立即数，编译器用 -slot 把栈和堆写死在目标核心。
+         * 版本 2 种类 1 的数据重定位，以及动态库的 attach，都加上目标核心相对 0 号的这份位移。
+         * 槽距和数据下限与沙盒、内核窗口相同，是标定，不是协议。
+         */
+        export const RelocateSlotBits = 8388608;
+
+        /** 小于这个地址的立即数属于固件格子，-slot 不加。 */
+        export const RelocateDataFloor = 1048576;
+
+        /** 位元线长度。8 颗 2MiB。bound 未设置时查询返回这个长度。 */
+        export const LineBits = 134217728;
       }
     }
   }

@@ -1,0 +1,6 @@
+/* 确认 obr.nas 能和主板、内存的指令头一起编过。 */
+import obr.nas;
+
+deRfun main(): long {
+  return obr::nas::ready();
+}

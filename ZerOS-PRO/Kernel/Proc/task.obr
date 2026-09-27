@@ -1,0 +1,436 @@
+/* 进程层。任务表、凭证、信号和等待。表放在监督核窗口里。 */
+#LINK /start.obr, /sched.obr, /vfs.obr, /exec.obr, /mm.obr
+import proc;
+import fs;
+import sched;
+import trap;
+import board;
+import memory;
+import obr.os;
+
+deRfun kFloor(): long {
+  return 1024L * 1024L;
+}
+
+deRfun kSlot(): long {
+  return 8L * 1024L * 1024L;
+}
+
+deRfun kSpan(): long {
+  return 5632L * 1024L;
+}
+
+deRfun kArena(long core): long {
+  return kFloor() + core * kSlot();
+}
+
+deRfun fsCore(): long {
+  return 4L;
+}
+
+/* 与 proc.mr 里 Task 的 19 个字一致。 */
+deRfun taskStride(): long {
+  return 19L * 64L;
+}
+
+/* 低地址留给调用帧和引导用的几个字。表从这里排 8 份。 */
+deRfun tableBase(): long {
+  return kArena(2L) + 65536L;
+}
+
+deRfun pidWord(): long {
+  return kArena(2L) + 12416L;
+}
+
+deRfun taskAt(long index): Task* {
+  return (Task*)(tableBase() + index * taskStride());
+}
+
+/* 正在跑的优先，其次是堵在系统调用里的，再其次是还没收掉的僵尸。就绪的只在没有这三类时才返回。 */
+deRfun taskFind(long core): long {
+  long index = 0L;
+  long sleeping = -1L;
+  long zombie = -1L;
+  long other = -1L;
+  while (index < 8L) {
+    Task* task = taskAt(index);
+    if (task.pid != 0L && task.core == core) {
+      if (task.state == TaskState::Running) {
+        return index;
+      }
+      if (task.state == TaskState::Sleeping && sleeping < 0L) {
+        sleeping = index;
+      }
+      if (task.state == TaskState::Zombie && zombie < 0L) {
+        zombie = index;
+      }
+      if (other < 0L) {
+        other = index;
+      }
+    }
+    index = index + 1L;
+  }
+  if (sleeping >= 0L) {
+    return sleeping;
+  }
+  if (zombie >= 0L) {
+    return zombie;
+  }
+  return other;
+}
+
+deRfun taskCount(long core): long {
+  long count = 0L;
+  long index = 0L;
+  while (index < 8L) {
+    Task* task = taskAt(index);
+    if (task.pid != 0L && task.core == core) {
+      count = count + 1L;
+    }
+    index = index + 1L;
+  }
+  return count;
+}
+
+/* except 是正在让出的那一格。-1 表示不排除。只返回已经抄进槽的就绪任务。 */
+deRfun taskReady(long core, long except): long {
+  long index = 0L;
+  while (index < 8L) {
+    if (index != except) {
+      Task* task = taskAt(index);
+      if (task.pid != 0L && task.core == core && task.state == TaskState::Ready && task.held == 1L) {
+        return index;
+      }
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun taskClear(): void {
+  long index = 0L;
+  while (index < 8L) {
+    Task* task = taskAt(index);
+    task.pid = 0L;
+    task.ppid = 0L;
+    task.state = TaskState::Empty;
+    task.core = -1L;
+    task.cred.uid = 0L;
+    task.cred.gid = 0L;
+    task.cred.euid = 0L;
+    task.cred.egid = 0L;
+    task.mm.origin = 0L;
+    task.mm.length = 0L;
+    task.mm.brk = 0L;
+    task.mm.freeHead = 0L;
+    task.mm.heap = 0L;
+    task.cap = 0L;
+    task.cwd = 0L;
+    task.sig = 0L;
+    task.code = 0L;
+    task.waitFor = 0L;
+    task.held = 0L;
+    index = index + 1L;
+  }
+  memory::store64(1L, pidWord());
+}
+
+deRfun taskRelease(long index): void {
+  if (index < 0L) {
+    return;
+  }
+  vfsForgetTask(index);
+  long pid = taskAt(index).pid;
+  devDrop(pid);
+  long other = 0L;
+  while (other < 8L) {
+    if (other != index && taskAt(other).ppid == pid && pid != 0L) {
+      taskAt(other).ppid = 1L;
+    }
+    other = other + 1L;
+  }
+  Task* task = taskAt(index);
+  task.pid = 0L;
+  task.ppid = 0L;
+  task.state = TaskState::Empty;
+  task.core = -1L;
+  task.code = 0L;
+  task.waitFor = 0L;
+  task.held = 0L;
+  task.mm.freeHead = 0L;
+  task.sig = 0L;
+}
+
+deRfun taskDrop(long core): void {
+  taskRelease(taskFind(core));
+}
+
+deRfun nextPid(): long {
+  long at = pidWord();
+  long value = memory::load64(at);
+  if (value < 1L) {
+    value = 1L;
+  }
+  memory::store64(value + 1L, at);
+  return value;
+}
+
+/* 编译器栈从窗口起点再往上 1048576 位开始。用户堆停在这之前，两份任务各一半，互不覆盖。 */
+deRfun heapSpan(): long {
+  return 516096L;
+}
+
+deRfun heapOf(long core): long {
+  if (core == 2L) {
+    return vfsEnd();
+  }
+  long order = taskCount(core);
+  if (order > 1L) {
+    return 0L;
+  }
+  /* 调用帧用到 home+12288。堆从这之后开始，避免和参数、路径、缓冲区叠在一起。 */
+  return kArena(core) + 16384L + order * heapSpan();
+}
+
+deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state): long {
+  if (core < 2L || core > 7L || pid < 1L) {
+    return 0L;
+  }
+  /* 监督核只有一份。用户核至多两份，再多就会撞上编译器栈。 */
+  if (core == 2L && taskFind(core) >= 0L) {
+    return 0L;
+  }
+  if (core != 2L && taskCount(core) >= 2L) {
+    return 0L;
+  }
+  long heap = heapOf(core);
+  if (heap == 0L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < 8L && taskAt(index).pid != 0L) {
+    index = index + 1L;
+  }
+  if (index >= 8L) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  task.pid = pid;
+  task.ppid = 1L;
+  task.state = state;
+  task.core = core;
+  task.cred.uid = uid;
+  task.cred.gid = gid;
+  task.cred.euid = uid;
+  task.cred.egid = gid;
+  if (core == 2L) {
+    task.mm.origin = kArena(core);
+    task.mm.length = kSpan();
+  } else {
+    task.mm.origin = heap;
+    task.mm.length = heapSpan();
+  }
+  task.mm.heap = heap;
+  task.mm.brk = task.mm.heap;
+  task.mm.freeHead = 0L;
+  task.cap = cap;
+  task.cwd = 0L;
+  task.sig = 0L;
+  task.code = 0L;
+  task.waitFor = 0L;
+  task.held = 0L;
+  return pid;
+}
+
+/* 没有任务就拒绝。装入和卸下要管理权的最低位。只有 euid 0、没有这一位，不能装入。 */
+deRfun taskAllows(long core, long service): long {
+  long index = taskFind(core);
+  if (index < 0L) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  if (task.pid == 0L || task.state == TaskState::Empty) {
+    return 0L;
+  }
+  if (service == 12L || service == 13L) {
+    if (task.cap % 2L == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun taskByPid(long pid): long {
+  long index = 0L;
+  while (index < 8L) {
+    if (taskAt(index).pid == pid && pid != 0L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun sigMask(long sig): long {
+  long bit = 1L;
+  long step = 1L;
+  while (step < sig) {
+    bit = bit * 2L;
+    step = step + 1L;
+  }
+  return bit;
+}
+
+deRfun sigPendingKill(long core): long {
+  long index = taskFind(core);
+  if (index < 0L) {
+    return 0L;
+  }
+  long mask = sigMask(9L);
+  if (taskAt(index).sig / mask % 2L == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun sigRaise(long caller, long pid, long sig): long {
+  if (sig < 0L || sig > 31L || pid == 1L) {
+    return -1L;
+  }
+  long target = taskByPid(pid);
+  long from = taskFind(caller);
+  if (target < 0L || from < 0L) {
+    return 2L;
+  }
+  Task* who = taskAt(from);
+  Task* task = taskAt(target);
+  if (who.cred.euid != 0L && who.cred.euid != task.cred.uid && who.cred.euid != task.cred.euid) {
+    return -1L;
+  }
+  if (sig == 0L) {
+    return 0L;
+  }
+  long mask = sigMask(sig);
+  if (task.sig / mask % 2L == 0L) {
+    task.sig = task.sig + mask;
+  }
+  return 0L;
+}
+
+deRfun sigTake(long caller): long {
+  long index = taskFind(caller);
+  if (index < 0L) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  long sig = 1L;
+  while (sig <= 31L) {
+    if (sig != 9L) {
+      long mask = sigMask(sig);
+      if (task.sig / mask % 2L == 1L) {
+        task.sig = task.sig - mask;
+        return sig;
+      }
+    }
+    sig = sig + 1L;
+  }
+  return 0L;
+}
+
+/* 丢掉指定的那一格。这颗核心上还有别的任务时不卸下，留给调度把下一份放回去。 */
+deRfun reapIndex(long index): void {
+  if (index < 0L) {
+    return;
+  }
+  long core = taskAt(index).core;
+  taskRelease(index);
+  if (taskCount(core) == 0L) {
+    obr::os::release(core);
+  }
+}
+
+/* 停住的核心变成僵尸。父任务是 1 号，或父任务已经不在，立刻收掉。父任务正在等它，就把退出码交回去再收掉。否则留着，等以后的 wait。 */
+deRfun procExit(long core, long code): void {
+  long index = taskFind(core);
+  if (index < 0L) {
+    return;
+  }
+  Task* task = taskAt(index);
+  if (task.state == TaskState::Zombie || task.state == TaskState::Empty) {
+    return;
+  }
+  task.state = TaskState::Zombie;
+  task.code = code;
+  long parent = task.ppid;
+  long pid = task.pid;
+  if (parent <= 1L || taskByPid(parent) < 0L) {
+    reapIndex(index);
+    return;
+  }
+  long parentIndex = taskByPid(parent);
+  Task* owner = taskAt(parentIndex);
+  if (owner.state != TaskState::Sleeping) {
+    return;
+  }
+  if (owner.waitFor != -1L && owner.waitFor != pid) {
+    return;
+  }
+  long parentCore = owner.core;
+  long home = query(1L, 8L, parentCore);
+  memory::store64(code, home + 192L);
+  owner.waitFor = 0L;
+  reapIndex(index);
+  reply(parentCore, pid);
+}
+
+/* 等一个子任务。home+128 是 pid，0 表示任意一个。成功时回复 pid，退出码写在 +192。没有子任务回复 2。子任务还在跑则先睡下，回复 -2 表示先不要应答这次调用。 */
+deRfun procWait(long caller, long home): long {
+  long self = taskFind(caller);
+  if (self < 0L) {
+    return -1L;
+  }
+  Task* me = taskAt(self);
+  long want = memory::load64(home + 128L);
+  if (want < 0L) {
+    return 13L;
+  }
+  long live = 0L;
+  long index = 0L;
+  while (index < 8L) {
+    Task* child = taskAt(index);
+    if (child.pid != 0L && child.ppid == me.pid && (want == 0L || want == child.pid)) {
+      if (child.state == TaskState::Zombie) {
+        long pid = child.pid;
+        long code = child.code;
+        reapIndex(index);
+        memory::store64(code, home + 192L);
+        return pid;
+      }
+      live = 1L;
+    }
+    index = index + 1L;
+  }
+  if (live == 0L) {
+    return 2L;
+  }
+  if (want == 0L) {
+    me.waitFor = -1L;
+  } else {
+    me.waitFor = want;
+  }
+  schedSleep(caller);
+  return -2L;
+}
+
+/* 父任务已经是 1 号的僵尸没有人会来等，这里收掉，把核心让出来。 */
+deRfun procCollect(): void {
+  long index = 0L;
+  while (index < 8L) {
+    Task* task = taskAt(index);
+    if (task.state == TaskState::Zombie && task.ppid <= 1L) {
+      reapIndex(index);
+    }
+    index = index + 1L;
+  }
+}

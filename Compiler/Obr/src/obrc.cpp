@@ -1,5 +1,6 @@
 #include "Codegen.hpp"
 #include "Diagnostic.hpp"
+#include "codegen/Layout.hpp"
 #include "Parser.hpp"
 #include "Sema.hpp"
 #include "image/Write.hpp"
@@ -67,8 +68,24 @@ int main(int argc, char** argv) {
     std::vector<std::string> inputs;
     std::string output;
     std::vector<std::string> includes;
+    int slot = 0;
+    bool shared = false;
+    bool pie = false;
+    bool writeZap = false;
     for (int index = 1; index < argc; index += 1) {
       const std::string arg = argv[index];
+      if (arg == "-shared") {
+        shared = true;
+        continue;
+      }
+      if (arg == "-pie") {
+        pie = true;
+        continue;
+      }
+      if (arg == "-zap") {
+        writeZap = true;
+        continue;
+      }
       if (arg == "-o" && index + 1 < argc) {
         output = argv[++index];
         continue;
@@ -77,11 +94,24 @@ int main(int argc, char** argv) {
         includes.push_back(argv[++index]);
         continue;
       }
+      if (arg == "-slot" && index + 1 < argc) {
+        const std::string text = argv[++index];
+        slot = 0;
+        if (text.empty()) obr::fail("-slot 缺少核心号");
+        for (char item : text) {
+          if (item < '0' || item > '9') obr::fail("-slot 不是十进制核心号");
+          slot = slot * 10 + (item - '0');
+          if (slot > 255) obr::fail("-slot 超出 255");
+        }
+        continue;
+      }
       inputs.push_back(arg);
     }
     if (inputs.empty() || output.empty()) {
-      std::cerr << "用法: obrc 文件.obr [更多.obr ...] [-I 头文件目录 ...] -o 程序\n";
-      std::cerr << "      默认写出无扩展名二进制。旁边的 .zap 是同一段程序的文本，用来对照调试。\n";
+      std::cerr << "用法: obrc 文件.obr [更多.obr ...] [-I 头文件目录 ...] [-slot 核心号] [-shared] [-pie] [-zap] -o 程序\n";
+      std::cerr << "      默认只写无扩展名二进制。-zap 才在旁边写文本，用来对照调试。\n";
+      std::cerr << "      -shared 编动态库，必须 -slot 0，并且不能有 main。\n";
+      std::cerr << "      -pie 编可重定位的可执行程序，必须 -slot 0。装入时再按目标核心挪数据地址。\n";
       std::cerr << "      -o 以 .zap 结尾时，二进制写在去掉这个后缀的路径上。\n";
       return 2;
     }
@@ -123,14 +153,20 @@ int main(int argc, char** argv) {
         headers.push_back(std::move(file));
       }
     }
+    if (shared && slot != 0) obr::fail("动态库必须 -slot 0");
+    if (pie && shared) obr::fail("动态库不要再写 -pie");
+    if (pie && slot != 0) obr::fail("可重定位程序必须 -slot 0");
+    obr::applySlot(slot);
     obr::Unit unit = obr::combine(std::move(sources), headers);
+    unit.shared = shared;
+    unit.pie = pie;
     obr::check(unit);
     const std::string text = obr::generate(unit);
     const bool namedZap = output.size() >= 4 && output.compare(output.size() - 4, 4, ".zap") == 0;
     const std::string zapPath = namedZap ? output : output + ".zap";
     const std::string binaryPath = namedZap ? output.substr(0, output.size() - 4) : output;
-    writeFile(zapPath, text);
-    obr::writeProgramBinary(binaryPath, text);
+    if (namedZap || writeZap) writeFile(zapPath, text);
+    obr::writeProgramBinary(binaryPath, text, unit);
     return 0;
   } catch (const obr::Error& error) {
     std::cerr << error.what() << "\n";

@@ -1,0 +1,44 @@
+/* 原先的文件转发。虚拟文件系统已经在内核里，引导不再装入这份映像。 */
+import board;
+import memory;
+import obr.nas;
+import obr.os;
+
+deRfun main(): int {
+  obr::os::slice(64L);
+  long home = query(1L, 8L, obr::os::core());
+  long op = memory::load64(home);
+  long status = 0L;
+  long kind = 0L;
+  long size = 0L;
+  long handle = 0L;
+  long got = 0L;
+  if (op == 4L) {
+    status = obr::nas::statAt(home + 512L, &kind, &size);
+    memory::store64(kind, home + 128L);
+    memory::store64(size, home + 192L);
+  } else if (op == 5L) {
+    status = obr::nas::openAt(home + 512L, memory::load64(home + 128L), &handle);
+    memory::store64(handle, home + 192L);
+  } else if (op == 6L) {
+    status = obr::nas::close(memory::load64(home + 128L));
+  } else if (op == 7L) {
+    status = obr::nas::read(memory::load64(home + 128L), memory::load64(home + 192L), home + 4096L, memory::load64(home + 256L), &got);
+    memory::store64(got, home + 320L);
+  } else if (op == 8L) {
+    status = obr::nas::write(memory::load64(home + 128L), memory::load64(home + 192L), home + 4096L, memory::load64(home + 256L), &got);
+    memory::store64(got, home + 320L);
+  } else if (op == 9L) {
+    status = obr::nas::readdirAt(home + 512L, memory::load64(home + 128L), home + 4096L, memory::load64(home + 192L), &got);
+    memory::store64(got, home + 256L);
+  } else if (op == 10L) {
+    status = obr::nas::mkdirAt(home + 512L);
+  } else if (op == 11L) {
+    status = obr::nas::unlinkAt(home + 512L);
+  } else {
+    status = 13L;
+  }
+  memory::store64(status, home + 64L);
+  halt();
+  return 0;
+}

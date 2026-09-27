@@ -1,0 +1,41 @@
+/* 数组、列表、集合和映射。扩容、重复键和嵌套都要走到，结果是 62。 */
+deRfun main(): int {
+  array[long] slots = new array[long](4);
+  slots[0] = 10;
+  slots[1] = 32;
+  list[long] nums = new list[long]();
+  long i = 0L;
+  while (i < 6L) {
+    nums.push(i);
+    i = i + 1L;
+  }
+  set[long] seen = new set[long]();
+  seen.add(10);
+  seen.add(10);
+  long n = 0L;
+  while (n < 20L) {
+    seen.add(n);
+    n = n + 1L;
+  }
+  seen.remove(3);
+  map[string, long] cfg = new map[string, long]();
+  cfg.put("hz", 30);
+  cfg.put("hz", 30);
+  map[long, long] table = new map[long, long]();
+  long k = 0L;
+  while (k < 20L) {
+    table.put(k, k + 1L);
+    k = k + 1L;
+  }
+  list[array[long]] rows = new list[array[long]]();
+  array[long] row = new array[long](1);
+  row[0] = 7;
+  rows.push(row);
+  array[long] back = rows.pop();
+  long hz = cfg.get("hz");
+  long last = table.get(19);
+  if (seen.has(19) && !seen.has(3) && seen.has(10) && (length(nums) == 6) && (hz == 30L) && (slots[1] == 32L) && (nums.pop() == 5L) && (last == 20L) && (back[0] == 7L)) {
+    return 62;
+  }
+  return 0;
+}

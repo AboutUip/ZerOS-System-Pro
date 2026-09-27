@@ -118,6 +118,36 @@ export namespace ZerOS {
     }
 
     function codeOf(message: string): number {
+      if (message.includes("attach")) {
+        return 21;
+      }
+      if (message.includes("capture") || message.includes("restore")) {
+        return 20;
+      }
+      if (message.includes("install")) {
+        return 12;
+      }
+      if (message.includes("bound")) {
+        return 13;
+      }
+      if (message.includes("schedule")) {
+        return 14;
+      }
+      if (message.includes("pass") || message.includes("保持位")) {
+        return 15;
+      }
+      if (message.includes("syscall")) {
+        return 16;
+      }
+      if (message.includes("gate")) {
+        return 17;
+      }
+      if (message.includes("release")) {
+        return 18;
+      }
+      if (message.includes("slice")) {
+        return 19;
+      }
       if (message.includes("跳转")) {
         return 1;
       }

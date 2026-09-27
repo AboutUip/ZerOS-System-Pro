@@ -1,0 +1,5 @@
+/* 调度。入口扫任务，执行和文件可以唤醒或睡下。 */
+deRfun schedWake(long core): void;
+deRfun schedSweep(): void;
+deRfun schedSleep(long core): void;
+deRfun schedStop(long core): void;

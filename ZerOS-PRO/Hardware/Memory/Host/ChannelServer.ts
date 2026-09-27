@@ -25,6 +25,7 @@ import { ZerOS as MachineMemoryRoot } from "../Bootstrap/MachineMemory";
 import type { ZerOS as MemoryControllerRoot } from "../Controller/MemoryController";
 import { ZerOS as Uint32Root } from "../Structure/Uint32";
 import { ZerOS as ChannelWidthRoot } from "../../Motherboard/Enum/ChannelWidth";
+import { ZerOS as InitStateRoot } from "../Enum/UnitInitState";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -36,6 +37,7 @@ export namespace ZerOS {
       const channelPrefix = "[ZerOS.Hardware.Motherboard.MemoryChannel]";
       const ChannelWidthBit = ChannelWidthRoot.Hardware.Motherboard.ChannelWidthBit;
       const ChannelWidthOctet = ChannelWidthRoot.Hardware.Motherboard.ChannelWidthOctet;
+      const InitStateActive = InitStateRoot.Hardware.Memory.UnitInitStateCode.Active;
 
       /** 总控只存在于这条内存线程。还没发布时通道不能碰存储体。 */
       function requireController(): MemoryController {
@@ -136,6 +138,70 @@ export namespace ZerOS {
           return;
         }
         controller.WriteLinearInteger(address / 8n, accepted / 8, data);
+      }
+
+      /**
+       * 一段八位组直接落进颗粒的 Cells。
+       * 每颗先确认已经正式可用，再整段拷贝。不再为每个八位组重走线性整数端口。
+       */
+      function moveSpan(address: bigint, bytes: Uint8Array, writing: boolean): void {
+        if (address % 8n !== 0n) {
+          throw new Error(`${channelPrefix} 搬运地址必须对齐到八位组`);
+        }
+        const controller = requireController();
+        const units = Array.from(controller.Units.values()).sort(
+          (left, right): number => left.UnitOrdinal - right.UnitOrdinal,
+        );
+        const rows: { readonly origin: bigint; readonly count: bigint; readonly cells: Uint8Array; readonly active: boolean }[] = [];
+        let cursor = 0n;
+        for (const unit of units) {
+          const count = BigInt(unit.CellCount) / 8n;
+          rows.push({
+            origin: cursor,
+            count,
+            cells: unit.Cells,
+            active: unit.InitState === InitStateActive,
+          });
+          cursor += count;
+        }
+        const start = address / 8n;
+        let offset = 0;
+        while (offset < bytes.length) {
+          const linear = start + BigInt(offset);
+          let placed = false;
+          for (const row of rows) {
+            if (linear < row.origin || linear >= row.origin + row.count) {
+              continue;
+            }
+            if (!row.active) {
+              throw new Error(`${channelPrefix} 搬运落到还没有正式可用的颗粒`);
+            }
+            const local = Number(linear - row.origin);
+            const room = Number(row.origin + row.count - linear);
+            const run = Math.min(bytes.length - offset, room);
+            if (writing) {
+              row.cells.set(bytes.subarray(offset, offset + run), local);
+            } else {
+              bytes.set(row.cells.subarray(local, local + run), offset);
+            }
+            offset += run;
+            placed = true;
+            break;
+          }
+          if (!placed) {
+            throw new Error(`${channelPrefix} 搬运越出整机位元线`);
+          }
+        }
+      }
+
+      /** 把搬运区里的一段写入线性地址。失败时一个八位组都不承诺已经落稳。 */
+      export function executeSpanWrite(address: bigint, bytes: Uint8Array): void {
+        moveSpan(address, bytes, true);
+      }
+
+      /** 从线性地址读出一段，写进调用方给的缓冲。 */
+      export function executeSpanRead(address: bigint, bytes: Uint8Array): void {
+        moveSpan(address, bytes, false);
       }
     }
   }

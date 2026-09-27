@@ -1,0 +1,10 @@
+/* 文件。入口处理系统调用，执行准备路径，进程在丢掉任务时关掉描述符。 */
+deRfun vfsEnd(): long;
+deRfun vfsInit(): void;
+deRfun vfsForget(long core): void;
+deRfun vfsForgetTask(long taskIndex): void;
+deRfun vfsCall(long caller, long service): long;
+deRfun vfsPrepare(long caller, long path): long;
+deRfun scratch(): long;
+deRfun devPublish(long core, long pid, long name, long nameLen): long;
+deRfun devDrop(long pid): void;

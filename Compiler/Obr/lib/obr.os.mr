@@ -1,0 +1,35 @@
+/* 内核用的处理器指令。没有函数体，调用处直接变成一条 ZAP。 */
+namespace obr {
+namespace os {
+/* 请求坐座调度一颗已停止、并且已经装入程序的核心。 */
+deRfun schedule(long core): void;
+/* 本核心每一轮最多执行这么多条。0 表示直到 halt。 */
+deRfun slice(long count): void;
+/* 把整数放进目标核心的空保持位。 */
+deRfun pass(long core, long value): void;
+/* 取出本核心的保持位。取到返回 1，并把整数写进 value。空则返回 0。 */
+deRfun take(long* value): long;
+/* 把服务号交给监督核，停在下一条。回复写回返回值。 */
+deRfun svc(long service): long;
+/* 划定目标核心可访问的位元范围。监督核自己不受限制。 */
+deRfun bound(long core, long origin, long length): void;
+/* 当前核心成为监督核。 */
+deRfun gate(): void;
+/* 卸下另一颗已停止的核心。 */
+deRfun release(long core): void;
+/* 停在下一条，寄存器保留。 */
+deRfun yield(): void;
+/* 正在执行的核心编号。 */
+deRfun core(): long;
+/* 把一段程序映像装到另一颗已停止的核心。 */
+deRfun install(long core, long address, long length): void;
+/* 设置另一颗核心的 Hz。 */
+deRfun hertz(long core, long hz): void;
+/* 把已停止核心抄进 0 至 7 号槽。槽里还有别人读不到的已写入八位组。 */
+deRfun capture(long core, long slot): void;
+/* 把槽放回已停止的核心，私有写入整份替换。不启动它。 */
+deRfun restore(long core, long slot): void;
+/* 把动态库接到已停止核心的指令末尾。返回第一个导出的指令编号。 */
+deRfun attach(long core, long address, long length): long;
+}
+}

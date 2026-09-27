@@ -23,6 +23,7 @@ class Generator {
   int temp_ = 0;
   std::vector<std::pair<std::string, std::string>> loops_;
   bool needString_ = false;
+  bool needCollect_ = false;
   bool uiInk_ = false;
   bool uiBox_ = false;
   bool uiGlyph_ = false;
@@ -84,6 +85,13 @@ class Generator {
   void concat();
   void emitConcatRoutine();
   void emitCopyRoutine();
+  void markCollect();
+  void restoreFrame();
+  void emitCollectCall(const std::string& label);
+  void emitCollectNew(const Expr& expr);
+  void emitCollectMethod(const Expr& expr);
+  void emitElementAddress(const Expr& box, const Expr& index);
+  void emitCollectRoutines();
   void asFloat();
   void truth(TypeKind type);
   void narrow(TypeKind type);

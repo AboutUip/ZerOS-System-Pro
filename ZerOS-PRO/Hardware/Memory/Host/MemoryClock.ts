@@ -82,6 +82,20 @@ export namespace ZerOS {
         return waitSpan(delay);
       }
 
+      /**
+       * 一段连续访问只等待一次。
+       * accesses 记入已完成条数，cycles 推进绝对时间。短于 1 毫秒的等待仍然不挂起。
+       */
+      export function spendBulk(accesses: number, cycles: number): Promise<void> {
+        const steps = accesses < 1 ? 1 : accesses;
+        const count = cycles < 1 ? 1 : cycles;
+        executed += steps;
+        cycleIndex += count;
+        const deadline = origin + (cycleIndex * 1000) / hertz;
+        const delay = deadline - performance.now();
+        return waitSpan(delay);
+      }
+
       /** 给信箱文本用的两行：当前 Hz，已完成条数。 */
       export function paceText(): string {
         return `${String(hertz)}\n${String(executed)}`;

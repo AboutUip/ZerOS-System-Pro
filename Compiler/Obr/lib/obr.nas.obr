@@ -1,0 +1,541 @@
+/* ZNP1 的客侧。每个字 8 个八位组，由插头去问 NAS 进程。 */
+import board;
+import memory;
+
+deRfun nasPack(long b0, long b1, long b2, long b3, long b4, long b5, long b6, long b7): long {
+  return b0 + b1 * 256L + b2 * 65536L + b3 * 16777216L + b4 * 4294967296L + b5 * 1099511627776L + b6 * 281474976710656L + b7 * 72057594037927936L;
+}
+
+deRfun nasOctet(long word, long index): long {
+  long rest = word;
+  long cursor = 0L;
+  while (cursor < index) {
+    long low = rest & 255L;
+    rest = (rest - low) / 256L;
+    cursor = cursor + 1L;
+  }
+  return rest & 255L;
+}
+
+deRfun nasTalk(long b0, long b1, long b2, long b3, long b4, long b5, long b6, long b7): long {
+  return xchg(2L, 0L, nasPack(b0, b1, b2, b3, b4, b5, b6, b7));
+}
+
+deRfun nasBegin(): long {
+  long back = nasTalk(8L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasOctet(back, 0L);
+}
+
+deRfun nasFinish(long status): long {
+  long back = nasTalk(9L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
+  long ended = nasOctet(back, 0L);
+  if (ended != 0L) {
+    return ended;
+  }
+  return status;
+}
+
+deRfun nasSend(string path): long {
+  int raw = length(path);
+  if (raw > 240) {
+    return 7L;
+  }
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long room = count - index;
+    if (room > 6L) {
+      room = 6L;
+    }
+    long c0 = 0L;
+    long c1 = 0L;
+    long c2 = 0L;
+    long c3 = 0L;
+    long c4 = 0L;
+    long c5 = 0L;
+    if (room > 0L) {
+      c0 = path[index];
+    }
+    if (room > 1L) {
+      c1 = path[index + 1L];
+    }
+    if (room > 2L) {
+      c2 = path[index + 2L];
+    }
+    if (room > 3L) {
+      c3 = path[index + 3L];
+    }
+    if (room > 4L) {
+      c4 = path[index + 4L];
+    }
+    if (room > 5L) {
+      c5 = path[index + 5L];
+    }
+    long back = nasTalk(1L, room, c0, c1, c2, c3, c4, c5);
+    long status = nasOctet(back, 0L);
+    if (status != 0L) {
+      return status;
+    }
+    index = index + room;
+  }
+  return 0L;
+}
+
+deRfun nasKeep(long slot): long {
+  long back = nasTalk(2L, slot, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasOctet(back, 0L);
+}
+
+deRfun nasHandle(long handle): long {
+  long low = handle % 256L;
+  long high = (handle / 256L) % 256L;
+  long back = nasTalk(3L, low, high, 0L, 0L, 0L, 0L, 0L);
+  return nasOctet(back, 0L);
+}
+
+deRfun nasRange(long offset, long count): long {
+  long b1 = offset % 256L;
+  long b2 = (offset / 256L) % 256L;
+  long b3 = (offset / 65536L) % 256L;
+  long b4 = (offset / 16777216L) % 256L;
+  long b5 = count % 256L;
+  long b6 = (count / 256L) % 256L;
+  long back = nasTalk(4L, b1, b2, b3, b4, b5, b6, 0L);
+  return nasOctet(back, 0L);
+}
+
+deRfun nasStage(long address, long count): long {
+  long index = 0L;
+  while (index < count) {
+    long room = count - index;
+    if (room > 6L) {
+      room = 6L;
+    }
+    long c0 = 0L;
+    long c1 = 0L;
+    long c2 = 0L;
+    long c3 = 0L;
+    long c4 = 0L;
+    long c5 = 0L;
+    if (room > 0L) {
+      c0 = memory::loadOctet(address + index * 8L);
+    }
+    if (room > 1L) {
+      c1 = memory::loadOctet(address + (index + 1L) * 8L);
+    }
+    if (room > 2L) {
+      c2 = memory::loadOctet(address + (index + 2L) * 8L);
+    }
+    if (room > 3L) {
+      c3 = memory::loadOctet(address + (index + 3L) * 8L);
+    }
+    if (room > 4L) {
+      c4 = memory::loadOctet(address + (index + 4L) * 8L);
+    }
+    if (room > 5L) {
+      c5 = memory::loadOctet(address + (index + 5L) * 8L);
+    }
+    long back = nasTalk(5L, room, c0, c1, c2, c3, c4, c5);
+    long status = nasOctet(back, 0L);
+    if (status != 0L) {
+      return status;
+    }
+    index = index + room;
+  }
+  return 0L;
+}
+
+deRfun nasPull(long address, long count, long* got): long {
+  /* 拉回缓冲已经在宿主里。一次 fill 写下整段，不再逐个字交换、逐个八位组存储。 */
+  long n = bulk(2L, address, count);
+  if (n < 0L) {
+    *got = 0L;
+    return 0L - n;
+  }
+  *got = n;
+  return 0L;
+}
+
+deRfun nasDrain(long count): long {
+  long filled = 0L;
+  while (filled < count) {
+    long back = nasTalk(7L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
+    long status = nasOctet(back, 0L);
+    if (status != 0L) {
+      return status;
+    }
+    long amount = nasOctet(back, 1L);
+    if (amount == 0L) {
+      return 0L;
+    }
+    filled = filled + amount;
+  }
+  return 0L;
+}
+
+deRfun nasSendAt(long address): long {
+  long raw = memory::load64(address);
+  if (raw > 240L || raw < 0L) {
+    return 7L;
+  }
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long room = count - index;
+    if (room > 6L) {
+      room = 6L;
+    }
+    long c0 = 0L;
+    long c1 = 0L;
+    long c2 = 0L;
+    long c3 = 0L;
+    long c4 = 0L;
+    long c5 = 0L;
+    if (room > 0L) {
+      c0 = memory::loadOctet(address + 64L + index * 8L);
+    }
+    if (room > 1L) {
+      c1 = memory::loadOctet(address + 64L + (index + 1L) * 8L);
+    }
+    if (room > 2L) {
+      c2 = memory::loadOctet(address + 64L + (index + 2L) * 8L);
+    }
+    if (room > 3L) {
+      c3 = memory::loadOctet(address + 64L + (index + 3L) * 8L);
+    }
+    if (room > 4L) {
+      c4 = memory::loadOctet(address + 64L + (index + 4L) * 8L);
+    }
+    if (room > 5L) {
+      c5 = memory::loadOctet(address + 64L + (index + 5L) * 8L);
+    }
+    long back = nasTalk(1L, room, c0, c1, c2, c3, c4, c5);
+    long status = nasOctet(back, 0L);
+    if (status != 0L) {
+      return status;
+    }
+    index = index + room;
+  }
+  return 0L;
+}
+
+deRfun nasPathAt(long address, long slot): long {
+  long sent = nasSendAt(address);
+  if (sent != 0L) {
+    return sent;
+  }
+  return nasKeep(slot);
+}
+
+deRfun nasPath(string path, long slot): long {
+  long sent = nasSend(path);
+  if (sent != 0L) {
+    return sent;
+  }
+  return nasKeep(slot);
+}
+
+deRfun obr::nas::ready(): long {
+  long back = nasTalk(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun obr::nas::stat(string path, long* kind, long* size): long {
+  *kind = 0L;
+  *size = 0L;
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPath(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 1L, 0L, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status == 0L) {
+    *kind = nasOctet(back, 1L);
+    *size = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L + nasOctet(back, 4L) * 65536L + nasOctet(back, 5L) * 16777216L;
+  }
+  return nasFinish(status);
+}
+
+deRfun obr::nas::open(string path, long mode, long* handle): long {
+  *handle = 0L;
+  if (mode < 0L || mode > 3L) {
+    return 13L;
+  }
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPath(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 2L, mode, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status == 0L) {
+    *handle = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+  }
+  return nasFinish(status);
+}
+
+deRfun obr::nas::close(long handle): long {
+  if (handle < 1L || handle > 65535L) {
+    return 5L;
+  }
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long placed = nasHandle(handle);
+  if (placed != 0L) {
+    return nasFinish(placed);
+  }
+  long back = nasTalk(6L, 3L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasFinish(nasOctet(back, 0L));
+}
+
+deRfun obr::nas::read(long handle, long offset, long address, long count, long* got): long {
+  *got = 0L;
+  if (handle < 1L || handle > 65535L) {
+    return 5L;
+  }
+  if (count < 0L || offset < 0L || offset > 4294967295L) {
+    return 13L;
+  }
+  if (count > 268435456L) {
+    return 7L;
+  }
+  /* 句柄、窗口、执行和拉回都在宿主里一次做完。长度可以到搬运上界。 */
+  long n = carry(2L, handle, offset, address, count);
+  if (n < 0L) {
+    return 0L - n;
+  }
+  *got = n;
+  return 0L;
+}
+
+deRfun obr::nas::write(long handle, long offset, long address, long count, long* wrote): long {
+  *wrote = 0L;
+  if (handle < 1L || handle > 65535L) {
+    return 5L;
+  }
+  if (count < 0L || offset < 0L || offset > 4294967295L) {
+    return 13L;
+  }
+  if (count > 65535L) {
+    return 7L;
+  }
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long placed = nasHandle(handle);
+  if (placed != 0L) {
+    return nasFinish(placed);
+  }
+  long ranged = nasRange(offset, 0L);
+  if (ranged != 0L) {
+    return nasFinish(ranged);
+  }
+  long staged = nasStage(address, count);
+  if (staged != 0L) {
+    return nasFinish(staged);
+  }
+  long back = nasTalk(6L, 5L, 0L, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status == 0L) {
+    *wrote = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+  }
+  return nasFinish(status);
+}
+
+deRfun obr::nas::readdir(string path, long index, long address, long capacity, long* got): long {
+  *got = 0L;
+  if (index < 0L || index > 4294967295L || capacity < 0L) {
+    return 13L;
+  }
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPath(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long ranged = nasRange(index, 0L);
+  if (ranged != 0L) {
+    return nasFinish(ranged);
+  }
+  long back = nasTalk(6L, 9L, 0L, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status != 0L) {
+    return nasFinish(status);
+  }
+  long expect = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+  if (expect > capacity) {
+    long drained = nasDrain(expect);
+    if (drained != 0L) {
+      return nasFinish(drained);
+    }
+    return nasFinish(7L);
+  }
+  if (expect == 0L) {
+    return nasFinish(0L);
+  }
+  long pulled = nasPull(address, expect, got);
+  return nasFinish(pulled);
+}
+
+deRfun obr::nas::mkdir(string path): long {
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPath(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 6L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasFinish(nasOctet(back, 0L));
+}
+
+deRfun obr::nas::unlink(string path): long {
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPath(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 7L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasFinish(nasOctet(back, 0L));
+}
+
+deRfun obr::nas::statAt(long path, long* kind, long* size): long {
+  *kind = 0L;
+  *size = 0L;
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPathAt(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 1L, 0L, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status == 0L) {
+    *kind = nasOctet(back, 1L);
+    *size = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L + nasOctet(back, 4L) * 65536L + nasOctet(back, 5L) * 16777216L;
+  }
+  return nasFinish(status);
+}
+
+deRfun obr::nas::openAt(long path, long mode, long* handle): long {
+  *handle = 0L;
+  if (mode < 0L || mode > 3L) {
+    return 13L;
+  }
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPathAt(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 2L, mode, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status == 0L) {
+    *handle = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+  }
+  return nasFinish(status);
+}
+
+deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, long* got): long {
+  *got = 0L;
+  if (index < 0L || index > 4294967295L || capacity < 0L) {
+    return 13L;
+  }
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPathAt(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long ranged = nasRange(index, 0L);
+  if (ranged != 0L) {
+    return nasFinish(ranged);
+  }
+  long back = nasTalk(6L, 9L, 0L, 0L, 0L, 0L, 0L, 0L);
+  long status = nasOctet(back, 0L);
+  if (status != 0L) {
+    return nasFinish(status);
+  }
+  long expect = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+  if (expect > capacity) {
+    long drained = nasDrain(expect);
+    if (drained != 0L) {
+      return nasFinish(drained);
+    }
+    return nasFinish(7L);
+  }
+  if (expect == 0L) {
+    return nasFinish(0L);
+  }
+  long pulled = nasPull(address, expect, got);
+  return nasFinish(pulled);
+}
+
+deRfun obr::nas::mkdirAt(long path): long {
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPathAt(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 6L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasFinish(nasOctet(back, 0L));
+}
+
+deRfun obr::nas::unlinkAt(long path): long {
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long kept = nasPathAt(path, 0L);
+  if (kept != 0L) {
+    return nasFinish(kept);
+  }
+  long back = nasTalk(6L, 7L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasFinish(nasOctet(back, 0L));
+}
+
+deRfun obr::nas::rename(string from, string to): long {
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long source = nasPath(from, 0L);
+  if (source != 0L) {
+    return nasFinish(source);
+  }
+  long dest = nasPath(to, 1L);
+  if (dest != 0L) {
+    return nasFinish(dest);
+  }
+  long back = nasTalk(6L, 8L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasFinish(nasOctet(back, 0L));
+}

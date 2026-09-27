@@ -1,0 +1,7 @@
+/* 装入。只有入口可以拉映像、装驱动和创建子任务。 */
+deRfun imageAt(): long;
+deRfun pull(string path, long* size): long;
+deRfun placeAt(long path, long core): long;
+deRfun drvLoad(): void;
+deRfun execSpawn(long caller, long home): long;
+deRfun loadLib(long caller, long home): long;

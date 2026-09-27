@@ -1,8 +1,9 @@
-/* 固件主程序。F12 进入设置：顶栏两个类别，左侧子类，右侧内容。Tab 在三块之间移动焦点。
+/* 固件主程序。启动画面还在时 F12 进入设置：顶栏两个类别，左侧子类，右侧内容。Tab 在三块之间移动焦点。结束标志写成 1 之后不再进入。
    子页是 13312 起的行表，字符串在 8192。进入设置时写一次，之后只读地址。地址表在 Bios.ts。 */
 import firmware;
 import gl;
 import board;
+import obr.os;
 import obr.ui;
 
 /* 从高位往低位把一个非负整数画成字形，返回写完后的横坐标。 */
@@ -10,17 +11,19 @@ deRfun putnum(long x, long y, long value, long color): long {
   if (value < 0L) {
     value = 0L;
   }
+  long step = obr::ui::advance(16L);
   if (value < 10L) {
     obr::ui::glyph(48L + value, x, y, 16L, color, 255L);
-    return x + 8L;
+    return x + step;
   }
   long next = putnum(x, y, value / 10L, color);
   obr::ui::glyph(48L + value % 10L, next, y, 16L, color, 255L);
-  return next + 8L;
+  return next + step;
 }
 
 /* 从查询字段连续读字符，遇到 0 停止。最多 32 个，避免没有结尾时一直画。 */
 deRfun putfield(long x, long y, long seat, long field, long start, long color): long {
+  long step = obr::ui::advance(16L);
   long index = 0L;
   while (index != 32L) {
     long code = query(seat, field, start + index);
@@ -28,7 +31,7 @@ deRfun putfield(long x, long y, long seat, long field, long start, long color): 
       return x;
     }
     obr::ui::glyph(code, x, y, 16L, color, 255L);
-    x = x + 8L;
+    x = x + step;
     index = index + 1L;
   }
   return x;
@@ -397,7 +400,7 @@ deRfun show(long x, long y, long wide, long kind, long a, long b, long c, long i
     say(x, y, 16L, 16L, dim);
     cursor = putnum(x + 40L, y, run, ink);
     obr::ui::glyph(47L, cursor, y, 16L, dim, 255L);
-    putnum(cursor + 8L, y, cores, ink);
+    putnum(cursor + obr::ui::advance(16L), y, cores, ink);
     y = y + 20L;
     if (cores > 0L) {
       meterbar(x, y, wide, run, cores, obr::ui::rgb(72L, 156L, 255L));
@@ -435,16 +438,16 @@ deRfun show(long x, long y, long wide, long kind, long a, long b, long c, long i
     long cursor = 0L;
     say(x, y, 16L, a, dim);
     cursor = putnum(x + c, y, query(b, 0L, 0L), ink);
-    obr::ui::glyph(120L, cursor + 8L, y, 16L, dim, 255L);
-    putnum(cursor + 24L, y, query(b, 1L, 0L), ink);
+    obr::ui::glyph(120L, cursor + obr::ui::advance(16L), y, 16L, dim, 255L);
+    putnum(cursor + obr::ui::advance(16L) * 3L, y, query(b, 1L, 0L), ink);
     return y + 24L;
   }
   if (kind == 19L) {
     long cursor = 0L;
     say(x, y, 16L, 9L, dim);
     cursor = putnum(x + 80L, y, query(4L, 0L, 0L), ink);
-    obr::ui::glyph(120L, cursor + 8L, y, 16L, dim, 255L);
-    cursor = putnum(cursor + 24L, y, query(4L, 1L, 0L), ink);
+    obr::ui::glyph(120L, cursor + obr::ui::advance(16L), y, 16L, dim, 255L);
+    cursor = putnum(cursor + obr::ui::advance(16L) * 3L, y, query(4L, 1L, 0L), ink);
     say(cursor + 12L, y, 16L, 15L, dim);
     putnum(cursor + 40L, y, query(4L, 2L, 0L), ink);
     return y + 36L;
@@ -793,7 +796,7 @@ deRfun poll(): int {
   }
 }
 
-/* F12 进入设置。Tab 轮换焦点。方向键在当前块里移动。Esc 先退出详情，再离开设置。 */
+/* 启动画面期间 F12 进入设置。结束标志写成 1 之后忽略。Tab 轮换焦点。方向键在当前块里移动。Esc 先退出详情，再离开设置。 */
 deRfun onkey(): void {
   long* mode = (long*)4096;
   long* name = (long*)4864;
@@ -805,6 +808,10 @@ deRfun onkey(): void {
   long* depth = (long*)5376;
   long* selection = (long*)5568;
   if (*name == 0x323146L) {
+    long* done = (long*)5952;
+    if (*done != 0L) {
+      return;
+    }
     if (*mode != 2L) {
       *mode = 2L;
       *focus = 0L;
@@ -884,41 +891,23 @@ deRfun onkey(): void {
   }
 }
 
-/* 把六个点重画一遍。hot 那颗是红的，其余是白的。点本身不动，颜色往后换。 */
-deRfun dots(long hot): void {
-  long wide = obr::ui::width();
-  long high = obr::ui::height();
-  long size = 48L;
-  long step = obr::ui::advance(size);
-  long word = obr::ui::textWidth(size, "Starting");
-  long origin = obr::ui::align(0L, wide, word + step * 6L, obr::ui::Align::Center) + 8L;
-  long y = obr::ui::align(0L, high, size, obr::ui::Align::Center);
-  long white = obr::ui::rgb(255L, 255L, 255L);
-  long red = obr::ui::rgb(255L, 0L, 0L);
-  long index = 0L;
-  while (index != 6L) {
-    long color = white;
-    if (index == hot) {
-      color = red;
-    }
-    obr::ui::glyph(46L, origin + word + index * step, y, size, color, 255L);
-    index = index + 1L;
-  }
-  obr::ui::present();
-}
-
-/* 找键盘口，然后一直轮询。等待时每 24 次把红点换到下一颗。设置画面按键立刻重画，空闲时少刷几次，让频率条上的亮线还能动。 */
+/* 找键盘口，然后一直轮询。红点不在这里换：这一循环的快慢会跟着读盘变。
+   倒计时结束时只调度核心 3。核心 2 把各映像装完后把 5952 写成 1，这里才清成黑屏。 */
 deRfun main(): int {
   long* mode = (long*)4096;
   long* count = (long*)4352;
   long* wait = (long*)4416;
   long* port = (long*)4480;
   long* tick = (long*)5696;
+  long* done = (long*)5952;
+  long* armed = (long*)6016;
   gl::load();
   *mode = 0L;
   *count = 0L;
   *wait = 800L;
   *tick = 0L;
+  *done = 0L;
+  *armed = 0L;
   long index = 0L;
   long matched = 0L;
   while (index != 4L && matched == 0L) {
@@ -952,12 +941,15 @@ deRfun main(): int {
         }
       }
     } else if (*mode == 0L) {
-      *wait = *wait - 1L;
-      if (*wait == 0L) {
+      if (*armed == 0L) {
+        *wait = *wait - 1L;
+        if (*wait == 0L) {
+          obr::os::schedule(3L);
+          *armed = 1L;
+        }
+      } else if (*done != 0L) {
         clear();
         *mode = 1L;
-      } else if (*wait % 24L == 0L) {
-        dots((obr::ui::frame() - 1L) % 6L);
       }
     }
   }

@@ -20,9 +20,10 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
+import { ZerOS as WindowCheckRoot } from "./Test/KernelWindowCheck";
 import { ZerOS as BiosRoot } from "./Bios";
 import { ZerOS as MotherboardRoot } from "../Hardware/Motherboard/Bootstrap/Motherboard";
-import { logoProgram } from "zeros-boot-firmware";
+import { loadProgram, logoProgram } from "zeros-boot-firmware";
 
 export namespace ZerOS {
   /* ------------------------------------------------------------------------ */
@@ -44,17 +45,27 @@ export namespace ZerOS {
 
     /**
      * 收尾之后的固件循环。
-     * 等待期间红点按六个点的顺序往后换色。等待结束就清屏。按下 F12 进入设置画面：顶栏切换类别，左侧是子类，右侧是内容。
+     * 等待期间红点按六个点的顺序往后换色。等待结束就清屏。画面还在时按下 F12 进入设置：顶栏切换类别，左侧是子类，右侧是内容。结束标志写成 1 之后 F12 不再进入。
      */
-    export const Drive: Uint8Array = BiosRoot.Boot.BiosProgram;
+    export     const Drive: Uint8Array = BiosRoot.Boot.BiosProgram;
+
+    /**
+     * 放在核心 3 上、先不启动的装入程序。正文在 Load.obr，按核心 3 的槽编译。
+     * 固件倒计时结束时才调度它。读盘不走画红点的那一核。
+     */
+    export const Loader: Uint8Array = Uint8Array.from(loadProgram);
+    const runKernelWindowCheck = WindowCheckRoot.Boot.runKernelWindowCheck;
 
     /**
      * 登记 logo 和固件循环后通电。
+     * 先核对内核窗口。窗口和固件或沙盒重叠时抛出，主板不通电。
      * 主板画出 logo，设备坐稳后跑固件循环。Boot 不等待循环结束。
      */
     export function Run(): void {
+      runKernelWindowCheck();
       Motherboard.SetLogo(Logo);
       Motherboard.SetDrive(Drive);
+      Motherboard.SetLoader(Loader);
       Motherboard.Power();
     }
   }

@@ -1,0 +1,119 @@
+/* 堆。每块前面两个字：载荷位数，以及空闲链表的下一块。使用中的链字是 -1。只有入口分配。 */
+#LINK /start.obr
+import proc;
+import memory;
+
+deRfun alignNeed(long size): long {
+  long need = size;
+  if (need < 64L) {
+    need = 64L;
+  }
+  long extra = need % 64L;
+  if (extra != 0L) {
+    need = need + 64L - extra;
+  }
+  return need;
+}
+
+deRfun coalesce(Task* task): void {
+  long cursor = task.mm.freeHead;
+  while (cursor != 0L) {
+    long payload = memory::load64(cursor);
+    long next = memory::load64(cursor + 64L);
+    if (next != 0L && cursor + 128L + payload == next) {
+      long merged = payload + 128L + memory::load64(next);
+      memory::store64(merged, cursor);
+      memory::store64(memory::load64(next + 64L), cursor + 64L);
+    } else {
+      cursor = next;
+    }
+  }
+}
+
+deRfun insertFree(Task* task, long block): void {
+  long prev = 0L;
+  long cursor = task.mm.freeHead;
+  while (cursor != 0L && cursor < block) {
+    prev = cursor;
+    cursor = memory::load64(cursor + 64L);
+  }
+  memory::store64(cursor, block + 64L);
+  if (prev == 0L) {
+    task.mm.freeHead = block;
+  } else {
+    memory::store64(block, prev + 64L);
+  }
+  coalesce(task);
+}
+
+deRfun mmAlloc(long core, long size): long {
+  long index = taskFind(core);
+  if (index < 0L || size < 1L) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  long need = alignNeed(size);
+  long prev = 0L;
+  long cursor = task.mm.freeHead;
+  while (cursor != 0L) {
+    long span = memory::load64(cursor);
+    long next = memory::load64(cursor + 64L);
+    if (span >= need) {
+      long remain = span - need;
+      if (remain >= 192L) {
+        memory::store64(need, cursor);
+        long rest = cursor + 128L + need;
+        memory::store64(remain - 128L, rest);
+        memory::store64(next, rest + 64L);
+        if (prev == 0L) {
+          task.mm.freeHead = rest;
+        } else {
+          memory::store64(rest, prev + 64L);
+        }
+      } else if (prev == 0L) {
+        task.mm.freeHead = next;
+      } else {
+        memory::store64(next, prev + 64L);
+      }
+      memory::store64(-1L, cursor + 64L);
+      return cursor + 128L;
+    }
+    prev = cursor;
+    cursor = next;
+  }
+  long base = task.mm.brk;
+  long limit = task.mm.origin + task.mm.length;
+  if (base < task.mm.heap || base + 128L + need > limit) {
+    return 0L;
+  }
+  memory::store64(need, base);
+  memory::store64(-1L, base + 64L);
+  task.mm.brk = base + 128L + need;
+  return base + 128L;
+}
+
+deRfun mmFree(long core, long origin, long size): long {
+  long index = taskFind(core);
+  if (index < 0L || size < 1L) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  long need = alignNeed(size);
+  long block = origin - 128L;
+  if (block < task.mm.heap || block >= task.mm.brk) {
+    return 0L;
+  }
+  if (memory::load64(block + 64L) != -1L) {
+    return 0L;
+  }
+  /* 没切开的空闲块会比请求更大。地址已经定位这一块，位数只要不超过块本身。 */
+  long payload = memory::load64(block);
+  if (payload < need) {
+    return 0L;
+  }
+  if (block + 128L + need > task.mm.origin + task.mm.length) {
+    return 0L;
+  }
+  insertFree(task, block);
+  return 1L;
+}

@@ -8,7 +8,9 @@
  * 只在 CPU 线程里使用。核心 Worker 由主板创建；这里保存主板交来的端口。
  * 调度和 Pass / Take 不经过主板。Place 与 Add 只改核心上的寄存器。
  * Load / Store 把一条访存命令交给那个核心，由核心送给主板。
- * 不创建进程，也不解释一段程序。
+ * install 只替换另一颗已停止核心的指令序列，不创建进程。动态库必须用 attach 接到末尾。
+ * capture 与 restore 在 8 个槽里保存或放回寄存器、下一条、已装入序列和链接目录，也不创建进程。
+ * 映像用和开机相同的解码器解一次，执行时不再从那段地址取指。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -32,6 +34,7 @@ import { ZerOS as OpcodeRoot } from "../../Motherboard/Enum/MemoryOpcode";
 import { ZerOS as DirectionRoot } from "../../Motherboard/Enum/ChannelDirection";
 import { type ZerOS as CommandResultRoot } from "../Structure/CpuCommandResult";
 import { type ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
+import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -55,7 +58,13 @@ export namespace ZerOS {
       const memoryOpcodeDirection = OpcodeRoot.Hardware.Motherboard.memoryOpcodeDirection;
       const toMemoryOpcode = OpcodeRoot.Hardware.Motherboard.toMemoryOpcode;
       const ChannelDirectionRead = DirectionRoot.Hardware.Motherboard.ChannelDirectionRead;
+      const decodeProgramImage = BinaryRoot.Hardware.Cpu.decodeProgramImage;
+      type ProgramImage = BinaryRoot.Hardware.Cpu.ProgramImage;
+      type ProgramSymbol = BinaryRoot.Hardware.Cpu.ProgramSymbol;
+      const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const runtimePrefix = "[ZerOS.Hardware.Cpu.CpuRuntime]";
+      /** 一次装入最多读这么多个八位组。再长就拒绝，避免一条指令扫完整条地址线。 */
+      const InstallOctetLimit = 16777216;
 
       interface MountedCore {
         readonly port: MessagePort;
@@ -81,7 +90,44 @@ export namespace ZerOS {
         paceOrigin: number;
         /** 从起点起已经排过的拍数。 */
         paceIndex: number;
+        /** 装入后等着执行的指令序列。没有装入时是空。 */
+        installed: CpuInstruction[] | null;
+        /** 已经接到这颗核心上的导出。编号是当前序列里的指令下标。 */
+        exports: ProgramSymbol[];
+        /** 还没对上名字的调用。编号是要改的那条指令。 */
+        imports: ProgramSymbol[];
+        /** 正在把映像八位组从这颗核心读回来。 */
+        span: ((bytes: Uint8Array) => void) | null;
+        spanReject: ((error: Error) => void) | null;
+        /** 目标核心已经把 8 个寄存器写成 0。 */
+        wiped: (() => void) | null;
+        /** 目标核心已经按给出的 8 个整数写好寄存器。参数是这次是否写上。 */
+        planted: ((ok: boolean) => void) | null;
+        /** 读回这颗核心上别人看不见的已写入八位组、临时字和帧字。 */
+        cached: ((snap: PrivateOctets) => void) | null;
+        cacheReject: ((error: Error) => void) | null;
+        /** 私有写入已经按槽换上，或已经清掉。参数是这次是否写上。 */
+        cachePlanted: ((ok: boolean) => void) | null;
+        /** Schedule 拉起装入序列后的那一次执行。宿主用它等程序停下来。 */
+        started: Promise<void> | null;
+        /** 下次从这里继续。空表示从第一条重新开始。 */
+        resumeCursor: number | null;
+        /** 0 已经结束，1 时间片或 yield 停住，2 在等系统调用回复。 */
+        stopKind: number;
+        /** 0 表示一直跑到 halt。其它正数是每轮最多执行的指令数。 */
+        sliceQuota: number;
+        sliceLeft: number;
+        /** 负长度表示还不限制访存。 */
+        boundOrigin: bigint;
+        boundLength: bigint;
+        /** 系统调用的回复要写进这个寄存器。空表示没在等。 */
+        svcDest: number | null;
       }
+
+      /** 监督核。空表示还没有人调用 gate，这时装入和调度不设限。 */
+      let gateOrdinal: number | null = null;
+
+      const LineBits = BigInt(ConfigRoot.Hardware.Cpu.Config.LineBits);
 
       /** 这一份实现声明的核心数。挂载不得超过它。 */
       let declaredCoreCount = 0;
@@ -163,6 +209,21 @@ export namespace ZerOS {
         if (field === 7) {
           return BigInt(core.Executed);
         }
+        if (field === 8) {
+          return core.boundOrigin;
+        }
+        if (field === 9) {
+          return core.boundLength < 0n ? LineBits : core.boundLength;
+        }
+        if (field === 10) {
+          return core.resumeCursor === null ? -1n : BigInt(core.resumeCursor);
+        }
+        if (field === 11) {
+          return BigInt(core.stopKind);
+        }
+        if (field === 12) {
+          return BigInt(core.sliceQuota);
+        }
         fail("没有这种 CPU 字段");
       }
 
@@ -193,6 +254,24 @@ export namespace ZerOS {
           Executed: 0,
           paceOrigin: clockOrigin(),
           paceIndex: 0,
+          installed: null,
+          exports: [],
+          imports: [],
+          span: null,
+          spanReject: null,
+          wiped: null,
+          planted: null,
+          cached: null,
+          cacheReject: null,
+          cachePlanted: null,
+          started: null,
+          resumeCursor: null,
+          stopKind: 0,
+          sliceQuota: 0,
+          sliceLeft: 0,
+          boundOrigin: 0n,
+          boundLength: -1n,
+          svcDest: null,
         };
         port.onmessage = (event: MessageEvent): void => {
           onCoreMessage(core, event.data as unknown);
@@ -206,8 +285,9 @@ export namespace ZerOS {
         if (core === undefined) {
           return;
         }
-        const reject = core.pendingReject ?? core.fillReject;
+        const reject = core.pendingReject ?? core.fillReject ?? core.spanReject;
         cores.delete(ordinal);
+        sequenceBusy.delete(ordinal);
         if (reject !== null) {
           reject(new Error(`${runtimePrefix} 核心已被强制卸载`));
         }
@@ -260,6 +340,63 @@ export namespace ZerOS {
           resolve(cursor, executed);
           return;
         }
+        if (record["kind"] === "wiped") {
+          const resolve = core.wiped;
+          core.wiped = null;
+          if (resolve !== null) {
+            resolve();
+          }
+          return;
+        }
+        if (record["kind"] === "planted") {
+          const resolve = core.planted;
+          core.planted = null;
+          if (resolve !== null) {
+            resolve(record["ok"] === true);
+          }
+          return;
+        }
+        if (record["kind"] === "cached") {
+          const resolve = core.cached;
+          const reject = core.cacheReject;
+          core.cached = null;
+          core.cacheReject = null;
+          if (resolve === null || reject === null) {
+            return;
+          }
+          const snap = privateOctets(record);
+          if (snap === null) {
+            reject(new Error("capture 私有写入"));
+            return;
+          }
+          resolve(snap);
+          return;
+        }
+        if (record["kind"] === "cache-planted") {
+          const resolve = core.cachePlanted;
+          core.cachePlanted = null;
+          if (resolve !== null) {
+            resolve(record["ok"] === true);
+          }
+          return;
+        }
+        if (record["kind"] === "span") {
+          const resolve = core.span;
+          const reject = core.spanReject;
+          core.span = null;
+          core.spanReject = null;
+          if (resolve === null || reject === null) {
+            return;
+          }
+          const bytes = record["bytes"];
+          if (record["ok"] !== true || !(bytes instanceof Uint8Array)) {
+            const message = record["message"];
+            reject(new Error(typeof message === "string" ? message : `${runtimePrefix} install 访存`));
+            return;
+          }
+          resolve(bytes);
+          return;
+        }
         if (record["kind"] === "peek") {
           const resolve = core.peek;
           core.peek = null;
@@ -310,11 +447,34 @@ export namespace ZerOS {
         });
       }
 
-      /** 已挂载核心进入执行中。 */
+      /** 已挂载核心进入执行中。已装入且当前没在跑时，从第一条开始执行那段序列。 */
       export function schedule(ordinal: number): void {
         const core = requireOrdinal(ordinal);
         core.state = CoreStateRunning;
         core.port.postMessage({ kind: "state", running: true });
+        if (core.installed === null || sequenceBusy.has(ordinal)) {
+          return;
+        }
+        const steps = core.installed;
+        const run = runSequence(ordinal, steps);
+        core.started = run;
+        void run.catch((error: unknown): void => {
+          /* 核心 2 起是内核和服务。失败画到面板上。固件和沙盒仍走它们自己的失败路径。 */
+          if (ordinal < 2) {
+            return;
+          }
+          const message = error instanceof Error ? error.message : "装入的程序失败";
+          globalThis.postMessage({ kind: "fault", message });
+        });
+      }
+
+      /** 等最近一次由 Schedule 拉起的装入序列结束。没有拉起过就失败。 */
+      export function startedRun(ordinal: number): Promise<void> {
+        const started = requireOrdinal(ordinal).started;
+        if (started === null) {
+          fail("这颗核心没有开始执行装入的程序");
+        }
+        return started;
       }
 
       /** 已挂载核心进入停止。停止后不再执行命令。 */
@@ -322,6 +482,90 @@ export namespace ZerOS {
         const core = requireOrdinal(ordinal);
         core.state = CoreStateHalted;
         core.port.postMessage({ kind: "state", running: false });
+      }
+
+      /**
+       * 自检用过监督核之后把它交还。
+       * 客程序没有对应指令。内核稍后自己 gate。
+       */
+      export function clearGate(): void {
+        gateOrdinal = null;
+      }
+
+      function wakeGate(except: number): void {
+        if (gateOrdinal === null || gateOrdinal === except) {
+          return;
+        }
+        const gate = cores.get(gateOrdinal);
+        if (gate === undefined) {
+          return;
+        }
+        if (gate.installed === null || gate.resumeCursor === null || gate.stopKind !== 1) {
+          return;
+        }
+        if (gate.state !== CoreStateHalted || sequenceBusy.has(gateOrdinal)) {
+          return;
+        }
+        schedule(gateOrdinal);
+      }
+
+      function park(ordinal: number, cursor: number, kind: number): void {
+        const core = requireOrdinal(ordinal);
+        core.resumeCursor = cursor;
+        core.stopKind = kind;
+        halt(ordinal);
+        wakeGate(ordinal);
+      }
+
+      function supervisor(caller: number): boolean {
+        return gateOrdinal === null || caller === gateOrdinal;
+      }
+
+      function accessBits(opcode: number): number {
+        if (opcode === 1 || opcode === 2) {
+          return 1;
+        }
+        if (opcode === 3 || opcode === 4) {
+          return 8;
+        }
+        if (opcode === 5 || opcode === 6) {
+          return 16;
+        }
+        if (opcode === 7 || opcode === 8 || opcode === 11 || opcode === 12) {
+          return 32;
+        }
+        if (opcode === 9 || opcode === 10 || opcode === 13 || opcode === 14) {
+          return 64;
+        }
+        return 0;
+      }
+
+      function withinBound(ordinal: number, address: bigint, bits: number): void {
+        if (gateOrdinal === ordinal) {
+          return;
+        }
+        const core = requireOrdinal(ordinal);
+        if (core.boundLength < 0n) {
+          return;
+        }
+        if (bits < 1 || address < core.boundOrigin || address + BigInt(bits) > core.boundOrigin + core.boundLength) {
+          fail("bound 访存越界");
+        }
+      }
+
+      async function consume(ordinal: number, cursor: number, count: number): Promise<boolean> {
+        const core = requireOrdinal(ordinal);
+        if (core.sliceQuota <= 0 || count <= 0) {
+          return false;
+        }
+        core.sliceLeft -= count;
+        if (core.sliceLeft > 0) {
+          return false;
+        }
+        /* 按这颗核心自己的 Hz 等一拍，时间片才不会把宿主占满。100MHz 时不足 1 毫秒，不会挂起。 */
+        await waitPace(core);
+        park(ordinal, cursor, 1);
+        return true;
       }
 
       /** 读取运行状态。 */
@@ -468,6 +712,7 @@ export namespace ZerOS {
         ordinal: number,
         cursor: number,
         steps: readonly CpuInstruction[] | null,
+        limit: number,
       ): Promise<{ readonly cursor: number; readonly executed: number }> {
         const core = requireOrdinal(ordinal);
         if (core.state !== CoreStateRunning) {
@@ -481,11 +726,14 @@ export namespace ZerOS {
             resolve({ cursor: next, executed });
           };
           core.burstReject = reject;
-          if (steps === null) {
-            core.port.postMessage({ kind: "burst", cursor });
-            return;
-          }
-          core.port.postMessage({ kind: "burst", cursor, steps });
+          core.port.postMessage({
+            kind: "burst",
+            cursor,
+            limit,
+            boundOrigin: core.boundOrigin,
+            boundLength: core.boundLength,
+            ...(steps === null ? {} : { steps }),
+          });
         });
       }
 
@@ -540,6 +788,7 @@ export namespace ZerOS {
         if (memoryOpcode === null || memoryOpcodeDirection(memoryOpcode) !== ChannelDirectionRead) {
           fail("Load 只接受读操作码");
         }
+        withinBound(ordinal, address, accessBits(opcode));
         return beginCommand(ordinal, { kind: "load", opcode, address, register });
       }
 
@@ -555,6 +804,7 @@ export namespace ZerOS {
         if (memoryOpcode === null || memoryOpcodeDirection(memoryOpcode) === ChannelDirectionRead) {
           fail("Store 只接受写操作码");
         }
+        withinBound(ordinal, address, accessBits(opcode));
         return beginCommand(ordinal, { kind: "store", opcode, address, register });
       }
 
@@ -563,9 +813,554 @@ export namespace ZerOS {
         return beginCommand(ordinal, message);
       }
 
+      function installFail(text: string): never {
+        fail(`install ${text}`);
+      }
+
+      function attachFail(text: string): never {
+        fail(`attach ${text}`);
+      }
+
+      function copySymbols(items: readonly ProgramSymbol[]): ProgramSymbol[] {
+        const next: ProgramSymbol[] = [];
+        for (const item of items) {
+          next.push({ name: item.name, index: item.index });
+        }
+        return next;
+      }
+
+      function symbolIndex(items: readonly ProgramSymbol[], name: string): number | null {
+        for (const item of items) {
+          if (item.name === name) {
+            return item.index;
+          }
+        }
+        return null;
+      }
+
+      /** 跳转编号换成接入或整段换上之后的位置。不是跳转就拒绝，避免把数据指令改掉。 */
+      function retarget(step: CpuInstruction, target: number, reject: (text: string) => never): CpuInstruction {
+        if (step.Op === "call" || step.Op === "link") {
+          return { Op: step.Op, Register: step.Register, Target: target };
+        }
+        if (step.Op === "jz" || step.Op === "jnz") {
+          return { Op: step.Op, Condition: step.Condition, Target: target };
+        }
+        reject("重定位");
+      }
+
+      /** 数据立即数换成这颗核心窗口里的地址。place、load、store 以外的指令没有这份立即数。 */
+      function redata(step: CpuInstruction, value: bigint, reject: (text: string) => never): CpuInstruction {
+        if (step.Op === "load") {
+          return { Op: "load", Opcode: step.Opcode, Address: value, Register: step.Register };
+        }
+        if (step.Op === "store") {
+          return { Op: "store", Opcode: step.Opcode, Address: value, Register: step.Register };
+        }
+        if (step.Op === "place") {
+          return { Op: "place", Register: step.Register, Data: value };
+        }
+        reject("重定位");
+      }
+
+      function shiftedTarget(addend: bigint, base: number, limit: number, reject: (text: string) => never): number {
+        if (addend < 0n || addend > 0xffffffffn) {
+          reject("重定位");
+        }
+        const target = Number(addend) + base;
+        if (!Number.isSafeInteger(target) || target < 0 || target >= limit) {
+          reject("重定位");
+        }
+        return target;
+      }
+
+      function coreOrdinal(value: bigint): number | null {
+        if (value < 0n || value >= BigInt(declaredCoreCount)) {
+          return null;
+        }
+        const ordinal = Number(value);
+        if (!Number.isInteger(ordinal)) {
+          return null;
+        }
+        return ordinal;
+      }
+
+      /** 向正在执行的核心要一段八位组。核心先交自己写过的，其余再问主板。 */
+      function readSpan(ordinal: number, address: bigint, length: number): Promise<Uint8Array> {
+        const core = requireOrdinal(ordinal);
+        if (core.span !== null || core.pending !== null) {
+          installFail("访存");
+        }
+        return new Promise((resolve, reject): void => {
+          core.span = resolve;
+          core.spanReject = reject;
+          core.port.postMessage({ kind: "span", address, length });
+        });
+      }
+
+      /** 把目标核心的 8 个寄存器写成给出的整数。目标这时是停止的。 */
+      function plantRegisters(ordinal: number, words: readonly bigint[]): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.planted !== null || core.pending !== null || words.length !== RegisterCount) {
+          installFail("目标核心未停止");
+        }
+        return new Promise((resolve, reject): void => {
+          core.planted = (ok: boolean): void => {
+            if (ok) {
+              resolve();
+              return;
+            }
+            reject(new Error("restore 寄存器"));
+          };
+          core.port.postMessage({ kind: "plant", words: words.slice() });
+        });
+      }
+
+      /** 从核心的回答里取出私有八位组。对不上时返回空，调用方让这条指令失败。 */
+      function privateOctets(record: Record<string, unknown>): PrivateOctets | null {
+        const addresses = record["addresses"];
+        const bytes = record["bytes"];
+        const scratch = record["scratch"];
+        const frame = record["frame"];
+        if (!Array.isArray(addresses) || !Array.isArray(bytes) || addresses.length !== bytes.length) {
+          return null;
+        }
+        if (!Array.isArray(scratch) || typeof frame !== "bigint") {
+          return null;
+        }
+        const keys: bigint[] = [];
+        for (const item of addresses) {
+          if (typeof item !== "bigint") {
+            return null;
+          }
+          keys.push(item);
+        }
+        const octets: number[] = [];
+        for (const item of bytes) {
+          if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > 255) {
+            return null;
+          }
+          octets.push(item);
+        }
+        const words: bigint[] = [];
+        for (const item of scratch) {
+          if (typeof item !== "bigint") {
+            return null;
+          }
+          words.push(item);
+        }
+        return { addresses: keys, bytes: octets, scratch: words, frameHeld: record["frameHeld"] === true, frame };
+      }
+
+      /** 读出目标核心上别人看不见的写入。不改那颗核心。 */
+      function readPrivate(ordinal: number): Promise<PrivateOctets> {
+        const core = requireOrdinal(ordinal);
+        if (core.cached !== null || core.pending !== null) {
+          contextFail("capture", "目标核心未停止");
+        }
+        return new Promise((resolve, reject): void => {
+          core.cached = resolve;
+          core.cacheReject = reject;
+          core.port.postMessage({ kind: "cache" });
+        });
+      }
+
+      /** 用槽里的私有写入替换目标。核对失败时核心上的原表不动，这条指令失败。 */
+      function plantPrivate(ordinal: number, cache: PrivateOctets): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.cachePlanted !== null || core.pending !== null) {
+          contextFail("restore", "目标核心未停止");
+        }
+        return new Promise((resolve, reject): void => {
+          core.cachePlanted = (ok: boolean): void => {
+            if (ok) {
+              resolve();
+              return;
+            }
+            reject(new Error("restore 私有写入"));
+          };
+          core.port.postMessage({
+            kind: "cache-plant",
+            addresses: cache.addresses.slice(),
+            bytes: cache.bytes.slice(),
+            scratch: cache.scratch.slice(),
+            frameHeld: cache.frameHeld,
+            frame: cache.frame,
+          });
+        });
+      }
+
+      /** 装入或卸下成功后清掉上一份程序留下的私有写入。 */
+      function clearPrivate(ordinal: number, name: "install" | "release"): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.cachePlanted !== null || core.pending !== null) {
+          fail(`${name} 目标核心未停止`);
+        }
+        return new Promise((resolve, reject): void => {
+          core.cachePlanted = (ok: boolean): void => {
+            if (ok) {
+              resolve();
+              return;
+            }
+            reject(new Error(`${name} 私有写入`));
+          };
+          core.port.postMessage({ kind: "cache-clear" });
+        });
+      }
+
+      /** 全机 8 个上下文槽。槽留下寄存器、下一条、已装入序列，以及别人读不到的写入。槽不是进程。 */
+      const ContextSlotCount = 8;
+
+      /** 一颗核心上别人读不到的八位组、临时字和帧字。地址不换算到别的核心。 */
+      interface PrivateOctets {
+        addresses: readonly bigint[];
+        bytes: readonly number[];
+        scratch: readonly bigint[];
+        frameHeld: boolean;
+        frame: bigint;
+      }
+
+      interface HeldContext {
+        filled: boolean;
+        cursor: number | null;
+        registers: readonly bigint[];
+        steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
+        exports: ProgramSymbol[];
+        imports: ProgramSymbol[];
+        stopKind: number;
+        sliceQuota: number;
+        sliceLeft: number;
+        svcDest: number | null;
+        latch: bigint | null;
+        cache: PrivateOctets;
+      }
+
+      const emptyCache: PrivateOctets = { addresses: [], bytes: [], scratch: [], frameHeld: false, frame: 0n };
+
+      const contextSlots: HeldContext[] = [];
+      for (let index = 0; index < ContextSlotCount; index += 1) {
+        contextSlots.push({
+          filled: false,
+          cursor: null,
+          registers: [],
+          steps: [],
+          exports: [],
+          imports: [],
+          stopKind: 0,
+          sliceQuota: 0,
+          sliceLeft: 0,
+          svcDest: null,
+          latch: null,
+          cache: emptyCache,
+        });
+      }
+
+      function contextSlot(value: bigint): number | null {
+        if (value < 0n || value >= BigInt(ContextSlotCount)) {
+          return null;
+        }
+        const slot = Number(value);
+        if (!Number.isInteger(slot)) {
+          return null;
+        }
+        return slot;
+      }
+
+      function contextFail(name: string, text: string): never {
+        fail(`${name} ${text}`);
+      }
+
       /**
-       * 从第 0 条开始执行。jz / jnz 可以改下一条的编号。
-       * 遇到 halt 或序列结束就停止该核心。一条失败则不再取下一条。
+       * 把已停止核心抄进一个槽。
+       * 抄的是 8 个寄存器、留下的下一条、停止原因、时间片、当时装入的指令序列，以及别人读不到的已写入八位组。
+       * 不改目标核心，也不保存可访问范围和 Hz。
+       */
+      async function captureContext(caller: number, targetValue: bigint, slotValue: bigint): Promise<void> {
+        if (!supervisor(caller)) {
+          contextFail("capture", "不是监督核");
+        }
+        const target = coreOrdinal(targetValue);
+        const slot = contextSlot(slotValue);
+        if (target === null || target === caller || slot === null) {
+          contextFail("capture", "目标核心未停止");
+        }
+        const targetCore = cores.get(target);
+        if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
+          contextFail("capture", "目标核心未停止");
+        }
+        if (targetCore.installed === null) {
+          contextFail("capture", "目标没有程序");
+        }
+        const registers = await readImage(target);
+        const cache = await readPrivate(target);
+        const held = contextSlots[slot];
+        if (held === undefined) {
+          contextFail("capture", "槽号超出范围");
+        }
+        held.filled = true;
+        held.cursor = targetCore.resumeCursor;
+        held.registers = registers.slice();
+        held.steps = targetCore.installed.slice();
+        held.exports = copySymbols(targetCore.exports);
+        held.imports = copySymbols(targetCore.imports);
+        held.stopKind = targetCore.stopKind;
+        held.sliceQuota = targetCore.sliceQuota;
+        held.sliceLeft = targetCore.sliceLeft;
+        held.svcDest = targetCore.svcDest;
+        held.latch = targetCore.latch;
+        held.cache = {
+          addresses: cache.addresses.slice(),
+          bytes: cache.bytes.slice(),
+          scratch: cache.scratch.slice(),
+          frameHeld: cache.frameHeld,
+          frame: cache.frame,
+        };
+      }
+
+      /** 把槽放回已停止的核心。放回后仍然停止，要另一次 schedule 才继续。私有写入整份替换，地址不换算。 */
+      async function restoreContext(caller: number, targetValue: bigint, slotValue: bigint): Promise<void> {
+        if (!supervisor(caller)) {
+          contextFail("restore", "不是监督核");
+        }
+        const target = coreOrdinal(targetValue);
+        const slot = contextSlot(slotValue);
+        if (target === null || target === caller || slot === null) {
+          contextFail("restore", "目标核心未停止");
+        }
+        const targetCore = cores.get(target);
+        if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
+          contextFail("restore", "目标核心未停止");
+        }
+        const held = contextSlots[slot];
+        if (held?.filled !== true) {
+          contextFail("restore", "槽是空的");
+        }
+        await plantRegisters(target, held.registers);
+        await plantPrivate(target, held.cache);
+        targetCore.installed = held.steps.slice();
+        targetCore.exports = copySymbols(held.exports);
+        targetCore.imports = copySymbols(held.imports);
+        targetCore.resumeCursor = held.cursor;
+        targetCore.stopKind = held.stopKind;
+        targetCore.sliceQuota = held.sliceQuota;
+        targetCore.sliceLeft = held.sliceLeft;
+        targetCore.svcDest = held.svcDest;
+        targetCore.latch = held.latch;
+      }
+
+      /** 把目标核心的 8 个寄存器写成 0。目标这时是停止的，不能用 Place。 */
+      function wipeRegisters(ordinal: number): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.wiped !== null || core.pending !== null) {
+          installFail("目标核心未停止");
+        }
+        return new Promise((resolve): void => {
+          core.wiped = resolve;
+          core.port.postMessage({ kind: "wipe" });
+        });
+      }
+
+      /**
+       * 把一份动态库接到已停止核心的指令末尾。
+       * 库按 0 号核心的窗口编译。数据重定位加上 `目标编号 × 槽距`，跳转编号加上接入点。
+       * 库自己的导入必须已经能在这颗核心上找到，否则整次失败，目标保持原样。
+       * 同名导出已经都在时不再追加，结果寄存器写回原来的入口编号。
+       */
+      async function attachImage(caller: number, step: CpuInstruction & { Op: "attach" }): Promise<void> {
+        if (!supervisor(caller)) {
+          attachFail("不是监督核");
+        }
+        const targetValue = await peekRegister(caller, step.Core);
+        const address = await peekRegister(caller, step.Address);
+        const length = await peekRegister(caller, step.Length);
+        const target = coreOrdinal(targetValue);
+        if (target === null || target === caller) {
+          attachFail("目标核心未停止");
+        }
+        const targetCore = cores.get(target);
+        if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
+          attachFail("目标核心未停止");
+        }
+        if (targetCore.installed === null) {
+          attachFail("目标没有程序");
+        }
+        if (address < 0n || address % 8n !== 0n) {
+          attachFail("地址没有按 8 对齐");
+        }
+        if (length < 0n || length > BigInt(InstallOctetLimit)) {
+          attachFail("长度超出范围");
+        }
+        const octets = await readSpan(caller, address, Number(length));
+        let image: ProgramImage;
+        try {
+          image = decodeProgramImage(octets);
+        } catch {
+          attachFail("程序映像");
+        }
+        if (image.kind !== 2) {
+          attachFail("不是动态库");
+        }
+        const head = image.symbols[0];
+        if (head === undefined) {
+          attachFail("没有导出");
+        }
+        let known = 0;
+        for (const item of image.symbols) {
+          if (symbolIndex(targetCore.exports, item.name) !== null) {
+            known += 1;
+          }
+        }
+        if (known === image.symbols.length) {
+          const existing = symbolIndex(targetCore.exports, head.name);
+          if (existing === null) {
+            attachFail("没有符号");
+          }
+          await place(caller, step.Destination, BigInt(existing));
+          return;
+        }
+        if (known > 0) {
+          attachFail("重复导出");
+        }
+        const codeBase = targetCore.installed.length;
+        const library = image.steps.slice();
+        const limit = codeBase + library.length;
+        const bias = BigInt(target) * BigInt(RelocateSlotBits);
+        for (const reloc of image.relocs) {
+          const current = library[reloc.index];
+          if (current === undefined) {
+            attachFail("重定位");
+          }
+          if (reloc.field === 1) {
+            library[reloc.index] = retarget(current, shiftedTarget(reloc.addend, codeBase, limit, attachFail), attachFail);
+          } else {
+            const value = reloc.addend + bias;
+            if (value < -9223372036854775808n || value > 9223372036854775807n) {
+              attachFail("重定位");
+            }
+            library[reloc.index] = redata(current, value, attachFail);
+          }
+        }
+        for (const item of image.imports) {
+          const found = symbolIndex(targetCore.exports, item.name);
+          const current = library[item.index];
+          if (found === null || current === undefined) {
+            attachFail("没有符号");
+          }
+          library[item.index] = retarget(current, found, attachFail);
+        }
+        const prefix = targetCore.installed.slice();
+        const nextImports: ProgramSymbol[] = [];
+        for (const item of targetCore.imports) {
+          const found = symbolIndex(image.symbols, item.name);
+          if (found === null) {
+            nextImports.push({ name: item.name, index: item.index });
+            continue;
+          }
+          const current = prefix[item.index];
+          if (current === undefined) {
+            attachFail("没有符号");
+          }
+          prefix[item.index] = retarget(current, found + codeBase, attachFail);
+        }
+        const nextExports = copySymbols(targetCore.exports);
+        for (const item of image.symbols) {
+          nextExports.push({ name: item.name, index: item.index + codeBase });
+        }
+        targetCore.installed = prefix.concat(library);
+        targetCore.exports = nextExports;
+        targetCore.imports = nextImports;
+        await place(caller, step.Destination, BigInt(head.index + codeBase));
+      }
+
+      /**
+       * 把映像装到另一颗已停止的核心。
+       * 解码失败、重定位对不上，或目标不合格时，不改那颗核心的序列和寄存器。
+       * 版本 2 种类 1 的数据立即数先加上目标核心相对 0 号的窗口位移，再清寄存器。
+       * 动态库不能整段换上，必须用 attach 接到已有序列后面。
+       */
+      async function installImage(caller: number, targetValue: bigint, address: bigint, length: bigint): Promise<void> {
+        if (!supervisor(caller)) {
+          installFail("不是监督核");
+        }
+        const target = coreOrdinal(targetValue);
+        if (target === null || target === caller) {
+          installFail("目标核心未停止");
+        }
+        const targetCore = cores.get(target);
+        if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
+          installFail("目标核心未停止");
+        }
+        if (address < 0n || address % 8n !== 0n) {
+          installFail("地址没有按 8 对齐");
+        }
+        if (length < 0n || length > BigInt(InstallOctetLimit)) {
+          installFail("长度超出范围");
+        }
+        const octets = await readSpan(caller, address, Number(length));
+        let image: ProgramImage;
+        try {
+          image = decodeProgramImage(octets);
+        } catch {
+          installFail("程序映像");
+        }
+        if (image.kind === 2) {
+          installFail("动态库");
+        }
+        const placed = image.steps.slice();
+        const bias = BigInt(target) * BigInt(RelocateSlotBits);
+        for (const reloc of image.relocs) {
+          const current = placed[reloc.index];
+          if (current === undefined) {
+            installFail("重定位");
+          }
+          if (reloc.field === 1) {
+            placed[reloc.index] = retarget(current, shiftedTarget(reloc.addend, 0, placed.length, installFail), installFail);
+          } else if (reloc.field === 0) {
+            const value = reloc.addend + bias;
+            if (value < -9223372036854775808n || value > 9223372036854775807n) {
+              installFail("重定位");
+            }
+            placed[reloc.index] = redata(current, value, installFail);
+          } else {
+            installFail("重定位");
+          }
+        }
+        await wipeRegisters(target);
+        await clearPrivate(target, "install");
+        targetCore.installed = placed;
+        targetCore.exports = copySymbols(image.symbols);
+        targetCore.imports = copySymbols(image.imports);
+        targetCore.resumeCursor = null;
+        targetCore.stopKind = 0;
+        targetCore.svcDest = null;
+        targetCore.sliceQuota = 0;
+        targetCore.sliceLeft = 0;
+      }
+
+      /**
+       * 把已经解码的程序放上一颗停止的核心，不启动。
+       * 这是上电时的宿主交付，不是客程序的 install。
+       * 这一核还没有执行过，寄存器保持挂载时的 0，不必再走一轮清寄存器。
+       * 固件循环稍后用 schedule 启动它，读盘因此不必占住换红点的那一核。
+       */
+      export function seatImage(ordinal: number, steps: readonly CpuInstruction[]): void {
+        const targetCore = requireOrdinal(ordinal);
+        if (targetCore.state !== CoreStateHalted || sequenceBusy.has(ordinal)) {
+          fail("目标核心未停止");
+        }
+        targetCore.installed = steps.slice();
+        targetCore.exports = [];
+        targetCore.imports = [];
+        targetCore.resumeCursor = null;
+        targetCore.stopKind = 0;
+        targetCore.svcDest = null;
+        targetCore.sliceQuota = 0;
+        targetCore.sliceLeft = 0;
+      }
+
+      /**
+       * 有保留的下一条时从那里继续，否则从第 0 条开始。
+       * halt 或序列结束会忘掉下一条。yield、时间片和系统调用会留下下一条。
        * 不把每一行指令文本送出线程。页面收到后会直接丢掉，
        * 而每一条都会先占住 CPU 线程，再占住主板线程，键盘和访存就排在后面。
        */
@@ -577,13 +1372,35 @@ export namespace ZerOS {
           fail("这个核心正在执行另一段程序");
         }
         sequenceBusy.add(ordinal);
-        let cursor = 0;
+        const started = requireOrdinal(ordinal);
+        let cursor = started.resumeCursor ?? 0;
+        const deliver = started.svcDest;
+        started.resumeCursor = null;
+        started.stopKind = 0;
+        started.sliceLeft = started.sliceQuota;
         try {
         schedule(ordinal);
+        if (deliver !== null) {
+          if (started.latch === null) {
+            fail("syscall 还没有回复");
+          }
+          const reply = take(ordinal);
+          started.svcDest = null;
+          await place(ordinal, deliver, reply);
+        }
         while (cursor < steps.length) {
-          const span = await runBurst(ordinal, cursor, cursor === 0 ? steps : null);
+          if (started.sliceQuota > 0 && started.sliceLeft <= 0) {
+            await waitPace(started);
+            park(ordinal, cursor, 1);
+            return;
+          }
+          const limit = started.sliceQuota > 0 ? started.sliceLeft : 0;
+          const span = await runBurst(ordinal, cursor, cursor === 0 ? steps : null, limit);
           requireOrdinal(ordinal).Executed += span.executed;
           cursor = span.cursor;
+          if (await consume(ordinal, cursor, span.executed)) {
+            return;
+          }
           if (cursor >= steps.length) {
             break;
           }
@@ -598,7 +1415,126 @@ export namespace ZerOS {
             break;
           }
           if (step.Op === "halt") {
+            const stopping = requireOrdinal(ordinal);
+            stopping.resumeCursor = null;
+            stopping.stopKind = 0;
+            stopping.svcDest = null;
             halt(ordinal);
+            wakeGate(ordinal);
+            return;
+          }
+          if (step.Op === "yield") {
+            requireOrdinal(ordinal).Executed += 1;
+            park(ordinal, cursor + 1, 1);
+            return;
+          }
+          if (step.Op === "gate") {
+            if (gateOrdinal !== null) {
+              fail("gate 已经有监督核");
+            }
+            gateOrdinal = ordinal;
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "core") {
+            await place(ordinal, step.Register, BigInt(ordinal));
+          } else if (step.Op === "slice") {
+            const count = await peekRegister(ordinal, step.Count);
+            if (count < 0n || count > 0xffffffffn) {
+              fail("slice 超出范围");
+            }
+            const sliced = requireOrdinal(ordinal);
+            sliced.sliceQuota = Number(count);
+            sliced.sliceLeft = sliced.sliceQuota;
+            sliced.Executed += 1;
+            cursor += 1;
+            continue;
+          } else if (step.Op === "schedule") {
+            await waitPace(requireOrdinal(ordinal));
+            const target = coreOrdinal(await peekRegister(ordinal, step.Core));
+            if (target === null || !supervisor(ordinal)) {
+              fail("schedule 不是监督核");
+            }
+            const chosen = requireOrdinal(target);
+            if (chosen.installed === null) {
+              fail("schedule 没有程序");
+            }
+            if (chosen.svcDest !== null && chosen.latch === null) {
+              fail("schedule syscall 还没有回复");
+            }
+            if (!sequenceBusy.has(target)) {
+              schedule(target);
+            }
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "release") {
+            await waitPace(requireOrdinal(ordinal));
+            const target = coreOrdinal(await peekRegister(ordinal, step.Core));
+            if (target === null || target === ordinal || !supervisor(ordinal)) {
+              fail("release 不是监督核");
+            }
+            const chosen = requireOrdinal(target);
+            if (chosen.state !== CoreStateHalted || sequenceBusy.has(target)) {
+              fail("release 目标核心未停止");
+            }
+            chosen.installed = null;
+            chosen.exports = [];
+            chosen.imports = [];
+            chosen.resumeCursor = null;
+            chosen.stopKind = 0;
+            chosen.svcDest = null;
+            chosen.sliceQuota = 0;
+            chosen.sliceLeft = 0;
+            chosen.boundOrigin = 0n;
+            chosen.boundLength = 0n;
+            chosen.latch = null;
+            await wipeRegisters(target);
+            await clearPrivate(target, "release");
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "bound") {
+            const target = coreOrdinal(await peekRegister(ordinal, step.Core));
+            const origin = await peekRegister(ordinal, step.Origin);
+            const length = await peekRegister(ordinal, step.Length);
+            if (target === null || !supervisor(ordinal)) {
+              fail("bound 不是监督核");
+            }
+            const chosen = requireOrdinal(target);
+            if (target !== ordinal && (chosen.state !== CoreStateHalted || sequenceBusy.has(target))) {
+              fail("bound 目标核心未停止");
+            }
+            if (origin < 0n || length < 0n || origin + length < origin) {
+              fail("bound 范围不合法");
+            }
+            chosen.boundOrigin = origin;
+            chosen.boundLength = length;
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "pass") {
+            const target = coreOrdinal(await peekRegister(ordinal, step.Core));
+            const data = await peekRegister(ordinal, step.Value);
+            if (target === null) {
+              fail("pass 目标核心未挂载");
+            }
+            pass(ordinal, target, data);
+            if (target === gateOrdinal) {
+              wakeGate(ordinal);
+            }
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "take") {
+            const current = requireOrdinal(ordinal);
+            const found = current.latch === null ? 0n : 1n;
+            const data = current.latch === null ? 0n : take(ordinal);
+            await place(ordinal, step.Found, found);
+            await place(ordinal, step.Value, data);
+            current.Executed -= 1;
+          } else if (step.Op === "svc") {
+            if (gateOrdinal === null || gateOrdinal === ordinal) {
+              fail("syscall 没有监督核");
+            }
+            const service = await peekRegister(ordinal, step.Service);
+            if (service < 0n || service > 0xffffffffn) {
+              fail("syscall 服务号超出范围");
+            }
+            pass(ordinal, gateOrdinal, (BigInt(ordinal) << 32n) | service);
+            requireOrdinal(ordinal).svcDest = step.Destination;
+            requireOrdinal(ordinal).Executed += 1;
+            park(ordinal, cursor + 1, 2);
             return;
           }
           if (step.Op === "jz" || step.Op === "jnz") {
@@ -672,6 +1608,46 @@ export namespace ZerOS {
               port: step.Port,
               direction: step.Direction,
               data: step.Data,
+            });
+          } else if (step.Op === "fill") {
+            const address = await peekRegister(ordinal, step.Address);
+            const count = await peekRegister(ordinal, step.Count);
+            if (address < 0n || address % 8n !== 0n) {
+              fail("fill 地址没有对齐");
+            }
+            if (count < 0n || count > 4096n) {
+              fail("fill 长度超出");
+            }
+            if (count > 0n) {
+              withinBound(ordinal, address, Number(count) * 8);
+            }
+            await beginCommand(ordinal, {
+              kind: "fill",
+              destination: step.Destination,
+              port: step.Port,
+              address: step.Address,
+              count: step.Count,
+            });
+          } else if (step.Op === "carry") {
+            const address = await peekRegister(ordinal, step.Address);
+            const count = await peekRegister(ordinal, step.Count);
+            if (address < 0n || address % 8n !== 0n) {
+              fail("carry 地址没有对齐");
+            }
+            if (count < 0n || count > 268435456n) {
+              fail("carry 长度超出");
+            }
+            if (count > 0n) {
+              withinBound(ordinal, address, Number(count) * 8);
+            }
+            await beginCommand(ordinal, {
+              kind: "carry",
+              destination: step.Destination,
+              port: step.Port,
+              handle: step.Handle,
+              offset: step.Offset,
+              address: step.Address,
+              count: step.Count,
             });
           } else if (step.Op === "port.state") {
             await beginCommand(ordinal, { kind: "port-state", destination: step.Destination, port: step.Port });
@@ -804,14 +1780,45 @@ export namespace ZerOS {
             const kind = numberFromRegister(await peekRegister(ordinal, step.Kind));
             const value = metric(target, kind);
             await place(ordinal, step.Register, value);
+          } else if (step.Op === "install") {
+            await waitPace(requireOrdinal(ordinal));
+            const target = await peekRegister(ordinal, step.Core);
+            const address = await peekRegister(ordinal, step.Address);
+            const length = await peekRegister(ordinal, step.Length);
+            await installImage(ordinal, target, address, length);
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "attach") {
+            await waitPace(requireOrdinal(ordinal));
+            await attachImage(ordinal, step);
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "capture") {
+            await waitPace(requireOrdinal(ordinal));
+            const target = await peekRegister(ordinal, step.Core);
+            const slot = await peekRegister(ordinal, step.Slot);
+            await captureContext(ordinal, target, slot);
+            requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "restore") {
+            await waitPace(requireOrdinal(ordinal));
+            const target = await peekRegister(ordinal, step.Core);
+            const slot = await peekRegister(ordinal, step.Slot);
+            await restoreContext(ordinal, target, slot);
+            requireOrdinal(ordinal).Executed += 1;
           } else if (step.Op === "gpu.compose") {
             await gpu(ordinal, { kind: "gpu", gpuOp: "compose" });
-          } else {
+          } else if (step.Op === "gpu.present") {
             await gpu(ordinal, { kind: "gpu", gpuOp: "present" });
           }
           cursor += 1;
+          if (await consume(ordinal, cursor, 1)) {
+            return;
+          }
         }
+        const finished = requireOrdinal(ordinal);
+        finished.resumeCursor = null;
+        finished.stopKind = 0;
+        finished.svcDest = null;
         halt(ordinal);
+        wakeGate(ordinal);
         } catch (error: unknown) {
           /* 失败的那条命令可能还占着核心。先放开并停止，后面的异常画面或下一段客程序才能再调度它。 */
           const core = cores.get(ordinal);
@@ -824,6 +1831,13 @@ export namespace ZerOS {
             core.image = null;
             core.burst = null;
             core.burstReject = null;
+            core.span = null;
+            core.spanReject = null;
+            core.wiped = null;
+            core.planted = null;
+            core.cached = null;
+            core.cacheReject = null;
+            core.cachePlanted = null;
             if (core.state === CoreStateRunning) {
               halt(ordinal);
             }
@@ -847,6 +1861,11 @@ export namespace ZerOS {
           core.image = resolve;
           core.port.postMessage({ kind: "image" });
         });
+      }
+
+      /** 宿主读取 8 个寄存器。停止后也能读。不是一条 ZAP 指令。 */
+      export function readRegisters(ordinal: number): Promise<readonly bigint[]> {
+        return readImage(ordinal);
       }
 
       /**

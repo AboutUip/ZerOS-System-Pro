@@ -14,9 +14,11 @@ namespace {
 struct Slot {
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
+  TypeKind alt = TypeKind::None;
   int index = -1;
   int words = 1;
   std::string typeName;
+  std::string altName;
 };
 
 class Checker {
@@ -44,6 +46,8 @@ class Checker {
   const std::vector<StructDecl>* structs_ = nullptr;
   const std::vector<EnumDecl>* enums_ = nullptr;
   std::string retName_;
+  TypeKind retAlt_ = TypeKind::None;
+  std::string retAltName_;
   std::vector<std::map<std::string, Slot>> scopes_;
   int words_ = 0;
   int staticNext_ = 0;
@@ -111,8 +115,11 @@ class Checker {
     resolveType(function.ret, function.retPointee, function.retName);
     if (function.ret == TypeKind::Struct) fail("结构体不能作为返回值");
     if (function.ret == TypeKind::None) fail("没有类型 " + function.retName);
+    repair(function.ret, function.retPointee, function.retAlt, function.retName, function.retAltName);
     ret_ = function.ret;
     retName_ = function.retName;
+    retAlt_ = function.retAlt;
+    retAltName_ = function.retAltName;
     labels_.clear();
     collectLabels(function.body);
     for (Param& param : function.params) {
@@ -120,8 +127,13 @@ class Checker {
       if (param.type == TypeKind::Void) fail("参数不能是 void");
       if (param.type == TypeKind::Struct) fail("结构体不能作为参数 " + param.name);
       if (param.type == TypeKind::None) fail("没有类型 " + param.typeName);
+      repair(param.type, param.pointee, param.alt, param.typeName, param.altName);
       param.slot = alloc(param.name, param.type, param.pointee, 1);
-      if (Slot* saved = find(param.name)) saved->typeName = param.typeName;
+      if (Slot* saved = find(param.name)) {
+        saved->typeName = param.typeName;
+        saved->alt = param.alt;
+        saved->altName = param.altName;
+      }
     }
     for (Stmt& stmt : function.body) checkStmt(stmt);
     function.words = words_;
@@ -249,6 +261,114 @@ class Checker {
     fail("没有类型 " + typeName);
   }
 
+  TypeKind kindOfName(const std::string& name) {
+    if (name == "byte") return TypeKind::Byte;
+    if (name == "short") return TypeKind::Short;
+    if (name == "int") return TypeKind::Int;
+    if (name == "long") return TypeKind::Long;
+    if (name == "float") return TypeKind::Float;
+    if (name == "double") return TypeKind::Double;
+    if (name == "boolean") return TypeKind::Boolean;
+    if (name == "char") return TypeKind::Char;
+    if (name == "string") return TypeKind::String;
+    if (name.rfind("array[", 0) == 0) return TypeKind::Array;
+    if (name.rfind("list[", 0) == 0) return TypeKind::List;
+    if (name.rfind("set[", 0) == 0) return TypeKind::Set;
+    if (name.rfind("map[", 0) == 0) return TypeKind::Map;
+    if (!name.empty() && name.back() == '*') return TypeKind::Ptr;
+    if (const EnumDecl* decl = findEnum(name)) return decl->underlying;
+    if (findStruct(name) != nullptr) fail("结构体不能放进集合");
+    if (findClass(name) != nullptr) return TypeKind::Ptr;
+    fail("集合里没有类型 " + name);
+  }
+
+  std::string unwrap(const std::string& desc) const {
+    const std::size_t open = desc.find('[');
+    if (open == std::string::npos || desc.back() != ']') fail("集合类型不完整");
+    return desc.substr(open + 1, desc.size() - open - 2);
+  }
+
+  void splitMap(const std::string& inner, std::string& key, std::string& value) const {
+    int depth = 0;
+    for (std::size_t index = 0; index < inner.size(); index += 1) {
+      const char unit = inner[index];
+      if (unit == '[') depth += 1;
+      else if (unit == ']') depth -= 1;
+      else if (unit == ',' && depth == 0) {
+        key = inner.substr(0, index);
+        value = inner.substr(index + 1);
+        return;
+      }
+    }
+    fail("map 要写成 map[键, 值]");
+  }
+
+  void validateDesc(const std::string& desc) {
+    if (desc.rfind("array[", 0) == 0 || desc.rfind("list[", 0) == 0 || desc.rfind("set[", 0) == 0) {
+      validateDesc(unwrap(desc));
+      return;
+    }
+    if (desc.rfind("map[", 0) == 0) {
+      std::string key;
+      std::string value;
+      splitMap(unwrap(desc), key, value);
+      validateDesc(key);
+      validateDesc(value);
+      return;
+    }
+    (void)kindOfName(desc);
+  }
+
+  void repair(TypeKind kind, TypeKind& pointee, TypeKind& alt, std::string& typeName, std::string& altName) {
+    if (!collection(kind)) return;
+    validateDesc(typeName);
+    pointee = kindOfName(typeName);
+    if (kind == TypeKind::Map) {
+      validateDesc(altName);
+      alt = kindOfName(altName);
+    }
+  }
+
+  void fillDesc(Expr& expr, const std::string& desc) {
+    if (desc.rfind("array[", 0) == 0 || desc.rfind("list[", 0) == 0 || desc.rfind("set[", 0) == 0 || desc.rfind("map[", 0) == 0) {
+      if (desc.rfind("array[", 0) == 0) expr.type = TypeKind::Array;
+      else if (desc.rfind("list[", 0) == 0) expr.type = TypeKind::List;
+      else if (desc.rfind("set[", 0) == 0) expr.type = TypeKind::Set;
+      else expr.type = TypeKind::Map;
+      if (expr.type == TypeKind::Map) {
+        splitMap(unwrap(desc), expr.typeName, expr.altName);
+        expr.pointee = kindOfName(expr.typeName);
+        expr.alt = kindOfName(expr.altName);
+      } else {
+        expr.typeName = unwrap(desc);
+        expr.pointee = kindOfName(expr.typeName);
+        expr.alt = TypeKind::None;
+        expr.altName.clear();
+      }
+      return;
+    }
+    expr.alt = TypeKind::None;
+    expr.altName.clear();
+    expr.pointee = TypeKind::None;
+    expr.type = kindOfName(desc);
+    expr.typeName.clear();
+    if (findEnum(desc) != nullptr || findClass(desc) != nullptr) expr.typeName = desc;
+    if (expr.type == TypeKind::Ptr && desc.size() > 1 && desc.back() == '*') expr.typeName = desc.substr(0, desc.size() - 1);
+  }
+
+  bool sameCollection(const Expr& expr, TypeKind kind, const std::string& typeName, const std::string& altName) const {
+    return expr.type == kind && expr.typeName == typeName && expr.altName == altName;
+  }
+
+  bool fits(const Expr& expr, TypeKind kind, const std::string& typeName, TypeKind alt, const std::string& altName) const {
+    (void)alt;
+    if (collection(kind)) {
+      if (expr.kind == Expr::Kind::LitNull) return true;
+      return sameCollection(expr, kind, typeName, altName);
+    }
+    return expr.type == kind || canWiden(expr.type, kind);
+  }
+
   void layoutEnums(const std::vector<EnumDecl>& enums) {
     for (const EnumDecl& decl : enums) {
       if (decl.underlying != TypeKind::Int && decl.underlying != TypeKind::Long) fail("枚举底层类型只能是 int 或 long");
@@ -266,6 +386,7 @@ class Checker {
       int words = 0;
       for (Field& field : decl.fields) {
         resolveType(field.type, field.pointee, field.typeName);
+        repair(field.type, field.pointee, field.alt, field.typeName, field.altName);
         if (field.type == TypeKind::Void || field.type == TypeKind::None) fail("字段类型不对 " + field.name);
         if (field.type == TypeKind::Struct) {
           StructDecl* nested = findStructMut(structs, field.typeName);
@@ -289,6 +410,7 @@ class Checker {
     for (ClassDecl& decl : classes) {
       for (Field& field : decl.fields) {
         resolveType(field.type, field.pointee, field.typeName);
+        repair(field.type, field.pointee, field.alt, field.typeName, field.altName);
         if (field.type == TypeKind::Struct) fail("类字段不能内嵌结构体 " + field.name);
         if (field.type == TypeKind::Void || field.type == TypeKind::None) fail("字段类型不对 " + field.name);
       }
@@ -336,6 +458,7 @@ class Checker {
       }
       const bool hasInit = !(stmt.expr.kind == Expr::Kind::LitInt && stmt.expr.type == TypeKind::None && stmt.expr.kids.empty() && stmt.expr.integer == 0 && stmt.expr.text.empty());
       resolveType(stmt.type, stmt.pointee, stmt.typeName);
+      repair(stmt.type, stmt.pointee, stmt.alt, stmt.typeName, stmt.altName);
       if (stmt.type == TypeKind::Void) fail("变量不能是 void");
       if (stmt.type == TypeKind::None) fail("没有类型 " + stmt.typeName);
       if (stmt.type == TypeKind::Struct && stmt.isStatic) fail("结构体不能是 static");
@@ -344,13 +467,17 @@ class Checker {
       stmt.words = count;
       if (hasInit) {
         checkExpr(stmt.expr);
-        if (!canWiden(stmt.expr.type, stmt.type) && stmt.expr.type != stmt.type) {
-          fail(std::string("不能把 ") + nameOf(stmt.expr.type) + " 赋给 " + nameOf(stmt.type));
+        if (!fits(stmt.expr, stmt.type, stmt.typeName, stmt.alt, stmt.altName)) {
+          fail(std::string("不能把 ") + typeText(stmt.expr.type, stmt.expr.typeName, stmt.expr.alt, stmt.expr.altName) + " 赋给 " + typeText(stmt.type, stmt.typeName, stmt.alt, stmt.altName));
         }
         rejectForeignEnum(stmt.typeName, stmt.type, stmt.expr.typeName, stmt.expr.type);
       }
       stmt.slot = stmt.isStatic ? allocStatic(stmt.name, stmt.type, stmt.pointee) : alloc(stmt.name, stmt.type, stmt.pointee, count);
-      if (Slot* saved = find(stmt.name)) saved->typeName = stmt.typeName;
+      if (Slot* saved = find(stmt.name)) {
+        saved->typeName = stmt.typeName;
+        saved->alt = stmt.alt;
+        saved->altName = stmt.altName;
+      }
       return;
     }
     if (stmt.kind == Stmt::Kind::For) {
@@ -399,8 +526,8 @@ class Checker {
       }
       if (!hasValue) fail("函数必须返回值");
       checkExpr(stmt.expr);
-      if (stmt.expr.type != ret_ && !canWiden(stmt.expr.type, ret_)) {
-        fail(std::string("返回类型是 ") + nameOf(stmt.expr.type) + "，函数要求 " + nameOf(ret_));
+      if (!fits(stmt.expr, ret_, retName_, retAlt_, retAltName_)) {
+        fail(std::string("返回类型是 ") + typeText(stmt.expr.type, stmt.expr.typeName, stmt.expr.alt, stmt.expr.altName) + "，函数要求 " + typeText(ret_, retName_, retAlt_, retAltName_));
       }
       rejectForeignEnum(retName_, ret_, stmt.expr.typeName, stmt.expr.type);
       return;
@@ -429,6 +556,10 @@ class Checker {
               expr.kids.push_back(std::move(object));
               expr.integer = field.offset;
               expr.type = field.type;
+              expr.pointee = field.pointee;
+              expr.alt = field.alt;
+              expr.typeName = field.typeName;
+              expr.altName = field.altName;
               return;
             }
           }
@@ -437,7 +568,9 @@ class Checker {
       }
       expr.type = slot->type;
       expr.pointee = slot->pointee;
+      expr.alt = slot->alt;
       expr.typeName = slot->typeName;
+      expr.altName = slot->altName;
       expr.integer = slot->index;
       return;
     }
@@ -451,6 +584,16 @@ class Checker {
       return;
     }
     if (expr.kind == Expr::Kind::New) {
+      if (expr.integer == -6) {
+        for (Expr& argument : expr.kids) checkExpr(argument);
+        repair(expr.type, expr.pointee, expr.alt, expr.typeName, expr.altName);
+        if (expr.type == TypeKind::Array) {
+          if (expr.kids.size() != 1 || !integral(expr.kids[0].type)) fail("array 的 new 要一个整数长度");
+        } else if (!expr.kids.empty()) {
+          fail("这个集合的 new 不接受参数");
+        }
+        return;
+      }
       const ClassDecl* decl = findClass(expr.text);
       if (decl == nullptr) fail("没有类 " + expr.text);
       expr.type = TypeKind::Ptr;
@@ -517,7 +660,9 @@ class Checker {
           expr.integer = field.offset;
           expr.type = field.type;
           expr.pointee = field.pointee;
+          expr.alt = field.alt;
           expr.typeName = field.typeName;
+          expr.altName = field.altName;
           return;
         }
         fail("没有字段 " + expr.text);
@@ -530,13 +675,79 @@ class Checker {
         expr.integer = field.offset;
         expr.type = field.type;
         expr.pointee = field.pointee;
+        expr.alt = field.alt;
         expr.typeName = field.typeName;
+        expr.altName = field.altName;
         return;
       }
       fail("没有字段 " + expr.text);
     }
     if (expr.kind == Expr::Kind::Call) {
       for (Expr& argument : expr.kids) checkExpr(argument);
+      if (expr.integer == -4 && !expr.kids.empty() && collection(expr.kids[0].type)) {
+        const Expr& object = expr.kids[0];
+        const std::string& method = expr.text;
+        auto element = [&](Expr& target) { fillDesc(target, object.type == TypeKind::Map ? object.altName : object.typeName); };
+        if (object.type == TypeKind::List && method == "push" && expr.kids.size() == 2) {
+          Expr want;
+          element(want);
+          if (!fits(expr.kids[1], want.type, want.typeName, want.alt, want.altName)) fail("push 的元素类型不一致");
+          expr.integer = -20;
+          expr.type = TypeKind::Void;
+          return;
+        }
+        if (object.type == TypeKind::List && method == "pop" && expr.kids.size() == 1) {
+          expr.integer = -21;
+          element(expr);
+          return;
+        }
+        const bool keyed = object.type == TypeKind::Set || object.type == TypeKind::Map;
+        if (keyed && method == "has" && expr.kids.size() == 2) {
+          Expr want;
+          fillDesc(want, object.typeName);
+          if (!fits(expr.kids[1], want.type, want.typeName, want.alt, want.altName)) fail("has 的键类型不一致");
+          expr.integer = -22;
+          expr.type = TypeKind::Boolean;
+          return;
+        }
+        if (object.type == TypeKind::Set && method == "add" && expr.kids.size() == 2) {
+          Expr want;
+          fillDesc(want, object.typeName);
+          if (!fits(expr.kids[1], want.type, want.typeName, want.alt, want.altName)) fail("add 的元素类型不一致");
+          expr.integer = -23;
+          expr.type = TypeKind::Void;
+          return;
+        }
+        if (object.type == TypeKind::Map && method == "put" && expr.kids.size() == 3) {
+          Expr key;
+          Expr value;
+          fillDesc(key, object.typeName);
+          fillDesc(value, object.altName);
+          if (!fits(expr.kids[1], key.type, key.typeName, key.alt, key.altName) || !fits(expr.kids[2], value.type, value.typeName, value.alt, value.altName)) {
+            fail("put 的键或值类型不一致");
+          }
+          expr.integer = -24;
+          expr.type = TypeKind::Void;
+          return;
+        }
+        if (keyed && method == "remove" && expr.kids.size() == 2) {
+          Expr want;
+          fillDesc(want, object.typeName);
+          if (!fits(expr.kids[1], want.type, want.typeName, want.alt, want.altName)) fail("remove 的键类型不一致");
+          expr.integer = -25;
+          expr.type = TypeKind::Void;
+          return;
+        }
+        if (object.type == TypeKind::Map && method == "get" && expr.kids.size() == 2) {
+          Expr key;
+          fillDesc(key, object.typeName);
+          if (!fits(expr.kids[1], key.type, key.typeName, key.alt, key.altName)) fail("get 的键类型不一致");
+          expr.integer = -26;
+          element(expr);
+          return;
+        }
+        fail("没有这种集合操作 " + method);
+      }
       if (expr.integer == -4) {
         if (expr.kids.empty() || expr.kids[0].typeName.empty()) fail("成员调用的对象没有类");
         expr.text = expr.kids[0].typeName + "::" + expr.text;
@@ -629,7 +840,7 @@ class Checker {
           }
         }
       }
-      if (chosen < 0 && expr.text == "length" && expr.kids.size() == 1 && expr.kids[0].type == TypeKind::String) {
+      if (chosen < 0 && expr.text == "length" && expr.kids.size() == 1 && (expr.kids[0].type == TypeKind::String || collection(expr.kids[0].type))) {
         expr.integer = -2;
         expr.type = TypeKind::Int;
         return;
@@ -651,10 +862,13 @@ class Checker {
       expr.type = (*functions_)[static_cast<std::size_t>(chosen)].ret;
       expr.typeName = (*functions_)[static_cast<std::size_t>(chosen)].retName;
       expr.pointee = (*functions_)[static_cast<std::size_t>(chosen)].retPointee;
+      expr.alt = (*functions_)[static_cast<std::size_t>(chosen)].retAlt;
+      expr.altName = (*functions_)[static_cast<std::size_t>(chosen)].retAltName;
       return;
     }
     if (expr.kind == Expr::Kind::Cast) {
       checkExpr(expr.kids[0]);
+      resolveType(expr.type, expr.pointee, expr.typeName);
       if (expr.type != TypeKind::Ptr) fail("这一版只把整数转成指针");
       if (!integral(expr.kids[0].type) && expr.kids[0].type != TypeKind::Long) fail("指针转换的来源必须是整数");
       return;
@@ -700,13 +914,15 @@ class Checker {
     if (expr.kind == Expr::Kind::Assign) {
       checkExpr(expr.kids[0]);
       checkExpr(expr.kids[1]);
-      if (expr.kids[0].kind != Expr::Kind::Name && expr.kids[0].kind != Expr::Kind::Member && !(expr.kids[0].kind == Expr::Kind::Unary && expr.kids[0].op == Tok::Star)) fail("赋值的左边必须是变量、字段或 *指针");
+      const bool index = expr.kids[0].kind == Expr::Kind::Binary && expr.kids[0].op == Tok::LBracket;
+      if (expr.kids[0].kind != Expr::Kind::Name && expr.kids[0].kind != Expr::Kind::Member && !index && !(expr.kids[0].kind == Expr::Kind::Unary && expr.kids[0].op == Tok::Star)) fail("赋值的左边必须是变量、字段、下标或 *指针");
+      if (index && expr.kids[0].kids[0].type != TypeKind::Array && expr.kids[0].kids[0].type != TypeKind::List) fail("只有 array 和 list 能按下标赋值");
       if (expr.op == Tok::Assign) {
         const TypeKind dest = expr.kids[0].type;
         if (dest == TypeKind::Struct || expr.kids[1].type == TypeKind::Struct) {
           if (dest != TypeKind::Struct || expr.kids[1].type != TypeKind::Struct || expr.kids[0].typeName != expr.kids[1].typeName) fail("结构体赋值必须是同一类型");
           if (expr.kids[0].kind != Expr::Kind::Name || expr.kids[1].kind != Expr::Kind::Name) fail("结构体整值赋值只接受变量");
-        } else if (expr.kids[1].type != dest && !canWiden(expr.kids[1].type, dest) && !(dest == TypeKind::Ptr && integral(expr.kids[1].type))) {
+        } else if (!fits(expr.kids[1], dest, expr.kids[0].typeName, expr.kids[0].alt, expr.kids[0].altName) && !(dest == TypeKind::Ptr && integral(expr.kids[1].type))) {
           fail("赋值类型不一致");
         }
         rejectForeignEnum(expr.kids[0].typeName, dest, expr.kids[1].typeName, expr.kids[1].type);
@@ -732,9 +948,15 @@ class Checker {
     const TypeKind left = expr.kids[0].type;
     const TypeKind right = expr.kids[1].type;
     if (expr.op == Tok::LBracket) {
-      if (left != TypeKind::String || !integral(right)) fail("下标只能用于字符串和整数");
-      expr.type = TypeKind::Char;
-      return;
+      if (left == TypeKind::String && integral(right)) {
+        expr.type = TypeKind::Char;
+        return;
+      }
+      if ((left == TypeKind::Array || left == TypeKind::List) && integral(right)) {
+        fillDesc(expr, expr.kids[0].typeName);
+        return;
+      }
+      fail("下标只能用于字符串、array、list，下标必须是整数");
     }
     if (expr.op == Tok::And || expr.op == Tok::Or) {
       if (left == TypeKind::Void || right == TypeKind::Void) fail("逻辑运算不能是 void");
@@ -742,8 +964,14 @@ class Checker {
       return;
     }
     if (expr.op == Tok::Eq || expr.op == Tok::Ne) {
+      const bool leftNull = expr.kids[0].kind == Expr::Kind::LitNull;
+      const bool rightNull = expr.kids[1].kind == Expr::Kind::LitNull;
+      if ((collection(left) && (rightNull || sameCollection(expr.kids[1], left, expr.kids[0].typeName, expr.kids[0].altName))) || (collection(right) && leftNull)) {
+        expr.type = TypeKind::Boolean;
+        return;
+      }
       if (left != right || (!integral(left) && left != TypeKind::Float && left != TypeKind::Double && left != TypeKind::Char && left != TypeKind::String)) {
-        fail("== 的两侧类型必须相同，并且是数值、char 或 string");
+        fail("== 的两侧类型必须相同，并且是数值、char、string 或同一个集合");
       }
       expr.type = TypeKind::Boolean;
       return;
@@ -783,10 +1011,11 @@ std::string signatureOf(const Function& function) {
   std::string text = function.name + "(";
   for (std::size_t index = 0; index < function.params.size(); index += 1) {
     if (index > 0) text += ",";
-    text += nameOf(function.params[index].type);
+    const Param& param = function.params[index];
+    text += typeText(param.type, param.typeName, param.alt, param.altName);
   }
   text += "):";
-  text += nameOf(function.ret);
+  text += typeText(function.ret, function.retName, function.retAlt, function.retAltName);
   return text;
 }
 
@@ -895,14 +1124,31 @@ Unit combine(std::vector<SourceFile> sources, const std::vector<HeaderFile>& hea
   }
   for (const HeaderFile& header : headers) {
     for (const Function& decl : header.decls) {
-      if (opcodeSpec(decl.name) == nullptr && !libraryFunction(decl)) continue;
+      const bool opcode = opcodeSpec(decl.name) != nullptr;
+      const bool library = libraryFunction(decl);
+      bool wanted = false;
+      if (!opcode && !library) {
+        for (const SourceFile& source : sources) {
+          if (!source.dyn) continue;
+          for (const std::string& imported : source.imports) {
+            if (imported == header.name) wanted = true;
+          }
+        }
+        if (!wanted) continue;
+      }
+      bool defined = false;
       for (const Function& function : unit.functions) {
-        if (sameSignature(function, decl)) fail(libraryFunction(decl) ? "库函数不能再写函数体 " + decl.name : "指令不能再写函数体 " + decl.name);
+        if (sameSignature(function, decl)) defined = true;
+      }
+      if (defined) {
+        if (opcode || library) fail(library ? "库函数不能再写函数体 " + decl.name : "指令不能再写函数体 " + decl.name);
+        continue;
       }
       Function function = decl;
       function.origin = header.name;
-      if (libraryFunction(decl)) function.opcode = "library";
-      else bindOpcode(function);
+      if (library) function.opcode = "library";
+      else if (opcode) bindOpcode(function);
+      else function.imported = true;
       unit.functions.push_back(std::move(function));
     }
   }

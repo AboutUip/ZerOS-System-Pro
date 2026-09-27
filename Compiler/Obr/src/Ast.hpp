@@ -15,8 +15,12 @@ struct Expr {
   bool prefix = true;
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
+  /** map 的值类型。其它类型不用。 */
+  TypeKind alt = TypeKind::None;
   std::string text;
   std::string typeName;
+  /** map 的值描述，或空。集合的 typeName 是元素或键的描述。 */
+  std::string altName;
   long long integer = 0;
   double number = 0;
   std::vector<Expr> kids;
@@ -27,8 +31,10 @@ struct Stmt {
   Kind kind = Kind::Nop;
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
+  TypeKind alt = TypeKind::None;
   std::string name;
   std::string typeName;
+  std::string altName;
   int slot = -1;
   int words = 1;
   bool isStatic = false;
@@ -40,16 +46,20 @@ struct Stmt {
 struct Param {
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
+  TypeKind alt = TypeKind::None;
   std::string name;
   std::string typeName;
+  std::string altName;
   int slot = -1;
 };
 
 struct Field {
   TypeKind type = TypeKind::None;
   TypeKind pointee = TypeKind::None;
+  TypeKind alt = TypeKind::None;
   std::string name;
   std::string typeName;
+  std::string altName;
   int offset = 0;
   int words = 1;
 };
@@ -80,11 +90,15 @@ struct EnumDecl {
 struct Function {
   TypeKind ret = TypeKind::Void;
   TypeKind retPointee = TypeKind::None;
+  TypeKind retAlt = TypeKind::None;
   std::string retName;
+  std::string retAltName;
   std::string name;
   std::string label;
   std::string origin;
   bool exported = false;
+  /** 头文件里有声明、这份程序里没有函数体。调用先跳到 halt，等 attach 改成库里的编号。 */
+  bool imported = false;
   bool asyncFun = false;
   bool callfunNone = false;
   std::string owner;
@@ -100,8 +114,14 @@ struct Function {
   int words = 0;
 };
 
+struct LinkName {
+  std::string name;
+  std::string label;
+};
+
 struct SourceFile {
   std::string path;
+  bool dyn = false;
   std::vector<std::string> imports;
   std::vector<std::string> links;
   std::vector<Function> functions;
@@ -118,6 +138,10 @@ struct HeaderFile {
 };
 
 struct Unit {
+  bool shared = false;
+  bool pie = false;
+  std::vector<LinkName> exports;
+  std::vector<LinkName> imports;
   std::vector<Function> functions;
   std::vector<ClassDecl> classes;
   std::vector<StructDecl> structs;

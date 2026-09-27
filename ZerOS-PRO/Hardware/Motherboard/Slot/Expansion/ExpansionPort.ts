@@ -181,8 +181,9 @@ export namespace ZerOS {
         /**
          * 在已引导的口上交换一块八位组。
          * 宿主不查看内容。长度或方向不合法时不调用设备。
+         * 设备可以返回 Promise。忙标志会留到它结束，避免同一口重叠。
          */
-        export function Exchange(index: number, direction: number, payload: Uint8Array): Uint8Array {
+        export function Exchange(index: number, direction: number, payload: Uint8Array): Uint8Array | Promise<Uint8Array> {
           requireIndex(index);
           const seated = ports[index];
           if (seated?.state !== PortStateBooted) {
@@ -198,12 +199,71 @@ export namespace ZerOS {
             fail("这个扩展口还有一次交换没结束");
           }
           seated.busy = true;
+          let result: Uint8Array | Promise<Uint8Array>;
           try {
-            const result = seated.provider.Exchange(direction, payload);
+            result = seated.provider.Exchange(direction, payload);
+          } catch (error: unknown) {
+            seated.busy = false;
+            throw error;
+          }
+          if (result instanceof Promise) {
+            return result.then((value: Uint8Array) => {
+              if (value.length > PayloadMaxLength) {
+                fail("设备返回的载荷长于 4096");
+              }
+              return value;
+            }).finally(() => {
+              seated.busy = false;
+            });
+          }
+          try {
             if (result.length > PayloadMaxLength) {
               fail("设备返回的载荷长于 4096");
             }
             return result;
+          } finally {
+            seated.busy = false;
+          }
+        }
+
+        /**
+         * 一次取走该口已经准备好的应答。
+         * 插头没有 Drain 时返回 null。忙着交换时失败，不改会话。
+         */
+        export function Drain(index: number, max: number): { readonly status: number; readonly bytes: Uint8Array } | null {
+          requireIndex(index);
+          const seated = ports[index];
+          if (seated?.state !== PortStateBooted) {
+            fail("这个扩展口还不能交换数据");
+          }
+          if (seated.busy) {
+            fail("这个扩展口还有一次交换没结束");
+          }
+          if (seated.provider.Drain === undefined) {
+            return null;
+          }
+          return seated.provider.Drain(max);
+        }
+
+        /**
+         * 按句柄一次读取。插头没有 Carry 时返回 null。
+         * 忙着交换时失败。进行中占住这个口，结束时放开。
+         */
+        export async function Carry(index: number, handle: number, offset: number, count: number): Promise<{ readonly status: number; readonly bytes: Uint8Array } | null> {
+          requireIndex(index);
+          const seated = ports[index];
+          if (seated?.state !== PortStateBooted) {
+            fail("这个扩展口还不能交换数据");
+          }
+          if (seated.busy) {
+            fail("这个扩展口还有一次交换没结束");
+          }
+          if (seated.provider.Carry === undefined) {
+            return null;
+          }
+          seated.busy = true;
+          try {
+            return await seated.provider.Carry(handle, offset, count);
           } finally {
             seated.busy = false;
           }

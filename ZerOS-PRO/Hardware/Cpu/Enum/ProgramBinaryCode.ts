@@ -26,8 +26,14 @@ export namespace ZerOS {
       export const ProgramBinaryMagic2 = 0x42;
       export const ProgramBinaryMagic3 = 0x31;
 
-      /** 这一版布局。其它版本必须拒绝，不能按旧编号去猜。 */
+      /**
+       * 版本 1 只有指令，读完必须正好用尽字节。
+       * 版本 2 在这些指令之后还有链接目录。编码器往返仍写版本 1。
+       */
       export const ProgramBinaryVersion = 1;
+
+      /** 带导出、导入和重定位的映像。 */
+      export const ProgramBinaryVersionLink = 2;
 
       /** 1 表示文件里的多字节整数是小端。 */
       export const ProgramBinaryLittleEndian = 1;
@@ -120,6 +126,40 @@ export namespace ZerOS {
       /** 内存通道操作码，再加两个寄存器。 */
       export const ProgramBinaryLdi = 63;
       export const ProgramBinarySti = 64;
+
+      /** 三个寄存器：目标核心、线性位元地址、八位组长度。 */
+      export const ProgramBinaryInstall = 65;
+
+      /** 一个寄存器：要调度的核心。 */
+      export const ProgramBinarySchedule = 66;
+      /** 一个寄存器：本核心的时间片，0 表示直到停机。 */
+      export const ProgramBinarySlice = 67;
+      /** 两个寄存器：目标核心、要送出的整数。 */
+      export const ProgramBinaryPass = 68;
+      /** 两个寄存器：是否取到、取到的整数。 */
+      export const ProgramBinaryTake = 69;
+      /** 两个寄存器：回复目的、服务号。 */
+      export const ProgramBinarySvc = 70;
+      /** 三个寄存器：核心、起点、位数。 */
+      export const ProgramBinaryBound = 71;
+      /** 没有操作数。当前核心成为监督核。 */
+      export const ProgramBinaryGate = 72;
+      /** 一个寄存器：要卸下的核心。 */
+      export const ProgramBinaryRelease = 73;
+      /** 没有操作数。停在下一条，寄存器保留。 */
+      export const ProgramBinaryYield = 74;
+      /** 一个寄存器：写入本核心编号。 */
+      export const ProgramBinaryCore = 75;
+      /** 四个寄存器：目的、扩展口、位元地址、八位组个数。 */
+      export const ProgramBinaryFill = 76;
+      /** 六个寄存器：目的、扩展口、句柄、偏移、位元地址、八位组个数。 */
+      export const ProgramBinaryCarry = 77;
+      /** 两个寄存器：目标核心、上下文槽。把已停止核心的寄存器和序列抄进槽。 */
+      export const ProgramBinaryCapture = 78;
+      /** 两个寄存器：目标核心、上下文槽。把槽里的寄存器和序列放回已停止的核心。 */
+      export const ProgramBinaryRestore = 79;
+      /** 四个寄存器：结果、目标核心、位元地址、八位组长度。把动态库接到已有序列末尾。 */
+      export const ProgramBinaryAttach = 80;
 
       /** 立即数标记。0 用有符号 64 位读回，1 用无符号 64 位读回。 */
       export const ProgramBinaryImmediateSigned = 0;

@@ -98,6 +98,23 @@ export namespace ZerOS {
       const ProgramBinaryStore = CodeRoot.Hardware.Cpu.ProgramBinaryStore;
       const ProgramBinaryLdi = CodeRoot.Hardware.Cpu.ProgramBinaryLdi;
       const ProgramBinarySti = CodeRoot.Hardware.Cpu.ProgramBinarySti;
+      const ProgramBinaryInstall = CodeRoot.Hardware.Cpu.ProgramBinaryInstall;
+      const ProgramBinarySchedule = CodeRoot.Hardware.Cpu.ProgramBinarySchedule;
+      const ProgramBinarySlice = CodeRoot.Hardware.Cpu.ProgramBinarySlice;
+      const ProgramBinaryPass = CodeRoot.Hardware.Cpu.ProgramBinaryPass;
+      const ProgramBinaryTake = CodeRoot.Hardware.Cpu.ProgramBinaryTake;
+      const ProgramBinarySvc = CodeRoot.Hardware.Cpu.ProgramBinarySvc;
+      const ProgramBinaryBound = CodeRoot.Hardware.Cpu.ProgramBinaryBound;
+      const ProgramBinaryGate = CodeRoot.Hardware.Cpu.ProgramBinaryGate;
+      const ProgramBinaryRelease = CodeRoot.Hardware.Cpu.ProgramBinaryRelease;
+      const ProgramBinaryYield = CodeRoot.Hardware.Cpu.ProgramBinaryYield;
+      const ProgramBinaryCore = CodeRoot.Hardware.Cpu.ProgramBinaryCore;
+      const ProgramBinaryFill = CodeRoot.Hardware.Cpu.ProgramBinaryFill;
+      const ProgramBinaryCarry = CodeRoot.Hardware.Cpu.ProgramBinaryCarry;
+      const ProgramBinaryCapture = CodeRoot.Hardware.Cpu.ProgramBinaryCapture;
+      const ProgramBinaryRestore = CodeRoot.Hardware.Cpu.ProgramBinaryRestore;
+      const ProgramBinaryAttach = CodeRoot.Hardware.Cpu.ProgramBinaryAttach;
+      const ProgramBinaryVersionLink = CodeRoot.Hardware.Cpu.ProgramBinaryVersionLink;
       const ProgramBinaryImmediateSigned = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateSigned;
       const ProgramBinaryImmediateWide = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateWide;
 
@@ -283,6 +300,68 @@ export namespace ZerOS {
           case "xchg":
             writeCode(writer, ProgramBinaryXchg);
             writeRegisters(writer, [step.Port, step.Direction, step.Data]);
+            return;
+          case "install":
+            writeCode(writer, ProgramBinaryInstall);
+            writeRegisters(writer, [step.Core, step.Address, step.Length]);
+            return;
+          case "schedule":
+            writeCode(writer, ProgramBinarySchedule);
+            writeRegister(writer, step.Core);
+            return;
+          case "slice":
+            writeCode(writer, ProgramBinarySlice);
+            writeRegister(writer, step.Count);
+            return;
+          case "pass":
+            writeCode(writer, ProgramBinaryPass);
+            writeRegisters(writer, [step.Core, step.Value]);
+            return;
+          case "take":
+            writeCode(writer, ProgramBinaryTake);
+            writeRegisters(writer, [step.Found, step.Value]);
+            return;
+          case "svc":
+            writeCode(writer, ProgramBinarySvc);
+            writeRegisters(writer, [step.Destination, step.Service]);
+            return;
+          case "bound":
+            writeCode(writer, ProgramBinaryBound);
+            writeRegisters(writer, [step.Core, step.Origin, step.Length]);
+            return;
+          case "gate":
+            writeCode(writer, ProgramBinaryGate);
+            return;
+          case "release":
+            writeCode(writer, ProgramBinaryRelease);
+            writeRegister(writer, step.Core);
+            return;
+          case "yield":
+            writeCode(writer, ProgramBinaryYield);
+            return;
+          case "core":
+            writeCode(writer, ProgramBinaryCore);
+            writeRegister(writer, step.Register);
+            return;
+          case "fill":
+            writeCode(writer, ProgramBinaryFill);
+            writeRegisters(writer, [step.Destination, step.Port, step.Address, step.Count]);
+            return;
+          case "carry":
+            writeCode(writer, ProgramBinaryCarry);
+            writeRegisters(writer, [step.Destination, step.Port, step.Handle, step.Offset, step.Address, step.Count]);
+            return;
+          case "capture":
+            writeCode(writer, ProgramBinaryCapture);
+            writeRegisters(writer, [step.Core, step.Slot]);
+            return;
+          case "restore":
+            writeCode(writer, ProgramBinaryRestore);
+            writeRegisters(writer, [step.Core, step.Slot]);
+            return;
+          case "attach":
+            writeCode(writer, ProgramBinaryAttach);
+            writeRegisters(writer, [step.Destination, step.Core, step.Address, step.Length]);
             return;
           case "gpu.plot":
             writeCode(writer, ProgramBinaryGpuPlot);
@@ -633,6 +712,84 @@ export namespace ZerOS {
             Data: readRegister(reader),
           };
         }
+        if (code === ProgramBinaryInstall) {
+          return {
+            Op: "install",
+            Core: readRegister(reader),
+            Address: readRegister(reader),
+            Length: readRegister(reader),
+          };
+        }
+        if (code === ProgramBinarySchedule) {
+          return { Op: "schedule", Core: readRegister(reader) };
+        }
+        if (code === ProgramBinarySlice) {
+          return { Op: "slice", Count: readRegister(reader) };
+        }
+        if (code === ProgramBinaryPass) {
+          return { Op: "pass", Core: readRegister(reader), Value: readRegister(reader) };
+        }
+        if (code === ProgramBinaryTake) {
+          return { Op: "take", Found: readRegister(reader), Value: readRegister(reader) };
+        }
+        if (code === ProgramBinarySvc) {
+          return { Op: "svc", Destination: readRegister(reader), Service: readRegister(reader) };
+        }
+        if (code === ProgramBinaryBound) {
+          return {
+            Op: "bound",
+            Core: readRegister(reader),
+            Origin: readRegister(reader),
+            Length: readRegister(reader),
+          };
+        }
+        if (code === ProgramBinaryGate) {
+          return { Op: "gate" };
+        }
+        if (code === ProgramBinaryRelease) {
+          return { Op: "release", Core: readRegister(reader) };
+        }
+        if (code === ProgramBinaryYield) {
+          return { Op: "yield" };
+        }
+        if (code === ProgramBinaryCore) {
+          return { Op: "core", Register: readRegister(reader) };
+        }
+        if (code === ProgramBinaryFill) {
+          return {
+            Op: "fill",
+            Destination: readRegister(reader),
+            Port: readRegister(reader),
+            Address: readRegister(reader),
+            Count: readRegister(reader),
+          };
+        }
+        if (code === ProgramBinaryCarry) {
+          return {
+            Op: "carry",
+            Destination: readRegister(reader),
+            Port: readRegister(reader),
+            Handle: readRegister(reader),
+            Offset: readRegister(reader),
+            Address: readRegister(reader),
+            Count: readRegister(reader),
+          };
+        }
+        if (code === ProgramBinaryCapture) {
+          return { Op: "capture", Core: readRegister(reader), Slot: readRegister(reader) };
+        }
+        if (code === ProgramBinaryRestore) {
+          return { Op: "restore", Core: readRegister(reader), Slot: readRegister(reader) };
+        }
+        if (code === ProgramBinaryAttach) {
+          return {
+            Op: "attach",
+            Destination: readRegister(reader),
+            Core: readRegister(reader),
+            Address: readRegister(reader),
+            Length: readRegister(reader),
+          };
+        }
         if (code === ProgramBinaryGpuPlot) {
           return { Op: "gpu.plot", X: readRegister(reader), Y: readRegister(reader), Pixel: readRegister(reader) };
         }
@@ -847,18 +1004,135 @@ export namespace ZerOS {
         fail("指令编号无法识别");
       }
 
+      /** 导出或尚未接上的导入。index 在导出上是指令编号，在导入上是要改的那条调用。 */
+      export interface ProgramSymbol {
+        readonly name: string;
+        readonly index: number;
+      }
+
+      /** field 0 改数据立即数，1 改跳转编号。addend 是相对 0 号核心窗口或本映像起点的数。 */
+      export interface ProgramReloc {
+        readonly index: number;
+        readonly field: number;
+        readonly addend: bigint;
+      }
+
       /**
-       * 读回指令。版本或端序不对就拒绝，避免旧文件被当成新编号。
-       * 读完必须正好用尽字节，多出来的尾巴同样拒绝。
+       * 一次解码的结果。版本 1 的 kind 是 1，三份目录都是空的。
+       * kind 2 是动态库，install 必须拒绝，只许 attach 接到已有序列后面。
        */
-      export function decodeProgramBinary(bytes: Uint8Array): CpuInstruction[] {
+      export interface ProgramImage {
+        readonly steps: CpuInstruction[];
+        readonly kind: number;
+        readonly symbols: ProgramSymbol[];
+        readonly imports: ProgramSymbol[];
+        readonly relocs: ProgramReloc[];
+      }
+
+      const LinkNameMax = 64;
+      const LinkExportMax = 256;
+      const LinkImportMax = 256;
+      const LinkRelocMax = 4096;
+
+      function readU16(reader: Reader): number {
+        if (reader.at + 2 > reader.end) {
+          fail("程序二进制在链接目录处结束");
+        }
+        const value = reader.view.getUint16(reader.at, true);
+        reader.at += 2;
+        return value;
+      }
+
+      function readU32(reader: Reader): number {
+        if (reader.at + 4 > reader.end) {
+          fail("程序二进制在链接目录处结束");
+        }
+        const value = reader.view.getUint32(reader.at, true);
+        reader.at += 4;
+        return value;
+      }
+
+      function readI64(reader: Reader): bigint {
+        if (reader.at + 8 > reader.end) {
+          fail("程序二进制在链接目录处结束");
+        }
+        const value = reader.view.getBigInt64(reader.at, true);
+        reader.at += 8;
+        return value;
+      }
+
+      function readSymbolName(reader: Reader): string {
+        const length = readByte(reader);
+        if (length < 1 || length > LinkNameMax) {
+          fail("符号名超出范围");
+        }
+        let name = "";
+        for (let index = 0; index < length; index += 1) {
+          const byte = readByte(reader);
+          if (byte < 0x21 || byte > 0x7e) {
+            fail("符号名超出范围");
+          }
+          name += String.fromCharCode(byte);
+        }
+        return name;
+      }
+
+      function readSymbols(reader: Reader, count: number, limit: number, steps: number): ProgramSymbol[] {
+        if (count > limit) {
+          fail("符号太多");
+        }
+        const items: ProgramSymbol[] = [];
+        for (let index = 0; index < count; index += 1) {
+          const name = readSymbolName(reader);
+          const site = readU32(reader);
+          if (site >= steps) {
+            fail("符号编号越出这段指令");
+          }
+          items.push({ name, index: site });
+        }
+        return items;
+      }
+
+      function readLink(reader: Reader, steps: number): Pick<ProgramImage, "kind" | "symbols" | "imports" | "relocs"> {
+        const kind = readU16(reader);
+        const flags = readU16(reader);
+        if ((kind !== 1 && kind !== 2) || flags !== 0) {
+          fail("程序映像种类无法识别");
+        }
+        const exportCount = readU32(reader);
+        const importCount = readU32(reader);
+        const relocCount = readU32(reader);
+        const symbols = readSymbols(reader, exportCount, LinkExportMax, steps);
+        const imports = readSymbols(reader, importCount, LinkImportMax, steps);
+        if (relocCount > LinkRelocMax) {
+          fail("重定位太多");
+        }
+        const relocs: ProgramReloc[] = [];
+        for (let index = 0; index < relocCount; index += 1) {
+          const site = readU32(reader);
+          const field = readByte(reader);
+          const pad = readByte(reader);
+          const addend = readI64(reader);
+          if (site >= steps || (field !== 0 && field !== 1) || pad !== 0) {
+            fail("重定位无法识别");
+          }
+          relocs.push({ index: site, field, addend });
+        }
+        return { kind, symbols, imports, relocs };
+      }
+
+      /**
+       * 读回指令和链接目录。版本 1 没有目录，读完必须正好用尽字节。
+       * 版本 2 把目录读完，多出来的尾巴同样拒绝。
+       */
+      export function decodeProgramImage(bytes: Uint8Array): ProgramImage {
         if (!isProgramBinary(bytes)) {
           fail("不是程序二进制");
         }
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         const version = view.getUint16(4, true);
         const endian = view.getUint16(6, true);
-        if (version !== ProgramBinaryVersion) {
+        if (version !== ProgramBinaryVersion && version !== ProgramBinaryVersionLink) {
           fail("程序二进制版本无法识别");
         }
         if (endian !== ProgramBinaryLittleEndian) {
@@ -870,10 +1144,22 @@ export namespace ZerOS {
         for (let index = 0; index < count; index += 1) {
           steps.push(readOne(reader));
         }
+        if (version === ProgramBinaryVersion) {
+          if (reader.at !== reader.end) {
+            fail("程序二进制还有没读完的字节");
+          }
+          return { steps, kind: 1, symbols: [], imports: [], relocs: [] };
+        }
+        const link = readLink(reader, steps.length);
         if (reader.at !== reader.end) {
           fail("程序二进制还有没读完的字节");
         }
-        return steps;
+        return { steps, kind: link.kind, symbols: link.symbols, imports: link.imports, relocs: link.relocs };
+      }
+
+      /** 只要指令。版本 2 的目录由 decodeProgramImage 交给装入和接入。 */
+      export function decodeProgramBinary(bytes: Uint8Array): CpuInstruction[] {
+        return decodeProgramImage(bytes).steps;
       }
     }
   }

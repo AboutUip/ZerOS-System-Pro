@@ -51,6 +51,8 @@ export namespace ZerOS {
 
       /** 收尾之后交给 CPU 的指令。用来把入站整数转给扩展口，并在 F12 时进入设置画面。 */
       let driveLines: readonly string[] | Uint8Array | null = null;
+      /** 核心 3 的装入程序。上电时只装入，不启动。 */
+      let loaderLines: Uint8Array | null = null;
 
       function messageData(event: MessageEvent): unknown {
         return event.data as unknown;
@@ -144,7 +146,7 @@ export namespace ZerOS {
           if (powerAccepted) {
             return;
           }
-          if (logoLines === null || driveLines === null) {
+          if (logoLines === null || driveLines === null || loaderLines === null) {
             return;
           }
           powerAccepted = true;
@@ -152,6 +154,7 @@ export namespace ZerOS {
             kind: MailMessage.Power,
             logo: logoLines,
             drive: driveLines,
+            loader: loaderLines,
           });
         },
 
@@ -211,6 +214,14 @@ export namespace ZerOS {
          */
         SetDrive(lines: readonly string[] | Uint8Array): void {
           driveLines = lines;
+        },
+
+        /**
+         * 登记核心 3 的装入程序。必须在 Power 之前调用。
+         * 只接受二进制。上电把它装进已停止的核心 3，固件稍后自己调度。
+         */
+        SetLoader(binary: Uint8Array): void {
+          loaderLines = binary;
         },
 
         /**

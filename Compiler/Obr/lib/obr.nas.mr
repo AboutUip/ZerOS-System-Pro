@@ -1,0 +1,31 @@
+/* NAS。函数体在 obr.nas.obr。通过扩展口上的 xchg 组 ZNP1 的字，不新增中央处理器指令。 */
+namespace obr {
+namespace nas {
+/* 服务有应答时是 1，否则是 0。这一次会复位会话。官方库使用扩展口 2，这是标定，不是协议。 */
+deRfun ready(): long;
+/* 查看路径。成功时 kind 是 1 文件或 2 目录，size 是八位组数。返回值是 ZNP1 状态，0 是成功。 */
+deRfun stat(string path, long* kind, long* size): long;
+/* 打开。mode 0 只读，1 只写并截断，2 读写，3 追加。成功时 handle 是 1 到 32。 */
+deRfun open(string path, long mode, long* handle): long;
+/* 关闭句柄。 */
+deRfun close(long handle): long;
+/* 从 offset 读至多 count 个八位组，写到 address，相邻八位组相隔 8 位。count 大于 268435456 时失败。got 是实际读到的个数。 */
+deRfun read(long handle, long offset, long address, long count, long* got): long;
+/* 把 address 起的 count 个八位组写到 offset。count 大于 65535 时不写，因为窗口长度只有 16 位。wrote 是写下的个数。 */
+deRfun write(long handle, long offset, long address, long count, long* wrote): long;
+/* 目录的第 index 项，从 0 起。名字写到 address。没有这一项时状态是 2。 */
+deRfun readdir(string path, long index, long address, long capacity, long* got): long;
+/* 创建这一层目录。父层必须已经存在。 */
+deRfun mkdir(string path): long;
+/* 删除文件或空目录。 */
+deRfun unlink(string path): long;
+/* 把 from 改名为 to。 */
+deRfun rename(string from, string to): long;
+/* 下面这些和上面同名操作相同，路径是已经放在位元线上的字符串：先一个 64 位长度，再每个八位组隔 8 位。 */
+deRfun statAt(long path, long* kind, long* size): long;
+deRfun openAt(long path, long mode, long* handle): long;
+deRfun readdirAt(long path, long index, long address, long capacity, long* got): long;
+deRfun mkdirAt(long path): long;
+deRfun unlinkAt(long path): long;
+}
+}

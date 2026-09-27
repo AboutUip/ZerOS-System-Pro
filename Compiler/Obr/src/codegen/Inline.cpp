@@ -64,7 +64,7 @@ void Generator::prepareInline() {
     for (int index = 0; index < count; index += 1) {
       bool seenZap = false;
       collectStmtList((*functions_)[static_cast<std::size_t>(index)].body, calls[static_cast<std::size_t>(index)], seenZap);
-      if (seenZap || !(*functions_)[static_cast<std::size_t>(index)].opcode.empty()) zap[static_cast<std::size_t>(index)] = 1;
+      if (seenZap || (*functions_)[static_cast<std::size_t>(index)].imported || !(*functions_)[static_cast<std::size_t>(index)].opcode.empty()) zap[static_cast<std::size_t>(index)] = 1;
     }
     std::vector<int> color(static_cast<std::size_t>(count), 0);
     std::vector<int> stack;
@@ -84,7 +84,7 @@ void Generator::prepareInline() {
   }
 
 bool Generator::standalone(const Function& function) {
-    if (!function.opcode.empty()) return false;
+    if (!function.opcode.empty() || function.imported) return false;
     prepareInline();
     if (function.name == "main" || function.exported) return true;
     const int index = functionIndex(function);

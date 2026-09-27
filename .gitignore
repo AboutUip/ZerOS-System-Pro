@@ -6,16 +6,27 @@
 Toolchain/node_modules/
 Toolchain/Dist/
 
-# Compiler host products. obrc writes an extensionless program and a .zap sibling.
+# Compiler host products. obrc writes an extensionless program. -zap also writes a .zap sibling.
 Compiler/**/build/
 Compiler/**/*.exe
+Compiler/**/*.o
+Compiler/**/*.obj
 Compiler/**/*.zap
 # g++ -o obrc on Linux. The source file is obrc.cpp and stays tracked.
 Compiler/**/obrc
+# obrc -o beside an example. The .obr and .mr sources stay tracked.
+Compiler/Obr/examples/*
+!Compiler/Obr/examples/*.obr
+!Compiler/Obr/examples/*.mr
+!Compiler/Obr/examples/*.md
 
 # Preview firmware from Boot/*.obr. The extensionless file is what the CPU runs.
 # The .zap beside it is the same program as text, kept for debugging.
 Toolchain/Zap/
+
+# Guest tree of the reference NAS, including /kernel/start and /kernel/drv.
+# obrc writes these images here. The server creates the directory. Sources stay under Kernel/.
+ZerOS-PRO/Hardware/Nas/Root/
 
 # Vite dependency cache
 **/.vite/

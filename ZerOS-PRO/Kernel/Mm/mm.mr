@@ -1,0 +1,3 @@
+/* 堆。只有入口可以分配和释放。 */
+deRfun mmAlloc(long core, long size): long;
+deRfun mmFree(long core, long origin, long size): long;

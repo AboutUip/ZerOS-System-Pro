@@ -107,12 +107,28 @@ export namespace ZerOS {
         | { readonly Op: "jmp"; readonly Register: number }
         | { readonly Op: "inbox"; readonly Found: number; readonly Value: number }
         | { readonly Op: "xchg"; readonly Port: number; readonly Direction: number; readonly Data: number }
+        | { readonly Op: "fill"; readonly Destination: number; readonly Port: number; readonly Address: number; readonly Count: number }
+        | { readonly Op: "carry"; readonly Destination: number; readonly Port: number; readonly Handle: number; readonly Offset: number; readonly Address: number; readonly Count: number }
         | { readonly Op: "port.state"; readonly Destination: number; readonly Port: number }
         | { readonly Op: "port.char"; readonly Destination: number; readonly Port: number; readonly Offset: number }
         | { readonly Op: "port.byte"; readonly Destination: number; readonly Port: number; readonly Field: number; readonly Offset: number }
         | { readonly Op: "query"; readonly Register: number; readonly Seat: number; readonly Field: number; readonly Index: number }
         | { readonly Op: "ldi"; readonly Opcode: number; readonly Register: number; readonly Address: number }
         | { readonly Op: "sti"; readonly Opcode: number; readonly Register: number; readonly Address: number }
+        | { readonly Op: "install"; readonly Core: number; readonly Address: number; readonly Length: number }
+        | { readonly Op: "attach"; readonly Destination: number; readonly Core: number; readonly Address: number; readonly Length: number }
+        | { readonly Op: "schedule"; readonly Core: number }
+        | { readonly Op: "slice"; readonly Count: number }
+        | { readonly Op: "pass"; readonly Core: number; readonly Value: number }
+        | { readonly Op: "take"; readonly Found: number; readonly Value: number }
+        | { readonly Op: "svc"; readonly Destination: number; readonly Service: number }
+        | { readonly Op: "bound"; readonly Core: number; readonly Origin: number; readonly Length: number }
+        | { readonly Op: "gate" }
+        | { readonly Op: "release"; readonly Core: number }
+        | { readonly Op: "yield" }
+        | { readonly Op: "capture"; readonly Core: number; readonly Slot: number }
+        | { readonly Op: "restore"; readonly Core: number; readonly Slot: number }
+        | { readonly Op: "core"; readonly Register: number }
         | { readonly Op: "halt" };
 
       const loadMnemonic: Readonly<Record<string, number>> = {
@@ -446,6 +462,28 @@ export namespace ZerOS {
           }
           return { Op: "xchg", Port: port, Direction: direction, Data: data };
         }
+        if (head === "fill" && parts.length === 5) {
+          const destination = registerOf(parts[1] ?? "");
+          const port = registerOf(parts[2] ?? "");
+          const address = registerOf(parts[3] ?? "");
+          const count = registerOf(parts[4] ?? "");
+          if (destination === null || port === null || address === null || count === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "fill", Destination: destination, Port: port, Address: address, Count: count };
+        }
+        if (head === "carry" && parts.length === 7) {
+          const destination = registerOf(parts[1] ?? "");
+          const port = registerOf(parts[2] ?? "");
+          const handle = registerOf(parts[3] ?? "");
+          const offset = registerOf(parts[4] ?? "");
+          const address = registerOf(parts[5] ?? "");
+          const count = registerOf(parts[6] ?? "");
+          if (destination === null || port === null || handle === null || offset === null || address === null || count === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "carry", Destination: destination, Port: port, Handle: handle, Offset: offset, Address: address, Count: count };
+        }
         if (head === "port.state" && parts.length === 3) {
           const destination = registerOf(parts[1] ?? "");
           const port = registerOf(parts[2] ?? "");
@@ -580,6 +618,100 @@ export namespace ZerOS {
           }
           return { Op: "gpu.paint", Node: node, Foreground: foreground, Background: background };
         }
+        if (head === "install" && parts.length === 4) {
+          const core = registerOf(parts[1] ?? "");
+          const address = registerOf(parts[2] ?? "");
+          const length = registerOf(parts[3] ?? "");
+          if (core === null || address === null || length === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "install", Core: core, Address: address, Length: length };
+        }
+        if (head === "attach" && parts.length === 5) {
+          const destination = registerOf(parts[1] ?? "");
+          const core = registerOf(parts[2] ?? "");
+          const address = registerOf(parts[3] ?? "");
+          const length = registerOf(parts[4] ?? "");
+          if (destination === null || core === null || address === null || length === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "attach", Destination: destination, Core: core, Address: address, Length: length };
+        }
+        if (head === "schedule" && parts.length === 2) {
+          const core = registerOf(parts[1] ?? "");
+          if (core === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "schedule", Core: core };
+        }
+        if (head === "slice" && parts.length === 2) {
+          const count = registerOf(parts[1] ?? "");
+          if (count === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "slice", Count: count };
+        }
+        if (head === "pass" && parts.length === 3) {
+          const core = registerOf(parts[1] ?? "");
+          const value = registerOf(parts[2] ?? "");
+          if (core === null || value === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "pass", Core: core, Value: value };
+        }
+        if (head === "take" && parts.length === 3) {
+          const found = registerOf(parts[1] ?? "");
+          const value = registerOf(parts[2] ?? "");
+          if (found === null || value === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "take", Found: found, Value: value };
+        }
+        if (head === "svc" && parts.length === 3) {
+          const destination = registerOf(parts[1] ?? "");
+          const service = registerOf(parts[2] ?? "");
+          if (destination === null || service === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "svc", Destination: destination, Service: service };
+        }
+        if (head === "bound" && parts.length === 4) {
+          const core = registerOf(parts[1] ?? "");
+          const origin = registerOf(parts[2] ?? "");
+          const length = registerOf(parts[3] ?? "");
+          if (core === null || origin === null || length === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "bound", Core: core, Origin: origin, Length: length };
+        }
+        if (head === "gate" && parts.length === 1) {
+          return { Op: "gate" };
+        }
+        if (head === "release" && parts.length === 2) {
+          const core = registerOf(parts[1] ?? "");
+          if (core === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "release", Core: core };
+        }
+        if (head === "yield" && parts.length === 1) {
+          return { Op: "yield" };
+        }
+        if ((head === "capture" || head === "restore") && parts.length === 3) {
+          const core = registerOf(parts[1] ?? "");
+          const slot = registerOf(parts[2] ?? "");
+          if (core === null || slot === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: head, Core: core, Slot: slot };
+        }
+        if (head === "core" && parts.length === 2) {
+          const register = registerOf(parts[1] ?? "");
+          if (register === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "core", Register: register };
+        }
         if (head === "gpu.glyph" && parts.length === 3) {
           const node = registerOf(parts[1] ?? "");
           const code = registerOf(parts[2] ?? "");
@@ -664,6 +796,54 @@ export namespace ZerOS {
         }
         if (instruction.Op === "xchg") {
           return `xchg r${String(instruction.Port)}, r${String(instruction.Direction)}, r${String(instruction.Data)}`;
+        }
+        if (instruction.Op === "fill") {
+          return `fill r${String(instruction.Destination)}, r${String(instruction.Port)}, r${String(instruction.Address)}, r${String(instruction.Count)}`;
+        }
+        if (instruction.Op === "carry") {
+          return `carry r${String(instruction.Destination)}, r${String(instruction.Port)}, r${String(instruction.Handle)}, r${String(instruction.Offset)}, r${String(instruction.Address)}, r${String(instruction.Count)}`;
+        }
+        if (instruction.Op === "install") {
+          return `install r${String(instruction.Core)}, r${String(instruction.Address)}, r${String(instruction.Length)}`;
+        }
+        if (instruction.Op === "attach") {
+          return `attach r${String(instruction.Destination)}, r${String(instruction.Core)}, r${String(instruction.Address)}, r${String(instruction.Length)}`;
+        }
+        if (instruction.Op === "schedule") {
+          return `schedule r${String(instruction.Core)}`;
+        }
+        if (instruction.Op === "slice") {
+          return `slice r${String(instruction.Count)}`;
+        }
+        if (instruction.Op === "pass") {
+          return `pass r${String(instruction.Core)}, r${String(instruction.Value)}`;
+        }
+        if (instruction.Op === "take") {
+          return `take r${String(instruction.Found)}, r${String(instruction.Value)}`;
+        }
+        if (instruction.Op === "svc") {
+          return `svc r${String(instruction.Destination)}, r${String(instruction.Service)}`;
+        }
+        if (instruction.Op === "bound") {
+          return `bound r${String(instruction.Core)}, r${String(instruction.Origin)}, r${String(instruction.Length)}`;
+        }
+        if (instruction.Op === "gate") {
+          return "gate";
+        }
+        if (instruction.Op === "release") {
+          return `release r${String(instruction.Core)}`;
+        }
+        if (instruction.Op === "yield") {
+          return "yield";
+        }
+        if (instruction.Op === "capture") {
+          return `capture r${String(instruction.Core)}, r${String(instruction.Slot)}`;
+        }
+        if (instruction.Op === "restore") {
+          return `restore r${String(instruction.Core)}, r${String(instruction.Slot)}`;
+        }
+        if (instruction.Op === "core") {
+          return `core r${String(instruction.Register)}`;
         }
         if (instruction.Op === "port.state") {
           return `port.state r${String(instruction.Destination)}, r${String(instruction.Port)}`;

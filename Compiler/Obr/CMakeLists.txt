@@ -13,6 +13,7 @@ add_executable(obrc
   src/codegen/Emit.cpp
   src/codegen/Fold.cpp
   src/codegen/Runtime.cpp
+  src/codegen/Collect.cpp
   src/codegen/Inline.cpp
   src/codegen/Lower.cpp
   src/codegen/Math.cpp

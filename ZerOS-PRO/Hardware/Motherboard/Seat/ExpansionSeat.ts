@@ -21,6 +21,8 @@
 
 import { ZerOS as KeyboardRoot } from "../../Keyboard/ActiveProvider/Provider";
 import { ZerOS as KeyboardConfigRoot } from "../../Keyboard/Config/KeyboardConfig";
+import { ZerOS as NasRoot } from "../../Nas/ActiveProvider/Provider";
+import { ZerOS as NasConfigRoot } from "../../Nas/Config/NasConfig";
 import { ZerOS as SandboxRoot } from "../../Sandbox/ActiveProvider/Provider";
 import { ZerOS as SandboxConfigRoot } from "../../Sandbox/Config/SandboxConfig";
 import { ZerOS as ConfigRoot } from "../Config/ExpansionConfig";
@@ -40,6 +42,8 @@ export namespace ZerOS {
       const ActiveKeyboardProvider = KeyboardRoot.Hardware.Keyboard.ActiveKeyboardProvider;
       const SandboxPort = SandboxConfigRoot.Hardware.Sandbox.SandboxConfig.OfficialPort;
       const ActiveSandboxProvider = SandboxRoot.Hardware.Sandbox.ActiveSandboxProvider;
+      const NasPort = NasConfigRoot.Hardware.Nas.NasConfig.OfficialPort;
+      const ActiveNasProvider = NasRoot.Hardware.Nas.ActiveNasProvider;
       const seatPrefix = "[ZerOS.Hardware.Motherboard.ExpansionSeat]";
 
       /**
@@ -52,6 +56,9 @@ export namespace ZerOS {
         }
         if (Get(SandboxPort) === null) {
           Bind(SandboxPort, ActiveSandboxProvider);
+        }
+        if (Get(NasPort) === null) {
+          Bind(NasPort, ActiveNasProvider);
         }
         for (let index = 0; index < PortCount; index += 1) {
           if (Get(index) === null || State(index) !== PortStateEmpty) {

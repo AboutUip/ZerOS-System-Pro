@@ -2,6 +2,7 @@
 
 #include "Diagnostic.hpp"
 #include "Lexer.hpp"
+#include "type/Type.hpp"
 
 #include <utility>
 
@@ -22,9 +23,17 @@ class Parser {
       while (index < rest.size() && (rest[index] == ' ' || rest[index] == '\t')) index += 1;
       if (rest.substr(index) != "1") fail("#VERSION 只接受语言版本 1");
     }
-    while (tokens_[static_cast<std::size_t>(at_)].kind == Tok::Link) {
+    while (tokens_[static_cast<std::size_t>(at_)].kind == Tok::Link || tokens_[static_cast<std::size_t>(at_)].kind == Tok::Dyn) {
       const std::string line = tokens_[static_cast<std::size_t>(at_)].text;
       at_ += 1;
+      if (line.rfind("#DYN", 0) == 0) {
+        std::string rest = line.size() > 4 ? line.substr(4) : "";
+        std::size_t begin = 0;
+        while (begin < rest.size() && (rest[begin] == ' ' || rest[begin] == '\t')) begin += 1;
+        if (begin != rest.size()) fail("#DYN 不接受参数");
+        file.dyn = true;
+        continue;
+      }
       std::string rest = line.size() > 5 ? line.substr(5) : "";
       while (!rest.empty()) {
         const std::size_t comma = rest.find(',');
@@ -66,11 +75,74 @@ class Parser {
   struct ParsedType {
     TypeKind kind = TypeKind::None;
     TypeKind pointee = TypeKind::None;
+    TypeKind alt = TypeKind::None;
     std::string typeName;
+    std::string altName;
   };
+
+  bool collectionWord(const std::string& name) const {
+    return name == "array" || name == "list" || name == "set" || name == "map";
+  }
+
+  std::string describe(const ParsedType& type) const {
+    if (type.kind == TypeKind::Array) return "array[" + type.typeName + "]";
+    if (type.kind == TypeKind::List) return "list[" + type.typeName + "]";
+    if (type.kind == TypeKind::Set) return "set[" + type.typeName + "]";
+    if (type.kind == TypeKind::Map) return "map[" + type.typeName + "," + type.altName + "]";
+    if (type.kind == TypeKind::Ptr) {
+      if (!type.typeName.empty() && type.pointee == TypeKind::Void) return type.typeName + "*";
+      return std::string(nameOf(type.pointee)) + "*";
+    }
+    if (type.kind == TypeKind::None) return type.typeName;
+    return nameOf(type.kind);
+  }
+
+  bool scanTypeAt(int& index) const {
+    const int size = static_cast<int>(tokens_.size());
+    if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::Ident) return false;
+    const std::string name = tokens_[static_cast<std::size_t>(index)].text;
+    if (collectionWord(name)) {
+      if (index + 1 >= size || tokens_[static_cast<std::size_t>(index + 1)].kind != Tok::LBracket) return false;
+      index += 2;
+      if (!scanTypeAt(index)) return false;
+      if (name == "map") {
+        if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::Comma) return false;
+        index += 1;
+        if (!scanTypeAt(index)) return false;
+      }
+      if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::RBracket) return false;
+      index += 1;
+      return true;
+    }
+    if (typeName(name)) {
+      index += 1;
+      if (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star) index += 1;
+      return true;
+    }
+    index += 1;
+    while (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Scope) {
+      index += 1;
+      if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::Ident) return false;
+      index += 1;
+    }
+    if (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star) index += 1;
+    return true;
+  }
 
   bool typeName(const std::string& name) const {
     return name == "byte" || name == "short" || name == "int" || name == "long" || name == "float" || name == "double" || name == "boolean" || name == "char" || name == "string" || name == "void";
+  }
+
+  /* (名字*) 才是指针转换。(名字) 仍是括号表达式，避免把乘法看成转换。 */
+  bool looksLikePointerCast() const {
+    int index = at_;
+    const int size = static_cast<int>(tokens_.size());
+    if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::Ident) return false;
+    index += 1;
+    while (index + 1 < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Scope && tokens_[static_cast<std::size_t>(index + 1)].kind == Tok::Ident) {
+      index += 2;
+    }
+    return index + 1 < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star && tokens_[static_cast<std::size_t>(index + 1)].kind == Tok::RParen;
   }
 
   std::string typeIdent() {
@@ -86,22 +158,44 @@ class Parser {
 
   bool looksLikeDecl() const {
     if (!check(Tok::Ident)) return false;
-    if (typeName(peek().text)) {
-      const int next = at_ + 1;
-      if (next >= static_cast<int>(tokens_.size()) || tokens_[static_cast<std::size_t>(next)].kind != Tok::Scope) return true;
-    }
-    int index = at_ + 1;
+    int index = at_;
+    if (!scanTypeAt(index)) return false;
     const int size = static_cast<int>(tokens_.size());
-    while (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Scope) {
-      index += 1;
-      if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::Ident) return false;
-      index += 1;
+    if (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Ident) return true;
+    /* array[long]* 名字 仍是声明，解析类型时再拒绝。array[i] * 2 后面不是名字，保持表达式。 */
+    if (index + 1 < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star && tokens_[static_cast<std::size_t>(index + 1)].kind == Tok::Ident) return true;
+    return typeName(peek().text);
+  }
+
+  ParsedType parseCollection() {
+    const std::string which = take().text;
+    expect(Tok::LBracket, "集合缺少 [");
+    const ParsedType elem = parseType();
+    ParsedType value;
+    if (which == "map") {
+      expect(Tok::Comma, "map 要写成 map[键, 值]");
+      value = parseType();
     }
-    if (index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star) index += 1;
-    return index < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Ident;
+    expect(Tok::RBracket, "集合缺少 ]");
+    if (check(Tok::Star)) fail("集合已经是引用");
+    ParsedType parsed;
+    if (which == "array") parsed.kind = TypeKind::Array;
+    else if (which == "list") parsed.kind = TypeKind::List;
+    else if (which == "set") parsed.kind = TypeKind::Set;
+    else parsed.kind = TypeKind::Map;
+    parsed.pointee = elem.kind;
+    parsed.typeName = describe(elem);
+    parsed.alt = value.kind;
+    parsed.altName = which == "map" ? describe(value) : "";
+    if (parsed.typeName.empty() || (which == "map" && parsed.altName.empty())) fail("集合缺少元素类型");
+    return parsed;
   }
 
   ParsedType parseType() {
+    if (check(Tok::Ident) && collectionWord(peek().text)) {
+      const int next = at_ + 1;
+      if (next < static_cast<int>(tokens_.size()) && tokens_[static_cast<std::size_t>(next)].kind == Tok::LBracket) return parseCollection();
+    }
     if (!check(Tok::Ident)) fail("缺少类型");
     ParsedType parsed;
     const int next = at_ + 1;
@@ -239,7 +333,9 @@ class Parser {
       Field field;
       field.type = parsed.kind;
       field.pointee = parsed.pointee;
+      field.alt = parsed.alt;
       field.typeName = parsed.typeName;
+      field.altName = parsed.altName;
       field.name = take().text;
       for (const Field& earlier : decl.fields) {
         if (earlier.name == field.name) fail("字段重复 " + field.name);
@@ -345,7 +441,9 @@ class Parser {
       Field field;
       field.type = parsed.kind;
       field.pointee = parsed.pointee;
+      field.alt = parsed.alt;
       field.typeName = parsed.typeName;
+      field.altName = parsed.altName;
       field.name = take().text;
       field.offset = offset;
       offset += 64;
@@ -372,7 +470,9 @@ class Parser {
         const ParsedType parsed = parseType();
         param.type = parsed.kind;
         param.pointee = parsed.pointee;
+        param.alt = parsed.alt;
         param.typeName = parsed.typeName;
+        param.altName = parsed.altName;
         if (param.type == TypeKind::Void) fail("参数不能是 void");
         if (!check(Tok::Ident)) fail("参数缺少名字");
         param.name = take().text;
@@ -384,7 +484,9 @@ class Parser {
     const ParsedType ret = parseType();
     function.ret = ret.kind;
     function.retPointee = ret.pointee;
+    function.retAlt = ret.alt;
     function.retName = ret.typeName;
+    function.retAltName = ret.altName;
     if (header_) {
       expect(Tok::Semi, "函数头必须以 ; 结束");
       return function;
@@ -498,7 +600,9 @@ class Parser {
       const ParsedType parsed = parseType();
       stmt.type = parsed.kind;
       stmt.pointee = parsed.pointee;
+      stmt.alt = parsed.alt;
       stmt.typeName = parsed.typeName;
+      stmt.altName = parsed.altName;
       if (stmt.type == TypeKind::Void) fail("变量不能是 void");
       expect(Tok::RBracket, "var 声明缺少 ]");
       stmt.name = take().text;
@@ -513,7 +617,9 @@ class Parser {
       const ParsedType parsed = parseType();
       stmt.type = parsed.kind;
       stmt.pointee = parsed.pointee;
+      stmt.alt = parsed.alt;
       stmt.typeName = parsed.typeName;
+      stmt.altName = parsed.altName;
       if (stmt.type == TypeKind::Void) fail("变量不能是 void");
       stmt.name = take().text;
       if (eat(Tok::Assign)) stmt.expr = parseExpr();
@@ -719,6 +825,28 @@ class Parser {
       return expr;
     }
     if (eat(Tok::New)) {
+      if (check(Tok::Ident) && collectionWord(peek().text)) {
+        const int next = at_ + 1;
+        if (next < static_cast<int>(tokens_.size()) && tokens_[static_cast<std::size_t>(next)].kind == Tok::LBracket) {
+          const ParsedType parsed = parseType();
+          Expr expr;
+          expr.kind = Expr::Kind::New;
+          expr.integer = -6;
+          expr.type = parsed.kind;
+          expr.pointee = parsed.pointee;
+          expr.alt = parsed.alt;
+          expr.typeName = parsed.typeName;
+          expr.altName = parsed.altName;
+          expect(Tok::LParen, "new 缺少 (");
+          if (!check(Tok::RParen)) {
+            do {
+              expr.kids.push_back(parseExpr());
+            } while (eat(Tok::Comma));
+          }
+          expect(Tok::RParen, "new 缺少 )");
+          return expr;
+        }
+      }
       if (!check(Tok::Ident)) fail("new 缺少类名");
       Expr expr;
       expr.kind = Expr::Kind::New;
@@ -752,13 +880,14 @@ class Parser {
       return expr;
     }
     if (eat(Tok::LParen)) {
-      if (check(Tok::Ident) && typeName(peek().text)) {
+      if (looksLikePointerCast()) {
         const ParsedType parsed = parseType();
         expect(Tok::RParen, "转换缺少 )");
         Expr expr;
         expr.kind = Expr::Kind::Cast;
         expr.type = parsed.kind;
         expr.pointee = parsed.pointee;
+        expr.typeName = parsed.typeName;
         expr.kids.push_back(parseUnary());
         return expr;
       }

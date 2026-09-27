@@ -1,0 +1,333 @@
+/* 执行层。引导时装驱动。spawn 在空闲核心上装第一份；核心已经因时间片停住且只有一份任务时，先把那份抄进槽，再装第二份。loadLib 把动态库接到调用者自己的序列后面。 */
+#LINK /start.obr
+import proc;
+import fs;
+import sched;
+import board;
+import memory;
+import obr.nas;
+import obr.os;
+
+deRfun imageAt(): long {
+  return 2560L * 1024L + 2L * kSlot() + 4096L;
+}
+
+deRfun drvPath(): long {
+  return kArena(2L) + 32768L;
+}
+
+deRfun drvName(): long {
+  return kArena(2L) + 34816L;
+}
+
+deRfun pullAt(long path, long* size): long {
+  long kind = 0L;
+  long bytes = 0L;
+  long status = obr::nas::statAt(path, &kind, &bytes);
+  if (status != 0L || kind != 1L || bytes < 1L || bytes > 131072L) {
+    return 1L;
+  }
+  long handle = 0L;
+  status = obr::nas::openAt(path, 0L, &handle);
+  if (status != 0L) {
+    return status;
+  }
+  long offset = 0L;
+  long base = imageAt();
+  long span = 256L * 1024L;
+  while (offset < bytes) {
+    long count = bytes - offset;
+    if (count > span) {
+      count = span;
+    }
+    long got = 0L;
+    status = obr::nas::read(handle, offset, base + offset * 8L, count, &got);
+    if (status != 0L || got < 1L) {
+      obr::nas::close(handle);
+      return 1L;
+    }
+    offset = offset + got;
+    if (got == span && span < 256L * 1024L * 1024L) {
+      span = span * 2L;
+    } else {
+      span = 256L * 1024L;
+    }
+  }
+  obr::nas::close(handle);
+  *size = bytes;
+  return 0L;
+}
+
+deRfun pull(string path, long* size): long {
+  long kind = 0L;
+  long bytes = 0L;
+  long status = obr::nas::stat(path, &kind, &bytes);
+  if (status != 0L || kind != 1L || bytes < 1L || bytes > 131072L) {
+    return 1L;
+  }
+  long handle = 0L;
+  status = obr::nas::open(path, 0L, &handle);
+  if (status != 0L) {
+    return status;
+  }
+  long offset = 0L;
+  long base = imageAt();
+  long span = 256L * 1024L;
+  while (offset < bytes) {
+    long count = bytes - offset;
+    if (count > span) {
+      count = span;
+    }
+    long got = 0L;
+    status = obr::nas::read(handle, offset, base + offset * 8L, count, &got);
+    if (status != 0L || got < 1L) {
+      obr::nas::close(handle);
+      return 1L;
+    }
+    offset = offset + got;
+    if (got == span && span < 256L * 1024L * 1024L) {
+      span = span * 2L;
+    } else {
+      span = 256L * 1024L;
+    }
+  }
+  obr::nas::close(handle);
+  *size = bytes;
+  return 0L;
+}
+
+/* 路径在 home+512。库从 NAS 读进暂存，再接到已经停住的调用者后面。成功时 +192 是第一个导出的指令编号。 */
+deRfun loadLib(long caller, long home): long {
+  long size = 0L;
+  long status = pullAt(home + 512L, &size);
+  if (status != 0L) {
+    return status;
+  }
+  long base = obr::os::attach(caller, imageAt(), size);
+  memory::store64(base, home + 192L);
+  return 0L;
+}
+
+deRfun placeAt(long path, long core): long {
+  long size = 0L;
+  long status = pullAt(path, &size);
+  if (status != 0L) {
+    return status;
+  }
+  obr::os::install(core, imageAt(), size);
+  obr::os::bound(core, kArena(core), kSpan());
+  return 0L;
+}
+
+deRfun putDrv(long index, long value): void {
+  memory::storeOctet(value, drvPath() + 64L + index * 8L);
+}
+
+deRfun fillDrv(long nameLen): long {
+  long prefix = 12L;
+  long total = prefix + nameLen;
+  if (total > 240L) {
+    return 7L;
+  }
+  memory::store64(total, drvPath());
+  putDrv(0L, 47L);
+  putDrv(1L, 107L);
+  putDrv(2L, 101L);
+  putDrv(3L, 114L);
+  putDrv(4L, 110L);
+  putDrv(5L, 101L);
+  putDrv(6L, 108L);
+  putDrv(7L, 47L);
+  putDrv(8L, 100L);
+  putDrv(9L, 114L);
+  putDrv(10L, 118L);
+  putDrv(11L, 47L);
+  long index = 0L;
+  while (index < nameLen) {
+    long value = memory::loadOctet(drvName() + index * 8L);
+    putDrv(prefix + index, value);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun nameHasDot(long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (memory::loadOctet(drvName() + index * 8L) == 46L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun freeCore(long core): long {
+  if (core < 4L || core > 7L) {
+    return 0L;
+  }
+  if (taskCount(core) != 0L) {
+    return 0L;
+  }
+  if (query(1L, 5L, core) != 0L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 表里还有空位，第二份任务才装得下。 */
+deRfun taskRoom(): long {
+  long index = 0L;
+  while (index < 8L) {
+    if (taskAt(index).pid == 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 只有一份任务，并且已经因为时间片停住。这时才能在装入前把旧任务抄进槽。 */
+deRfun stoppedForSlice(long core): long {
+  if (core < 4L || core > 7L) {
+    return 0L;
+  }
+  if (query(1L, 5L, core) != 0L) {
+    return 0L;
+  }
+  if (query(1L, 11L, core) != 1L) {
+    return 0L;
+  }
+  if (taskCount(core) != 1L) {
+    return 0L;
+  }
+  long index = taskFind(core);
+  if (index < 0L) {
+    return 0L;
+  }
+  if (taskAt(index).state != TaskState::Running) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun bootDriver(long core): long {
+  long pid = taskSpawn(core, nextPid(), 0L, 0L, 0L, TaskState::Ready);
+  if (pid == 0L) {
+    return 0L;
+  }
+  obr::os::hertz(core, 30L);
+  schedWake(core);
+  return pid;
+}
+
+deRfun drvLoad(): void {
+  if (obr::nas::ready() != 1L) {
+    return;
+  }
+  long index = 0L;
+  long core = 4L;
+  while (index < 8L && core < 8L) {
+    long got = 0L;
+    long status = obr::nas::readdir("/kernel/drv", index, drvName(), 32L, &got);
+    if (status != 0L) {
+      return;
+    }
+    index = index + 1L;
+    if (got < 1L || nameHasDot(got) == 1L) {
+      continue;
+    }
+    if (fillDrv(got) != 0L) {
+      continue;
+    }
+    while (core < 8L && freeCore(core) == 0L) {
+      core = core + 1L;
+    }
+    if (core >= 8L) {
+      return;
+    }
+    if (placeAt(drvPath(), core) == 0L) {
+      long pid = bootDriver(core);
+      if (pid != 0L) {
+        devPublish(core, pid, drvName(), got);
+      }
+      core = core + 1L;
+    }
+  }
+}
+
+deRfun execSpawn(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  if (taskIndex < 0L) {
+    return -1L;
+  }
+  long status = vfsPrepare(caller, home + 512L);
+  if (status != 0L) {
+    return status;
+  }
+  long core = memory::load64(home + 128L);
+  long sharing = 0L;
+  if (core == 0L) {
+    core = 4L;
+    while (core < 8L && freeCore(core) == 0L) {
+      core = core + 1L;
+    }
+    if (core >= 8L) {
+      core = 4L;
+      while (core < 8L && stoppedForSlice(core) == 0L) {
+        core = core + 1L;
+      }
+      sharing = 1L;
+    }
+  } else if (freeCore(core) == 0L) {
+    if (stoppedForSlice(core) == 0L) {
+      return 11L;
+    }
+    sharing = 1L;
+  }
+  if (core < 4L || core > 7L) {
+    return 11L;
+  }
+  long old = -1L;
+  if (sharing == 1L) {
+    if (taskRoom() == 0L) {
+      return 7L;
+    }
+    old = taskFind(core);
+    if (old < 0L) {
+      return 11L;
+    }
+    /* 先抄旧任务。placeAt 里的 install 会清掉这颗核心上的私有栈。 */
+    obr::os::capture(core, old);
+  }
+  status = placeAt(scratch(), core);
+  if (status != 0L) {
+    return status;
+  }
+  if (sharing == 1L) {
+    Task* previous = taskAt(old);
+    previous.held = 1L;
+    previous.state = TaskState::Ready;
+  }
+  Task* parent = taskAt(taskIndex);
+  long pid = taskSpawn(core, nextPid(), parent.cred.uid, parent.cred.gid, parent.cap, TaskState::Running);
+  if (pid == 0L) {
+    if (sharing == 1L) {
+      obr::os::restore(core, old);
+      Task* back = taskAt(old);
+      back.state = TaskState::Running;
+      obr::os::schedule(core);
+    }
+    return 7L;
+  }
+  Task* child = taskAt(taskByPid(pid));
+  child.ppid = parent.pid;
+  child.cred.euid = parent.cred.euid;
+  child.cred.egid = parent.cred.egid;
+  child.cap = parent.cap;
+  obr::os::hertz(core, 30L);
+  schedWake(core);
+  memory::store64(pid, home + 192L);
+  memory::store64(core, home + 256L);
+  return 0L;
+}

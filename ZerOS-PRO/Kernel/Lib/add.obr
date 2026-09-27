@@ -1,0 +1,4 @@
+/* 动态库。用 -shared -slot 0 编。数据地址按 0 号核心记，接到哪颗核心再由 attach 挪过去。 */
+export deRfun add(long left, long right): long {
+  return left + right;
+}

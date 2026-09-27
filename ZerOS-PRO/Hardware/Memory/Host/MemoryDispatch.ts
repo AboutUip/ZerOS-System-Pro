@@ -34,7 +34,9 @@ export namespace ZerOS {
       const mailboxControl = MailboxRoot.Hardware.Motherboard.mailboxControl;
       const mailboxWords = MailboxRoot.Hardware.Motherboard.mailboxWords;
       const writeMailboxText = MailboxRoot.Hardware.Motherboard.writeMailboxText;
+      const MailboxSpanBytes = MailboxRoot.Hardware.Motherboard.MailboxSpanBytes;
       const spend = ClockRoot.Hardware.Memory.spend;
+      const spendBulk = ClockRoot.Hardware.Memory.spendBulk;
       const setHertz = ClockRoot.Hardware.Memory.setHertz;
       const currentHertz = ClockRoot.Hardware.Memory.currentHertz;
       const currentExecuted = ClockRoot.Hardware.Memory.currentExecuted;
@@ -45,12 +47,17 @@ export namespace ZerOS {
       interface MemoryCommands {
         executeChannelRead: (address: bigint, width: number) => bigint;
         executeChannelWrite: (address: bigint, width: number, data: bigint) => void;
+        executeSpanWrite: (address: bigint, bytes: Uint8Array) => void;
+        executeSpanRead: (address: bigint, bytes: Uint8Array) => void;
         seatActiveMemory: (supported: readonly string[]) => void;
         memoryObserveText: () => string;
       }
 
       /** 主板交来的信箱。bind 之前为空。 */
       let mailbox: SharedArrayBuffer | null = null;
+
+      /** 和主板共用的搬运区。一段读写只同步一次。 */
+      let span: Uint8Array | null = null;
 
       /** 内存实现的装载结果。同一条线程只装一次。 */
       let commands: MemoryCommands | null = null;
@@ -105,6 +112,8 @@ export namespace ZerOS {
             commands = {
               executeChannelRead: channelMod.ZerOS.Hardware.Memory.executeChannelRead,
               executeChannelWrite: channelMod.ZerOS.Hardware.Memory.executeChannelWrite,
+              executeSpanWrite: channelMod.ZerOS.Hardware.Memory.executeSpanWrite,
+              executeSpanRead: channelMod.ZerOS.Hardware.Memory.executeSpanRead,
               seatActiveMemory: seatMod.ZerOS.Hardware.Memory.seatActiveMemory,
               memoryObserveText: seatMod.ZerOS.Hardware.Memory.memoryObserveText,
             };
@@ -131,6 +140,10 @@ export namespace ZerOS {
           throw new Error("[ZerOS.Hardware.Motherboard.MemoryLink] 主板没有交来共享信箱");
         }
         mailbox = value;
+        const shared = record["span"];
+        if (shared instanceof SharedArrayBuffer && shared.byteLength === MailboxSpanBytes) {
+          span = new Uint8Array(shared);
+        }
         const origin = record["clockOrigin"];
         if (typeof origin === "number") {
           adoptOrigin(origin);
@@ -204,6 +217,21 @@ export namespace ZerOS {
           if (op === MailOp.Write) {
             ready.executeChannelWrite(address, width, data);
             await spend(cyclesOf(width));
+            finish(MailStatus.Ok, paceText());
+            return;
+          }
+          if (op === MailOp.WriteSpan || op === MailOp.ReadSpan) {
+            const lane = span;
+            if (lane === null || width < 1 || width > lane.length) {
+              throw new Error("[ZerOS.Hardware.Motherboard.MemoryLink] 搬运区还没有接上");
+            }
+            const view = lane.subarray(0, width);
+            if (op === MailOp.WriteSpan) {
+              ready.executeSpanWrite(address, view);
+            } else {
+              ready.executeSpanRead(address, view);
+            }
+            await spendBulk(width, width);
             finish(MailStatus.Ok, paceText());
             return;
           }

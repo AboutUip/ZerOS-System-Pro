@@ -6,9 +6,10 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 分辨率、刷新率和帧缓冲都在这条页面线程上。呈现直接画到画布。
-         * 节拍按绝对时间轴：第 n 拍到期于起点 + n × 1000 / Hertz。错过的拍丢掉。
-         * 帧缓冲没有新内容时，这一拍只推进时间轴，不再把同一幅拆进画布。
-         * 不创建 Worker。内存和主板在各自的线程里，不会堵住这里的计时。
+ * 节拍按绝对时间轴：第 n 拍到期于起点 + n × 1000 / Hertz。错过的拍丢掉。
+ * 帧缓冲没有新内容时，这一拍只推进时间轴，不再把同一幅拆进画布。
+ * 启动画面的六个点例外：它们按墙上的毫秒换色，不看固件循环快慢，也不看读盘。
+ * 不创建 Worker。内存和主板在各自的线程里，不会堵住这里的计时。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -24,6 +25,7 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as ConfigRoot } from "../Config/DisplayConfig";
+import { ZerOS as SplashRoot } from "./SplashDots";
 import { ZerOS as HertzRoot } from "../Structure/Hertz";
 import { ZerOS as ResolutionRoot } from "../Structure/Resolution";
 
@@ -35,6 +37,11 @@ export namespace ZerOS {
       const DefaultHertz = ConfigRoot.Hardware.Display.Config.DefaultHertz;
       const isHertz = HertzRoot.Hardware.Display.isHertz;
       const isResolution = ResolutionRoot.Hardware.Display.isResolution;
+      const captureSplash = SplashRoot.Hardware.Display.captureSplash;
+      const sameSplash = SplashRoot.Hardware.Display.sameSplash;
+      const splashPhase = SplashRoot.Hardware.Display.splashPhase;
+      const composeSplash = SplashRoot.Hardware.Display.composeSplash;
+      type SplashDots = SplashRoot.Hardware.Display.SplashDots;
 
       const displayPrefix = "[ZerOS.Hardware.Display.Display]";
 
@@ -75,6 +82,9 @@ export namespace ZerOS {
 
         /** 当前帧缓冲已经画到画布上。节拍到期时不必再拆一遍同一幅。 */
         private shown = false;
+
+        /** 启动画面还在。新的一帧不再是这幅 logo 时清掉。 */
+        private splash: SplashDots | null = null;
 
         /** 当前宽度。 */
         public get Width(): number {
@@ -171,17 +181,27 @@ export namespace ZerOS {
         }
 
         /**
-         * 拆开每个像素再写入画布。
-         * 任一像素不合法就在 putImageData 之前抛出，画布保持上一幅。
-         * 不按宿主字节序整块拷贝。透明通道固定为 255，它不是协议像素的一部分。
-         * 位图对象按分辨率复用。检查和拆开放在同一趟，避免每一帧先走一遍再走一遍。
+         * 新的一帧来了才调用。
+         * 仍是同一幅 logo 就继续换色。换成别的画面，包括全黑，换色停止。
          */
-        private paint(): void {
+        private observeSplash(): void {
+          const current = this.splash;
+          const source = this.framebuffer;
+          if (current !== null) {
+            if (!sameSplash(current, source)) {
+              this.splash = null;
+            }
+            return;
+          }
+          this.splash = captureSplash(source, this.width, this.height);
+        }
+
+        /** 把一份像素拆进画布。来源可以是帧缓冲，也可以是换过色的 logo。 */
+        private paintPixels(source: Uint32Array): void {
           const context = this.context;
           if (context === null) {
             throw new Error(`${displayPrefix} 面板还没有接上`);
           }
-          const source = this.framebuffer;
           let image = this.image;
           if (image === null) {
             image = context.createImageData(this.width, this.height);
@@ -206,6 +226,25 @@ export namespace ZerOS {
           }
           context.putImageData(image, 0, 0);
           this.shown = true;
+        }
+
+        /**
+         * 拆开每个像素再写入画布。
+         * 任一像素不合法就在 putImageData 之前抛出，画布保持上一幅。
+         * 不按宿主字节序整块拷贝。透明通道固定为 255，它不是协议像素的一部分。
+         * 位图对象按分辨率复用。检查和拆开放在同一趟，避免每一帧先走一遍再走一遍。
+         * 启动画面在换色期间不把原帧直接送上画布，红点按当前节拍盖上去。
+         */
+        private paint(): void {
+          this.observeSplash();
+          const splash = this.splash;
+          if (splash !== null) {
+            const phase = splashPhase(splash, performance.now());
+            this.paintPixels(composeSplash(splash, phase));
+            splash.shownPhase = phase;
+            return;
+          }
+          this.paintPixels(this.framebuffer);
         }
 
         /** 从现在起重新数拍。已经排好的定时作废。 */
@@ -254,7 +293,18 @@ export namespace ZerOS {
             guard += 1;
           }
           this.nextIndex += 1;
-          if (!this.shown) {
+          const splash = this.splash;
+          if (splash !== null) {
+            const phase = splashPhase(splash, now);
+            if (phase !== splash.shownPhase) {
+              try {
+                this.paintPixels(composeSplash(splash, phase));
+                splash.shownPhase = phase;
+              } catch {
+                /* 这一拍的帧不合法时不呈现，面板保持上一幅。 */
+              }
+            }
+          } else if (!this.shown) {
             try {
               this.paint();
             } catch {
