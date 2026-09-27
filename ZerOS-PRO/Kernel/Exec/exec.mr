@@ -3,5 +3,7 @@ deRfun imageAt(): long;
 deRfun pull(string path, long* size): long;
 deRfun placeAt(long path, long core): long;
 deRfun drvLoad(): void;
+deRfun bootInit(): void;
+deRfun bootPump(): void;
 deRfun execSpawn(long caller, long home): long;
 deRfun loadLib(long caller, long home): long;

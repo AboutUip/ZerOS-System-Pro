@@ -104,7 +104,8 @@ deRfun nasRange(long offset, long count): long {
   return nasOctet(back, 0L);
 }
 
-deRfun nasStage(long address, long count): long {
+/* 按 6 个八位组一组送出。opcode 1 是追加路径，5 是写入阶段。base 指向第一个八位组。 */
+deRfun nasFeed(long opcode, long base, long count): long {
   long index = 0L;
   while (index < count) {
     long room = count - index;
@@ -118,24 +119,24 @@ deRfun nasStage(long address, long count): long {
     long c4 = 0L;
     long c5 = 0L;
     if (room > 0L) {
-      c0 = memory::loadOctet(address + index * 8L);
+      c0 = memory::loadOctet(base + index * 8L);
     }
     if (room > 1L) {
-      c1 = memory::loadOctet(address + (index + 1L) * 8L);
+      c1 = memory::loadOctet(base + (index + 1L) * 8L);
     }
     if (room > 2L) {
-      c2 = memory::loadOctet(address + (index + 2L) * 8L);
+      c2 = memory::loadOctet(base + (index + 2L) * 8L);
     }
     if (room > 3L) {
-      c3 = memory::loadOctet(address + (index + 3L) * 8L);
+      c3 = memory::loadOctet(base + (index + 3L) * 8L);
     }
     if (room > 4L) {
-      c4 = memory::loadOctet(address + (index + 4L) * 8L);
+      c4 = memory::loadOctet(base + (index + 4L) * 8L);
     }
     if (room > 5L) {
-      c5 = memory::loadOctet(address + (index + 5L) * 8L);
+      c5 = memory::loadOctet(base + (index + 5L) * 8L);
     }
-    long back = nasTalk(5L, room, c0, c1, c2, c3, c4, c5);
+    long back = nasTalk(opcode, room, c0, c1, c2, c3, c4, c5);
     long status = nasOctet(back, 0L);
     if (status != 0L) {
       return status;
@@ -143,6 +144,10 @@ deRfun nasStage(long address, long count): long {
     index = index + room;
   }
   return 0L;
+}
+
+deRfun nasStage(long address, long count): long {
+  return nasFeed(5L, address, count);
 }
 
 deRfun nasPull(long address, long count, long* got): long {
@@ -178,45 +183,7 @@ deRfun nasSendAt(long address): long {
   if (raw > 240L || raw < 0L) {
     return 7L;
   }
-  long count = raw;
-  long index = 0L;
-  while (index < count) {
-    long room = count - index;
-    if (room > 6L) {
-      room = 6L;
-    }
-    long c0 = 0L;
-    long c1 = 0L;
-    long c2 = 0L;
-    long c3 = 0L;
-    long c4 = 0L;
-    long c5 = 0L;
-    if (room > 0L) {
-      c0 = memory::loadOctet(address + 64L + index * 8L);
-    }
-    if (room > 1L) {
-      c1 = memory::loadOctet(address + 64L + (index + 1L) * 8L);
-    }
-    if (room > 2L) {
-      c2 = memory::loadOctet(address + 64L + (index + 2L) * 8L);
-    }
-    if (room > 3L) {
-      c3 = memory::loadOctet(address + 64L + (index + 3L) * 8L);
-    }
-    if (room > 4L) {
-      c4 = memory::loadOctet(address + 64L + (index + 4L) * 8L);
-    }
-    if (room > 5L) {
-      c5 = memory::loadOctet(address + 64L + (index + 5L) * 8L);
-    }
-    long back = nasTalk(1L, room, c0, c1, c2, c3, c4, c5);
-    long status = nasOctet(back, 0L);
-    if (status != 0L) {
-      return status;
-    }
-    index = index + room;
-  }
-  return 0L;
+  return nasFeed(1L, address + 64L, raw);
 }
 
 deRfun nasPathAt(long address, long slot): long {
@@ -533,6 +500,23 @@ deRfun obr::nas::rename(string from, string to): long {
     return nasFinish(source);
   }
   long dest = nasPath(to, 1L);
+  if (dest != 0L) {
+    return nasFinish(dest);
+  }
+  long back = nasTalk(6L, 8L, 0L, 0L, 0L, 0L, 0L, 0L);
+  return nasFinish(nasOctet(back, 0L));
+}
+
+deRfun obr::nas::renameAt(long from, long to): long {
+  long opened = nasBegin();
+  if (opened != 0L) {
+    return opened;
+  }
+  long source = nasPathAt(from, 0L);
+  if (source != 0L) {
+    return nasFinish(source);
+  }
+  long dest = nasPathAt(to, 1L);
   if (dest != 0L) {
     return nasFinish(dest);
   }

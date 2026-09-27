@@ -1,0 +1,35 @@
+/* 线性同余的状态放在 static 里，第一次执行才赋 1。 */
+import obr.rand;
+
+deRfun randCell(long write, long value): long {
+  static var[long] kept = 1L;
+  if (write == 1L) {
+    kept = value;
+  }
+  return kept;
+}
+
+deRfun obr::rand::seed(long value): void {
+  long next = value % 4294967296L;
+  if (next < 0L) {
+    next = 0L - next;
+  }
+  if (next == 0L) {
+    next = 1L;
+  }
+  randCell(1L, next);
+}
+
+deRfun obr::rand::next(): long {
+  long state = randCell(0L, 0L);
+  state = (state * 1664525L + 1013904223L) % 4294967296L;
+  randCell(1L, state);
+  return state;
+}
+
+deRfun obr::rand::below(long bound): long {
+  if (bound <= 0L) {
+    return 0L;
+  }
+  return obr::rand::next() % bound;
+}

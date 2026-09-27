@@ -3,7 +3,7 @@
 > 路径：`Documents/Protocol/PhysicalHardware/Cpu/QueryRegistry.md`  
 > 权威优先级：本登记表 > [QueryIndex.md](./QueryIndex.md) > [ZCP1.md](./ZCP1.md) 中的摘要
 
-`query rD, rS, rF, rI` 的座位 `rS`、字段 `rF` 和下标 `rI` 以本表为准。字符读过字符串末尾时结果是 `0`，不是失败。座位或字段没有登记时必须失败，且不得改写 `rD`。
+`query rD, rS, rF, rI` 的座位 `rS`、字段 `rF` 和下标 `rI` 以本表为准。字符读过字符串末尾时结果是 `0`，不是失败。座位或字段没有登记时必须失败，且不得改写 `rD`。客核心能问哪些座位和字段见 [ZCP1.md](./ZCP1.md)，本表不改字段含义。
 
 ## 1. 编码规则
 

@@ -1,0 +1,230 @@
+/* 进制和 Base64。码点先加宽成 long 再比大小，char 不能做关系运算。 */
+import obr.base;
+
+deRfun baseDigit(char unit): long {
+  long n = unit;
+  if (n >= 48L && n <= 57L) {
+    return n - 48L;
+  }
+  if (n >= 97L && n <= 102L) {
+    return n - 87L;
+  }
+  if (n >= 65L && n <= 70L) {
+    return n - 55L;
+  }
+  return -1L;
+}
+
+deRfun b64Digit(char unit): long {
+  string alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  int count = length(alpha);
+  int index = 0;
+  while (index < count) {
+    if (alpha[index] == unit) {
+      return index;
+    }
+    index = index + 1;
+  }
+  return -1L;
+}
+
+deRfun obr::base::text(long value, long radix): string {
+  if (radix < 2L || radix > 16L) {
+    return "";
+  }
+  if (value == 0L) {
+    return "0";
+  }
+  int neg = 0;
+  if (value < 0L) {
+    value = 0L - value;
+    if (value < 0L) {
+      return "";
+    }
+    neg = 1;
+  }
+  string digits = "0123456789abcdef";
+  string out = "";
+  while (value > 0L) {
+    long digit = value % radix;
+    out = digits[digit] + out;
+    value = value / radix;
+  }
+  if (neg == 1) {
+    out = "-" + out;
+  }
+  return out;
+}
+
+deRfun obr::base::read(string text, long radix, long* value): long {
+  *value = 0L;
+  if (radix < 2L || radix > 16L) {
+    return 13L;
+  }
+  int count = length(text);
+  if (count <= 0) {
+    return 7L;
+  }
+  int index = 0;
+  int neg = 0;
+  if (text[0] == '-') {
+    neg = 1;
+    index = 1;
+    if (index >= count) {
+      return 7L;
+    }
+  }
+  long acc = 0L;
+  while (index < count) {
+    long digit = baseDigit(text[index]);
+    if (digit < 0L || digit >= radix) {
+      return 7L;
+    }
+    acc = acc * radix + digit;
+    index = index + 1;
+  }
+  if (neg == 1) {
+    acc = 0L - acc;
+  }
+  *value = acc;
+  return 0L;
+}
+
+deRfun obr::base::hex(string raw): string {
+  int count = length(raw);
+  if (count > 128) {
+    return "";
+  }
+  string digits = "0123456789abcdef";
+  string out = "";
+  int index = 0;
+  while (index < count) {
+    long unit = raw[index];
+    if (unit < 0L || unit > 255L) {
+      return "";
+    }
+    out = out + digits[unit / 16L];
+    out = out + digits[unit % 16L];
+    index = index + 1;
+  }
+  return out;
+}
+
+deRfun obr::base::b64(string raw): string {
+  int count = length(raw);
+  if (count > 192) {
+    return "";
+  }
+  string alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  string out = "";
+  int index = 0;
+  while (index < count) {
+    long b0 = raw[index];
+    long b1 = 0L;
+    long b2 = 0L;
+    int have = 1;
+    if (index + 1 < count) {
+      b1 = raw[index + 1];
+      have = 2;
+    }
+    if (index + 2 < count) {
+      b2 = raw[index + 2];
+      have = 3;
+    }
+    long pack = b0 * 65536L + b1 * 256L + b2;
+    out = out + alpha[(pack / 262144L) % 64L];
+    out = out + alpha[(pack / 4096L) % 64L];
+    if (have == 1) {
+      out = out + "=";
+      out = out + "=";
+    } else {
+      if (have == 2) {
+        out = out + alpha[(pack / 64L) % 64L];
+        out = out + "=";
+      } else {
+        out = out + alpha[(pack / 64L) % 64L];
+        out = out + alpha[pack % 64L];
+      }
+    }
+    index = index + 3;
+  }
+  return out;
+}
+
+deRfun obr::base::unb64(string coded, list[long] out): long {
+  int count = length(coded);
+  if (count == 0) {
+    return 0L;
+  }
+  if (count > 256 || count % 4 != 0) {
+    return 7L;
+  }
+  int index = 0;
+  while (index < count) {
+    long v0 = b64Digit(coded[index]);
+    long v1 = b64Digit(coded[index + 1]);
+    int pad = 0;
+    long v2 = 0L;
+    long v3 = 0L;
+    if (coded[index + 2] == '=') {
+      if (coded[index + 3] != '=') {
+        return 7L;
+      }
+      pad = 2;
+    } else {
+      v2 = b64Digit(coded[index + 2]);
+      if (coded[index + 3] == '=') {
+        pad = 1;
+      } else {
+        v3 = b64Digit(coded[index + 3]);
+      }
+    }
+    if (v0 < 0L || v1 < 0L) {
+      return 7L;
+    }
+    if (pad < 2 && v2 < 0L) {
+      return 7L;
+    }
+    if (pad == 0 && v3 < 0L) {
+      return 7L;
+    }
+    if (pad != 0 && index + 4 != count) {
+      return 7L;
+    }
+    index = index + 4;
+  }
+  index = 0;
+  while (index < count) {
+    long v0 = b64Digit(coded[index]);
+    long v1 = b64Digit(coded[index + 1]);
+    int pad = 0;
+    long v2 = 0L;
+    long v3 = 0L;
+    if (coded[index + 2] == '=') {
+      pad = 2;
+    } else {
+      v2 = b64Digit(coded[index + 2]);
+      if (coded[index + 3] == '=') {
+        pad = 1;
+      } else {
+        v3 = b64Digit(coded[index + 3]);
+      }
+    }
+    long pack = v0 * 262144L + v1 * 4096L;
+    if (pad < 2) {
+      pack = pack + v2 * 64L;
+    }
+    if (pad == 0) {
+      pack = pack + v3;
+    }
+    out.push(pack / 65536L);
+    if (pad < 2) {
+      out.push((pack / 256L) % 256L);
+    }
+    if (pad == 0) {
+      out.push(pack % 256L);
+    }
+    index = index + 4;
+  }
+  return 0L;
+}

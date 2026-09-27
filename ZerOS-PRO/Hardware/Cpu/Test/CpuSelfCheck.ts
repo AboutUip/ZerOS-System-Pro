@@ -555,6 +555,40 @@ export namespace ZerOS {
         }
       }
 
+      /**
+       * 监督核划定另一颗核心之后，那颗核心不能再碰显卡。
+       * 运算仍然留下结果。卸下之后交还监督核，避免这颗核心一直停在客核心。
+       */
+      async function checkGuestPrivilege(): Promise<void> {
+        if (declaredCount() < 2) {
+          return;
+        }
+        try {
+          const opened = await runGuest(0, linesOf([
+            "gate",
+            "place r1, 1",
+            "place r2, 0",
+            "place r3, 64",
+            "bound r1, r2, r3",
+            "halt",
+          ]));
+          if (!opened.Ok) {
+            fail(`客核心没有划定 ${opened.Message}`);
+          }
+          const denied = await runGuest(1, linesOf(["gpu.compose", "halt"]));
+          if (denied.Ok || !denied.Message.includes("特权")) {
+            fail(`客核心仍然执行了显卡指令 ${denied.Message}`);
+          }
+          const kept = await runGuest(1, linesOf(["place r2, 7", "halt"]));
+          if (!kept.Ok || kept.Registers[2] !== 7n) {
+            fail(`客核心的运算没有留下 ${kept.Message}`);
+          }
+        } finally {
+          await runGuest(0, linesOf(["place r1, 1", "release r1", "halt"]));
+          clearGate();
+        }
+      }
+
       export async function runCpuRegisterCheck(): Promise<void> {
         await checkProgramBinary();
         await checkInstall();
@@ -562,6 +596,7 @@ export namespace ZerOS {
         await checkBound();
         await checkAttach();
         await checkPieInstall();
+        await checkGuestPrivilege();
         schedule(0);
         const placedLeft = await place(0, 0, 1n);
         const placedRight = await place(0, 1, 2n);

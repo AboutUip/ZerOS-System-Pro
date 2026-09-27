@@ -40,9 +40,15 @@ Objective-R 原仓库（`D:\Project\Algorithm\Objective-R`）太远，不作为�
 
 `import obr.math;` 之后可以调用 `obr::math::abs`、`min`、`max`、`clamp`。每一组都有 `int` 和 `long` 两个重载，参数和结果是同一整数类型。实参类型完全一致时选这个重载；`int` 字面量可以加宽去配 `long`。这些函数没有 Obr 函数体。编译器在调用处直接写出比较、分支和减法，不生成 `call`。`abs` 对负数取相反数。`min` 取较小值，`max` 取较大值。`clamp` 先和 `low` 比，小于 `low` 就得到 `low`；否则再和 `high` 比，大于 `high` 就得到 `high`；两边都没超出则得到原值。`low` 大于 `high` 时，小于 `low` 得到 `low`，否则得到 `high`。库函数不能再写函数体。
 
-`import obr.ui;` 之后可以调用 `obr::ui` 的布局、样式、文字、原点和按键。这些函数没有 Obr 函数体。`pad` 把边加上内边距。`span(起点, 步进, 下标)` 得到 `起点 + 下标 * 步进`，用来排纵向或横向的下一项。`alignStart` 得到起点，`alignCenter` 在一段空间里居中，`alignEnd` 靠终点。`Align` 是 `long` 枚举：`Start` 是 0，`Center` 是 1，`End` 是 2。`align(起点, 空间, 项, 方式)` 按这三档摆放；方式不是 0、1、2 时失败。`advance(字号)` 是排下一个字的步进：字号小于 1 时失败，小于 2 时是 1，否则是字号除以 2 再加 1。多出的 1 像素是字与字之间的空隙。格子里的墨仍只占字号的一半。`textWidth(字号, 字符串)` 是字数乘这个步进。`textWidth(字号, 字距, 字符串)` 是 `字数 * 步进 + (字数 > 0 ? 字数 - 1 : 0) * 字距`；`步进 + 字距` 小于 1 时失败，空串宽度是 0。`lerp` 按比例取整；`numer` 小于等于 0 得到 `from`，大于等于 `denom` 得到 `to`，`denom` 为 0 时失败。`ease` 是先慢后快再慢的整数平滑：先算 `(to - from) * numer * numer * (3 * denom - 2 * numer)`，再除以 `denom` 的三次方，最后加回 `from`。边界和 `denom` 为 0 的规则与 `lerp` 相同。`meter(跨度, 当前值, 最大值)` 是进度占了多少像素：跨度小于 0、或最大值小于 1 时失败；当前值小于等于 0 得到 0，大于等于最大值得到跨度，否则是跨度乘当前值再除以最大值。`bar` 画一条横条：先按半径画整条轨道，再从左边用填充色盖上和 `meter` 同一段子程序算出的宽度。宽、高或半径小于 0，或最大值小于 1 时失败。填充宽度是 0 时只留轨道。填充自己也是圆角矩形，半径收到不超过它较短边的一半。`rgb` 把三个 0 到 255 的通道收成 `0xRRGGBB`，超出的收到 0 或 255。
+`import obr.ui;` 之后可以调用 `obr::ui` 的布局、样式、文字、原点和按键。这些函数没有 Obr 函数体。`pad` 把边加上内边距。`span(起点, 步进, 下标)` 得到 `起点 + 下标 * 步进`，用来排纵向或横向的下一项。`alignStart` 得到起点，`alignCenter` 在一段空间里居中，`alignEnd` 靠终点。`Align` 是 `long` 枚举：`Start` 是 0，`Center` 是 1，`End` 是 2。`align(起点, 空间, 项, 方式)` 按这三档摆放；方式不是 0、1、2 时失败。`advance(字号)` 是排下一个字的步进：字号小于 1 时失败，小于 2 时是 1，否则是字号除以 2 再加 1。多出的 1 像素是字与字之间的空隙。格子里的墨仍只占字号的一半。`textWidth(字号, 字符串)` 是字数乘这个步进。`textWidth(字号, 字距, 字符串)` 是 `字数 * 步进 + (字数 > 0 ? 字数 - 1 : 0) * 字距`；`步进 + 字距` 小于 1 时失败，空串宽度是 0。`lerp` 按比例取整；`numer` 小于等于 0 得到 `from`，大于等于 `denom` 得到 `to`，`denom` 为 0 时失败。`ease` 是先慢后快再慢的整数平滑：先算 `(to - from) * numer * numer * (3 * denom - 2 * numer)`，再除以 `denom` 的三次方，最后加回 `from`。边界和 `denom` 为 0 的规则与 `lerp` 相同。`meter(跨度, 当前值, 最大值)` 是进度占了多少像素：跨度小于 0、或最大值小于 1 时失败；当前值小于等于 0 得到 0，大于等于最大值得到跨度，否则是跨度乘当前值再除以最大值。`bar` 画一条横条：先按半径画整条轨道，再从左边用填充色盖上和 `meter` 同一段子程序算出的宽度。宽、高或半径小于 0，或最大值小于 1 时失败。填充宽度是 0 时只留轨道。填充自己也是圆角矩形，半径收到不超过它较短边的一半。`rgb` 把三个 0 到 255 的通道收成 `0xRRGGBB`，超出的收到 0 或 255。`title(字号)` 是标题栏高度，字号小于 1 时失败，否则是字号加 8。`below(顶, 字号)` 是这条标题栏的下沿。`hit(x, y, 左, 上, 宽, 高)` 在点落在矩形内时返回 1，宽或高小于 1 时返回 0，左和上包含，右和下不包含。这三份是整数运算，客程序可以调用。
 
 `clear`、`rect`、`round`、`ellipse`、`glyph`、`text`、`clip`、`unclip`、`present`、`width`、`height` 收成已有的显卡指令，不新增中央处理器指令。屏幕像素左上是原点，y 向下。`save` 记下当前原点，栈深超过 32 时失败。`translate` 把之后的绘制原点平移。`restore` 回到最近一次 `save`，栈空时失败。`rect`、`round`、`ellipse`、`glyph`、`text`、`clip` 都会加上这个原点。`round` 的半径收到不超过较短边的一半，0 是直角。`ellipse` 是内切椭圆。`text` 有六参和七参两档；七参在字号步进上再加字距，步进小于 1 时失败。`shadow(dx, dy, count, color, alpha)` 让之后的 `text` 和 `glyph` 先沿偏移连画 `count` 层，`dx` 向右为正。层号从 1 到 `count`，`count` 最远，画在 `层号 * dx`、`层号 * dy`，透明度是 `alpha * (count - 层号 + 1) / count`，越远越淡。`count` 小于 1 或大于 8 时失败。`noshadow` 把层数清成 0。没调用过 `shadow` 的程序，文字绘制和以前相同。`width` 和 `height` 是颜色目标的边。`frame` 每次加 1，第一次返回 1。`key` 返回新的按下或重复的键位名；没有新事件、抬起、或找不到键盘时是 0，第一次调用只记下已完成次数。`enter` 在这次新事件的键位名是 Enter 时返回 1。`clip` 打开剪裁并设置矩形，`unclip` 关掉剪裁。`present` 就是 `gpu.present`。矩形宽高为负、码点不在 `0x20` 至 `0x7E`、圆角半径为负，由显卡拒绝。字号、步进和 5×7 字形与 AccelRegistry、AccelGlyph 一致。
+
+`import obr.nas;` 读 `lib/obr.nas.mr`，函数体在 `lib/obr.nas.obr`。使用时要把这个 `.obr` 和程序一起交给编译器，并让 `board.mr`、`memory.mr` 处在搜索路径里。会话字仍由扩展口上的 `xchg` 组成。按句柄读取用 `carry` 一次做完。路径是 `string`，或已经放在位元线上的计数字符串（`statAt`、`openAt`、`readdirAt`、`mkdirAt`、`unlinkAt`、`renameAt`）。`rename` 的两条路径分别放进槽 0 和槽 1。读写缓冲区是线性位地址，相邻八位组相隔 8 位。一次读取从 262144 个八位组起，搬满则加倍，最多 268435456。写入仍走 16 位窗口，最多 65535。官方库使用扩展口 2，这是标定，不是协议。客程序不直接用这份口。
+
+`import obr.text;`、`import obr.proc;`、`import obr.con;` 是客程序用的库。函数体分别在 `obr.text.obr`、`obr.proc.obr`、`obr.con.obr`，使用时和程序一起交给编译器。这三份不进内核链接。计数字符串是长度字加从 `+64` 起、隔 8 位的八位组，路径最长 240。`obr::text::same` 按码点比较两段字符串，相同是 1。`string` 的 `==` 仍只比引用。`obr::proc::home` 是 `query(1, 8, core())`。文件、等待、派生、管道、信号和堆的参数放在这个窗口里：`+128`、`+192`、`+256`、`+320` 是描述符和个数，`+512` 是路径，`+4096` 是读写字节。分配、释放、装入和卸下用窗口开头的两个字。`obr::proc::slot` 读回结果字。服务号与内核入口一致，返回值就是内核状态，`0` 是成功。`wait` 在子任务还在跑时不返回。`obr::con::open` 以只写打开 `/dev/con`，`obr::con::write` 一次最多 64 个八位组。
+
+`import obr.base;`、`import obr.hash;`、`import obr.rand;`、`import obr.json;` 的函数体在同名 `.obr`，使用时和程序一起交给编译器，不进内核链接。`obr::base::text` / `read` 做 2 到 16 进制，`hex` 把码点写成两位十六进制，`b64` / `unb64` 做 Base64。`unb64` 把八位组推进调用方的 `list[long]`。`obr::hash::mix` 是 djb2，从 5381 起按 `hash * 33 + 码点` 对 4294967296 取余。`obr::rand` 是乘数 1664525、加数 1013904223、模 4294967296 的线性同余，种子 0 当成 1，同一颗核心一份状态。语言没有 JSON 类型。`obr::json::parse` 成功返回 1，树留到下一次 `parse`。只接受对象、数组、字符串、整数、`true`、`false`、`null`。不接受小数、指数、`\u`、`\b`、`\f`。源文本最长 512，节点最多 64。
 
 `namespace 名 { ... }` 与 `::` 用来写成 `gpu::glyph` 这种限定名。带 `::` 的函数名不能 `export`。`export deRfun` 的标号就是函数名。
 
@@ -108,11 +114,11 @@ class 派生 : 基类 { }
 
 `@Callfun(文件.obr)` 写在函数前面，只允许列出的源文件调用。`@Callfun(*)` 与不写一样，谁都能调。`@Callfun(!*)` 禁止用户代码调用。失败信息是「调用被 @Callfun 禁止」或「调用链不允许」。
 
-`async deRfun` 里才能写 `await 调用()`。`await` 的操作数必须是调用。它现在就是一次普通调用，不挂起核心，也没有调度。
+`async deRfun` 里才能写 `await 调用()`。`await` 的操作数必须是调用。调用完成后发出已有的 `yield`：这颗核心停在下一条，停止原因是 1，寄存器和栈都留着，返回值仍在 `r0`。监督核按时间片规则再调度它。同一核心上若还有一份就绪任务，可以先换上那一份。被调用的函数里如果再 `await`，就停在那一层，外层帧还在栈上；恢复后从那一层接着做，做完再回到这次 `await` 的下一条。`svc` 会先以停止原因 2 停住，回复之后才执行这次 `yield`。
 
 ## 指令头
 
-`gpu.mr`、`memory.mr` 以及主板上的头文件里，与指令表同名同参的声明收成一条已有 ZAP，不建栈帧，也不能再写函数体。`bulk(long port, long address, long count): long` 收成 `fill r0, r1, r2, r3`，把扩展口上已经准备好的应答一次写到位元线。函数名不用 `fill`，避免和画面填充重名。`carry(long port, long handle, long offset, long address, long count): long` 收成 `carry r0, r1, r2, r3, r4, r5`，按句柄一次读完至多 268435456 个八位组。一次实际读多少由 ZNP1 在这个上界里从 262144 起加倍。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double`、`inbox(long* word): long` 以外，这些参数是 `long`。`gpu::accel(long op, double a, double b, double c, double d): long` 收成 `gpu.accel r6, r0, r1, r2, r3, r4`，再把 `r6` 拷回 `r0`。`op` 是整数操作码，四个 `double` 按二进制 64 位型传入。不要为 Obr 增加只给编译器使用的 CPU 指令。新指令必须是通用的 ZCP1 指令。
+`gpu.mr`、`memory.mr` 以及主板上的头文件里，与指令表同名同参的声明收成一条已有 ZAP，不建栈帧，也不能再写函数体。`bulk(long port, long address, long count): long` 收成 `fill r0, r1, r2, r3`，把扩展口上已经准备好的应答一次写到位元线。函数名不用 `fill`，避免和画面填充重名。`carry(long port, long handle, long offset, long address, long count): long` 收成 `carry r0, r1, r2, r3, r4, r5`，按句柄一次读完至多 268435456 个八位组。一次实际读多少由 ZNP1 在这个上界里从 262144 起加倍。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double`、`inbox(long* word): long` 以外，这些参数是 `long`。`gpu::accel(long op, double a, double b, double c, double d): long` 收成 `gpu.accel r6, r0, r1, r2, r3, r4`，再把 `r6` 拷回 `r0`。`gpu::character(long x, long y, long code, long foreground, long background): void` 收成 `gpu.character r0, r1, r2, r3, r4`，直接改帧上的 8×8 字形，不进节点树。`op` 是整数操作码，四个 `double` 按二进制 64 位型传入。不要为 Obr 增加只给编译器使用的 CPU 指令。新指令必须是通用的 ZCP1 指令。
 
 ## 产出
 
@@ -120,4 +126,4 @@ class 派生 : 基类 { }
 
 ## 还没有
 
-`@Overwrite`、`system.mr`、`std::rout`、宏。`await` 不挂起。`public` / `private` 不做访问控制。没有多重继承，没有虚函数。集合没有垃圾回收，不能放下结构体，集合和映射也没有下标。没有通用的 JSON 对象模型。
+`@Overwrite`、`system.mr`、`std::rout`、宏。`public` / `private` 不做访问控制。没有多重继承，没有虚函数。集合没有垃圾回收，不能放下结构体，集合和映射也没有下标。语言没有 JSON 类型，也没有硬件随机数。

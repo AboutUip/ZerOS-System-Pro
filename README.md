@@ -2,7 +2,7 @@
 
 浏览器里的教学向虚拟机。分层可以拆开看，兼容性以协议为准，实现代码不是规范。
 
-与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件。系统层还是空的。内核映像放在 NAS 的 `/kernel/`，由固件在倒计时结束时装到核心 2。
+与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件。用户态在 `ZerOS-PRO/System/`：1 号任务和会话。内核映像放在 NAS 的 `/kernel/`，由固件在倒计时结束时装到核心 2。
 
 许可证：[GNU Affero GPL v3](./LICENSE)（AGPLv3）。
 
@@ -12,8 +12,8 @@
 ZerOS-System-Pro/
 ├── ZerOS-PRO/
 │   ├── Boot/                 # 通电、启动画面、F12 进入设置
-│   ├── Kernel/               # 客程序 .obr，编译进 NAS 的 /kernel/
-│   ├── System/               # 空命名空间
+│   ├── Kernel/               # 内核 .obr，编译进 NAS 的 /kernel/
+│   ├── System/               # 用户态。Init 是 1 号，Session 是 /os/session
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板与插座
 │       ├── Cpu/  Gpu/  Memory/
@@ -46,7 +46,7 @@ npm run dev
 | `npm run check` | 类型检查 + Lint |
 | `npm run build` | 校验后产出到 `Toolchain/Dist/` |
 
-开发服的根是 `ZerOS-PRO/Hardware/Display`。引导在页面里给主板通电，再把启动画面和固件交给 CPU。浏览器包里没有内核映像。`System` 不参与这一段。
+开发服的根是 `ZerOS-PRO/Hardware/Display`。引导在页面里给主板通电，再把启动画面和固件交给 CPU。浏览器包里没有内核映像，也没有 `System/` 里的用户态映像。这两份都在 NAS 上。
 
 ## 协议
 
@@ -75,7 +75,7 @@ npm run dev
 | 驱动 | `Driver/Gpu/` | 固件调用的 OpenGL 切片 |
 | 语言 | `Compiler/Obr/` | 默认交出无扩展名二进制。同一次编译另写 `.zap` 供对照。语法见 [编译器说明](./Compiler/Obr/README.md) |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
-| 系统 | `System/` | 空命名空间 |
+| 系统 | `System/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`Session/session.obr` 客路径 `/os/session` |
 
 设置画面只展示查询得到的状态，不改配置。内核由固件在倒计时结束时装入，不从设置画面进入。
 

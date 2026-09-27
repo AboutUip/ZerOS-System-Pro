@@ -1,0 +1,17 @@
+/* await 在调用返回后 yield。两次加一，结果是 22，main 返回 1。 */
+async deRfun step(long value): long {
+  return value + 1L;
+}
+
+async deRfun pick(): long {
+  long first = await step(20L);
+  long second = await step(first);
+  return second;
+}
+
+deRfun main(): int {
+  if (pick() == 22L) {
+    return 1;
+  }
+  return 0;
+}

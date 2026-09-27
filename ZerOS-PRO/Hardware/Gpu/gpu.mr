@@ -5,6 +5,7 @@ deRfun text(long parent, long x, long y, long width, long height): long;
 deRfun align(long node, long x, long y): void;
 deRfun paint(long node, long foreground, long background): void;
 deRfun glyph(long node, long code): void;
+deRfun character(long x, long y, long code, long foreground, long background): void;
 deRfun drop(long node): void;
 deRfun compose(): void;
 deRfun present(): void;

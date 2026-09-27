@@ -1,0 +1,26 @@
+/* 用户态 1 号任务。用 -pie -slot 0 编译，放到 /kernel/init。
+   加载画面由固件画。这里只拉起 /os/session，空转一会儿再等，
+   好让会话先把资源准备完，不和驱动抢监督核的保持位。 */
+import board;
+import memory;
+import obr.os;
+import obr.proc;
+import obr.text;
+
+deRfun main(): int {
+  long home = query(1L, 8L, obr::os::core());
+  if (obr::text::put(home + 512L, "/os/session") == 0L) {
+    obr::proc::spawn(home, 0L);
+  }
+  long spin = 0L;
+  while (spin < 200000L) {
+    spin = spin + 1L;
+  }
+  while (1) {
+    memory::store64(0L, home + 128L);
+    if (obr::os::svc(21L) == 2L) {
+      obr::os::yield();
+    }
+  }
+  return 0;
+}

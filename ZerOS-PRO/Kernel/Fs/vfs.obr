@@ -6,6 +6,7 @@ import sched;
 import trap;
 import board;
 import memory;
+import gpu;
 import obr.nas;
 
 struct Inode {
@@ -991,7 +992,12 @@ deRfun doRead(long caller, long home, long writing): long {
     return 5L;
   }
   File* file = fileAt(slot);
+  /* 1 号的第一行不依赖打开。描述符还没挂上时，写就直接画到控制台。 */
   if (file.used == 0L) {
+    if (writing == 1L && taskIndex >= 0L && taskAt(taskIndex).pid == 1L) {
+      conWrite(home);
+      return 0L;
+    }
     return 5L;
   }
   if (file.ino < 0L) {
@@ -1009,6 +1015,15 @@ deRfun doRead(long caller, long home, long writing): long {
     }
     if (writing == 1L && file.flags == 0L) {
       return -1L;
+    }
+    /* 核心 2 上的设备由监督核自己画，不进驱动环。读到的个数是 0。 */
+    if (devAt(file.handle).core == 2L) {
+      if (writing == 0L) {
+        memory::store64(0L, home + 320L);
+        return 0L;
+      }
+      conWrite(home);
+      return 0L;
     }
     if (writing == 0L) {
       return devMove(file.handle, home, 0L, 0L, caller, 1L);
@@ -1428,8 +1443,145 @@ deRfun devDir(): long {
   return 1L;
 }
 
-deRfun devPublish(long core, long pid, long name, long nameLen): long {
-  if (core < 4L || core > 7L || pid < 1L || nameLen < 1L || nameLen > 32L) {
+/* 进入时 r1 是调用者窗口。个数在 +256，字节在 +4096，实际个数写回 +320。
+   列在 17838272，行在 17838336，窗口记在 17838592。步数留在 r6，个数留在 r7。
+   这些地址已经是核心 2 装入后的位址，__zap__ 不再按槽位挪动。一次最多 64 个八位组。 */
+deRfun conWrite(long home): void {
+  __zap__ {
+    store.64 r1, 17838592
+    place r2, 256
+    add r5, r1, r2
+    ldi.64 r7, r5
+    place r2, 0
+    lt r0, r7, r2
+    jz r0, conCap
+    place r7, 0
+    conCap:
+    place r2, 64
+    lt r0, r7, r2
+    jnz r0, conUse
+    place r7, 64
+    conUse:
+    place r6, 0
+    conLoop:
+    lt r0, r6, r7
+    jz r0, conFlush
+    place r2, 8
+    mul r0, r6, r2
+    place r2, 4096
+    add r0, r0, r2
+    load.64 r3, 17838592
+    add r5, r3, r0
+    ldi.octet r1, r5
+    place r2, 10
+    eq r0, r1, r2
+    jnz r0, conNl
+    place r2, 32
+    lt r0, r1, r2
+    jnz r0, conNext
+    place r2, 126
+    gt r0, r1, r2
+    jnz r0, conNext
+    or r4, r1, r1
+    load.64 r0, 17838336
+    place r2, 8
+    mul r1, r0, r2
+    load.64 r0, 17838272
+    mul r0, r0, r2
+    or r2, r4, r4
+    place r3, 16777215
+    place r4, 0
+    gpu.character r0, r1, r2, r3, r4
+    load.64 r0, 17838272
+    place r2, 1
+    add r0, r0, r2
+    place r2, 80
+    lt r1, r0, r2
+    jnz r1, conStay
+    conNl:
+    place r0, 0
+    store.64 r0, 17838272
+    conDown:
+    load.64 r0, 17838336
+    place r2, 1
+    add r0, r0, r2
+    place r2, 60
+    lt r1, r0, r2
+    jnz r1, conRow
+    place r0, 0
+    conRow:
+    store.64 r0, 17838336
+    place r2, 1
+    jnz r2, conNext
+    conStay:
+    store.64 r0, 17838272
+    conNext:
+    place r2, 1
+    add r6, r6, r2
+    jnz r2, conLoop
+    conFlush:
+    gpu.present
+    load.64 r3, 17838592
+    place r2, 320
+    add r5, r3, r2
+    sti.64 r7, r5
+  }
+}
+
+/* 固件铺上加载画面之后把 4096 写成 1。等到这一步再往下初始化，画面才不会被盖掉。
+   这里不能 yield：引导还没进主循环，让出之后没有人再把监督核叫醒。
+   固件在另一颗核心上写 4096。这一步不再往控制台写字。 */
+deRfun conShow(): void {
+  __zap__ {
+    conWait:
+    place r1, 4096
+    ldi.64 r0, r1
+    place r2, 1
+    eq r0, r0, r2
+    jz r0, conWait
+  }
+}
+
+/* /dev/con 挂在监督核上。名字先放在驱动名暂存 17860608，drvLoad 之后会盖掉。
+   光标两个字一并清掉。栈针在 17825792，第四个参数从这里推进去再调 devPublish。
+   这段不展开进 main，免得占满入口映像。 */
+deRfun conPublish(): void {
+  __zap__ {
+    place r0, 99
+    store.octet r0, 17860608
+    place r0, 111
+    store.octet r0, 17860616
+    place r0, 110
+    store.octet r0, 17860624
+    place r0, 0
+    store.64 r0, 17838272
+    store.64 r0, 17838336
+    load.64 r4, 17825792
+    place r0, 3
+    sti.64 r0, r4
+    place r5, 64
+    add r4, r4, r5
+    store.64 r4, 17825792
+    place r1, 2
+    place r2, 1
+    place r3, 17860608
+    call devPublish
+    load.64 r4, 17825792
+    place r5, 64
+    sub r4, r4, r5
+    store.64 r4, 17825792
+  }
+}
+
+/* 导出是为了让 conPublish 的机器码能按名字调用。标号挡住内联，避免再复制一份。 */
+export deRfun devPublish(long core, long pid, long name, long nameLen): long {
+  __zap__ {
+    conKeep:
+  }
+  if (pid < 1L || nameLen < 1L || nameLen > 32L) {
+    return 6L;
+  }
+  if (core != 2L && (core < 4L || core > 7L)) {
     return 6L;
   }
   long dir = devDir();

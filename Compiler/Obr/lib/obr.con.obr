@@ -1,0 +1,26 @@
+/* 控制台。打开走路径，写入把字符铺在窗口 +4096，相邻隔 8 位。 */
+import memory;
+import obr.proc;
+import obr.text;
+
+deRfun obr::con::open(long home): long {
+  long placed = obr::text::put(home + 512L, "/dev/con");
+  if (placed != 0L) {
+    return placed;
+  }
+  return obr::proc::open(home, 1L);
+}
+
+deRfun obr::con::write(long home, long fd, string text): long {
+  int raw = length(text);
+  if (raw < 0 || raw > 64) {
+    return 7L;
+  }
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], home + 4096L + index * 8L);
+    index = index + 1L;
+  }
+  return obr::proc::write(home, fd, 0L, count);
+}

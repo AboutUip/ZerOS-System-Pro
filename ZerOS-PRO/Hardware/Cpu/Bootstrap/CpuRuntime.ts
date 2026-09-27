@@ -122,6 +122,12 @@ export namespace ZerOS {
         boundLength: bigint;
         /** 系统调用的回复要写进这个寄存器。空表示没在等。 */
         svcDest: number | null;
+        /**
+         * 监督核已经用 install 或 bound 划定过的其它核心。
+         * 这种核心只能做运算、窗口内访存、停机、让出、时间片、查自己的编号和系统调用。
+         * 固件所在的核心、监督核自己，以及监督核出现之前装上的核心，都不是客核心。
+         */
+        guest: boolean;
       }
 
       /** 监督核。空表示还没有人调用 gate，这时装入和调度不设限。 */
@@ -272,6 +278,7 @@ export namespace ZerOS {
           boundOrigin: 0n,
           boundLength: -1n,
           svcDest: null,
+          guest: false,
         };
         port.onmessage = (event: MessageEvent): void => {
           onCoreMessage(core, event.data as unknown);
@@ -521,6 +528,56 @@ export namespace ZerOS {
         return gateOrdinal === null || caller === gateOrdinal;
       }
 
+      /**
+       * 监督核把另一颗核心装入或划定之后，那颗核心成为客核心。
+       * 监督核划定自己时不标记。还没有监督核时，装入和划定都不标记。
+       */
+      function markGuest(target: number): void {
+        if (gateOrdinal !== null && target !== gateOrdinal) {
+          requireOrdinal(target).guest = true;
+        }
+      }
+
+      /**
+       * 客核心不能碰显卡、扩展口、频率，也不能把整数交给别的核或自己再当监督核。
+       * 运算、访存、halt、yield、svc、slice、core 不在这张表里。
+       */
+      function guestBlocked(op: string): boolean {
+        return op.startsWith("gpu.")
+          || op === "port.state"
+          || op === "port.char"
+          || op === "port.byte"
+          || op === "xchg"
+          || op === "inbox"
+          || op === "fill"
+          || op === "carry"
+          || op === "mem.hertz"
+          || op === "mem.metric"
+          || op === "hertz"
+          || op === "metric"
+          || op === "pass"
+          || op === "take"
+          || op === "gate";
+      }
+
+      function refuseGuest(ordinal: number, op: string): void {
+        if (requireOrdinal(ordinal).guest && guestBlocked(op)) {
+          fail("核心特权指令");
+        }
+      }
+
+      /**
+       * 客核心只能问 CPU 座位。
+       * 字段 0 至 4 是整机身份，任意下标都可以。
+       * 字段 5 至 12 是某一颗核心的状态，下标必须是正在执行的自己。
+       */
+      function guestMayQuery(ordinal: number, seat: number, field: number, index: number): boolean {
+        if (seat !== 1 || field < 0 || field > 12) {
+          return false;
+        }
+        return field < 5 || index === ordinal;
+      }
+
       function accessBits(opcode: number): number {
         if (opcode === 1 || opcode === 2) {
           return 1;
@@ -732,6 +789,7 @@ export namespace ZerOS {
             limit,
             boundOrigin: core.boundOrigin,
             boundLength: core.boundLength,
+            guest: core.guest,
             ...(steps === null ? {} : { steps }),
           });
         });
@@ -1335,6 +1393,7 @@ export namespace ZerOS {
         targetCore.svcDest = null;
         targetCore.sliceQuota = 0;
         targetCore.sliceLeft = 0;
+        markGuest(target);
       }
 
       /**
@@ -1414,6 +1473,7 @@ export namespace ZerOS {
           if (step === undefined) {
             break;
           }
+          refuseGuest(ordinal, step.Op);
           if (step.Op === "halt") {
             const stopping = requireOrdinal(ordinal);
             stopping.resumeCursor = null;
@@ -1485,6 +1545,7 @@ export namespace ZerOS {
             chosen.boundOrigin = 0n;
             chosen.boundLength = 0n;
             chosen.latch = null;
+            chosen.guest = false;
             await wipeRegisters(target);
             await clearPrivate(target, "release");
             requireOrdinal(ordinal).Executed += 1;
@@ -1504,6 +1565,7 @@ export namespace ZerOS {
             }
             chosen.boundOrigin = origin;
             chosen.boundLength = length;
+            markGuest(target);
             requireOrdinal(ordinal).Executed += 1;
           } else if (step.Op === "pass") {
             const target = coreOrdinal(await peekRegister(ordinal, step.Core));
@@ -1670,6 +1732,9 @@ export namespace ZerOS {
             const seat = numberFromRegister(await peekRegister(ordinal, step.Seat));
             const field = numberFromRegister(await peekRegister(ordinal, step.Field));
             const index = numberFromRegister(await peekRegister(ordinal, step.Index));
+            if (requireOrdinal(ordinal).guest && !guestMayQuery(ordinal, seat, field, index)) {
+              fail("核心特权指令");
+            }
             if (seat === 1) {
               const value = queryCpu(field, index);
               if (field === 2 || field === 3 || field === 4) {

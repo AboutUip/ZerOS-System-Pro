@@ -1,0 +1,21 @@
+/* 标题栏高度、下沿和命中。16 加 8 是 24，顶 10 的下沿是 34。通过时返回 73。 */
+import obr.ui;
+
+deRfun main(): int {
+  if (obr::ui::title(16L) != 24L) {
+    return 1;
+  }
+  if (obr::ui::below(10L, 16L) != 34L) {
+    return 2;
+  }
+  if (obr::ui::hit(8L, 8L, 0L, 0L, 100L, 24L) != 1L) {
+    return 3;
+  }
+  if (obr::ui::hit(8L, 24L, 0L, 0L, 100L, 24L) != 0L) {
+    return 4;
+  }
+  if (obr::ui::hit(0L, 0L, 0L, 0L, 0L, 24L) != 0L) {
+    return 5;
+  }
+  return 73;
+}

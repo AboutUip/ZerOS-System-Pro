@@ -1,4 +1,4 @@
-/* NAS。函数体在 obr.nas.obr。通过扩展口上的 xchg 组 ZNP1 的字，不新增中央处理器指令。 */
+/* NAS。函数体在 obr.nas.obr。通过扩展口上的 xchg 组 ZNP1 的字，不新增中央处理器指令。客程序不直接用这份口，走 obr.proc。 */
 namespace obr {
 namespace nas {
 /* 服务有应答时是 1，否则是 0。这一次会复位会话。官方库使用扩展口 2，这是标定，不是协议。 */
@@ -19,7 +19,7 @@ deRfun readdir(string path, long index, long address, long capacity, long* got):
 deRfun mkdir(string path): long;
 /* 删除文件或空目录。 */
 deRfun unlink(string path): long;
-/* 把 from 改名为 to。 */
+/* 把 from 改名为 to。两条路径分别放进槽 0 和槽 1。 */
 deRfun rename(string from, string to): long;
 /* 下面这些和上面同名操作相同，路径是已经放在位元线上的字符串：先一个 64 位长度，再每个八位组隔 8 位。 */
 deRfun statAt(long path, long* kind, long* size): long;
@@ -27,5 +27,7 @@ deRfun openAt(long path, long mode, long* handle): long;
 deRfun readdirAt(long path, long index, long address, long capacity, long* got): long;
 deRfun mkdirAt(long path): long;
 deRfun unlinkAt(long path): long;
+/* 两条路径都是计数字符串，分别放进槽 0 和槽 1。 */
+deRfun renameAt(long from, long to): long;
 }
 }

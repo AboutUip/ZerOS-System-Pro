@@ -1,0 +1,11 @@
+/* 32 位线性同余。乘数 1664525，加数 1013904223，模 4294967296。
+   没有硬件熵。种子 0 和取模后仍为 0 的值都改成 1。同一颗核心上共用一份状态。 */
+namespace obr {
+namespace rand {
+deRfun seed(long value): void;
+/* 返回 0 到 4294967295。 */
+deRfun next(): long;
+/* 返回 0 到 bound-1。bound 小于 1 时返回 0。 */
+deRfun below(long bound): long;
+}
+}

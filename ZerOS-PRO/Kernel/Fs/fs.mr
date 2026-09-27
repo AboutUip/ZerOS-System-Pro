@@ -8,3 +8,5 @@ deRfun vfsPrepare(long caller, long path): long;
 deRfun scratch(): long;
 deRfun devPublish(long core, long pid, long name, long nameLen): long;
 deRfun devDrop(long pid): void;
+deRfun conPublish(): void;
+deRfun conShow(): void;

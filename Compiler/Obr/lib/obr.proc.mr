@@ -1,0 +1,63 @@
+/* 客程序的系统调用。home 是 query(1, 8, core())，也就是本核心的界限起点。
+   窗口里的字：
+   +0 分配的位数、释放的块地址、装入或卸下的核心号。
+   +64 释放时的位数。
+   +128 打开标志、描述符、目录下标、权限、属主、等待的 pid、spawn 的核心、信号的目标、管道的读端、驱动方向。
+   +192 打开得到的描述符、读写偏移、目录容量、属组、退出码、spawn 得到的 pid、信号号、管道的写端、接入得到的入口。
+   +256 读写个数、目录读回的名字长度。
+   +320 实际读写的个数。
+   +512 路径，排法见 obr.text。
+   +4096 读写和目录项的八位组，相邻隔 8 位，不是计数字符串。
+   返回值就是内核状态，0 是成功。等待时子任务还在跑，这次调用不返回。 */
+namespace obr {
+namespace proc {
+/* 本核心的界限起点。 */
+deRfun home(): long;
+/* 读窗口里的一个字。offset 是上面列出的位偏移。 */
+deRfun slot(long home, long offset): long;
+/* 服务 5。路径已在 +512。标志 0 只读，1 只写并截断，2 读写，3 追加。成功时描述符在 +192。 */
+deRfun open(long home, long flags): long;
+/* 服务 7。字节在 +4096。实际个数在 +320。 */
+deRfun read(long home, long fd, long offset, long count): long;
+/* 服务 8。字节在 +4096。实际个数在 +320。 */
+deRfun write(long home, long fd, long offset, long count): long;
+/* 服务 6。 */
+deRfun close(long home, long fd): long;
+/* 服务 4。路径在 +512。种类在 +128，大小在 +192，权限在 +256，属主在 +320，属组在 +384。 */
+deRfun stat(long home): long;
+/* 服务 9。路径在 +512。名字八位组写到 +4096，个数在 +256。 */
+deRfun readdir(long home, long index, long capacity): long;
+/* 服务 10。路径在 +512。 */
+deRfun mkdir(long home): long;
+/* 服务 11。路径在 +512。 */
+deRfun unlink(long home): long;
+/* 服务 14。路径在 +512。mode 只留低 9 位。 */
+deRfun chmod(long home, long mode): long;
+/* 服务 15。路径在 +512。 */
+deRfun chown(long home, long uid, long gid): long;
+/* 服务 16。路径在 +512。 */
+deRfun chdir(long home): long;
+/* 服务 20。读端在 +128，写端在 +192。 */
+deRfun pipe(long home): long;
+/* 服务 17。路径在 +512。core 为 0 时由内核选一颗。pid 在 +192，实际核心在 +256。 */
+deRfun spawn(long home, long core): long;
+/* 服务 18。不能把 1 号作为目标。 */
+deRfun kill(long home, long pid, long sig): long;
+/* 服务 19。返回取到的信号，没有则是 0。 */
+deRfun sigtake(): long;
+/* 服务 21。pid 为 0 表示任意子任务。成功时返回值是 pid，退出码在 +192。没有子任务是 2。 */
+deRfun wait(long home, long pid): long;
+/* 服务 2。返回块地址。 */
+deRfun alloc(long home, long size): long;
+/* 服务 3。 */
+deRfun free(long home, long block, long size): long;
+/* 服务 12。需要能力位 0。返回装上的核心，失败是 0。 */
+deRfun load(long home, long core): long;
+/* 服务 13。需要能力位 0。 */
+deRfun unload(long home, long core): long;
+/* 服务 22。路径在 +512。入口地址在 +192。 */
+deRfun loadlib(long home): long;
+/* 服务 23。只有发布了设备的驱动调用。dir 0 从下行环取出，1 写入上行环。个数在 +256，字节在 +4096，实际个数在 +320。 */
+deRfun devio(long home, long dir): long;
+}
+}

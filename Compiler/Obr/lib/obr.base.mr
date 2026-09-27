@@ -1,0 +1,17 @@
+/* 进制、十六进制和 Base64。没有函数体里的移位：移位会把值收成 32 位，这里用乘除。
+   进制只接受 2 到 16。整数文本最长不会超过一个 long 的十进制位数。
+   十六进制和 Base64 的输入最长 128 和 192 个码点。解 Base64 时把八位组推进调用方的列表。 */
+namespace obr {
+namespace base {
+/* 把非负或带减号的整数写成进制文本。进制不对，或是最小的负数时，得到空串。0 得到 "0"。 */
+deRfun text(long value, long radix): string;
+/* 按进制读回整数。成功返回 0 并写入 value。进制不对是 13，文本不合法是 7。 */
+deRfun read(string text, long radix, long* value): long;
+/* 每个码点写成两位小写十六进制。超长或码点不在 0 到 255 时得到空串。 */
+deRfun hex(string raw): string;
+/* 把文本编成 Base64。空串得到空串。长于 192 时得到空串。 */
+deRfun b64(string raw): string;
+/* 把 Base64 解成八位组，依次 push 进 out。成功返回 0。长度不是 4 的倍数、含非法字符或长于 256 时返回 7，此时 out 不动。 */
+deRfun unb64(string coded, list[long] out): long;
+}
+}

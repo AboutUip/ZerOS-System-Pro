@@ -611,6 +611,91 @@ void Generator::emitUi(const Expr& expr, const Function& target) {
     accel(38);
     return;
   }
+  if (name == "obr::ui::title" || name == "obr::ui::below") {
+    int topSlot = -1;
+    if (name == "obr::ui::below") topSlot = keep(0);
+    const int size = keep(name == "obr::ui::title" ? 0 : 1);
+    const std::string ready = fresh("e");
+    loadSlot(size, TypeKind::Long);
+    emit("or r1, r0, r0");
+    emit("place r2, 1");
+    emit("lt r0, r1, r2");
+    emit("jz r0, " + ready);
+    fault();
+    emit(ready + ":");
+    loadSlot(size, TypeKind::Long);
+    emit("or r1, r0, r0");
+    emit("place r2, 8");
+    emit("add r0, r1, r2");
+    if (name == "obr::ui::below") {
+      emit("or r1, r0, r0");
+      loadSlot(topSlot, TypeKind::Long);
+      emit("or r2, r0, r0");
+      emit("add r0, r2, r1");
+      drop(2);
+    } else {
+      drop(1);
+    }
+    return;
+  }
+  if (name == "obr::ui::hit") {
+    const int x = keep(0);
+    const int y = keep(1);
+    const int left = keep(2);
+    const int top = keep(3);
+    const int width = keep(4);
+    const int height = keep(5);
+    const std::string miss = fresh("e");
+    const std::string accept = fresh("e");
+    loadSlot(width, TypeKind::Long);
+    emit("or r1, r0, r0");
+    emit("place r2, 1");
+    emit("lt r0, r1, r2");
+    emit("jnz r0, " + miss);
+    loadSlot(height, TypeKind::Long);
+    emit("or r1, r0, r0");
+    emit("place r2, 1");
+    emit("lt r0, r1, r2");
+    emit("jnz r0, " + miss);
+    loadSlot(x, TypeKind::Long);
+    emit("or r1, r0, r0");
+    loadSlot(left, TypeKind::Long);
+    emit("or r2, r0, r0");
+    emit("lt r0, r1, r2");
+    emit("jnz r0, " + miss);
+    loadSlot(y, TypeKind::Long);
+    emit("or r1, r0, r0");
+    loadSlot(top, TypeKind::Long);
+    emit("or r2, r0, r0");
+    emit("lt r0, r1, r2");
+    emit("jnz r0, " + miss);
+    loadSlot(left, TypeKind::Long);
+    emit("or r1, r0, r0");
+    loadSlot(width, TypeKind::Long);
+    emit("or r2, r0, r0");
+    emit("add r2, r1, r2");
+    loadSlot(x, TypeKind::Long);
+    emit("or r1, r0, r0");
+    emit("lt r0, r1, r2");
+    emit("jz r0, " + miss);
+    loadSlot(top, TypeKind::Long);
+    emit("or r1, r0, r0");
+    loadSlot(height, TypeKind::Long);
+    emit("or r2, r0, r0");
+    emit("add r2, r1, r2");
+    loadSlot(y, TypeKind::Long);
+    emit("or r1, r0, r0");
+    emit("lt r0, r1, r2");
+    emit("jz r0, " + miss);
+    emit("place r0, 1");
+    emit("place r1, 1");
+    emit("jnz r1, " + accept);
+    emit(miss + ":");
+    emit("place r0, 0");
+    emit(accept + ":");
+    drop(6);
+    return;
+  }
   if (name == "obr::ui::shadow") {
     uiShadow_ = true;
     const int count = keep(2);

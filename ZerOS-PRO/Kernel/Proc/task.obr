@@ -38,6 +38,7 @@ deRfun tableBase(): long {
   return kArena(2L) + 65536L;
 }
 
+/* 12416 是下一个 pid。紧接着的列和行，以及 +12800 的写入窗口，给控制台用，这里不要再放别的。 */
 deRfun pidWord(): long {
   return kArena(2L) + 12416L;
 }
@@ -133,6 +134,11 @@ deRfun taskClear(): void {
     index = index + 1L;
   }
   memory::store64(1L, pidWord());
+}
+
+/* 1 号留给用户态 init。之后 nextPid 从 2 起，驱动不会占掉 1。 */
+deRfun reserveOne(): void {
+  memory::store64(2L, pidWord());
 }
 
 deRfun taskRelease(long index): void {
@@ -350,7 +356,8 @@ deRfun reapIndex(long index): void {
   }
 }
 
-/* 停住的核心变成僵尸。父任务是 1 号，或父任务已经不在，立刻收掉。父任务正在等它，就把退出码交回去再收掉。否则留着，等以后的 wait。 */
+/* 停住的核心变成僵尸。1 号自己退出就收掉。父任务不在时改挂到 1 号；1 号也不在就立刻收掉。
+   父任务正在等它，就把退出码交回去再收掉。否则留着，等以后的 wait。 */
 deRfun procExit(long core, long code): void {
   long index = taskFind(core);
   if (index < 0L) {
@@ -362,11 +369,20 @@ deRfun procExit(long core, long code): void {
   }
   task.state = TaskState::Zombie;
   task.code = code;
-  long parent = task.ppid;
   long pid = task.pid;
-  if (parent <= 1L || taskByPid(parent) < 0L) {
+  if (pid == 1L) {
     reapIndex(index);
     return;
+  }
+  long parent = task.ppid;
+  if (taskByPid(parent) < 0L) {
+    if (taskByPid(1L) >= 0L) {
+      task.ppid = 1L;
+      parent = 1L;
+    } else {
+      reapIndex(index);
+      return;
+    }
   }
   long parentIndex = taskByPid(parent);
   Task* owner = taskAt(parentIndex);
@@ -423,13 +439,17 @@ deRfun procWait(long caller, long home): long {
   return -2L;
 }
 
-/* 父任务已经是 1 号的僵尸没有人会来等，这里收掉，把核心让出来。 */
+/* 父任务已经不在的僵尸，能挂到 1 号就挂过去，留给它的 wait。1 号也不在才收掉。 */
 deRfun procCollect(): void {
   long index = 0L;
   while (index < 8L) {
     Task* task = taskAt(index);
-    if (task.state == TaskState::Zombie && task.ppid <= 1L) {
-      reapIndex(index);
+    if (task.state == TaskState::Zombie && task.pid != 1L && taskByPid(task.ppid) < 0L) {
+      if (taskByPid(1L) >= 0L) {
+        task.ppid = 1L;
+      } else {
+        reapIndex(index);
+      }
     }
     index = index + 1L;
   }

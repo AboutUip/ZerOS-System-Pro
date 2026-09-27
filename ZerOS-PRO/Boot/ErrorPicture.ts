@@ -181,6 +181,9 @@ export namespace ZerOS {
       if (message.includes("访存") || message.includes("内存")) {
         return 11;
       }
+      if (message.includes("特权")) {
+        return 22;
+      }
       return 0;
     }
   }

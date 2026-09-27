@@ -1,0 +1,16 @@
+/* 客程序用库打开控制台并写一行。只用来确认库能编过，不放进引导。 */
+import obr.con;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long opened = obr::con::open(home);
+  if (opened != 0L) {
+    return 0;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  if (obr::con::write(home, fd, "hi\n") != 0L) {
+    return 0;
+  }
+  return 1;
+}

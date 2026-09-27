@@ -1,0 +1,22 @@
+/* JSON 文本。语言没有 JSON 类型。一次 parse 留一棵树，下一次 parse 换掉它。
+   parse 成功返回 1。root 是根节点。kind 是下面的枚举。
+   count、child 走数组和对象的子节点。find 按对象的键找，没有是 -1。
+   key 是这个子节点的键。text 是字符串或整数的原文。number 把整数字段收成 long，不是整数时是 0。
+   只接受对象、数组、字符串、整数、true、false、null。不接受小数、指数、\u、\b、\f。
+   转义只认 \" \\ \/ \n \r \t。源文本最长 512，节点最多 64。 */
+namespace obr {
+namespace json {
+/* 0 空，1 假，2 真，3 整数，4 字符串，5 数组，6 对象。 */
+enum Kind: long { Null, False, True, Number, String, Array, Object }
+deRfun parse(string text): long;
+deRfun ok(): long;
+deRfun root(): long;
+deRfun kind(long node): long;
+deRfun count(long node): long;
+deRfun child(long node, long index): long;
+deRfun find(long node, string name): long;
+deRfun key(long node): string;
+deRfun text(long node): string;
+deRfun number(long node): long;
+}
+}

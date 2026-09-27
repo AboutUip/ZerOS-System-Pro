@@ -24,8 +24,9 @@ Compiler/Obr/examples/*
 # The .zap beside it is the same program as text, kept for debugging.
 Toolchain/Zap/
 
-# Guest tree of the reference NAS, including /kernel/start and /kernel/drv.
-# obrc writes these images here. The server creates the directory. Sources stay under Kernel/.
+# Guest tree of the reference NAS: /kernel/start, /kernel/init, /os/session, /kernel/drv.
+# obrc writes these images here. The server creates the directory.
+# Kernel sources stay under ZerOS-PRO/Kernel/. Userspace sources stay under ZerOS-PRO/System/.
 ZerOS-PRO/Hardware/Nas/Root/
 
 # Vite dependency cache

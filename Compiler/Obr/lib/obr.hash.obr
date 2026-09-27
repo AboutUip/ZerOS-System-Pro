@@ -1,0 +1,14 @@
+/* 每个码点加宽成 long 再累加，避免把散列收成 32 位有符号数。 */
+import obr.hash;
+
+deRfun obr::hash::mix(string value): long {
+  long hash = 5381L;
+  int count = length(value);
+  int index = 0;
+  while (index < count) {
+    long unit = value[index];
+    hash = (hash * 33L + unit) % 4294967296L;
+    index = index + 1;
+  }
+  return hash;
+}

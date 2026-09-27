@@ -1,0 +1,9 @@
+/* 控制台。先打开 /dev/con，再把字符串写成一串八位组。一次最多 64 个，和内核画字的上限一致。 */
+namespace obr {
+namespace con {
+/* 以只写方式打开 /dev/con。路径写在 home+512。成功时描述符在 +192。 */
+deRfun open(long home): long;
+/* 把 text 写到 fd，偏移是 0。长于 64 时返回 7，不发起调用。 */
+deRfun write(long home, long fd, string text): long;
+}
+}

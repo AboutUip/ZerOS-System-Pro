@@ -1,0 +1,40 @@
+/* 计数字符串的实现。和内核路径、系统调用窗口用的是同一种排法。 */
+import memory;
+
+deRfun obr::text::put(long address, string text): long {
+  int raw = length(text);
+  if (raw < 0 || raw > 240) {
+    return 7L;
+  }
+  long count = raw;
+  memory::store64(count, address);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], address + 64L + index * 8L);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun obr::text::len(long address): long {
+  return memory::load64(address);
+}
+
+deRfun obr::text::at(long address, long index): long {
+  return memory::loadOctet(address + 64L + index * 8L);
+}
+
+deRfun obr::text::same(string left, string right): long {
+  int count = length(left);
+  if (count != length(right)) {
+    return 0L;
+  }
+  int index = 0;
+  while (index < count) {
+    if (left[index] != right[index]) {
+      return 0L;
+    }
+    index = index + 1;
+  }
+  return 1L;
+}

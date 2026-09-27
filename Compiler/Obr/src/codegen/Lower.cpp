@@ -58,6 +58,8 @@ void Generator::gen(const Expr& expr) {
     }
     if (expr.kind == Expr::Kind::Await) {
       gen(expr.kids[0]);
+      /* 调用已经把结果留在 r0。yield 停住这颗核心，寄存器和栈都保留。 */
+      emit("yield");
       return;
     }
     if (expr.kind == Expr::Kind::New) {
@@ -774,8 +776,11 @@ void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
       const std::string end = fresh("e");
       emit("jz r0, " + other);
       for (const Stmt& inner : stmt.body) emitStmt(inner, ret);
-      emit("place r1, 1");
-      emit("jnz r1, " + end);
+      /* 没有 else，或者 then 已经 return，后面就是出口，不必再跳一次。 */
+      if (!stmt.other.empty() && !endsWithReturn(stmt.body)) {
+        emit("place r1, 1");
+        emit("jnz r1, " + end);
+      }
       emit(other + ":");
       for (const Stmt& inner : stmt.other) emitStmt(inner, ret);
       emit(end + ":");

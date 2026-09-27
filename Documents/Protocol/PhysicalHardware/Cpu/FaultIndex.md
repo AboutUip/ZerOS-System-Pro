@@ -31,6 +31,7 @@
 | `19` | [Slice](./FaultRegistry.md#2-错误码) |
 | `20` | [Context](./FaultRegistry.md#2-错误码) |
 | `21` | [Attach](./FaultRegistry.md#2-错误码) |
+| `22` | [Privilege](./FaultRegistry.md#2-错误码) |
 
 ## 2. 按来源
 
@@ -64,3 +65,4 @@
 | 上下文槽 | 错误码 `20` |
 | 保持位与系统调用 | 错误码 `15`、`16` |
 | 监督核 | 错误码 `17`、`18` |
+| 客核心 | 错误码 `22` |

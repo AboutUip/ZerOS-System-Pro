@@ -29,6 +29,12 @@ deRfun ease(long from, long to, long numer, long denom): long;
 deRfun meter(long span, long value, long maximum): long;
 /* 三个 0 到 255 的通道收成 0xRRGGBB。超出的通道收到 0 或 255。 */
 deRfun rgb(long red, long green, long blue): long;
+/* 标题栏高度。字号小于 1 时失败，否则是字号加 8，上下各留 4 像素。客程序可以算，不发显卡。 */
+deRfun title(long size): long;
+/* 标题栏下沿，等于顶加上 title(字号)。字号小于 1 时失败。 */
+deRfun below(long top, long size): long;
+/* 点是否落在矩形里。宽或高小于 1 时是 0。左和上包含，右和下不包含。 */
+deRfun hit(long x, long y, long left, long top, long width, long height): long;
 /* 把加速颜色目标清成这个颜色。透明度也是 0 到 255。 */
 deRfun clear(long color, long alpha): void;
 /* 屏幕像素矩形。左上是原点，y 向下。会加上当前局部原点。 */

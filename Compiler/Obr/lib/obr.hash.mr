@@ -1,0 +1,6 @@
+/* djb2。从 5381 起，每个码点做 hash * 33 + 码点，再对 4294967296 取余。空串得到 5381。 */
+namespace obr {
+namespace hash {
+deRfun mix(string value): long;
+}
+}

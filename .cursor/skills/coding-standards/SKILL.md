@@ -40,6 +40,8 @@ description: >-
 | 协议标识字符串 | 精确匹配（如 `"ZMP1"`） |
 | 编译产物与依赖 | 仅 `Toolchain/` |
 
+`System/` 放用户态程序，按职责分子目录。`Init/init.obr` 是 1 号任务，客路径 `/kernel/init`。`Session/session.obr` 客路径 `/os/session`。内核源码留在 `Kernel/`。不要在 `System/` 根下留空的 `System.ts`。
+
 ### 子系统子目录通例（以 Memory 为权威范例 · 必须遵守）
 
 路径：`ZerOS-PRO/Hardware/Memory/`  

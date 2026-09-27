@@ -4,7 +4,7 @@ import proc;
 import board;
 import obr.os;
 
-deRfun schedWake(long core): void {
+export deRfun schedWake(long core): void {
   long index = taskFind(core);
   if (index < 0L) {
     return;

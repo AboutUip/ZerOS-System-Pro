@@ -1,0 +1,23 @@
+/* 1 号拉起的会话。用 -pie -slot 0 编译，放到 /os/session。
+   加载画面由固件画。这里只核对布局，再在自己的堆里留下一块资源，然后空转。
+   不再写控制台，也不发显卡。 */
+import obr.proc;
+import obr.ui;
+
+deRfun main(): int {
+  long bar = obr::ui::title(16L);
+  long content = obr::ui::below(0L, 16L);
+  if (content != bar) {
+    bar = 0L;
+  }
+  if (obr::ui::hit(4L, 4L, 0L, 0L, 640L, bar) != 1L && bar != 0L) {
+    bar = 0L;
+  }
+  long home = obr::proc::home();
+  long block = obr::proc::alloc(home, 4096L);
+  long spin = block + bar;
+  while (1) {
+    spin = spin + 1L;
+  }
+  return 0;
+}

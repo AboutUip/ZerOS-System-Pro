@@ -1,0 +1,13 @@
+/* 位元线上的计数字符串。长度是一个 64 位字，八位组从 +64 起、相邻隔 8 位。路径最长 240。 */
+namespace obr {
+namespace text {
+/* 把字符串写到 address。成功返回 0。长于 240 或长度为负时返回 7，原处不动。 */
+deRfun put(long address, string text): long;
+/* 读出长度字。 */
+deRfun len(long address): long;
+/* 读第 index 个八位组。调用方自己保证下标在长度以内。 */
+deRfun at(long address, long index): long;
+/* 按码点比较。相同是 1。string 的 == 只比引用，内容要走这里。 */
+deRfun same(string left, string right): long;
+}
+}

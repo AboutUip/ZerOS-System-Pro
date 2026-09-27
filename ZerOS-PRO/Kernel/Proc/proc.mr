@@ -46,6 +46,7 @@ deRfun taskFind(long core): long;
 deRfun taskCount(long core): long;
 deRfun taskReady(long core, long except): long;
 deRfun taskClear(): void;
+deRfun reserveOne(): void;
 deRfun taskDrop(long core): void;
 deRfun nextPid(): long;
 deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state): long;

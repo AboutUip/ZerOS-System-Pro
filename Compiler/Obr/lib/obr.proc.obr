@@ -1,0 +1,123 @@
+/* 客程序系统调用。只填窗口再 svc，不碰扩展口。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun obr::proc::home(): long {
+  return query(1L, 8L, obr::os::core());
+}
+
+deRfun obr::proc::slot(long home, long offset): long {
+  return memory::load64(home + offset);
+}
+
+deRfun obr::proc::open(long home, long flags): long {
+  memory::store64(flags, home + 128L);
+  return obr::os::svc(5L);
+}
+
+deRfun obr::proc::read(long home, long fd, long offset, long count): long {
+  memory::store64(fd, home + 128L);
+  memory::store64(offset, home + 192L);
+  memory::store64(count, home + 256L);
+  return obr::os::svc(7L);
+}
+
+deRfun obr::proc::write(long home, long fd, long offset, long count): long {
+  memory::store64(fd, home + 128L);
+  memory::store64(offset, home + 192L);
+  memory::store64(count, home + 256L);
+  return obr::os::svc(8L);
+}
+
+deRfun obr::proc::close(long home, long fd): long {
+  memory::store64(fd, home + 128L);
+  return obr::os::svc(6L);
+}
+
+deRfun obr::proc::stat(long home): long {
+  return obr::os::svc(4L);
+}
+
+deRfun obr::proc::readdir(long home, long index, long capacity): long {
+  memory::store64(index, home + 128L);
+  memory::store64(capacity, home + 192L);
+  return obr::os::svc(9L);
+}
+
+deRfun obr::proc::mkdir(long home): long {
+  return obr::os::svc(10L);
+}
+
+deRfun obr::proc::unlink(long home): long {
+  return obr::os::svc(11L);
+}
+
+deRfun obr::proc::chmod(long home, long mode): long {
+  memory::store64(mode, home + 128L);
+  return obr::os::svc(14L);
+}
+
+deRfun obr::proc::chown(long home, long uid, long gid): long {
+  memory::store64(uid, home + 128L);
+  memory::store64(gid, home + 192L);
+  return obr::os::svc(15L);
+}
+
+deRfun obr::proc::chdir(long home): long {
+  return obr::os::svc(16L);
+}
+
+deRfun obr::proc::pipe(long home): long {
+  return obr::os::svc(20L);
+}
+
+deRfun obr::proc::spawn(long home, long core): long {
+  memory::store64(core, home + 128L);
+  return obr::os::svc(17L);
+}
+
+deRfun obr::proc::kill(long home, long pid, long sig): long {
+  memory::store64(pid, home + 128L);
+  memory::store64(sig, home + 192L);
+  return obr::os::svc(18L);
+}
+
+deRfun obr::proc::sigtake(): long {
+  return obr::os::svc(19L);
+}
+
+deRfun obr::proc::wait(long home, long pid): long {
+  memory::store64(pid, home + 128L);
+  return obr::os::svc(21L);
+}
+
+deRfun obr::proc::alloc(long home, long size): long {
+  memory::store64(size, home);
+  return obr::os::svc(2L);
+}
+
+deRfun obr::proc::free(long home, long block, long size): long {
+  memory::store64(block, home);
+  memory::store64(size, home + 64L);
+  return obr::os::svc(3L);
+}
+
+deRfun obr::proc::load(long home, long core): long {
+  memory::store64(core, home);
+  return obr::os::svc(12L);
+}
+
+deRfun obr::proc::unload(long home, long core): long {
+  memory::store64(core, home);
+  return obr::os::svc(13L);
+}
+
+deRfun obr::proc::loadlib(long home): long {
+  return obr::os::svc(22L);
+}
+
+deRfun obr::proc::devio(long home, long dir): long {
+  memory::store64(dir, home + 128L);
+  return obr::os::svc(23L);
+}

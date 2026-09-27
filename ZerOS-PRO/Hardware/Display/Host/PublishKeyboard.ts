@@ -20,8 +20,8 @@ export namespace ZerOS {
 
       /**
        * ZKP1 的键位名最多 8 个可打印 ASCII。
-       * ArrowDown、ArrowLeft、ArrowRight 和 NumpadEnter 都更长。
-       * 直接丢掉的话，固件收不到方向键，也收不到小键盘回车。
+       * ArrowDown、ArrowLeft、ArrowRight、NumpadEnter 和 Backspace 都更长。
+       * 直接丢掉的话，固件收不到方向键、小键盘回车，也删不掉刚打的字。
        * 这里收成仍然合法的短名，字长和协议都不变。ArrowUp 正好 7 个字符，不必改。
        */
       function fitName(code: string): string {
@@ -36,6 +36,9 @@ export namespace ZerOS {
         }
         if (code === "NumpadEnter") {
           return "Enter";
+        }
+        if (code === "Backspace") {
+          return "Back";
         }
         return code;
       }

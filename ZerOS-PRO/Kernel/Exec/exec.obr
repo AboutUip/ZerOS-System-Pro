@@ -211,17 +211,29 @@ deRfun stoppedForSlice(long core): long {
   return 1L;
 }
 
+/* 11904 起六个字：1 号所在核心，还没拉起的驱动个数，然后最多四颗核心。
+   紧挨在 pid 字 12416 前面。驱动先装上不调度，免得和 1 号的第一次系统调用抢同一个保持位。 */
+deRfun holdAt(long index): long {
+  return 17837696L + index * 64L;
+}
+
 deRfun bootDriver(long core): long {
   long pid = taskSpawn(core, nextPid(), 0L, 0L, 0L, TaskState::Ready);
   if (pid == 0L) {
     return 0L;
   }
   obr::os::hertz(core, 30L);
-  schedWake(core);
+  long count = memory::load64(holdAt(1L));
+  if (count < 4L) {
+    memory::store64(core, holdAt(2L + count));
+    memory::store64(count + 1L, holdAt(1L));
+  }
   return pid;
 }
 
 deRfun drvLoad(): void {
+  memory::store64(0L, holdAt(0L));
+  memory::store64(0L, holdAt(1L));
   if (obr::nas::ready() != 1L) {
     return;
   }
@@ -253,6 +265,106 @@ deRfun drvLoad(): void {
       }
       core = core + 1L;
     }
+  }
+}
+
+/* 清屏之后再拉起。映像在 /kernel/init，固定 pid 1，父任务是 0。uid 0，没有管理权。
+   驱动已经占掉的核心跳过。没有空核心或读不到映像时，引导继续，只是没有 1 号。 */
+deRfun bootInit(): void {
+  if (obr::nas::ready() != 1L) {
+    return;
+  }
+  long core = 4L;
+  while (core < 8L && freeCore(core) == 0L) {
+    core = core + 1L;
+  }
+  if (core >= 8L) {
+    return;
+  }
+  long size = 0L;
+  if (pull("/kernel/init", &size) != 0L) {
+    return;
+  }
+  obr::os::install(core, imageAt(), size);
+  obr::os::bound(core, kArena(core), kSpan());
+  long pid = taskSpawn(core, 1L, 0L, 0L, 0L, TaskState::Ready);
+  if (pid == 0L) {
+    return;
+  }
+  taskAt(taskByPid(1L)).ppid = 0L;
+  memory::store64(core, holdAt(0L));
+  /* 30 太慢，写一行要等好几秒。这里拉高，字马上出来。 */
+  obr::os::hertz(core, 1000000L);
+  schedWake(core);
+}
+
+/* 1 号还没进入等待时先不拉驱动。它停在 wait 里，或根本没有 1 号，再把记下的核心一次调度起来。
+   结果写在 17838080：1 表示刚调度了驱动，调用方这时不要让出。
+   任务表在 17891328，每份 1216 位，状态在 +128。Sleeping 是 3。 */
+deRfun bootPump(): void {
+  __zap__ {
+    load.64 r0, 17837760
+    place r2, 1
+    lt r1, r0, r2
+    jnz r1, pumpNo
+    load.64 r3, 17837696
+    place r2, 0
+    eq r1, r3, r2
+    jnz r1, pumpGo
+    place r4, 0
+    pumpScan:
+    place r2, 8
+    lt r1, r4, r2
+    jz r1, pumpGo
+    place r2, 1216
+    mul r0, r4, r2
+    place r2, 17891328
+    add r5, r0, r2
+    ldi.64 r0, r5
+    place r2, 1
+    eq r1, r0, r2
+    jnz r1, pumpHit
+    place r2, 1
+    add r4, r4, r2
+    place r2, 1
+    jnz r2, pumpScan
+    pumpHit:
+    place r2, 128
+    add r5, r5, r2
+    ldi.64 r0, r5
+    place r2, 3
+    eq r1, r0, r2
+    jz r1, pumpNo
+    pumpGo:
+    place r0, 0
+    store.64 r0, 17838144
+    pumpLoop:
+    load.64 r6, 17838144
+    load.64 r7, 17837760
+    lt r0, r6, r7
+    jz r0, pumpDone
+    place r2, 64
+    mul r0, r6, r2
+    place r2, 17837824
+    add r0, r0, r2
+    ldi.64 r1, r0
+    call schedWake
+    load.64 r6, 17838144
+    place r2, 1
+    add r6, r6, r2
+    store.64 r6, 17838144
+    place r2, 1
+    jnz r2, pumpLoop
+    pumpDone:
+    place r0, 0
+    store.64 r0, 17837760
+    place r0, 1
+    place r2, 1
+    jnz r2, pumpEnd
+    pumpNo:
+    place r0, 0
+    pumpEnd:
+    store.64 r0, 17838080
   }
 }
 
@@ -325,7 +437,8 @@ deRfun execSpawn(long caller, long home): long {
   child.cred.euid = parent.cred.euid;
   child.cred.egid = parent.cred.egid;
   child.cap = parent.cap;
-  obr::os::hertz(core, 30L);
+  /* 30 太慢，用户程序写一行要等很久。拉高之后马上能看见。 */
+  obr::os::hertz(core, 1000000L);
   schedWake(core);
   memory::store64(pid, home + 192L);
   memory::store64(core, home + 256L);

@@ -765,7 +765,8 @@ deRfun paint(): void {
   obr::ui::present();
 }
 
-/* 从收件箱取出一次按键。0 没有事件，1 是可导航的按下，2 是其它已收完的事件。 */
+/* 从收件箱取出一次按键。0 没有事件，1 是按下（按住后的重复也算），2 是松开或其它。
+   4992 记下键值。创建用户时靠它收字母和数字，键位名只用来认方向键、退格和回车。 */
 deRfun poll(): int {
   long* port = (long*)4480;
   long* count = (long*)4352;
@@ -786,11 +787,10 @@ deRfun poll(): int {
       if (xchg(*port, 1L, 1L) != 0L) {
         return 2;
       }
-      if (xchg(*port, 1L, 4L) != 0L) {
-        return 2;
-      }
       *name = xchg(*port, 1L, 3L);
       *mods = xchg(*port, 1L, 6L);
+      *(long*)4992 = xchg(*port, 1L, 2L);
+      *(long*)5056 = xchg(*port, 1L, 4L);
       return 1;
     }
   }
@@ -891,8 +891,1151 @@ deRfun onkey(): void {
   }
 }
 
+/* 圆周上 24 个整点，半径 14。相邻两点靠得比笔触窄，叠起来是一段实心弧，不是散点。 */
+deRfun orbit(long slot, long* dx, long* dy): void {
+  long turn = slot;
+  if (turn < 0L) {
+    turn = 0L;
+  }
+  if (turn > 23L) {
+    turn = 23L;
+  }
+  if (turn == 0L) { *dx = 14L; *dy = 0L; }
+  else if (turn == 1L) { *dx = 14L; *dy = 4L; }
+  else if (turn == 2L) { *dx = 12L; *dy = 7L; }
+  else if (turn == 3L) { *dx = 10L; *dy = 10L; }
+  else if (turn == 4L) { *dx = 7L; *dy = 12L; }
+  else if (turn == 5L) { *dx = 4L; *dy = 14L; }
+  else if (turn == 6L) { *dx = 0L; *dy = 14L; }
+  else if (turn == 7L) { *dx = 0L - 4L; *dy = 14L; }
+  else if (turn == 8L) { *dx = 0L - 7L; *dy = 12L; }
+  else if (turn == 9L) { *dx = 0L - 10L; *dy = 10L; }
+  else if (turn == 10L) { *dx = 0L - 12L; *dy = 7L; }
+  else if (turn == 11L) { *dx = 0L - 14L; *dy = 4L; }
+  else if (turn == 12L) { *dx = 0L - 14L; *dy = 0L; }
+  else if (turn == 13L) { *dx = 0L - 14L; *dy = 0L - 4L; }
+  else if (turn == 14L) { *dx = 0L - 12L; *dy = 0L - 7L; }
+  else if (turn == 15L) { *dx = 0L - 10L; *dy = 0L - 10L; }
+  else if (turn == 16L) { *dx = 0L - 7L; *dy = 0L - 12L; }
+  else if (turn == 17L) { *dx = 0L - 4L; *dy = 0L - 14L; }
+  else if (turn == 18L) { *dx = 0L; *dy = 0L - 14L; }
+  else if (turn == 19L) { *dx = 4L; *dy = 0L - 14L; }
+  else if (turn == 20L) { *dx = 7L; *dy = 0L - 12L; }
+  else if (turn == 21L) { *dx = 10L; *dy = 0L - 10L; }
+  else if (turn == 22L) { *dx = 12L; *dy = 0L - 7L; }
+  else { *dx = 14L; *dy = 0L - 4L; }
+}
+
+/* 从尾画到头。每颗都盖住前一颗的边，透明度往后收，连成一段拖影。头在最上面。 */
+deRfun smear(long cx, long cy, long head, long fade): void {
+  if (fade < 1L) {
+    return;
+  }
+  long ink = obr::ui::rgb(236L, 242L, 248L);
+  long step = 9L;
+  while (step >= 0L) {
+    long slot = head - step;
+    if (slot < 0L) {
+      slot = slot + 24L;
+    }
+    long dx = 0L;
+    long dy = 0L;
+    orbit(slot, &dx, &dy);
+    /* 靠近头的几颗全不透明，叠成实心。再往后才收成拖影。 */
+    long alpha = 255L;
+    if (step > 2L) {
+      alpha = obr::ui::ease(255L, 0L, step - 2L, 7L);
+    }
+    alpha = alpha * fade / 255L;
+    if (alpha > 0L) {
+      obr::ui::ellipse(cx + dx - 4L, cy + dy - 4L, 8L, 8L, ink, alpha);
+    }
+    step = step - 1L;
+  }
+}
+
+/* 四块同样的蓝色圆角方标，中间留一道缝。alpha 用来做淡入。 */
+deRfun panes(long left, long top, long alpha): void {
+  if (alpha < 1L) {
+    return;
+  }
+  long blue = obr::ui::rgb(0L, 120L, 212L);
+  long n = 26L;
+  long jump = 34L;
+  obr::ui::round(left, top, n, n, 3L, blue, alpha);
+  obr::ui::round(left + jump, top, n, n, 3L, blue, alpha);
+  obr::ui::round(left, top + jump, n, n, 3L, blue, alpha);
+  obr::ui::round(left + jump, top + jump, n, n, 3L, blue, alpha);
+}
+
+/* 黑底。方标在上，实心拖影在下，整组居中。
+   6144 是过渡拍，0 到 20：方标先淡入并上移，拖影晚几拍再淡入。
+   6080 是拖影头部，0 到 23。客核心不发显卡。 */
+deRfun loading(): void {
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long* phase = (long*)6080;
+  long* intro = (long*)6144;
+  long head = *phase;
+  if (head < 0L || head > 23L) {
+    head = 0L;
+    *phase = 0L;
+  }
+  long rise = *intro;
+  if (rise < 0L) {
+    rise = 0L;
+  }
+  if (rise > 12L) {
+    rise = 12L;
+  }
+  long logoA = obr::ui::ease(0L, 255L, rise, 12L);
+  long lift = obr::ui::ease(14L, 0L, rise, 12L);
+  long spinA = 0L;
+  if (*intro > 8L) {
+    long gone = *intro - 8L;
+    if (gone > 12L) {
+      gone = 12L;
+    }
+    spinA = obr::ui::ease(0L, 255L, gone, 12L);
+  }
+  long block = 60L;
+  long gap = 80L;
+  long radius = 14L;
+  long thick = 8L;
+  long total = block + gap + radius * 2L + thick;
+  long top = (high - total) / 2L;
+  obr::ui::clear(0L, 255L);
+  panes((wide - block) / 2L, top + lift, logoA);
+  smear(wide / 2L, top + block + gap + radius + thick / 2L, head, spinA);
+  obr::ui::present();
+}
+
+/* 四团光晕沿相位移动。椭圆比间距大，看起来是一整片晕，不是粒子。 */
+deRfun glow(long wide, long high, long phase): void {
+  long index = 0L;
+  while (index < 4L) {
+    long turn = phase + index * 6L;
+    if (turn >= 24L) {
+      turn = turn - 24L;
+    }
+    long drift = phase * (index + 1L) % 24L;
+    long x = obr::ui::ease(0L - 140L, wide - 40L, turn, 23L);
+    long y = obr::ui::ease(0L - 80L, high - 60L, drift, 23L);
+    long alpha = 26L + index * 10L;
+    long color = obr::ui::rgb(32L, 96L, 200L);
+    if (index == 1L) {
+      color = obr::ui::rgb(80L, 160L, 255L);
+    } else if (index == 2L) {
+      color = obr::ui::rgb(16L, 60L, 150L);
+    } else if (index == 3L) {
+      color = obr::ui::rgb(150L, 200L, 255L);
+    }
+    obr::ui::ellipse(x, y, 200L, 130L, color, alpha);
+    index = index + 1L;
+  }
+}
+
+/* 16x16 点阵。字形表只到 ASCII，这些汉字用矩形点出来，不走 glyph。
+   编号：0安 1装 2语 3言 4中 5文 6国 7家 8美 9日 10本 11英
+   12用 13户 14名 15密 16码 17下 18一 19步 20创 21建 22欢 23迎
+   24锁 25屏 26桌 27面 28开 29始 30不 31对。低位是左边的像素。 */
+deRfun bitrow(long id, long row): long {
+  if (id == 0L) {
+    if (row == 0L) { return 64L; }
+    if (row == 1L) { return 128L; }
+    if (row == 2L) { return 8188L; }
+    if (row == 3L) { return 4164L; }
+    if (row == 4L) { return 64L; }
+    if (row == 5L) { return 8188L; }
+    if (row == 6L) { return 1056L; }
+    if (row == 7L) { return 1040L; }
+    if (row == 8L) { return 624L; }
+    if (row == 9L) { return 384L; }
+    if (row == 10L) { return 1632L; }
+    if (row == 11L) { return 2076L; }
+    return 0L;
+  }
+  if (id == 1L) {
+    if (row == 0L) { return 548L; }
+    if (row == 1L) { return 552L; }
+    if (row == 2L) { return 8160L; }
+    if (row == 3L) { return 560L; }
+    if (row == 4L) { return 552L; }
+    if (row == 5L) { return 4004L; }
+    if (row == 6L) { return 128L; }
+    if (row == 7L) { return 8188L; }
+    if (row == 8L) { return 320L; }
+    if (row == 9L) { return 2608L; }
+    if (row == 10L) { return 1196L; }
+    if (row == 11L) { return 6240L; }
+    return 0L;
+  }
+  if (id == 2L) {
+    if (row == 0L) { return 8164L; }
+    if (row == 1L) { return 264L; }
+    if (row == 2L) { return 4032L; }
+    if (row == 3L) { return 2176L; }
+    if (row == 4L) { return 2188L; }
+    if (row == 5L) { return 8168L; }
+    if (row == 6L) { return 8L; }
+    if (row == 7L) { return 4040L; }
+    if (row == 8L) { return 2120L; }
+    if (row == 9L) { return 2136L; }
+    if (row == 10L) { return 4040L; }
+    if (row == 11L) { return 2112L; }
+    return 0L;
+  }
+  if (id == 3L) {
+    if (row == 0L) { return 64L; }
+    if (row == 1L) { return 128L; }
+    if (row == 2L) { return 8188L; }
+    if (row == 4L) { return 4088L; }
+    if (row == 6L) { return 4088L; }
+    if (row == 8L) { return 4088L; }
+    if (row == 9L) { return 2056L; }
+    if (row == 10L) { return 4088L; }
+    if (row == 11L) { return 2056L; }
+    return 0L;
+  }
+  if (id == 4L) {
+    if (row == 0L) { return 128L; }
+    if (row == 1L) { return 128L; }
+    if (row == 2L) { return 128L; }
+    if (row == 3L) { return 4088L; }
+    if (row == 4L) { return 2184L; }
+    if (row == 5L) { return 2184L; }
+    if (row == 6L) { return 2184L; }
+    if (row == 7L) { return 4088L; }
+    if (row == 8L) { return 2184L; }
+    if (row == 9L) { return 128L; }
+    if (row == 10L) { return 128L; }
+    if (row == 11L) { return 128L; }
+    return 0L;
+  }
+  if (id == 5L) {
+    if (row == 0L) { return 64L; }
+    if (row == 1L) { return 128L; }
+    if (row == 2L) { return 8188L; }
+    if (row == 3L) { return 1040L; }
+    if (row == 4L) { return 1040L; }
+    if (row == 5L) { return 544L; }
+    if (row == 6L) { return 544L; }
+    if (row == 7L) { return 320L; }
+    if (row == 8L) { return 128L; }
+    if (row == 9L) { return 320L; }
+    if (row == 10L) { return 1584L; }
+    if (row == 11L) { return 6156L; }
+    return 0L;
+  }
+  if (id == 6L) {
+    if (row == 0L) { return 8188L; }
+    if (row == 1L) { return 4100L; }
+    if (row == 2L) { return 6132L; }
+    if (row == 3L) { return 4228L; }
+    if (row == 4L) { return 4228L; }
+    if (row == 5L) { return 6132L; }
+    if (row == 6L) { return 4740L; }
+    if (row == 7L) { return 5252L; }
+    if (row == 8L) { return 8188L; }
+    if (row == 9L) { return 4100L; }
+    if (row == 10L) { return 8188L; }
+    if (row == 11L) { return 4100L; }
+    return 0L;
+  }
+  if (id == 7L) {
+    if (row == 0L) { return 128L; }
+    if (row == 1L) { return 8188L; }
+    if (row == 2L) { return 4100L; }
+    if (row == 3L) { return 4088L; }
+    if (row == 4L) { return 64L; }
+    if (row == 5L) { return 2208L; }
+    if (row == 6L) { return 1368L; }
+    if (row == 7L) { return 800L; }
+    if (row == 8L) { return 1432L; }
+    if (row == 9L) { return 6496L; }
+    if (row == 10L) { return 284L; }
+    if (row == 11L) { return 192L; }
+    return 0L;
+  }
+  if (id == 8L) {
+    if (row == 0L) { return 1040L; }
+    if (row == 1L) { return 544L; }
+    if (row == 2L) { return 4088L; }
+    if (row == 3L) { return 128L; }
+    if (row == 4L) { return 4088L; }
+    if (row == 5L) { return 128L; }
+    if (row == 6L) { return 8188L; }
+    if (row == 7L) { return 128L; }
+    if (row == 8L) { return 8188L; }
+    if (row == 9L) { return 320L; }
+    if (row == 10L) { return 1584L; }
+    if (row == 11L) { return 6156L; }
+    return 0L;
+  }
+  if (id == 9L) {
+    if (row == 1L) { return 4088L; }
+    if (row == 2L) { return 2056L; }
+    if (row == 3L) { return 2056L; }
+    if (row == 4L) { return 2056L; }
+    if (row == 5L) { return 4088L; }
+    if (row == 6L) { return 2056L; }
+    if (row == 7L) { return 2056L; }
+    if (row == 8L) { return 2056L; }
+    if (row == 9L) { return 2056L; }
+    if (row == 10L) { return 4088L; }
+    if (row == 11L) { return 2056L; }
+    return 0L;
+  }
+  if (id == 10L) {
+    if (row == 0L) { return 128L; }
+    if (row == 1L) { return 128L; }
+    if (row == 2L) { return 8188L; }
+    if (row == 3L) { return 128L; }
+    if (row == 4L) { return 448L; }
+    if (row == 5L) { return 672L; }
+    if (row == 6L) { return 672L; }
+    if (row == 7L) { return 1168L; }
+    if (row == 8L) { return 2184L; }
+    if (row == 9L) { return 6132L; }
+    if (row == 10L) { return 128L; }
+    if (row == 11L) { return 128L; }
+    return 0L;
+  }
+  if (id == 11L) {
+    if (row == 0L) { return 544L; }
+    if (row == 1L) { return 8188L; }
+    if (row == 2L) { return 544L; }
+    if (row == 3L) { return 128L; }
+    if (row == 4L) { return 4088L; }
+    if (row == 5L) { return 2184L; }
+    if (row == 6L) { return 2184L; }
+    if (row == 7L) { return 2184L; }
+    if (row == 8L) { return 8188L; }
+    if (row == 9L) { return 320L; }
+    if (row == 10L) { return 1584L; }
+    if (row == 11L) { return 6156L; }
+    return 0L;
+  }
+  if (id == 12L) {
+    if (row == 1L) { return 4088L; }
+    if (row == 2L) { return 2184L; }
+    if (row == 3L) { return 2184L; }
+    if (row == 4L) { return 4088L; }
+    if (row == 5L) { return 2184L; }
+    if (row == 6L) { return 2184L; }
+    if (row == 7L) { return 4088L; }
+    if (row == 8L) { return 2184L; }
+    if (row == 9L) { return 2184L; }
+    if (row == 10L) { return 2184L; }
+    if (row == 11L) { return 3588L; }
+    return 0L;
+  }
+  if (id == 13L) {
+    if (row == 0L) { return 128L; }
+    if (row == 1L) { return 256L; }
+    if (row == 2L) { return 8176L; }
+    if (row == 3L) { return 4112L; }
+    if (row == 4L) { return 4112L; }
+    if (row == 5L) { return 4112L; }
+    if (row == 6L) { return 8176L; }
+    if (row == 7L) { return 4112L; }
+    if (row == 8L) { return 16L; }
+    if (row == 9L) { return 8L; }
+    if (row == 10L) { return 8L; }
+    if (row == 11L) { return 4L; }
+    return 0L;
+  }
+  if (id == 14L) {
+    if (row == 0L) { return 64L; }
+    if (row == 1L) { return 64L; }
+    if (row == 2L) { return 4064L; }
+    if (row == 3L) { return 2064L; }
+    if (row == 4L) { return 1064L; }
+    if (row == 5L) { return 832L; }
+    if (row == 6L) { return 192L; }
+    if (row == 7L) { return 8176L; }
+    if (row == 8L) { return 4140L; }
+    if (row == 9L) { return 4128L; }
+    if (row == 10L) { return 8160L; }
+    if (row == 11L) { return 4128L; }
+    return 0L;
+  }
+  if (id == 15L) {
+    if (row == 0L) { return 128L; }
+    if (row == 1L) { return 8188L; }
+    if (row == 2L) { return 4164L; }
+    if (row == 3L) { return 640L; }
+    if (row == 4L) { return 2344L; }
+    if (row == 5L) { return 5288L; }
+    if (row == 6L) { return 6084L; }
+    if (row == 7L) { return 48L; }
+    if (row == 8L) { return 128L; }
+    if (row == 9L) { return 2184L; }
+    if (row == 10L) { return 2184L; }
+    if (row == 11L) { return 4088L; }
+    return 0L;
+  }
+  if (id == 16L) {
+    if (row == 0L) { return 4032L; }
+    if (row == 1L) { return 2108L; }
+    if (row == 2L) { return 2192L; }
+    if (row == 3L) { return 2192L; }
+    if (row == 4L) { return 2184L; }
+    if (row == 5L) { return 8120L; }
+    if (row == 6L) { return 4140L; }
+    if (row == 7L) { return 4136L; }
+    if (row == 8L) { return 6120L; }
+    if (row == 9L) { return 4152L; }
+    if (row == 10L) { return 4136L; }
+    if (row == 11L) { return 3072L; }
+    return 0L;
+  }
+  if (id == 17L) {
+    if (row == 1L) { return 8188L; }
+    if (row == 2L) { return 64L; }
+    if (row == 3L) { return 64L; }
+    if (row == 4L) { return 320L; }
+    if (row == 5L) { return 576L; }
+    if (row == 6L) { return 1088L; }
+    if (row == 7L) { return 2112L; }
+    if (row == 8L) { return 2112L; }
+    if (row == 9L) { return 64L; }
+    if (row == 10L) { return 64L; }
+    if (row == 11L) { return 64L; }
+    return 0L;
+  }
+  if (id == 18L) {
+    if (row == 6L) { return 8188L; }
+    return 0L;
+  }
+  if (id == 19L) {
+    if (row == 0L) { return 128L; }
+    if (row == 1L) { return 144L; }
+    if (row == 2L) { return 3984L; }
+    if (row == 3L) { return 144L; }
+    if (row == 4L) { return 144L; }
+    if (row == 5L) { return 8188L; }
+    if (row == 7L) { return 2208L; }
+    if (row == 8L) { return 1168L; }
+    if (row == 9L) { return 904L; }
+    if (row == 10L) { return 192L; }
+    if (row == 11L) { return 56L; }
+    return 0L;
+  }
+  if (id == 20L) {
+    if (row == 0L) { return 4128L; }
+    if (row == 1L) { return 4176L; }
+    if (row == 2L) { return 5256L; }
+    if (row == 3L) { return 5380L; }
+    if (row == 4L) { return 5368L; }
+    if (row == 5L) { return 5256L; }
+    if (row == 6L) { return 5256L; }
+    if (row == 7L) { return 5256L; }
+    if (row == 8L) { return 5224L; }
+    if (row == 9L) { return 4360L; }
+    if (row == 10L) { return 4360L; }
+    if (row == 11L) { return 6640L; }
+    return 0L;
+  }
+  if (id == 21L) {
+    if (row == 0L) { return 256L; }
+    if (row == 1L) { return 4060L; }
+    if (row == 2L) { return 2320L; }
+    if (row == 3L) { return 8168L; }
+    if (row == 4L) { return 2308L; }
+    if (row == 5L) { return 4060L; }
+    if (row == 6L) { return 272L; }
+    if (row == 7L) { return 4048L; }
+    if (row == 8L) { return 276L; }
+    if (row == 9L) { return 8168L; }
+    if (row == 10L) { return 280L; }
+    if (row == 11L) { return 8164L; }
+    return 0L;
+  }
+  if (id == 22L) {
+    if (row == 0L) { return 256L; }
+    if (row == 1L) { return 380L; }
+    if (row == 2L) { return 8000L; }
+    if (row == 3L) { return 4292L; }
+    if (row == 4L) { return 2152L; }
+    if (row == 5L) { return 552L; }
+    if (row == 6L) { return 528L; }
+    if (row == 7L) { return 528L; }
+    if (row == 8L) { return 1320L; }
+    if (row == 9L) { return 1320L; }
+    if (row == 10L) { return 2180L; }
+    if (row == 11L) { return 4160L; }
+    return 0L;
+  }
+  if (id == 23L) {
+    if (row == 0L) { return 132L; }
+    if (row == 1L) { return 7784L; }
+    if (row == 2L) { return 4640L; }
+    if (row == 3L) { return 4640L; }
+    if (row == 4L) { return 4652L; }
+    if (row == 5L) { return 4648L; }
+    if (row == 6L) { return 4776L; }
+    if (row == 7L) { return 4712L; }
+    if (row == 8L) { return 6696L; }
+    if (row == 9L) { return 520L; }
+    if (row == 10L) { return 520L; }
+    if (row == 11L) { return 8180L; }
+    return 0L;
+  }
+  if (id == 24L) {
+    if (row == 0L) { return 520L; }
+    if (row == 1L) { return 4696L; }
+    if (row == 2L) { return 2692L; }
+    if (row == 3L) { return 512L; }
+    if (row == 4L) { return 8156L; }
+    if (row == 5L) { return 4168L; }
+    if (row == 6L) { return 4680L; }
+    if (row == 7L) { return 4700L; }
+    if (row == 8L) { return 4680L; }
+    if (row == 9L) { return 1288L; }
+    if (row == 10L) { return 2200L; }
+    if (row == 11L) { return 4200L; }
+    return 0L;
+  }
+  if (id == 25L) {
+    if (row == 0L) { return 8184L; }
+    if (row == 1L) { return 4104L; }
+    if (row == 2L) { return 8184L; }
+    if (row == 3L) { return 2120L; }
+    if (row == 4L) { return 1160L; }
+    if (row == 5L) { return 8168L; }
+    if (row == 6L) { return 1160L; }
+    if (row == 7L) { return 1160L; }
+    if (row == 8L) { return 8184L; }
+    if (row == 9L) { return 1160L; }
+    if (row == 10L) { return 1096L; }
+    if (row == 11L) { return 1060L; }
+    return 0L;
+  }
+  if (id == 26L) {
+    if (row == 0L) { return 128L; }
+    if (row == 1L) { return 3968L; }
+    if (row == 2L) { return 128L; }
+    if (row == 3L) { return 4088L; }
+    if (row == 4L) { return 2056L; }
+    if (row == 5L) { return 4088L; }
+    if (row == 6L) { return 2056L; }
+    if (row == 7L) { return 4088L; }
+    if (row == 8L) { return 128L; }
+    if (row == 9L) { return 8188L; }
+    if (row == 10L) { return 1168L; }
+    if (row == 11L) { return 6284L; }
+    return 0L;
+  }
+  if (id == 27L) {
+    if (row == 1L) { return 8188L; }
+    if (row == 2L) { return 128L; }
+    if (row == 3L) { return 64L; }
+    if (row == 4L) { return 8184L; }
+    if (row == 5L) { return 4680L; }
+    if (row == 6L) { return 5064L; }
+    if (row == 7L) { return 4680L; }
+    if (row == 8L) { return 5064L; }
+    if (row == 9L) { return 4680L; }
+    if (row == 10L) { return 8184L; }
+    if (row == 11L) { return 4104L; }
+    return 0L;
+  }
+  if (id == 28L) {
+    if (row == 1L) { return 4088L; }
+    if (row == 2L) { return 544L; }
+    if (row == 3L) { return 544L; }
+    if (row == 4L) { return 544L; }
+    if (row == 5L) { return 544L; }
+    if (row == 6L) { return 8188L; }
+    if (row == 7L) { return 544L; }
+    if (row == 8L) { return 544L; }
+    if (row == 9L) { return 528L; }
+    if (row == 10L) { return 528L; }
+    if (row == 11L) { return 520L; }
+    return 0L;
+  }
+  if (id == 29L) {
+    if (row == 0L) { return 528L; }
+    if (row == 1L) { return 528L; }
+    if (row == 2L) { return 272L; }
+    if (row == 3L) { return 2236L; }
+    if (row == 4L) { return 8104L; }
+    if (row == 5L) { return 4136L; }
+    if (row == 6L) { return 4008L; }
+    if (row == 7L) { return 2212L; }
+    if (row == 8L) { return 2216L; }
+    if (row == 9L) { return 2192L; }
+    if (row == 10L) { return 4008L; }
+    if (row == 11L) { return 2212L; }
+    return 0L;
+  }
+  if (id == 30L) {
+    if (row == 1L) { return 8188L; }
+    if (row == 2L) { return 256L; }
+    if (row == 3L) { return 256L; }
+    if (row == 4L) { return 128L; }
+    if (row == 5L) { return 704L; }
+    if (row == 6L) { return 1184L; }
+    if (row == 7L) { return 2192L; }
+    if (row == 8L) { return 4236L; }
+    if (row == 9L) { return 128L; }
+    if (row == 10L) { return 128L; }
+    if (row == 11L) { return 128L; }
+    return 0L;
+  }
+  if (id == 31L) {
+    if (row == 0L) { return 2048L; }
+    if (row == 1L) { return 2048L; }
+    if (row == 2L) { return 2172L; }
+    if (row == 3L) { return 8000L; }
+    if (row == 4L) { return 2112L; }
+    if (row == 5L) { return 2116L; }
+    if (row == 6L) { return 2344L; }
+    if (row == 7L) { return 2600L; }
+    if (row == 8L) { return 2576L; }
+    if (row == 9L) { return 2088L; }
+    if (row == 10L) { return 2120L; }
+    if (row == 11L) { return 3652L; }
+    return 0L;
+  }
+  return 0L;
+}
+
+deRfun han(long id, long x, long y, long color): void {
+  long row = 0L;
+  while (row < 16L) {
+    long bits = bitrow(id, row);
+    long col = 0L;
+    long probe = 1L;
+    while (col < 16L) {
+      if ((bits / probe) % 2L == 1L) {
+        obr::ui::rect(x + col, y + row, 1L, 1L, color, 255L);
+      }
+      probe = probe * 2L;
+      col = col + 1L;
+    }
+    row = row + 1L;
+  }
+}
+
+/* 名字和密码各最多 16 个八位组，拆在两个字里。低位是前面的字。
+   用 set/at 写这些格子：同一个指针中途改地址会被收成最后一个。 */
+
+deRfun scaleOf(long index): long {
+  long scale = 1L;
+  long step = 0L;
+  while (step < index) {
+    scale = scale * 256L;
+    step = step + 1L;
+  }
+  return scale;
+}
+
+deRfun takeByte(long word, long index): long {
+  long scale = scaleOf(index);
+  return (word / scale) % 256L;
+}
+
+deRfun putByte(long word, long index, long code): long {
+  long scale = scaleOf(index);
+  long old = (word / scale) % 256L;
+  return word - old * scale + (code % 256L) * scale;
+}
+
+deRfun pushAt(long lenAt, long lowAt, long highAt, long code): void {
+  long len = at(lenAt);
+  if (len < 0L || len >= 16L) {
+    return;
+  }
+  if (len < 8L) {
+    set(lowAt, putByte(at(lowAt), len, code));
+  } else {
+    set(highAt, putByte(at(highAt), len - 8L, code));
+  }
+  set(lenAt, len + 1L);
+}
+
+deRfun popAt(long lenAt): void {
+  long len = at(lenAt);
+  if (len <= 0L) {
+    return;
+  }
+  set(lenAt, len - 1L);
+}
+
+deRfun cellAt(long lowAt, long highAt, long index): long {
+  if (index < 8L) {
+    return takeByte(at(lowAt), index);
+  }
+  return takeByte(at(highAt), index - 8L);
+}
+
+deRfun showLine(long lowAt, long highAt, long count, long x, long y, long color, long dots): void {
+  if (count > 16L) {
+    count = 16L;
+  }
+  long step = obr::ui::advance(16L);
+  long index = 0L;
+  while (index < count) {
+    long code = 42L;
+    if (dots == 0L) {
+      code = cellAt(lowAt, highAt, index);
+    }
+    if (code >= 32L && code <= 126L) {
+      obr::ui::glyph(code, x + index * step, y, 16L, color, 255L);
+    }
+    index = index + 1L;
+  }
+}
+
+deRfun sameSecret(): int {
+  long expect = at(6848L);
+  long got = at(7104L);
+  if (expect < 1L || expect != got) {
+    return 0;
+  }
+  long index = 0L;
+  while (index < expect) {
+    if (cellAt(6912L, 6976L, index) != cellAt(7168L, 7232L, index)) {
+      return 0;
+    }
+    index = index + 1L;
+  }
+  return 1;
+}
+
+/* 退格是 -1。字母、数字、减号和下划线是码点。其它是 0。 */
+deRfun typed(): long {
+  long name = *(long*)4864;
+  long unit = *(long*)4992;
+  if (name == 0x6B636142L) {
+    return 0L - 1L;
+  }
+  if (name % 16777216L == 0x79654BL) {
+    if (unit >= 97L && unit <= 122L) {
+      return unit;
+    }
+    if (unit >= 65L && unit <= 90L) {
+      return unit;
+    }
+  }
+  if (name % 1099511627776L == 0x7469676944L) {
+    if (unit >= 48L && unit <= 57L) {
+      return unit;
+    }
+  }
+  if (name == 0x73756E694DL) {
+    if (unit == 45L || unit == 95L) {
+      return unit;
+    }
+  }
+  return 0L;
+}
+
+/* 0 语言 1 国家 2 中文 3 中国 4 美国 5 日本 6 英国
+   7 用户名 8 密码 9 下一步 10 创建用户 11 欢迎 12 锁屏
+   13 桌面 14 开始 15 安装 16 不对 */
+deRfun phrase(long kind, long x, long y, long color): void {
+  long step = 17L;
+  if (kind == 0L) {
+    han(2L, x, y, color);
+    han(3L, x + step, y, color);
+    return;
+  }
+  if (kind == 1L) {
+    han(6L, x, y, color);
+    han(7L, x + step, y, color);
+    return;
+  }
+  if (kind == 2L) {
+    han(4L, x, y, color);
+    han(5L, x + step, y, color);
+    return;
+  }
+  if (kind == 3L) {
+    han(4L, x, y, color);
+    han(6L, x + step, y, color);
+    return;
+  }
+  if (kind == 4L) {
+    han(8L, x, y, color);
+    han(6L, x + step, y, color);
+    return;
+  }
+  if (kind == 5L) {
+    han(9L, x, y, color);
+    han(10L, x + step, y, color);
+    return;
+  }
+  if (kind == 6L) {
+    han(11L, x, y, color);
+    han(6L, x + step, y, color);
+    return;
+  }
+  if (kind == 7L) {
+    han(12L, x, y, color);
+    han(13L, x + step, y, color);
+    han(14L, x + step * 2L, y, color);
+    return;
+  }
+  if (kind == 8L) {
+    han(15L, x, y, color);
+    han(16L, x + step, y, color);
+    return;
+  }
+  if (kind == 9L) {
+    han(17L, x, y, color);
+    han(18L, x + step, y, color);
+    han(19L, x + step * 2L, y, color);
+    return;
+  }
+  if (kind == 10L) {
+    han(20L, x, y, color);
+    han(21L, x + step, y, color);
+    han(12L, x + step * 2L, y, color);
+    han(13L, x + step * 3L, y, color);
+    return;
+  }
+  if (kind == 11L) {
+    han(22L, x, y, color);
+    han(23L, x + step, y, color);
+    return;
+  }
+  if (kind == 12L) {
+    han(24L, x, y, color);
+    han(25L, x + step, y, color);
+    return;
+  }
+  if (kind == 13L) {
+    han(26L, x, y, color);
+    han(27L, x + step, y, color);
+    return;
+  }
+  if (kind == 14L) {
+    han(28L, x, y, color);
+    han(29L, x + step, y, color);
+    return;
+  }
+  if (kind == 15L) {
+    han(0L, x, y, color);
+    han(1L, x + step, y, color);
+    return;
+  }
+  han(30L, x, y, color);
+  han(31L, x + step, y, color);
+}
+
+deRfun caption(string english, long kind, long x, long y, long color): void {
+  if (*(long*)6336 == 1L) {
+    phrase(kind, x, y, color);
+    return;
+  }
+  obr::ui::text(x, y, 16L, english, color, 255L);
+}
+
+deRfun backdrop(): void {
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long phase = at(6080L);
+  if (phase < 0L || phase > 23L) {
+    phase = 0L;
+  }
+  obr::ui::clear(obr::ui::rgb(6L, 10L, 18L), 255L);
+  glow(wide, high, phase);
+}
+
+deRfun account(long wx, long wy, long ww, long ink, long dim, long accent): void {
+  long field = at(6464L);
+  long nameCount = at(6656L);
+  long passCount = at(6848L);
+  long quiet = obr::ui::rgb(36L, 48L, 68L);
+  caption("User name", 7L, wx + 24L, wy + 96L, dim);
+  if (field == 0L) {
+    obr::ui::round(wx + 16L, wy + 118L, ww - 32L, 28L, 6L, accent, 255L);
+    showLine(6720L, 6784L, nameCount, wx + 28L, wy + 124L, ink, 0L);
+    obr::ui::rect(wx + 28L + nameCount * obr::ui::advance(16L), wy + 128L, 2L, 12L, ink, 255L);
+  } else {
+    obr::ui::round(wx + 16L, wy + 118L, ww - 32L, 28L, 6L, quiet, 255L);
+    showLine(6720L, 6784L, nameCount, wx + 28L, wy + 124L, dim, 0L);
+  }
+  caption("Password", 8L, wx + 24L, wy + 160L, dim);
+  if (field == 1L) {
+    obr::ui::round(wx + 16L, wy + 182L, ww - 32L, 28L, 6L, accent, 255L);
+    showLine(6912L, 6976L, passCount, wx + 28L, wy + 188L, ink, 1L);
+    obr::ui::rect(wx + 28L + passCount * obr::ui::advance(16L), wy + 192L, 2L, 12L, ink, 255L);
+  } else {
+    obr::ui::round(wx + 16L, wy + 182L, ww - 32L, 28L, 6L, quiet, 255L);
+    showLine(6912L, 6976L, passCount, wx + 28L, wy + 188L, dim, 1L);
+  }
+  if (*(long*)6336 != 1L) {
+    obr::ui::text(wx + 24L, wy + 224L, 16L, "Type, then Enter", dim, 255L);
+  }
+}
+
+deRfun lineOf(long page, long index, long x, long y, long color): void {
+  if (page == 0L) {
+    if (index == 0L) {
+      obr::ui::text(x, y, 16L, "English", color, 255L);
+    } else {
+      phrase(2L, x, y, color);
+    }
+    return;
+  }
+  if (index == 0L) {
+    caption("China", 3L, x, y, color);
+  } else if (index == 1L) {
+    caption("United States", 4L, x, y, color);
+  } else if (index == 2L) {
+    caption("Japan", 5L, x, y, color);
+  } else {
+    caption("Britain", 6L, x, y, color);
+  }
+}
+
+/* 安装窗口。没有关闭键。语言和地区用方向键。用户页自己打名字和密码。 */
+deRfun install(): void {
+  backdrop();
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long ww = 440L;
+  long wh = 320L;
+  long wx = obr::ui::align(0L, wide, ww, obr::ui::Align::Center);
+  long wy = obr::ui::align(0L, high, wh, obr::ui::Align::Center);
+  long panel = obr::ui::rgb(18L, 24L, 34L);
+  long line = obr::ui::rgb(48L, 64L, 88L);
+  long ink = obr::ui::rgb(232L, 236L, 242L);
+  long dim = obr::ui::rgb(150L, 164L, 184L);
+  long accent = obr::ui::rgb(0L, 120L, 212L);
+  obr::ui::round(wx, wy, ww, wh, 10L, panel, 255L);
+  caption("ZerOS Setup", 15L, wx + 24L, wy + 18L, ink);
+  obr::ui::rect(wx + 20L, wy + 44L, ww - 40L, 1L, line, 255L);
+  long page = *(long*)6272;
+  if (page == 0L) {
+    caption("Language", 0L, wx + 24L, wy + 60L, ink);
+  } else if (page == 1L) {
+    caption("Country", 1L, wx + 24L, wy + 60L, ink);
+  } else {
+    caption("Create user", 10L, wx + 24L, wy + 60L, ink);
+  }
+  if (page == 2L) {
+    account(wx, wy, ww, ink, dim, accent);
+  } else {
+    long n = 2L;
+    long pick = *(long*)6336;
+    if (page == 1L) {
+      n = 4L;
+      pick = *(long*)6400;
+    }
+    long row = 0L;
+    while (row < n) {
+      long y = wy + 96L + row * 32L;
+      long color = dim;
+      if (row == pick) {
+        obr::ui::round(wx + 16L, y - 6L, ww - 32L, 28L, 6L, accent, 255L);
+        color = ink;
+      }
+      lineOf(page, row, wx + 28L, y, color);
+      row = row + 1L;
+    }
+  }
+  caption("Enter", 9L, wx + 24L, wy + wh - 36L, dim);
+  obr::ui::present();
+}
+
+/* 语言和国家各用自己的指针。用户页不改指针，名字打进 6656 那一组格子。 */
+deRfun choose(): void {
+  long name = *(long*)4864;
+  long page = *(long*)6272;
+  long unit = typed();
+  if (*(long*)5056 != 0L && unit == 0L) {
+    return;
+  }
+  if (page == 2L) {
+    if (backward(name) == 1 || forward(name) == 1) {
+      if (at(6464L) == 0L) {
+        set(6464L, 1L);
+      } else {
+        set(6464L, 0L);
+      }
+      return;
+    }
+    if (unit < 0L) {
+      if (at(6464L) == 0L) {
+        popAt(6656L);
+      } else {
+        popAt(6848L);
+      }
+      return;
+    }
+    if (unit > 0L) {
+      if (at(6464L) == 0L) {
+        pushAt(6656L, 6720L, 6784L, unit);
+      } else {
+        pushAt(6848L, 6912L, 6976L, unit);
+      }
+      return;
+    }
+    if (name == 0x7265746e45L) {
+      if (at(6464L) == 0L) {
+        if (at(6656L) > 0L) {
+          set(6464L, 1L);
+        }
+        return;
+      }
+      if (at(6656L) > 0L && at(6848L) > 0L) {
+        set(7040L, 1L);
+        set(7104L, 0L);
+        set(7168L, 0L);
+        set(7232L, 0L);
+        set(7296L, 0L);
+      }
+    }
+    return;
+  }
+  if (backward(name) == 1) {
+    if (page == 0L) {
+      long* lang = (long*)6336;
+      *lang = *lang - 1L;
+      if (*lang < 0L) {
+        *lang = 1L;
+      }
+    }
+    if (page == 1L) {
+      long* country = (long*)6400;
+      *country = *country - 1L;
+      if (*country < 0L) {
+        *country = 3L;
+      }
+    }
+    return;
+  }
+  if (forward(name) == 1) {
+    if (page == 0L) {
+      long* lang = (long*)6336;
+      *lang = *lang + 1L;
+      if (*lang > 1L) {
+        *lang = 0L;
+      }
+    }
+    if (page == 1L) {
+      long* country = (long*)6400;
+      *country = *country + 1L;
+      if (*country > 3L) {
+        *country = 0L;
+      }
+    }
+    return;
+  }
+  if (name == 0x7265746e45L && page < 2L) {
+    long* step = (long*)6272;
+    *step = page + 1L;
+    if (page == 1L) {
+      set(6464L, 0L);
+    }
+  }
+}
+
+deRfun lock(): void {
+  backdrop();
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long ww = 420L;
+  long wh = 280L;
+  long wx = obr::ui::align(0L, wide, ww, obr::ui::Align::Center);
+  long wy = obr::ui::align(0L, high, wh, obr::ui::Align::Center);
+  long panel = obr::ui::rgb(18L, 24L, 34L);
+  long ink = obr::ui::rgb(232L, 236L, 242L);
+  long dim = obr::ui::rgb(150L, 164L, 184L);
+  long accent = obr::ui::rgb(0L, 120L, 212L);
+  obr::ui::round(wx, wy, ww, wh, 10L, panel, 255L);
+  caption("Welcome", 11L, wx + 28L, wy + 28L, ink);
+  showLine(6720L, 6784L, at(6656L), wx + 28L, wy + 64L, ink, 0L);
+  caption("Password", 8L, wx + 28L, wy + 108L, dim);
+  obr::ui::round(wx + 20L, wy + 136L, ww - 40L, 28L, 6L, accent, 255L);
+  showLine(7168L, 7232L, at(7104L), wx + 32L, wy + 142L, ink, 1L);
+  obr::ui::rect(wx + 32L + at(7104L) * obr::ui::advance(16L), wy + 146L, 2L, 12L, ink, 255L);
+  if (at(7296L) == 1L) {
+    caption("Wrong", 16L, wx + 28L, wy + 180L, accent);
+  }
+  caption("Enter", 9L, wx + 28L, wy + wh - 36L, dim);
+  obr::ui::present();
+}
+
+deRfun desk(): void {
+  backdrop();
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long ink = obr::ui::rgb(232L, 236L, 242L);
+  long dim = obr::ui::rgb(180L, 190L, 205L);
+  long panel = obr::ui::rgb(18L, 24L, 34L);
+  long accent = obr::ui::rgb(0L, 120L, 212L);
+  caption("Desktop", 13L, 36L, 36L, ink);
+  long country = at(6400L);
+  if (country == 0L) {
+    caption("China", 3L, 36L, 64L, dim);
+  } else if (country == 1L) {
+    caption("United States", 4L, 36L, 64L, dim);
+  } else if (country == 2L) {
+    caption("Japan", 5L, 36L, 64L, dim);
+  } else {
+    caption("Britain", 6L, 36L, 64L, dim);
+  }
+  obr::ui::text(36L, 100L, 16L, "Esc", dim, 255L);
+  caption("Lock", 12L, 80L, 100L, dim);
+  obr::ui::rect(0L, high - 48L, wide, 48L, panel, 255L);
+  obr::ui::round(12L, high - 40L, 100L, 32L, 8L, accent, 255L);
+  caption("Start", 14L, 32L, high - 32L, ink);
+  long count = at(6656L);
+  long step = obr::ui::advance(16L);
+  showLine(6720L, 6784L, count, wide - 24L - count * step, high - 32L, ink, 0L);
+  obr::ui::present();
+}
+
+deRfun lockKey(): void {
+  long name = *(long*)4864;
+  long unit = typed();
+  if (*(long*)5056 != 0L && unit == 0L) {
+    return;
+  }
+  if (unit < 0L) {
+    popAt(7104L);
+    set(7296L, 0L);
+    return;
+  }
+  if (unit > 0L) {
+    pushAt(7104L, 7168L, 7232L, unit);
+    set(7296L, 0L);
+    return;
+  }
+  if (name == 0x7265746e45L) {
+    if (sameSecret() == 1) {
+      set(7040L, 2L);
+      set(7296L, 0L);
+      return;
+    }
+    set(7296L, 1L);
+    set(7104L, 0L);
+    set(7168L, 0L);
+    set(7232L, 0L);
+  }
+}
+
+deRfun deskKey(): void {
+  if (*(long*)4864 == 0x657061637345L) {
+    set(7040L, 1L);
+    set(7104L, 0L);
+    set(7168L, 0L);
+    set(7232L, 0L);
+    set(7296L, 0L);
+  }
+}
+
 /* 找键盘口，然后一直轮询。红点不在这里换：这一循环的快慢会跟着读盘变。
-   倒计时结束时只调度核心 3。核心 2 把各映像装完后把 5952 写成 1，这里才清成黑屏。 */
+   倒计时结束时只调度核心 3。核心 2 把各映像装完后把 5952 写成 1，这里才铺上全屏加载，并把 4096 写成 1。
+   过渡的前 20 拍画得密一些，方标和拖影依次淡入。资源准备好且 6208 为 1 时，改画安装窗口。
+   用户名和密码打进去之后进入锁屏。密码相符才铺桌面。Esc 回到锁屏。
+   加载期间内核去准备资源并初始化。 */
 deRfun main(): int {
   long* mode = (long*)4096;
   long* count = (long*)4352;
@@ -908,6 +2051,24 @@ deRfun main(): int {
   *tick = 0L;
   *done = 0L;
   *armed = 0L;
+  *(long*)6208 = 0L;
+  *(long*)6272 = 0L;
+  *(long*)6336 = 0L;
+  *(long*)6400 = 0L;
+  *(long*)6464 = 0L;
+  *(long*)6528 = 0L;
+  *(long*)6592 = 0L;
+  *(long*)6656 = 0L;
+  *(long*)6720 = 0L;
+  *(long*)6784 = 0L;
+  *(long*)6848 = 0L;
+  *(long*)6912 = 0L;
+  *(long*)6976 = 0L;
+  *(long*)7040 = 0L;
+  *(long*)7104 = 0L;
+  *(long*)7168 = 0L;
+  *(long*)7232 = 0L;
+  *(long*)7296 = 0L;
   long index = 0L;
   long matched = 0L;
   while (index != 4L && matched == 0L) {
@@ -926,8 +2087,28 @@ deRfun main(): int {
   }
   while (1) {
     int event = poll();
+    long* installFlag = (long*)6208;
+    long* introNow = (long*)6144;
+    long* holdNow = (long*)6592;
     if (event == 1) {
-      onkey();
+      long faceNow = *(long*)7040;
+      if (faceNow == 2L) {
+        deskKey();
+      } else if (faceNow == 1L) {
+        lockKey();
+      } else if ((*installFlag == 1L && *introNow >= 20L) || *holdNow >= 8L) {
+        choose();
+      } else {
+        onkey();
+      }
+      long faceAfter = *(long*)7040;
+      if (faceAfter == 2L) {
+        desk();
+      } else if (faceAfter == 1L) {
+        lock();
+      } else if ((*installFlag == 1L && *introNow >= 20L) || *holdNow >= 8L) {
+        install();
+      }
     }
     if (*mode == 2L) {
       if (event == 1) {
@@ -948,8 +2129,49 @@ deRfun main(): int {
           *armed = 1L;
         }
       } else if (*done != 0L) {
-        clear();
         *mode = 1L;
+        *tick = 0L;
+        long* phase = (long*)6080;
+        long* intro = (long*)6144;
+        *phase = 0L;
+        *intro = 0L;
+        loading();
+      }
+    } else if (*done != 0L) {
+      *tick = *tick + 1L;
+      long* intro = (long*)6144;
+      long* flag = (long*)6208;
+      long gap = 28L;
+      if (*intro < 20L) {
+        gap = 5L;
+      }
+      long* hold = (long*)6592;
+      if (*flag == 1L && *intro >= 20L) {
+        gap = 8L;
+      }
+      if (*tick >= gap) {
+        *tick = 0L;
+        if (*intro < 20L) {
+          *intro = *intro + 1L;
+        } else {
+          *hold = *hold + 1L;
+        }
+        long* phase = (long*)6080;
+        *phase = *phase + 1L;
+        if (*phase >= 24L) {
+          *phase = 0L;
+        }
+        /* 标记到了就进安装。标记没到，淡入后再转几拍也进，避免一直停在加载。
+           7040 为 1 是锁屏，为 2 是桌面。密码相符才离开锁屏。 */
+        if (*(long*)7040 == 2L) {
+          desk();
+        } else if (*(long*)7040 == 1L) {
+          lock();
+        } else if ((*flag == 1L && *intro >= 20L) || *hold >= 8L) {
+          install();
+        } else {
+          loading();
+        }
       }
     }
   }

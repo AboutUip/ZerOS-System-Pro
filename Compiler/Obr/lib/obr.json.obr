@@ -1,0 +1,468 @@
+/* 把一小段 JSON 收成节点。子节点用头指针和右兄弟串起来。键存在子节点上。 */
+import obr.json;
+import obr.text;
+
+deRfun jsonSpan(string text): int {
+  return length(text);
+}
+
+deRfun jsonRows(list[long] items): long {
+  long count = length(items);
+  return count;
+}
+
+deRfun jsonNames(list[string] items): long {
+  long count = length(items);
+  return count;
+}
+
+class Json {
+  string source;
+  int at;
+  int bad;
+  list[long] kinds;
+  list[long] heads;
+  list[long] links;
+  list[long] sizes;
+  list[string] bodies;
+  list[string] names;
+  long top;
+
+  deRfun read(string input): void {
+    source = input;
+    at = 0;
+    bad = 0;
+    kinds = new list[long]();
+    heads = new list[long]();
+    links = new list[long]();
+    sizes = new list[long]();
+    bodies = new list[string]();
+    names = new list[string]();
+    top = -1L;
+    if (jsonSpan(input) > 512) {
+      bad = 1;
+      return;
+    }
+    top = parseValue();
+    skip();
+    if (bad != 0 || top < 0L || at < jsonSpan(source)) {
+      bad = 1;
+    }
+  }
+
+  deRfun Json(string input): void {
+    read(input);
+  }
+
+  deRfun ok(): long {
+    if (bad != 0) {
+      return 0L;
+    }
+    return 1L;
+  }
+
+  deRfun root(): long {
+    return top;
+  }
+
+  deRfun kind(long node): long {
+    if (node < 0L || node >= jsonRows(kinds)) {
+      return -1L;
+    }
+    return kinds[node];
+  }
+
+  deRfun count(long node): long {
+    if (node < 0L || node >= jsonRows(sizes)) {
+      return 0L;
+    }
+    return sizes[node];
+  }
+
+  deRfun child(long node, long index): long {
+    if (index < 0L || node < 0L || node >= jsonRows(sizes)) {
+      return -1L;
+    }
+    if (index >= sizes[node]) {
+      return -1L;
+    }
+    long cursor = heads[node];
+    long step = 0L;
+    while (step < index) {
+      cursor = links[cursor];
+      step = step + 1L;
+    }
+    return cursor;
+  }
+
+  deRfun find(long node, string name): long {
+    if (kind(node) != obr::json::Kind::Object) {
+      return -1L;
+    }
+    long total = count(node);
+    long index = 0L;
+    while (index < total) {
+      long item = child(node, index);
+      if (obr::text::same(names[item], name) == 1L) {
+        return item;
+      }
+      index = index + 1L;
+    }
+    return -1L;
+  }
+
+  deRfun key(long node): string {
+    if (node < 0L || node >= jsonNames(names)) {
+      return "";
+    }
+    return names[node];
+  }
+
+  deRfun text(long node): string {
+    if (node < 0L || node >= jsonNames(bodies)) {
+      return "";
+    }
+    return bodies[node];
+  }
+
+  deRfun number(long node): long {
+    if (kind(node) != obr::json::Kind::Number) {
+      return 0L;
+    }
+    string body = bodies[node];
+    int count = jsonSpan(body);
+    int index = 0;
+    int neg = 0;
+    if (count > 0 && body[0] == '-') {
+      neg = 1;
+      index = 1;
+    }
+    long value = 0L;
+    while (index < count) {
+      long digit = body[index];
+      value = value * 10L + (digit - 48L);
+      index = index + 1;
+    }
+    if (neg == 1) {
+      value = 0L - value;
+    }
+    return value;
+  }
+
+  deRfun skip(): void {
+    int count = jsonSpan(source);
+    while (at < count) {
+      char unit = source[at];
+      if (unit != ' ' && unit != '\t' && unit != '\n' && unit != '\r') {
+        return;
+      }
+      at = at + 1;
+    }
+  }
+
+  deRfun add(long k, string body, string name): long {
+    if (jsonRows(kinds) >= 64L) {
+      bad = 1;
+      return -1L;
+    }
+    long id = jsonRows(kinds);
+    kinds.push(k);
+    heads.push(-1L);
+    links.push(-1L);
+    sizes.push(0L);
+    bodies.push(body);
+    names.push(name);
+    return id;
+  }
+
+  deRfun link(long parent, long child): void {
+    long total = sizes[parent];
+    if (total == 0L) {
+      heads[parent] = child;
+    } else {
+      long cursor = heads[parent];
+      while (links[cursor] != -1L) {
+        cursor = links[cursor];
+      }
+      links[cursor] = child;
+    }
+    sizes[parent] = total + 1L;
+  }
+
+  deRfun cut(int from, int to): string {
+    string out = "";
+    while (from < to) {
+      out = out + source[from];
+      from = from + 1;
+    }
+    return out;
+  }
+
+  deRfun readString(): string {
+    if (at >= jsonSpan(source) || source[at] != '"') {
+      bad = 1;
+      return "";
+    }
+    at = at + 1;
+    string body = "";
+    while (at < jsonSpan(source)) {
+      char unit = source[at];
+      at = at + 1;
+      if (unit == '"') {
+        return body;
+      }
+      if (unit == '\\') {
+        if (at >= jsonSpan(source)) {
+          bad = 1;
+          return "";
+        }
+        char escaped = source[at];
+        at = at + 1;
+        if (escaped == '"' || escaped == '\\' || escaped == '/') {
+          body = body + escaped;
+        } else {
+          if (escaped == 'n') {
+            body = body + '\n';
+          } else {
+            if (escaped == 'r') {
+              body = body + '\r';
+            } else {
+              if (escaped == 't') {
+                body = body + '\t';
+              } else {
+                bad = 1;
+                return "";
+              }
+            }
+          }
+        }
+      } else {
+        body = body + unit;
+      }
+    }
+    bad = 1;
+    return "";
+  }
+
+  deRfun parseString(): long {
+    string body = readString();
+    if (bad != 0) {
+      return -1L;
+    }
+    return add(obr::json::Kind::String, body, "");
+  }
+
+  deRfun parseNumber(): long {
+    int start = at;
+    long unit = source[at];
+    if (unit == 45L) {
+      at = at + 1;
+      if (at >= jsonSpan(source)) {
+        bad = 1;
+        return -1L;
+      }
+      unit = source[at];
+    }
+    if (unit < 48L || unit > 57L) {
+      bad = 1;
+      return -1L;
+    }
+    int digits = 0;
+    while (at < jsonSpan(source)) {
+      long digit = source[at];
+      if (digit < 48L || digit > 57L) {
+        break;
+      }
+      at = at + 1;
+      digits = digits + 1;
+    }
+    if (digits > 18) {
+      bad = 1;
+      return -1L;
+    }
+    if (at < jsonSpan(source)) {
+      long digit = source[at];
+      if (digit == 46L || digit == 101L || digit == 69L) {
+        bad = 1;
+        return -1L;
+      }
+    }
+    return add(obr::json::Kind::Number, cut(start, at), "");
+  }
+
+  deRfun parseWord(string word, long k): long {
+    int count = jsonSpan(word);
+    int index = 0;
+    while (index < count) {
+      if (at >= jsonSpan(source) || source[at] != word[index]) {
+        bad = 1;
+        return -1L;
+      }
+      at = at + 1;
+      index = index + 1;
+    }
+    return add(k, "", "");
+  }
+
+  deRfun parseArray(): long {
+    at = at + 1;
+    long node = add(obr::json::Kind::Array, "", "");
+    if (node < 0L) {
+      return -1L;
+    }
+    skip();
+    if (at < jsonSpan(source) && source[at] == ']') {
+      at = at + 1;
+      return node;
+    }
+    while (bad == 0) {
+      long item = parseValue();
+      if (item < 0L) {
+        return -1L;
+      }
+      link(node, item);
+      skip();
+      if (at >= jsonSpan(source)) {
+        bad = 1;
+        return -1L;
+      }
+      if (source[at] == ']') {
+        at = at + 1;
+        return node;
+      }
+      if (source[at] != ',') {
+        bad = 1;
+        return -1L;
+      }
+      at = at + 1;
+    }
+    return -1L;
+  }
+
+  deRfun parseObject(): long {
+    at = at + 1;
+    long node = add(obr::json::Kind::Object, "", "");
+    if (node < 0L) {
+      return -1L;
+    }
+    skip();
+    if (at < jsonSpan(source) && source[at] == '}') {
+      at = at + 1;
+      return node;
+    }
+    while (bad == 0) {
+      skip();
+      string name = readString();
+      if (bad != 0) {
+        return -1L;
+      }
+      skip();
+      if (at >= jsonSpan(source) || source[at] != ':') {
+        bad = 1;
+        return -1L;
+      }
+      at = at + 1;
+      long item = parseValue();
+      if (item < 0L) {
+        return -1L;
+      }
+      names[item] = name;
+      link(node, item);
+      skip();
+      if (at >= jsonSpan(source)) {
+        bad = 1;
+        return -1L;
+      }
+      if (source[at] == '}') {
+        at = at + 1;
+        return node;
+      }
+      if (source[at] != ',') {
+        bad = 1;
+        return -1L;
+      }
+      at = at + 1;
+    }
+    return -1L;
+  }
+
+  deRfun parseValue(): long {
+    skip();
+    if (at >= jsonSpan(source)) {
+      bad = 1;
+      return -1L;
+    }
+    char unit = source[at];
+    if (unit == '{') {
+      return parseObject();
+    }
+    if (unit == '[') {
+      return parseArray();
+    }
+    if (unit == '"') {
+      return parseString();
+    }
+    if (unit == 't') {
+      return parseWord("true", obr::json::Kind::True);
+    }
+    if (unit == 'f') {
+      return parseWord("false", obr::json::Kind::False);
+    }
+    if (unit == 'n') {
+      return parseWord("null", obr::json::Kind::Null);
+    }
+    long code = unit;
+    if (code == 45L || (code >= 48L && code <= 57L)) {
+      return parseNumber();
+    }
+    bad = 1;
+    return -1L;
+  }
+}
+
+deRfun jsonDoc(): Json {
+  static Json value = new Json("");
+  return value;
+}
+
+deRfun obr::json::parse(string text): long {
+  Json doc = jsonDoc();
+  doc.read(text);
+  return doc.ok();
+}
+
+deRfun obr::json::ok(): long {
+  return jsonDoc().ok();
+}
+
+deRfun obr::json::root(): long {
+  return jsonDoc().root();
+}
+
+deRfun obr::json::kind(long node): long {
+  return jsonDoc().kind(node);
+}
+
+deRfun obr::json::count(long node): long {
+  return jsonDoc().count(node);
+}
+
+deRfun obr::json::child(long node, long index): long {
+  return jsonDoc().child(node, index);
+}
+
+deRfun obr::json::find(long node, string name): long {
+  return jsonDoc().find(node, name);
+}
+
+deRfun obr::json::key(long node): string {
+  return jsonDoc().key(node);
+}
+
+deRfun obr::json::text(long node): string {
+  return jsonDoc().text(node);
+}
+
+deRfun obr::json::number(long node): long {
+  return jsonDoc().number(node);
+}

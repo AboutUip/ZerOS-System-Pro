@@ -90,6 +90,32 @@ export namespace ZerOS {
        */
       const SharedBootFlag = 5952n;
       /**
+       * 固件模式。核心 0 在清屏之后写成 1，核心 2 读到 1 才往帧上画字。
+       * 和结束标志一样落在固件格子里。若只留在 0 号核心的缓存，2 号核心永远读到 0，清屏之后面板就一直是黑的。
+       */
+      const SharedModeWord = 4096n;
+      /**
+       * 安装标记。核心 2 在 1 号进入等待后写成 1，核心 0 离开加载画面，进入安装窗口。
+       * 和结束标志一样落在固件格子里，必须进共享内存。
+       */
+      const SharedInstallWord = 6208n;
+
+      /** 这次访存是否盖住结束标志、模式字或安装标记。bitWidth 是这次访问的位数。 */
+      function touchesSharedFirmware(address: bigint, bitWidth: bigint): boolean {
+        const end = address + bitWidth;
+        if (address < SharedBootFlag + 64n && end > SharedBootFlag) {
+          return true;
+        }
+        if (address < SharedModeWord + 64n && end > SharedModeWord) {
+          return true;
+        }
+        if (address < SharedInstallWord + 64n && end > SharedInstallWord) {
+          return true;
+        }
+        return false;
+      }
+
+      /**
        * 0 号核心的调用栈。编译器从 2097152 往上长，一帧远小于这段。
        * 挂载后按核心号挪到 -slot 的窗口，局部变量才不必每个字都去问内存。
        */
@@ -298,7 +324,8 @@ export namespace ZerOS {
         if (address < 0n || address % 8n !== 0n || address === FrameAddress) {
           return false;
         }
-        if (address <= SharedBootFlag && address + BigInt(width * 8) > SharedBootFlag) {
+        /* 结束标志和模式字要给另一颗核心看，不能留在本核心的缓存里。 */
+        if (touchesSharedFirmware(address, BigInt(width * 8))) {
           return false;
         }
         if (outsideBound(address, BigInt(width * 8))) {
@@ -566,6 +593,8 @@ export namespace ZerOS {
       let boundOrigin = 0n;
       let boundLength = -1n;
       let burstLimit = 100000;
+      /** 这颗核心已被监督核划成客核心。显卡队列不得在交回宿主之前送出。 */
+      let guestCore = false;
 
       function outsideBound(address: bigint, bits: bigint): boolean {
         if (boundLength < 0n) {
@@ -594,6 +623,10 @@ export namespace ZerOS {
           }
           const op = step["Op"];
           if (typeof op !== "string") {
+            break;
+          }
+          if (guestCore && op.startsWith("gpu.")) {
+            quietFault = `${corePrefix} 核心特权指令`;
             break;
           }
           if (isLocalOp(op)) {
@@ -1620,6 +1653,10 @@ export namespace ZerOS {
           const length = record["boundLength"];
           boundOrigin = typeof origin === "bigint" ? origin : 0n;
           boundLength = typeof length === "bigint" ? length : -1n;
+          guestCore = record["guest"] === true;
+          if (guestCore) {
+            queryCache.clear();
+          }
           const outcome = runBurst(start);
           const fault = quietFault;
           quietFault = "";
@@ -1886,7 +1923,7 @@ export namespace ZerOS {
       /**
        * 把编译器窗口挪到这颗核心的槽上。
        * obrc -slot 加的是 核心号 × 槽距。0 号保持原地址。
-       * 固件格子不加，5952 那个结束标志仍然进共享内存。
+       * 固件格子不加。5952 结束标志和 4096 模式字仍然进共享内存。
        */
       function adoptSlot(ordinal: number): void {
         if (!Number.isInteger(ordinal) || ordinal <= 0 || ordinal > 255) {

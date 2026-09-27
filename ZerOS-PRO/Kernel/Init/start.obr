@@ -45,12 +45,13 @@ deRfun boot(): void {
   obr::os::bound(me, kArena(me), kSpan());
   taskClear();
   vfsInit();
-  /* 监督核自己是 1 号任务，根，持有管理权。当前目录是根。 */
-  spawnOn(me, 0L, 0L, 1L, TaskState::Running);
-  if (obr::nas::ready() == 1L) {
-    drvLoad();
-  }
+  /* 监督核不进任务表。1 号留给用户态 init，驱动从 2 号起。 */
+  reserveOne();
+  conPublish();
+  drvLoad();
   noteDone();
+  conShow();
+  bootInit();
 }
 
 deRfun dispatch(long caller, long service): void {
@@ -146,6 +147,20 @@ deRfun dispatch(long caller, long service): void {
   reply(caller, 0L);
 }
 
+/* 1 号进入等待，说明会话已经把资源留下。6208 写成 1，固件改画安装窗口。
+   这一字和 4096、5952 一样走共享内存。部署这一份准备完就进入安装。 */
+deRfun noteInstall(): void {
+  long* flag = (long*)6208;
+  if (*flag != 0L) {
+    return;
+  }
+  long index = taskByPid(1L);
+  if (index < 0L || taskAt(index).state != TaskState::Sleeping) {
+    return;
+  }
+  *flag = 1L;
+}
+
 deRfun main(): int {
   boot();
   while (1) {
@@ -155,7 +170,12 @@ deRfun main(): int {
     if (found == 1L) {
       dispatch(value / pack(), value % pack());
     }
-    obr::os::yield();
+    /* 17838080 为 1 时刚调度了驱动，先回去取调用。这时让出会停住。 */
+    bootPump();
+    noteInstall();
+    if (memory::load64(17838080L) == 0L) {
+      obr::os::yield();
+    }
   }
   return 0;
 }

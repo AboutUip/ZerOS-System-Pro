@@ -1,0 +1,80 @@
+/* 核对文本、进制、散列、随机数和 JSON。全部通过时 main 返回 73。 */
+import obr.base;
+import obr.hash;
+import obr.json;
+import obr.rand;
+import obr.text;
+
+deRfun main(): int {
+  if (obr::text::same("ab", "ab") != 1L) {
+    return 1;
+  }
+  if (obr::text::same("ab", "a") != 0L) {
+    return 2;
+  }
+  if (obr::text::same(obr::base::text(255L, 16L), "ff") != 1L) {
+    return 3;
+  }
+  if (obr::text::same(obr::base::text(10L, 2L), "1010") != 1L) {
+    return 4;
+  }
+  if (obr::text::same(obr::base::text(-4L, 10L), "-4") != 1L) {
+    return 5;
+  }
+  long value = 0L;
+  if (obr::base::read("ff", 16L, &value) != 0L || value != 255L) {
+    return 6;
+  }
+  if (obr::base::read("zz", 16L, &value) != 7L) {
+    return 7;
+  }
+  if (obr::text::same(obr::base::hex("hi"), "6869") != 1L) {
+    return 8;
+  }
+  if (obr::text::same(obr::base::b64("hi"), "aGk=") != 1L) {
+    return 9;
+  }
+  list[long] bytes = new list[long]();
+  if (obr::base::unb64("aGk=", bytes) != 0L) {
+    return 10;
+  }
+  if (length(bytes) != 2 || bytes[0] != 104L || bytes[1] != 105L) {
+    return 11;
+  }
+  if (obr::hash::mix("") != 5381L || obr::hash::mix("hi") != 5863446L) {
+    return 12;
+  }
+  obr::rand::seed(1L);
+  if (obr::rand::next() != 1015568748L) {
+    return 13;
+  }
+  obr::rand::seed(1L);
+  long span = obr::rand::below(10L);
+  if (span < 0L || span >= 10L) {
+    return 14;
+  }
+  if (obr::json::parse("{\"n\":12,\"s\":\"ok\"}") != 1L) {
+    return 15;
+  }
+  long num = obr::json::find(obr::json::root(), "n");
+  if (obr::json::kind(num) != obr::json::Kind::Number || obr::json::number(num) != 12L) {
+    return 16;
+  }
+  long word = obr::json::find(obr::json::root(), "s");
+  if (obr::text::same(obr::json::text(word), "ok") != 1L) {
+    return 17;
+  }
+  if (obr::json::parse("[1,2]") != 1L || obr::json::count(obr::json::root()) != 2L) {
+    return 18;
+  }
+  if (obr::json::number(obr::json::child(obr::json::root(), 1L)) != 2L) {
+    return 19;
+  }
+  if (obr::json::parse("true") != 1L || obr::json::kind(obr::json::root()) != obr::json::Kind::True) {
+    return 20;
+  }
+  if (obr::json::parse("\"a\\nb\"") != 1L || obr::text::same(obr::json::text(obr::json::root()), "a\nb") != 1L) {
+    return 21;
+  }
+  return 73;
+}

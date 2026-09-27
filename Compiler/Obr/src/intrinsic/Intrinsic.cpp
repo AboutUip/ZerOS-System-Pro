@@ -14,6 +14,7 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"gpu::align", "gpu.align", TypeKind::Void, 3, 0, false, false},
       {"gpu::paint", "gpu.paint", TypeKind::Void, 3, 0, false, false},
       {"gpu::glyph", "gpu.glyph", TypeKind::Void, 2, 0, false, false},
+      {"gpu::character", "gpu.character", TypeKind::Void, 5, 0, false, false},
       {"gpu::drop", "gpu.drop", TypeKind::Void, 1, 0, false, false},
       {"gpu::compose", "gpu.compose", TypeKind::Void, 0, 0, false, false},
       {"gpu::present", "gpu.present", TypeKind::Void, 0, 0, false, false},
@@ -86,6 +87,11 @@ bool libraryFunction(const Function& function) {
     return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Long);
   }
   if (function.name == "obr::ui::meter") return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Long);
+  if (function.name == "obr::ui::title") return sameShape(function, {TypeKind::Long}, TypeKind::Long);
+  if (function.name == "obr::ui::below") return sameShape(function, {TypeKind::Long, TypeKind::Long}, TypeKind::Long);
+  if (function.name == "obr::ui::hit") {
+    return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Long);
+  }
   if (function.name == "obr::ui::clear") return sameShape(function, {TypeKind::Long, TypeKind::Long}, TypeKind::Void);
   if (function.name == "obr::ui::rect" || function.name == "obr::ui::glyph") {
     return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Void);
