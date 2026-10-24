@@ -65,7 +65,7 @@ deRfun gl::clear(): void {
     gpu::drop(*kept);
     *kept = 0L;
   }
-  *kept = gpu::box(0L, 0L, 0L, 640L, 480L, *clearPixel);
+  *kept = gpu::box(0L, 0L, 0L, gl::frame(0L), gl::frame(1L), *clearPixel);
 }
 
 deRfun gl::clear(long mask): void {
@@ -205,6 +205,10 @@ deRfun gl::ellipse(long x, long y, long width, long height): void {
 
 deRfun gl::frame(long edge): long {
   return gpu::accel(38L, edge, 0.0, 0.0, 0.0);
+}
+
+deRfun gl::resize(long width, long height): long {
+  return gpu::accel(39L, width, height, 0.0, 0.0);
 }
 
 deRfun gl::raster(long x, long y, long width, long height): long {

@@ -1,0 +1,7 @@
+/* 分辨率从显卡驱动进去。显卡换帧之后，页面再把同一组宽高交给显示器。 */
+import panel;
+import gl;
+
+deRfun panel::apply(long width, long height): long {
+  return gl::resize(width, height);
+}

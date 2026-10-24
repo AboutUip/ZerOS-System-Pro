@@ -26,6 +26,9 @@ import { ZerOS as CpuSlotRoot } from "../../Motherboard/Slot/Cpu/CpuSlot";
 import { ZerOS as CpuSelfCheckRoot } from "../Test/CpuSelfCheck";
 import { ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
 import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
+import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
+import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
+import { ZerOS as MailboxRoot } from "../../Motherboard/Host/Mailbox";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -35,6 +38,7 @@ export namespace ZerOS {
       const acceptMountedCore = RuntimeRoot.Hardware.Cpu.acceptMountedCore;
       const adoptHostClock = RuntimeRoot.Hardware.Cpu.adoptHostClock;
       const noteCpuIdentity = RuntimeRoot.Hardware.Cpu.noteCpuIdentity;
+      const adoptMetricPage = RuntimeRoot.Hardware.Cpu.adoptMetricPage;
       const dropCore = RuntimeRoot.Hardware.Cpu.dropCore;
       const runCpuSelfCheck = CpuSelfCheckRoot.Hardware.Cpu.runCpuSelfCheck;
       const runCpuRegisterCheck = CpuSelfCheckRoot.Hardware.Cpu.runCpuRegisterCheck;
@@ -42,8 +46,16 @@ export namespace ZerOS {
       const decodeProgramBinary = BinaryRoot.Hardware.Cpu.decodeProgramBinary;
       const isProgramBinary = BinaryRoot.Hardware.Cpu.isProgramBinary;
       const runSequence = RuntimeRoot.Hardware.Cpu.runSequence;
+      const parkInstalledFaults = RuntimeRoot.Hardware.Cpu.parkInstalledFaults;
+      const presentFaultFrame = RuntimeRoot.Hardware.Cpu.presentFaultFrame;
+      const runBorrowed = RuntimeRoot.Hardware.Cpu.runBorrowed;
       const runGuest = RuntimeRoot.Hardware.Cpu.runGuest;
+      const coreIsHalted = RuntimeRoot.Hardware.Cpu.coreIsHalted;
       const seatImage = RuntimeRoot.Hardware.Cpu.seatImage;
+      const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
+      const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
+      const DebugRunMessage = MailboxRoot.Hardware.Motherboard.MailMessage.DebugRun;
+      const DebugResultMessage = MailboxRoot.Hardware.Motherboard.MailMessage.DebugResult;
       const seatPrefix = "[ZerOS.Hardware.Motherboard.CpuSeat]";
 
       function asRecord(data: unknown): Record<string, unknown> | null {
@@ -88,6 +100,10 @@ export namespace ZerOS {
         if (typeof origin === "number") {
           adoptHostClock(origin);
         }
+        const metrics = record["metrics"];
+        if (metrics instanceof SharedArrayBuffer) {
+          adoptMetricPage(metrics);
+        }
         globalThis.postMessage({ kind: "seated", coreCount: provider.CoreCount });
       }
 
@@ -130,9 +146,12 @@ export namespace ZerOS {
       function onProbe(): void {
         void runCpuRegisterCheck().then(
           (): void => {
+            /* 自检里故意的失败到此为止，不再补发。接下来固件的失败才送主板。 */
+            parkInstalledFaults(false);
             globalThis.postMessage({ kind: "ok" });
           },
           (error: unknown): void => {
+            parkInstalledFaults(false);
             const message = error instanceof Error ? error.message : `${seatPrefix} 核心试执行失败`;
             postFault(message);
           },
@@ -202,6 +221,43 @@ export namespace ZerOS {
         globalThis.postMessage({ kind: "ok" });
       }
 
+      /**
+       * 失败帧走单独的完成消息。
+       * 不发 kind 为 fault 的整机失败，否则主板会再画一次，两帧叠在一起。
+       */
+      function postFaultFrame(ok: boolean, message: string): void {
+        globalThis.postMessage({ kind: "fault-frame-done", ok, message });
+      }
+
+      /**
+       * 主板要求把失败帧画到面板上。
+       * 0 号核心正跑固件时，由运行时在下一条指令边界接替，这里只等它画完。
+       */
+      function onFaultFrame(record: Record<string, unknown>): void {
+        let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
+        try {
+          const parsed = stepsOf(record);
+          if (parsed === null || parsed.length < 1) {
+            postFaultFrame(false, "fault picture was not drawn");
+            return;
+          }
+          steps = parsed;
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "fault picture was not drawn";
+          postFaultFrame(false, message);
+          return;
+        }
+        void presentFaultFrame(steps).then(
+          (): void => {
+            postFaultFrame(true, "");
+          },
+          (error: unknown): void => {
+            const message = error instanceof Error ? error.message : "fault picture was not drawn";
+            postFaultFrame(false, message);
+          },
+        );
+      }
+
       function onRun(record: Record<string, unknown>): void {
         let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
         try {
@@ -256,13 +312,80 @@ export namespace ZerOS {
           onRun(record);
           return;
         }
+        if (kind === "fault-frame") {
+          onFaultFrame(record);
+          return;
+        }
         if (kind === "seat") {
           onSeat(record);
           return;
         }
         if (kind === "guest") {
           onGuest(record);
+          return;
         }
+        if (kind === DebugRunMessage) {
+          onDebug(record);
+        }
+      }
+
+      /**
+       * 调试开关打开、文本合法、并且 0 号核心已经停止时，才借用它跑这段 ZAP。
+       * 用客程序那条返回，不把这段的失败画成整机停机。开关关闭时只回拒绝原因。
+       */
+      function onDebug(record: Record<string, unknown>): void {
+        const lines = readDebugLines(record["lines"]);
+        if (lines === null) {
+          postDebug("debug run was refused");
+          return;
+        }
+        const decision = debugRunDecision(DebugEnabled, lines, coreIsHalted(0));
+        if (decision !== "") {
+          postDebug(decision);
+          return;
+        }
+        let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
+        try {
+          const parsed = stepsOf({ lines });
+          if (parsed === null || parsed.length < 1) {
+            postDebug("debug run was refused");
+            return;
+          }
+          steps = parsed;
+        } catch (error: unknown) {
+          postDebug(error instanceof Error ? error.message : "debug run was refused");
+          return;
+        }
+        void runGuest(0, steps).then(
+          (result): void => {
+            postDebug(result.Ok ? "ok" : result.Message);
+          },
+          (error: unknown): void => {
+            postDebug(error instanceof Error ? error.message : "debug run was refused");
+          },
+        );
+      }
+
+      function readDebugLines(value: unknown): string[] | null {
+        if (!Array.isArray(value)) {
+          return null;
+        }
+        const lines: string[] = [];
+        for (const item of value) {
+          if (typeof item !== "string") {
+            return null;
+          }
+          lines.push(item);
+        }
+        return lines;
+      }
+
+      function postDebug(message: string): void {
+        globalThis.postMessage({
+          kind: DebugResultMessage,
+          ok: message === "ok",
+          message,
+        });
       }
 
       /**
@@ -289,7 +412,7 @@ export namespace ZerOS {
           postGuest(ticket, false, message, []);
           return;
         }
-        void runGuest(ordinal, steps).then(
+        void runBorrowed(ordinal, steps).then(
           (result): void => {
             postGuest(ticket, result.Ok, result.Message, result.Registers);
           },

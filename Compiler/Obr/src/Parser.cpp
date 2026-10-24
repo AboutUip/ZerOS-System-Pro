@@ -457,8 +457,9 @@ class Parser {
   Function parseFunction(const std::string& space) {
     const bool exported = eat(Tok::Export);
     const bool asyncFun = eat(Tok::Async);
-    expect(Tok::DeRfun, header_ ? ".mr 里只能声明函数头、namespace、struct 或 enum" : "顶层只能是 import、class、struct、enum 或 deRfun");
     Function function;
+    function.line = peek().line;
+    expect(Tok::DeRfun, header_ ? ".mr 里只能声明函数头、namespace、struct 或 enum" : "顶层只能是 import、class、struct、enum 或 deRfun");
     const std::string written = qualified();
     function.name = space.empty() ? written : space + "::" + written;
     function.exported = exported;
@@ -499,13 +500,18 @@ class Parser {
   }
 
   Stmt parseStmt() {
-    if (eat(Tok::Semi)) return Stmt{};
+    const int opened = peek().line;
+    auto finish = [opened](Stmt stmt) {
+      if (stmt.line == 0) stmt.line = opened;
+      return stmt;
+    };
+    if (eat(Tok::Semi)) return finish(Stmt{});
     if (eat(Tok::LBrace)) {
       Stmt stmt;
       stmt.kind = Stmt::Kind::Block;
       while (!check(Tok::RBrace) && !check(Tok::End)) stmt.body.push_back(parseStmt());
       expect(Tok::RBrace, "语句块缺少 }");
-      return stmt;
+      return finish(stmt);
     }
     if (eat(Tok::If)) {
       Stmt stmt;
@@ -515,7 +521,7 @@ class Parser {
       expect(Tok::RParen, "if 缺少 )");
       stmt.body.push_back(parseStmt());
       if (eat(Tok::Else)) stmt.other.push_back(parseStmt());
-      return stmt;
+      return finish(stmt);
     }
     if (eat(Tok::While)) {
       Stmt stmt;
@@ -524,7 +530,7 @@ class Parser {
       stmt.expr = parseExpr();
       expect(Tok::RParen, "while 缺少 )");
       stmt.body.push_back(parseStmt());
-      return stmt;
+      return finish(stmt);
     }
     if (eat(Tok::For)) {
       Stmt stmt;
@@ -536,6 +542,7 @@ class Parser {
       if (!check(Tok::RParen)) {
         Stmt step;
         step.kind = Stmt::Kind::Expr;
+        step.line = peek().line;
         step.expr = parseExpr();
         stmt.other.push_back(step);
       } else {
@@ -543,25 +550,27 @@ class Parser {
       }
       expect(Tok::RParen, "for 缺少 )");
       stmt.body.push_back(parseStmt());
-      return stmt;
+      return finish(stmt);
     }
     if (eat(Tok::Break)) {
       expect(Tok::Semi, "break 缺少 ;");
       Stmt stmt;
       stmt.kind = Stmt::Kind::Break;
-      return stmt;
+      return finish(stmt);
     }
     if (eat(Tok::Continue)) {
       expect(Tok::Semi, "continue 缺少 ;");
       Stmt stmt;
       stmt.kind = Stmt::Kind::Continue;
-      return stmt;
+      return finish(stmt);
     }
     if (check(Tok::Zap)) {
+      const Token token = take();
       Stmt stmt;
       stmt.kind = Stmt::Kind::Zap;
-      stmt.name = take().text;
-      return stmt;
+      stmt.name = token.text;
+      stmt.line = token.line;
+      return finish(stmt);
     }
     if (eat(Tok::Goto)) {
       if (!check(Tok::Ident)) fail("goto 缺少标号");
@@ -569,21 +578,21 @@ class Parser {
       stmt.kind = Stmt::Kind::Goto;
       stmt.name = take().text;
       expect(Tok::Semi, "goto 缺少 ;");
-      return stmt;
+      return finish(stmt);
     }
     if (check(Tok::Ident) && at_ + 1 < static_cast<int>(tokens_.size()) && tokens_[static_cast<std::size_t>(at_ + 1)].kind == Tok::Colon) {
       Stmt stmt;
       stmt.kind = Stmt::Kind::Label;
       stmt.name = take().text;
       expect(Tok::Colon, "标号缺少 :");
-      return stmt;
+      return finish(stmt);
     }
     if (eat(Tok::Return)) {
       Stmt stmt;
       stmt.kind = Stmt::Kind::Return;
       if (!check(Tok::Semi)) stmt.expr = parseExpr();
       expect(Tok::Semi, "return 缺少 ;");
-      return stmt;
+      return finish(stmt);
     }
     bool isStatic = false;
     if (eat(Tok::Public) || eat(Tok::Private)) {
@@ -608,7 +617,7 @@ class Parser {
       stmt.name = take().text;
       if (eat(Tok::Assign)) stmt.expr = parseExpr();
       expect(Tok::Semi, "声明缺少 ;");
-      return stmt;
+      return finish(stmt);
     }
     if (looksLikeDecl()) {
       Stmt stmt;
@@ -624,14 +633,14 @@ class Parser {
       stmt.name = take().text;
       if (eat(Tok::Assign)) stmt.expr = parseExpr();
       expect(Tok::Semi, "声明缺少 ;");
-      return stmt;
+      return finish(stmt);
     }
     if (isStatic) fail("static 后面必须是变量声明");
     Stmt stmt;
     stmt.kind = Stmt::Kind::Expr;
     stmt.expr = parseExpr();
     expect(Tok::Semi, "语句缺少 ;");
-    return stmt;
+    return finish(stmt);
   }
 
   Expr parseExpr() { return parseAssign(); }

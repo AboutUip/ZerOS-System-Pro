@@ -88,7 +88,8 @@ function hostCompilerPath(): string {
 
 /**
  * 用已经编好的宿主编译器把 Boot 旁的 .obr 收成程序。
- * 交给页面的是无扩展名二进制。旁边的 .zap 只留在工具链目录里，用来对照指令。
+ * 交给页面的是无扩展名二进制。旁边的 .zap 和 .debug 只留在工具链目录里。
+ * .debug 是指令对照表，不打进页面包，也不装入客程序。CPU 不读它。
  * Vite 不调用 g++。产品源码只导入虚拟模块，不写产物路径。
  * 源文件变了就再编译并整页重载。
  */
@@ -109,6 +110,10 @@ function obrFirmwarePlugin(): Plugin {
       sources: [
         path.resolve(productRoot, "Boot/Bios.obr"),
         path.resolve(productRoot, "Boot/Clear.obr"),
+        path.resolve(repoRoot, "Driver/Pointer/pointer.obr"),
+        path.resolve(repoRoot, "Compiler/Obr/lib/obr.widget.obr"),
+        path.resolve(repoRoot, "Compiler/Obr/lib/obr.nas.obr"),
+        path.resolve(repoRoot, "Driver/Display/panel.obr"),
         gpuDriver,
       ],
       output: path.resolve(outputDir, "Bios"),
@@ -150,6 +155,7 @@ function obrFirmwarePlugin(): Plugin {
           "-I",
           memoryHeader,
           ...(job.slot === undefined ? [] : ["-slot", String(job.slot)]),
+          "-debug",
           "-zap",
           "-o",
           job.output,
@@ -165,6 +171,64 @@ function obrFirmwarePlugin(): Plugin {
 
   const bytesOf = (file: string): number[] => Array.from(readFileSync(file));
 
+  /**
+   * 把 obr-debug 1 收成连续段，避免把整份对照表嵌进页面。
+   * 只留文件名。全路径不进失败帧。
+   */
+  const compactSites = (binaryPath: string): (readonly [number, number, string, number, string])[] => {
+    const debugPath = `${binaryPath}.debug`;
+    if (!existsSync(debugPath)) {
+      return [];
+    }
+    const lines = readFileSync(debugPath, "utf8").split("\n");
+    const header = lines[0] ?? "";
+    if (header.trim() !== "obr-debug 1") {
+      return [];
+    }
+    const runs: (readonly [number, number, string, number, string])[] = [];
+    let from = -1;
+    let until = -1;
+    let file = "";
+    let lineNo = 0;
+    let name = "";
+    for (let index = 1; index < lines.length; index += 1) {
+      const line = lines[index] ?? "";
+      if (line.length < 1) {
+        continue;
+      }
+      const parts = line.split("\t");
+      if (parts.length < 4) {
+        continue;
+      }
+      const at = Number(parts[0]);
+      const row = Number(parts[2]);
+      const full = parts[1] ?? "";
+      const slash = Math.max(full.lastIndexOf("/"), full.lastIndexOf("\\"));
+      const nextFile = slash >= 0 ? full.slice(slash + 1) : full;
+      const nextName = parts[3] ?? "";
+      /* 开头几条没有源文件。跳过，不能因此把后面整份对照表丢掉。 */
+      if (!Number.isInteger(at) || at < 0 || !Number.isInteger(row) || row < 1 || nextFile.length < 1 || nextName.length < 1) {
+        continue;
+      }
+      if (from >= 0 && at === until && nextFile === file && row === lineNo && nextName === name) {
+        until = at + 1;
+        continue;
+      }
+      if (from >= 0) {
+        runs.push([from, until, file, lineNo, name]);
+      }
+      from = at;
+      until = at + 1;
+      file = nextFile;
+      lineNo = row;
+      name = nextName;
+    }
+    if (from >= 0) {
+      runs.push([from, until, file, lineNo, name]);
+    }
+    return runs;
+  };
+
   return {
     name: "zeros-obr-firmware",
     buildStart(): void {
@@ -173,7 +237,7 @@ function obrFirmwarePlugin(): Plugin {
     configureServer(server): void {
       compile();
       const watched = jobs.flatMap((job): readonly string[] => job.sources);
-      watched.push(path.resolve(gpuHeader, "gpu.mr"), path.resolve(driverHeader, "gl.mr"), path.resolve(boardHeader, "board.mr"), path.resolve(memoryHeader, "memory.mr"), path.resolve(productRoot, "Boot/firmware.mr"));
+      watched.push(path.resolve(gpuHeader, "gpu.mr"), path.resolve(driverHeader, "gl.mr"), path.resolve(boardHeader, "board.mr"), path.resolve(memoryHeader, "memory.mr"), path.resolve(productRoot, "Boot/firmware.mr"), path.resolve(repoRoot, "Compiler/Obr/lib/obr.widget.mr"));
       server.watcher.add(watched);
     },
     resolveId(id: string): string | null {
@@ -188,7 +252,11 @@ function obrFirmwarePlugin(): Plugin {
       }
       compile();
       return jobs
-        .map((job): string => `export const ${job.exportName} = ${JSON.stringify(bytesOf(job.output))};`)
+        .map((job): string => {
+          const bytes = `export const ${job.exportName} = ${JSON.stringify(bytesOf(job.output))};`;
+          const sites = `export const ${job.exportName}Sites = ${JSON.stringify(compactSites(job.output))};`;
+          return `${bytes}\n${sites}`;
+        })
         .join("\n");
     },
     handleHotUpdate(context) {

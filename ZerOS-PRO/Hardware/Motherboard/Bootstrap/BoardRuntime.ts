@@ -20,6 +20,7 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
+import { ZerOS as QueryRoot } from "../Host/HardwareQuery";
 import { ZerOS as CpuSeatRoot } from "../Seat/CpuSeat";
 import { ZerOS as ExpansionSeatRoot } from "../Seat/ExpansionSeat";
 import { ZerOS as GpuSeatRoot } from "../Seat/GpuSeat";
@@ -43,6 +44,7 @@ export namespace ZerOS {
           return;
         }
         ClockRoot.Hardware.Clock.startClock();
+        QueryRoot.Hardware.Motherboard.openQueryPage();
         BoardSelfCheckRoot.Hardware.Motherboard.runBoardSelfCheck();
         await GpuSeatRoot.Hardware.Motherboard.seatGpu();
         await CpuSeatRoot.Hardware.Motherboard.seatCpu();

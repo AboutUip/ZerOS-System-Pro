@@ -7,6 +7,7 @@ namespace obr {
 
 void Generator::emit(const std::string& line) {
     out_ << line << "\n";
+    sites_.push_back(site_);
     const bool call = line.rfind("call ", 0) == 0 || line == "ret" || (!line.empty() && line.back() == ':');
     const std::size_t dest = line.find(" r");
     const bool writesFrame = dest != std::string::npos && line.compare(dest, 3, " r4") == 0 && line.rfind("store", 0) != 0;
@@ -56,7 +57,9 @@ void Generator::emitLoad(TypeKind type) {
     else emit("ldi.64 r0, r5");
   }
 
-void Generator::emitZap(const std::string& body) {
+void Generator::emitZap(const std::string& body, int startLine) {
+    const int saved = site_.line;
+    int current = startLine;
     std::size_t index = 0;
     while (index < body.size()) {
       std::size_t end = body.find('\n', index);
@@ -65,9 +68,15 @@ void Generator::emitZap(const std::string& body) {
       const std::size_t trim = line.find_first_not_of(" \t");
       if (trim == std::string::npos) line.clear();
       else if (trim > 0) line = line.substr(trim);
-      if (!line.empty()) emit(line);
-      index = end < body.size() ? end + 1 : end;
+      if (!line.empty()) {
+        if (current > 0) site_.line = current;
+        emit(line);
+      }
+      const bool broke = end < body.size();
+      index = broke ? end + 1 : end;
+      if (broke && current > 0) current += 1;
     }
+    site_.line = saved;
     frameHeld_ = false;
   }
 

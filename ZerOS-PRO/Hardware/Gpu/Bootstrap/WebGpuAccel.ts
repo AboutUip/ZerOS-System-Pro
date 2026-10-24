@@ -7,6 +7,7 @@
  * ---------------------------------------------------------------------------
  * 固定功能管线：矩阵、顶点、纹理、清除和绘制。
  * 屏幕矩形、圆角、椭圆和屏幕字形按颜色目标的像素坐标画，不使用矩阵栈。
+ * 这些图元先记在列表里，到 present、读回，或下一条要占用颜色目标的三维绘制时，一次提交。
  * 只在显卡线程里使用。浏览器必须提供 WebGPU。
  * 没有绘制时不改帧存储，节点树的合成结果保持原样。
  *
@@ -16,7 +17,7 @@
  *   1. 导入
  *   2. 状态与设备
  *   3. 命令
- *   4. 读回帧
+ *   4. 读回帧与位图
  */
 
 /* -------------------------------------------------------------------------- */
@@ -85,9 +86,6 @@ struct Vout {
 struct Uniforms {
   mvp: mat4x4<f32>,
   useTex: f32,
-  mode: f32,
-  radius: f32,
-  box: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -98,44 +96,82 @@ struct Vin {
   @location(1) color: vec4<f32>,
   @location(2) uv: vec2<f32>,
   @location(3) normal: vec3<f32>,
+  @location(4) shape: vec4<f32>,
+  @location(5) box: vec4<f32>,
+  @location(6) clip: vec4<f32>,
 }
 struct Vout {
-  @builtin(position) clip: vec4<f32>,
+  @builtin(position) pixel: vec4<f32>,
   @location(0) color: vec4<f32>,
   @location(1) uv: vec2<f32>,
   @location(2) normal: vec3<f32>,
+  @location(3) @interpolate(flat) shape: vec4<f32>,
+  @location(4) @interpolate(flat) box: vec4<f32>,
+  @location(5) @interpolate(flat) clip: vec4<f32>,
 }
 
 @vertex fn vs(v: Vin) -> Vout {
   var o: Vout;
-  o.clip = u.mvp * vec4<f32>(v.pos, 1.0);
+  o.pixel = u.mvp * vec4<f32>(v.pos, 1.0);
   o.color = v.color;
   o.uv = v.uv;
   o.normal = v.normal;
+  o.shape = v.shape;
+  o.box = v.box;
+  o.clip = v.clip;
   return o;
 }
 
 @fragment fn fs(i: Vout) -> @location(0) vec4<f32> {
   let sampled = textureSample(tex, samp, i.uv);
-  let mixed = mix(vec4<f32>(1.0, 1.0, 1.0, 1.0), sampled, max(i.normal.x, u.useTex * 0.0));
-  let p = i.clip.xy;
-  let half = u.box.zw * 0.5;
-  let center = u.box.xy + half;
-  if (u.mode > 0.5 && u.mode < 1.5) {
-    let r = min(max(u.radius, 0.0), min(half.x, half.y));
+  let mixed = mix(vec4<f32>(1.0, 1.0, 1.0, 1.0), sampled, max(i.normal.x, 0.0));
+  let p = i.pixel.xy;
+  if (i.shape.z > 0.5) {
+    if (p.x < i.clip.x || p.y < i.clip.y || p.x >= i.clip.x + i.clip.z || p.y >= i.clip.y + i.clip.w) {
+      discard;
+    }
+  }
+  let half = i.box.zw * 0.5;
+  let center = i.box.xy + half;
+  if (i.shape.x > 0.5 && i.shape.x < 1.5) {
+    let r = min(max(i.shape.y, 0.0), min(half.x, half.y));
     let q = abs(p - center) - (half - vec2<f32>(r, r));
     let d = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
     if (d > 0.0) {
       discard;
     }
   }
-  if (u.mode > 1.5) {
+  if (i.shape.x > 1.5) {
     let n = (p - center) / half;
     if (dot(n, n) > 1.0) {
       discard;
     }
   }
   return i.color * mixed;
+}
+`;
+
+      /**
+       * 把颜色目标原样盖满一张画布。
+       * 顶点是铺满裁剪空间的三角形。片段位置就是纹理像素，原点在左上，不用采样器，避免过滤把界面糊掉。
+       */
+      const viewShader = `
+@group(0) @binding(0) var src: texture_2d<f32>;
+
+@vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+  var x = -1.0;
+  var y = -1.0;
+  if (index == 1u) {
+    x = 3.0;
+  }
+  if (index == 2u) {
+    y = 3.0;
+  }
+  return vec4<f32>(x, y, 0.0, 1.0);
+}
+
+@fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+  return textureLoad(src, vec2<i32>(floor(pos.xy)), 0);
 }
 `;
 
@@ -188,10 +224,24 @@ struct Vout {
       let device: GPUDevice | null = null;
       let color: GPUTexture | null = null;
       let depth: GPUTexture | null = null;
+      /**
+       * 颜色目标和深度目标的视图只建一次。
+       * 每一帧都 createView，浏览器会把旧视图留到队列结束才回收。
+       * 加载圈一直在画，视图越积越多，同一次提交就越来越慢。
+       * 换了纹理必须丢掉，否则还会画到已经作废的那张上。
+       */
+      let colorView: GPUTextureView | null = null;
+      let depthView: GPUTextureView | null = null;
+      /** 把颜色目标贴进位图时用的绑定组。源纹理没换就继续用这一份。 */
+      let copyGroup: GPUBindGroup | null = null;
       let pipeline: GPURenderPipeline | null = null;
       let uniform: GPUBuffer | null = null;
       let vertices: GPUBuffer | null = null;
       let readback: GPUBuffer | null = null;
+      /** 交给页面的画布。尺寸一变就丢掉，下一帧按新分辨率再要一张。 */
+      let viewCanvas: OffscreenCanvas | null = null;
+      let viewContext: GPUCanvasContext | null = null;
+      let viewPipe: GPURenderPipeline | null = null;
       let bind: GPUBindGroup | null = null;
       let sampler: GPUSampler | null = null;
       let white: GPUTexture | null = null;
@@ -219,6 +269,8 @@ struct Vout {
       let ny = 0;
       let nz = 1;
       const floatsPerVertex = 12;
+      /** 屏幕顶点比三维多三组：形状、包围盒、剪裁。三维的 DrawArrays 仍用 12。 */
+      const screenFloats = 24;
       let viewportX = 0;
       let viewportY = 0;
       let viewportW = 1;
@@ -245,14 +297,27 @@ struct Vout {
       let boundTexture = 0;
       const textures = new Map<number, { readonly w: number; readonly h: number; readonly rgba: Uint8Array }>();
       let screenPipeline: GPURenderPipeline | null = null;
-      /** 同一纹理的矩形或字形先攒成一份顶点，一次提交。换纹理、剪裁或读回时再画。 */
+      /** 同一纹理的矩形、圆角、椭圆和字形记在一份顶点里，到提交时再画。 */
       let screenVertices: GPUBuffer | null = null;
       let screenVertexBytes = 0;
-      let screenRectGroup: GPUBindGroup | null = null;
-      let screenGlyphGroup: GPUBindGroup | null = null;
-      /** 0 没有在攒，1 矩形和字形已经在同一份顶点里。 */
-      let screenRun = 0;
-      const screenQuads: number[] = [];
+      let screenGroup: GPUBindGroup | null = null;
+      /**
+       * 一次清除和它后面的图元是一段。
+       * 下一次清除再开一段。提交时一段一个渲染通道，整份只进一次队列。
+       */
+      interface ScreenPass {
+        clearColor: boolean;
+        red: number;
+        green: number;
+        blue: number;
+        alpha: number;
+        clearDepth: boolean;
+        z: number;
+        verts: number[];
+      }
+      const screenPasses: ScreenPass[] = [];
+      /** 只清深度时先记下，下一段或提交时再用。 */
+      let screenDepthPending = false;
       let fontTexture: GPUTexture | null = null;
       const glyphColumns = 5;
       const glyphBand = 7;
@@ -276,6 +341,16 @@ struct Vout {
         stack[stack.length - 1] = matrix;
       }
 
+      /**
+       * 颜色或深度纹理换掉之后，挂在上面的视图和拷贝绑定组一并作废。
+       * 不在这里 destroy：上一份命令可能还在队列里引用它们，等浏览器自己收。
+       */
+      function dropTargetViews(): void {
+        colorView = null;
+        depthView = null;
+        copyGroup = null;
+      }
+
       /** 帧尺寸变化后丢掉旧的颜色目标，下次绘制再按新尺寸建立。 */
       export function resize(nextWidth: number, nextHeight: number): void {
         width = nextWidth;
@@ -286,10 +361,23 @@ struct Vout {
         scissorH = nextHeight;
         color = null;
         depth = null;
+        dropTargetViews();
         readback = null;
+        viewCanvas = null;
+        viewContext = null;
         pipeline = null;
         colorReady = false;
         depthReady = false;
+      }
+
+      /** 同一张颜色纹理始终返回同一个视图。第一次用到才创建。 */
+      function colorAttachment(texture: GPUTexture): GPUTextureView {
+        return colorView ??= texture.createView();
+      }
+
+      /** 同一张深度纹理始终返回同一个视图。 */
+      function depthAttachment(texture: GPUTexture): GPUTextureView {
+        return depthView ??= texture.createView();
       }
 
       async function ensure(): Promise<GPUDevice> {
@@ -332,10 +420,12 @@ struct Vout {
           });
         }
         const active = device;
+        /* 旧纹理已经空了。若视图还指着它，下一帧会画到已经丢掉的目标上。 */
+        dropTargetViews();
         color = active.createTexture({
           size: { width, height },
           format: "rgba8unorm",
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
         });
         depth = active.createTexture({
           size: { width, height },
@@ -541,13 +631,13 @@ struct Vout {
         const encoder = active.createCommandEncoder();
         const pass = encoder.beginRenderPass({
           colorAttachments: [{
-            view: color.createView(),
+            view: colorAttachment(color),
             loadOp: colorReady ? "load" : "clear",
             clearValue: { r: clearRed, g: clearGreen, b: clearBlue, a: clearAlpha },
             storeOp: "store",
           }],
           depthStencilAttachment: {
-            view: depth.createView(),
+            view: depthAttachment(depth),
             depthLoadOp: depthReady ? "load" : "clear",
             depthClearValue: clearZ,
             depthStoreOp: "store",
@@ -767,12 +857,15 @@ struct Vout {
             module,
             entryPoint: "vs",
             buffers: [{
-              arrayStride: floatsPerVertex * 4,
+              arrayStride: screenFloats * 4,
               attributes: [
                 { shaderLocation: 0, offset: 0, format: "float32x3" },
                 { shaderLocation: 1, offset: 12, format: "float32x4" },
                 { shaderLocation: 2, offset: 28, format: "float32x2" },
                 { shaderLocation: 3, offset: 36, format: "float32x3" },
+                { shaderLocation: 4, offset: 48, format: "float32x4" },
+                { shaderLocation: 5, offset: 64, format: "float32x4" },
+                { shaderLocation: 6, offset: 80, format: "float32x4" },
               ],
             }],
           },
@@ -797,14 +890,74 @@ struct Vout {
         return screenPipeline;
       }
 
+      /** 还没有图元时开一段。这一段记下当时的清除色，隐式清屏不会被后面的改色带走。 */
+      function screenTail(): ScreenPass {
+        const last = screenPasses[screenPasses.length - 1];
+        if (last !== undefined) {
+          return last;
+        }
+        const created: ScreenPass = {
+          clearColor: false,
+          red: clearRed,
+          green: clearGreen,
+          blue: clearBlue,
+          alpha: clearAlpha,
+          clearDepth: screenDepthPending,
+          z: clearZ,
+          verts: [],
+        };
+        screenDepthPending = false;
+        screenPasses.push(created);
+        return created;
+      }
+
       /**
-       * 用颜色目标自己的像素坐标画矩形、圆角、椭圆或一个字形。
-       * mode 0 是实心矩形，1 是字形，2 是圆角，3 是椭圆。
-       * 实心矩形和字形放在同一份顶点里，一次绘制。法线 x 为 1 时采样字形，为 0 时用纯色。
-       * 圆角和椭圆各有自己的包围盒，仍是一次一个。
+       * 颜色清除并进当前段。这段已经有图元时另开一段，好让清除发生在那些图元之后。
+       * 只清深度先挂起，不单独占一次提交。
+       */
+      function recordClear(mask: number): void {
+        const colorBit = (mask & 1) !== 0;
+        const depthBit = (mask & 2) !== 0;
+        if (depthBit) {
+          screenDepthPending = true;
+        }
+        if (!colorBit) {
+          return;
+        }
+        const last = screenPasses[screenPasses.length - 1];
+        if (last?.verts.length === 0) {
+          last.clearColor = true;
+          last.red = clearRed;
+          last.green = clearGreen;
+          last.blue = clearBlue;
+          last.alpha = clearAlpha;
+          if (screenDepthPending) {
+            last.clearDepth = true;
+            last.z = clearZ;
+            screenDepthPending = false;
+          }
+          return;
+        }
+        screenPasses.push({
+          clearColor: true,
+          red: clearRed,
+          green: clearGreen,
+          blue: clearBlue,
+          alpha: clearAlpha,
+          clearDepth: screenDepthPending,
+          z: clearZ,
+          verts: [],
+        });
+        screenDepthPending = false;
+      }
+
+      /**
+       * 用颜色目标自己的像素坐标记一个矩形、圆角、椭圆或字形。
+       * shape 的 x 是 0 实心、1 圆角、2 椭圆。法线 x 为 1 时采样字形。
+       * 半径、包围盒和剪裁都写在顶点上，不同图元可以留在同一次绘制里。
        * 原点在左上，y 向下。不碰矩阵栈，也不看混合开关；透明度总是按源透明度叠上去。
        */
-      function pushScreenQuad(x: number, y: number, cellWidth: number, cellHeight: number, u0: number, v0: number, u1: number, v1: number, font: number): void {
+      function pushScreenQuad(x: number, y: number, cellWidth: number, cellHeight: number, u0: number, v0: number, u1: number, v1: number, font: number, mode: number, radius: number): void {
         const tintR = clampUnit(red);
         const tintG = clampUnit(green);
         const tintB = clampUnit(blue);
@@ -813,8 +966,18 @@ struct Vout {
         const right = ((x + cellWidth) / width) * 2 - 1;
         const top = 1 - (y / height) * 2;
         const bottom = 1 - ((y + cellHeight) / height) * 2;
-        const corner = (px: number, py: number, su: number, sv: number): number[] => [px, py, 0, tintR, tintG, tintB, tintA, su, sv, font, 0, 0];
-        screenQuads.push(
+        const clipOn = scissorOn ? 1 : 0;
+        const corner = (px: number, py: number, su: number, sv: number): number[] => [
+          px, py, 0,
+          tintR, tintG, tintB, tintA,
+          su, sv,
+          font, 0, 0,
+          mode, radius, clipOn, 0,
+          x, y, cellWidth, cellHeight,
+          scissorX, scissorY, scissorW, scissorH,
+        ];
+        const verts = screenTail().verts;
+        verts.push(
           ...corner(left, top, u0, v0),
           ...corner(right, top, u1, v0),
           ...corner(right, bottom, u1, v1),
@@ -824,140 +987,128 @@ struct Vout {
         );
       }
 
-      /** 把已经攒下的矩形和字形一次画出去。顶点法线的 x 标明要不要采样字形。 */
-      async function flushScreenRun(): Promise<void> {
-        if (screenRun === 0 || screenQuads.length === 0) {
-          screenRun = 0;
-          screenQuads.length = 0;
-          return;
-        }
-        const list = screenQuads.slice();
-        screenRun = 0;
-        screenQuads.length = 0;
-        await submitScreenList(true, 0, 0, 0, 0, 0, 0, list);
-      }
-
       /**
-       * 一次渲染通道画完这份顶点。
-       * useFont 为真时采样字形图集，否则采样白纹理。sdf 0 是整格，1 是圆角，2 是椭圆。
+       * 把记下的屏幕图元一次提交。
+       * 每一段清除是一个渲染通道，顶点在通道之间按顺序画，队列只收这一份命令。
        */
-      async function submitScreenList(
-        useFont: boolean,
-        sdf: number,
-        radius: number,
-        boxX: number,
-        boxY: number,
-        boxW: number,
-        boxH: number,
-        list: readonly number[],
-      ): Promise<void> {
-        if (list.length === 0) {
+      export async function flushScreen(): Promise<void> {
+        const passes = screenPasses.splice(0);
+        if (screenDepthPending) {
+          passes.push({
+            clearColor: false,
+            red: clearRed,
+            green: clearGreen,
+            blue: clearBlue,
+            alpha: clearAlpha,
+            clearDepth: true,
+            z: clearZ,
+            verts: [],
+          });
+          screenDepthPending = false;
+        }
+        if (passes.length === 0) {
           return;
         }
         const active = await ensure();
         buildFont(active);
-        if (color === null || depth === null || uniform === null || sampler === null || white === null || fontTexture === null) {
+        if (color === null || depth === null || uniform === null || sampler === null || fontTexture === null) {
           fail("颜色目标还没有建立");
         }
         const pipe = screenPipe(active);
-        const packed = new Float32Array(24);
-        packed.set(identity());
-        packed[16] = useFont ? 1 : 0;
-        packed[17] = sdf;
-        packed[18] = radius;
-        packed[20] = boxX;
-        packed[21] = boxY;
-        packed[22] = boxW;
-        packed[23] = boxH;
-        active.queue.writeBuffer(uniform, 0, packed);
-        const data = new Float32Array(list);
-        const bytes = data.byteLength;
-        let buffer = screenVertices;
-        if (buffer === null || screenVertexBytes < bytes) {
-          if (buffer !== null) {
-            buffer.destroy();
+        const mvp = new Float32Array(17);
+        mvp.set(identity());
+        active.queue.writeBuffer(uniform, 0, mvp);
+        const joined: number[] = [];
+        const draws: { readonly first: number; readonly count: number }[] = [];
+        for (const pass of passes) {
+          draws.push({ first: joined.length / screenFloats, count: pass.verts.length / screenFloats });
+          for (const value of pass.verts) {
+            joined.push(value);
           }
-          const size = Math.max(bytes, screenVertexBytes * 2, 4096);
-          buffer = active.createBuffer({
-            size,
-            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-          });
-          screenVertices = buffer;
-          screenVertexBytes = size;
         }
-        active.queue.writeBuffer(buffer, 0, data);
-        const cached = useFont ? screenGlyphGroup : screenRectGroup;
-        const view = useFont ? fontTexture : white;
-        const group = cached ?? active.createBindGroup({
+        let buffer = screenVertices;
+        if (joined.length > 0) {
+          const data = new Float32Array(joined);
+          const bytes = data.byteLength;
+          if (buffer === null || screenVertexBytes < bytes) {
+            if (buffer !== null) {
+              buffer.destroy();
+            }
+            const size = Math.max(bytes, screenVertexBytes * 2, 4096);
+            buffer = active.createBuffer({
+              size,
+              usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            });
+            screenVertices = buffer;
+            screenVertexBytes = size;
+          }
+          active.queue.writeBuffer(buffer, 0, data);
+        }
+        const group = screenGroup ?? active.createBindGroup({
           layout: pipe.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: { buffer: uniform } },
-            { binding: 1, resource: view.createView() },
+            { binding: 1, resource: fontTexture.createView() },
             { binding: 2, resource: sampler },
           ],
         });
-        if (useFont) {
-          screenGlyphGroup = group;
-        } else {
-          screenRectGroup = group;
-        }
-        let scissorLeft = 0;
-        let scissorTop = 0;
-        let scissorWidth = width;
-        let scissorHeight = height;
-        if (scissorOn) {
-          scissorLeft = Math.max(0, Math.min(width, scissorX));
-          scissorTop = Math.max(0, Math.min(height, scissorY));
-          scissorWidth = Math.max(0, Math.min(width - scissorLeft, scissorW));
-          scissorHeight = Math.max(0, Math.min(height - scissorTop, scissorH));
-        }
+        screenGroup = group;
         const encoder = active.createCommandEncoder();
-        const pass = encoder.beginRenderPass({
-          colorAttachments: [{
-            view: color.createView(),
-            loadOp: colorReady ? "load" : "clear",
-            clearValue: { r: clearRed, g: clearGreen, b: clearBlue, a: clearAlpha },
-            storeOp: "store",
-          }],
-          depthStencilAttachment: {
-            view: depth.createView(),
-            depthLoadOp: depthReady ? "load" : "clear",
-            depthClearValue: clearZ,
-            depthStoreOp: "store",
-          },
-        });
-        pass.setPipeline(pipe);
-        pass.setBindGroup(0, group);
-        pass.setViewport(0, 0, width, height, 0, 1);
-        if (scissorOn && scissorWidth >= 1 && scissorHeight >= 1) {
-          pass.setScissorRect(scissorLeft, scissorTop, scissorWidth, scissorHeight);
+        let painted = false;
+        for (let index = 0; index < passes.length; index += 1) {
+          const pass = passes[index];
+          const draw = draws[index];
+          if (pass === undefined || draw === undefined) {
+            continue;
+          }
+          const clearColor = pass.clearColor || (!colorReady && draw.count > 0);
+          const gpuPass = encoder.beginRenderPass({
+            colorAttachments: [{
+              view: colorAttachment(color),
+              loadOp: clearColor ? "clear" : "load",
+              clearValue: { r: pass.red, g: pass.green, b: pass.blue, a: pass.alpha },
+              storeOp: "store",
+            }],
+            depthStencilAttachment: {
+              view: depthAttachment(depth),
+              depthLoadOp: pass.clearDepth || !depthReady ? "clear" : "load",
+              depthClearValue: pass.z,
+              depthStoreOp: "store",
+            },
+          });
+          if (draw.count > 0 && buffer !== null) {
+            gpuPass.setPipeline(pipe);
+            gpuPass.setBindGroup(0, group);
+            gpuPass.setViewport(0, 0, width, height, 0, 1);
+            gpuPass.setVertexBuffer(0, buffer);
+            gpuPass.draw(draw.count, 1, draw.first, 0);
+          }
+          gpuPass.end();
+          if (pass.clearColor || draw.count > 0 || pass.clearDepth) {
+            colorReady = true;
+          }
+          if (pass.clearColor || draw.count > 0) {
+            painted = true;
+          }
+          depthReady = true;
         }
-        pass.setVertexBuffer(0, buffer);
-        pass.draw(list.length / floatsPerVertex);
-        pass.end();
         active.queue.submit([encoder.finish()]);
-        colorReady = true;
-        depthReady = true;
-        drawn = true;
+        if (painted) {
+          drawn = true;
+        }
       }
 
-      async function paintScreen(mode: number, a: number, b: number, c: number, d: number): Promise<number> {
+      function paintScreen(mode: number, a: number, b: number, c: number, d: number): number {
         if (mode === 2 || mode === 3) {
-          await flushScreenRun();
           if (c < 0 || d < 0) {
             fail("矩形宽或高是负数");
           }
           if (c === 0 || d === 0 || !coversTarget(a, b, c, d)) {
             return 0;
           }
-          screenRun = 1;
-          pushScreenQuad(a, b, c, d, 0, 0, 1, 1, 0);
-          const list = screenQuads.slice();
-          screenRun = 0;
-          screenQuads.length = 0;
           const radius = mode === 2 ? cornerRadius : 0;
           const sdf = mode === 2 ? 1 : 2;
-          await submitScreenList(false, sdf, radius, a, b, c, d, list);
+          pushScreenQuad(a, b, c, d, 0, 0, 1, 1, 0, sdf, radius);
           return 0;
         }
         let x = 0;
@@ -999,20 +1150,35 @@ struct Vout {
         if (!coversTarget(x, y, cellWidth, cellHeight)) {
           return 0;
         }
-        if (screenRun === 0) {
-          screenRun = 1;
-        }
-        pushScreenQuad(x, y, cellWidth, cellHeight, u0, v0, u1, v1, font);
+        pushScreenQuad(x, y, cellWidth, cellHeight, u0, v0, u1, v1, font, 0, 0);
         return 0;
+      }
+
+      /** 这些操作只改屏幕列表或它的状态，不能把已经记下的图元提前提交。 */
+      function screenHolds(op: number): boolean {
+        return op === Op.Fill
+          || op === Op.ScreenGlyph
+          || op === Op.Color
+          || op === Op.Corner
+          || op === Op.Round
+          || op === Op.Ellipse
+          || op === Op.Scissor
+          || op === Op.ClearColor
+          || op === Op.ClearDepth
+          || op === Op.Clear
+          || op === Op.Frame
+          || op === Op.Enable
+          || op === Op.Disable;
       }
 
       /**
        * 执行一条加速命令。
        * 返回值写入调用方的结果寄存器；多数命令返回 0，生成纹理时返回新编号。
+       * 屏幕图元只追加。要画到三维管线或读像素之前，才把列表提交。
        */
       export async function accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number> {
-        if (op !== Op.Fill && op !== Op.ScreenGlyph && op !== Op.Color) {
-          await flushScreenRun();
+        if (!screenHolds(op)) {
+          await flushScreen();
         }
         if (op === Op.Viewport) {
           viewportX = f64(a);
@@ -1040,33 +1206,7 @@ struct Vout {
           return 0;
         }
         if (op === Op.Clear) {
-          const active = await ensure();
-          if (color === null || depth === null) {
-            fail("颜色目标还没有建立");
-          }
-          const mask = iarg(a);
-          const encoder = active.createCommandEncoder();
-          const pass = encoder.beginRenderPass({
-            colorAttachments: [{
-              view: color.createView(),
-              loadOp: (mask & 1) !== 0 ? "clear" : "load",
-              clearValue: { r: clearRed, g: clearGreen, b: clearBlue, a: clearAlpha },
-              storeOp: "store",
-            }],
-            depthStencilAttachment: {
-              view: depth.createView(),
-              depthLoadOp: (mask & 2) !== 0 || !depthReady ? "clear" : "load",
-              depthClearValue: clearZ,
-              depthStoreOp: "store",
-            },
-          });
-          pass.end();
-          active.queue.submit([encoder.finish()]);
-          colorReady = true;
-          depthReady = true;
-          if ((mask & 1) !== 0) {
-            drawn = true;
-          }
+          recordClear(iarg(a));
           return 0;
         }
         if (op === Op.Color) {
@@ -1320,17 +1460,118 @@ struct Vout {
         }
         if (op === Op.Fill || op === Op.Round || op === Op.Ellipse || op === Op.ScreenGlyph) {
           const mode = op === Op.ScreenGlyph ? 1 : op === Op.Round ? 2 : op === Op.Ellipse ? 3 : 0;
-          return await paintScreen(mode, iarg(a), iarg(b), iarg(c), iarg(d));
+          return paintScreen(mode, iarg(a), iarg(b), iarg(c), iarg(d));
         }
         fail("没有这种加速操作");
+      }
+
+      /** OffscreenCanvas 的 getContext 返回联合类型。WebGPU 上下文才有 configure。 */
+      function isGpuCanvas(context: RenderingContext | OffscreenRenderingContext): context is GPUCanvasContext {
+        return "configure" in context && "getCurrentTexture" in context;
+      }
+
+      /**
+       * 准备一张和颜色目标一样大的画布。
+       * 浏览器画布的像素格式常常不是 rgba8unorm，所以不用纹理拷贝，改画一个铺满的三角形。
+       */
+      function ensureView(active: GPUDevice): OffscreenCanvas {
+        const existing = viewCanvas;
+        if (existing !== null && existing.width === width && existing.height === height && viewContext !== null && viewPipe !== null) {
+          return existing;
+        }
+        const canvas = new OffscreenCanvas(width, height);
+        const context = canvas.getContext("webgpu");
+        if (context === null || !isGpuCanvas(context)) {
+          fail("画面画布没有 WebGPU 上下文");
+        }
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({
+          device: active,
+          format,
+          alphaMode: "opaque",
+        });
+        viewCanvas = canvas;
+        viewContext = context;
+        if (viewPipe === null) {
+          const module = active.createShaderModule({ code: viewShader });
+          viewPipe = active.createRenderPipeline({
+            layout: "auto",
+            vertex: { module, entryPoint: "vs" },
+            fragment: {
+              module,
+              entryPoint: "fs",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list" },
+          });
+        }
+        return canvas;
+      }
+
+      /**
+       * 把颜色目标画进位图。
+       * 先等这一次提交做完，再把画布交出去。位图拿走之后画布是空的，下一帧会再画。
+       */
+      async function copyColor(active: GPUDevice, source: GPUTexture): Promise<ImageBitmap> {
+        const canvas = ensureView(active);
+        const context = viewContext;
+        const pipe = viewPipe;
+        if (context === null || pipe === null) {
+          fail("画面画布还没有建立");
+        }
+        /* 源纹理不变就复用绑定组。每一帧新建一份，会和视图一样越积越慢。 */
+        const group = copyGroup ??= active.createBindGroup({
+          layout: pipe.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: colorAttachment(source) }],
+        });
+        const encoder = active.createCommandEncoder();
+        const pass = encoder.beginRenderPass({
+          colorAttachments: [{
+            /* 位图被拿走后，画布换上一张新纹理。这一张的视图不能留到下一帧。 */
+            view: context.getCurrentTexture().createView(),
+            loadOp: "clear",
+            storeOp: "store",
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          }],
+        });
+        pass.setPipeline(pipe);
+        pass.setBindGroup(0, group);
+        pass.draw(3);
+        pass.end();
+        active.queue.submit([encoder.finish()]);
+        await active.queue.onSubmittedWorkDone();
+        return canvas.transferToImageBitmap();
+      }
+
+      /**
+       * 加速器刚画过时，交出一张位图，不再把每个像素读回成整数。
+       * 还没画过就返回空，调用方继续用节点树合成的帧。失败时也返回空，同一幅仍可以走读回。
+       */
+      export async function snapshot(): Promise<ImageBitmap | null> {
+        await flushScreen();
+        const active = device;
+        const source = color;
+        if (!drawn || active === null || source === null) {
+          return null;
+        }
+        try {
+          const bitmap = await copyColor(active, source);
+          drawn = false;
+          return bitmap;
+        } catch {
+          viewCanvas = null;
+          viewContext = null;
+          return null;
+        }
       }
 
       /**
        * 把最近一次加速绘制读回帧存储。
        * 还没绘制过就什么都不写，节点树合成的像素留在帧里。
+       * 自检和启动画面仍走这里。稳态画面用 snapshot，不再整帧读回。
        */
       export async function blit(frame: Uint32Array, frameWidth: number, frameHeight: number): Promise<void> {
-        await flushScreenRun();
+        await flushScreen();
         if (!drawn || device === null || color === null || readback === null) {
           return;
         }

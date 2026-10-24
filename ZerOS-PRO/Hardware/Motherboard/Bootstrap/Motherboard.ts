@@ -21,12 +21,27 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as MailboxRoot } from "../Host/Mailbox";
+import { ZerOS as PageCoreStopRoot } from "../../Cpu/Host/PageCoreStop";
 import { ZerOS as QueuedWorkerRoot } from "../Host/QueuedWorker";
+import { ZerOS as DebugLogRoot } from "../../Debug/Host/DebugLog";
+import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
+import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
+import { ZerOS as FaultRecordRoot } from "../../Cpu/Structure/FaultRecord";
+import { ZerOS as SevereRoot } from "../../Debug/Host/SevereConsole";
 
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Motherboard {
       const MailMessage = MailboxRoot.Hardware.Motherboard.MailMessage;
+      const noteCoreStop = PageCoreStopRoot.Hardware.Cpu.noteCoreStop;
+      const rememberFault = DebugLogRoot.Hardware.Debug.rememberFault;
+      const readFaults = DebugLogRoot.Hardware.Debug.readFaults;
+      const lastFault = DebugLogRoot.Hardware.Debug.lastFault;
+      const faultFromWire = FaultRecordRoot.Hardware.Cpu.faultFromWire;
+      const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
+      const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
+      const reportSevere = SevereRoot.Hardware.Debug.reportSevere;
+      type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
 
       /** 主板线程。第一次上电时创建。 */
       let boardWorker: Worker | null = null;
@@ -37,8 +52,19 @@ export namespace ZerOS {
       /** 主板、内存、CPU 和显卡都自检通过后，页面用来启动显示器自检。 */
       let checkedListener: (() => void) | null = null;
 
-      /** 显卡 Present 副本到达页面时调用。主板不在这里解释像素。 */
-      let frameListener: ((frameWidth: number, frameHeight: number, pixels: Uint32Array) => void) | null = null;
+      /**
+       * 显卡 Present 到达页面时调用。主板不在这里解释像素。
+       * 像素和位图最多有一个。位图是稳态画面，像素是启动画面和页面主动要的那一帧。
+       */
+      let frameListener: ((
+        frameWidth: number,
+        frameHeight: number,
+        pixels: Uint32Array | null,
+        bitmap: ImageBitmap | null,
+      ) => void) | null = null;
+
+      /** 显卡换成新的帧尺寸时调用。页面再把同一组宽高交给显示器。 */
+      let panelListener: ((width: number, height: number) => void) | null = null;
 
       /** 一次扩展口交换的成功回调。同时只允许一路，避免两段结果对错号。 */
       let exchangeWait: ((word: bigint) => void) | null = null;
@@ -53,6 +79,12 @@ export namespace ZerOS {
       let driveLines: readonly string[] | Uint8Array | null = null;
       /** 核心 3 的装入程序。上电时只装入，不启动。 */
       let loaderLines: Uint8Array | null = null;
+      /** 三份程序的源位置。没有对照表时是空数组，失败帧上的源位置就是 `-`。 */
+      let logoSites: readonly (readonly [number, number, string, number, string])[] = [];
+      let driveSites: readonly (readonly [number, number, string, number, string])[] = [];
+      let loaderSites: readonly (readonly [number, number, string, number, string])[] = [];
+      /** 一次调试运行的结果。同时只允许一路。 */
+      let debugWait: ((text: string) => void) | null = null;
 
       function messageData(event: MessageEvent): unknown {
         return event.data as unknown;
@@ -76,20 +108,51 @@ export namespace ZerOS {
         if (kind === MailMessage.Trace) {
           return;
         }
+        if (kind === MailMessage.CoreStop) {
+          const ordinal = record["ordinal"];
+          const reason = record["reason"];
+          const index = record["index"];
+          const op = record["op"];
+          const detail = record["detail"];
+          /* 只留在页面上。不写客程序能读的内存，也不交给引导画面。 */
+          if (typeof ordinal === "number" && typeof reason === "number" && typeof index === "number" && typeof op === "string" && typeof detail === "string") {
+            noteCoreStop({
+              Core: ordinal,
+              Reason: reason,
+              Index: index,
+              Op: op,
+              Detail: detail,
+            });
+          }
+          return;
+        }
+        if (kind === MailMessage.PanelSize) {
+          const width = record["width"];
+          const height = record["height"];
+          if (typeof width === "number" && typeof height === "number") {
+            panelListener?.(width, height);
+          }
+          return;
+        }
         if (kind === MailMessage.Frame) {
           const frameWidth = record["frameWidth"];
           const frameHeight = record["frameHeight"];
           const pixels = record["pixels"];
+          const bitmap = record["bitmap"];
           const listener = frameListener;
-          if (
-            listener === null
-            || typeof frameWidth !== "number"
-            || typeof frameHeight !== "number"
-            || !(pixels instanceof Uint32Array)
-          ) {
+          if (typeof frameWidth !== "number" || typeof frameHeight !== "number" || listener === null) {
+            if (bitmap instanceof ImageBitmap) {
+              bitmap.close();
+            }
             return;
           }
-          listener(frameWidth, frameHeight, pixels);
+          if (bitmap instanceof ImageBitmap) {
+            listener(frameWidth, frameHeight, null, bitmap);
+            return;
+          }
+          if (pixels instanceof Uint32Array) {
+            listener(frameWidth, frameHeight, pixels, null);
+          }
           return;
         }
         if (kind === MailMessage.ExchangeResult) {
@@ -114,10 +177,24 @@ export namespace ZerOS {
           listener?.();
           return;
         }
+        if (kind === MailMessage.FaultLog && typeof message === "string") {
+          rememberFault(faultFromWire(record));
+          return;
+        }
+        if (kind === MailMessage.DebugResult && typeof message === "string") {
+          const wait = debugWait;
+          debugWait = null;
+          wait?.(message);
+          return;
+        }
         if (kind !== MailMessage.Fault || typeof message !== "string") {
           return;
         }
+        rememberFault(faultFromWire(record));
         powerAccepted = false;
+        if (record["window"] === false) {
+          reportSevere(message);
+        }
       }
 
       function ensureBoard(): Worker {
@@ -155,6 +232,9 @@ export namespace ZerOS {
             logo: logoLines,
             drive: driveLines,
             loader: loaderLines,
+            logoSites,
+            driveSites,
+            loaderSites,
           });
         },
 
@@ -165,6 +245,17 @@ export namespace ZerOS {
         Publish(words: readonly bigint[]): void {
           ensureBoard().postMessage({
             kind: MailMessage.Inbox,
+            words,
+          });
+        },
+
+        /**
+         * 把一次鼠标事件的六个字交给主板线程。
+         * 主板写进鼠标扩展口，不放进键盘用的入站队列。
+         */
+        PublishPointer(words: readonly bigint[]): void {
+          ensureBoard().postMessage({
+            kind: MailMessage.Pointer,
             words,
           });
         },
@@ -195,9 +286,19 @@ export namespace ZerOS {
           ensureBoard().postMessage({ kind: MailMessage.Present });
         },
 
-        /** 登记帧副本的接收者。显示器模块不由主板导入。 */
-        WhenFrame(listener: (frameWidth: number, frameHeight: number, pixels: Uint32Array) => void): void {
+        /** 登记帧的接收者。显示器模块不由主板导入。像素和位图最多有一个。 */
+        WhenFrame(listener: (
+          frameWidth: number,
+          frameHeight: number,
+          pixels: Uint32Array | null,
+          bitmap: ImageBitmap | null,
+        ) => void): void {
           frameListener = listener;
+        },
+
+        /** 登记帧尺寸变化。必须在 Power 之前调用，免得第一次换尺寸没人接。 */
+        WhenPanel(listener: (width: number, height: number) => void): void {
+          panelListener = listener;
         },
 
         /**
@@ -222,6 +323,52 @@ export namespace ZerOS {
          */
         SetLoader(binary: Uint8Array): void {
           loaderLines = binary;
+        },
+
+        /**
+         * 登记三份引导程序的源位置。必须在 Power 之前调用。
+         * 对照表只用于失败帧上的文件名和行号，不参与执行。
+         */
+        SetDebugSites(
+          logo: readonly (readonly [number, number, string, number, string])[],
+          drive: readonly (readonly [number, number, string, number, string])[],
+          loader: readonly (readonly [number, number, string, number, string])[],
+        ): void {
+          logoSites = logo;
+          driveSites = drive;
+          loaderSites = loader;
+        },
+
+        /** 最近的失败记录。调试入口打开时由它读出。平时页面自己不展示。 */
+        Faults(): readonly FaultRecord[] {
+          return readFaults();
+        },
+
+        /** 最近一条失败。还没有时是 null。 */
+        LastFault(): FaultRecord | null {
+          return lastFault();
+        },
+
+        /**
+         * 在已经停止的 0 号核心上跑一段短 ZAP。
+         * 开关关闭、文本不合法时立刻拒绝，不把消息送进机器。
+         */
+        DebugRun(lines: readonly string[]): Promise<string> {
+          const decision = debugRunDecision(DebugEnabled, lines, true);
+          if (decision !== "") {
+            return Promise.resolve(decision);
+          }
+          return new Promise((resolve): void => {
+            if (debugWait !== null) {
+              resolve("debug run was refused");
+              return;
+            }
+            debugWait = resolve;
+            ensureBoard().postMessage({
+              kind: MailMessage.DebugRun,
+              lines,
+            });
+          });
         },
 
         /**

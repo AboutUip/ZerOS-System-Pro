@@ -27,7 +27,13 @@ Toolchain/Zap/
 # Guest tree of the reference NAS: /kernel/start, /kernel/init, /os/session, /kernel/drv.
 # obrc writes these images here. The server creates the directory.
 # Kernel sources stay under ZerOS-PRO/Kernel/. Userspace sources stay under ZerOS-PRO/System/.
-ZerOS-PRO/Hardware/Nas/Root/
+# /boot is firmware storage (display size). It stays tracked. Images beside it do not.
+ZerOS-PRO/Hardware/Nas/Root/*
+!ZerOS-PRO/Hardware/Nas/Root/boot/
+!ZerOS-PRO/Hardware/Nas/Root/boot/**
 
 # Vite dependency cache
 **/.vite/
+
+# temp
+dev/

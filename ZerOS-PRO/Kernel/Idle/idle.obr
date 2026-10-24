@@ -1,0 +1,11 @@
+/* 没有任务时的空转。用 -pie -slot 0 编译，放到 /kernel/idle。
+   内核把它设成 30 Hz。每条 core 占一拍，等待长于 1 毫秒时宿主会睡，核心保持执行中。
+   沙盒借走这颗核心并归还后，从第一条重新开始。 */
+import obr.os;
+
+deRfun main(): int {
+  while (1) {
+    obr::os::core();
+  }
+  return 0;
+}

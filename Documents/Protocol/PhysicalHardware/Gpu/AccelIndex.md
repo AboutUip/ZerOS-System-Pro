@@ -42,3 +42,4 @@
 | 36 | Round | [AccelRegistry](./AccelRegistry.md) |
 | 37 | Ellipse | [AccelRegistry](./AccelRegistry.md) |
 | 38 | Frame | [AccelRegistry](./AccelRegistry.md) |
+| 39 | Resize | [AccelRegistry](./AccelRegistry.md) |

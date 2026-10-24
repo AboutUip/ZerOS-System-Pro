@@ -1,190 +1,117 @@
 /**
  * @module ZerOS.Boot.ErrorPicture
- * @description 把一次指令失败画成黑底白字的一帧
+ * @description 把一次失败画成协议规定的停机帧
  *
  * ---------------------------------------------------------------------------
  * 文件职责
  * ---------------------------------------------------------------------------
- * 只生成指令文本。错误码和来源以 ZCP1 失败登记表为准。
- * 说明文字只保留字形表能画的 ASCII。本文件不执行指令。
+ * 只生成指令文本，不执行。未画到的像素保持 0，字是白色。
+ * 帧上依次是 ERROR、错误码、来源、核心、指令编号、源位置和说明。
+ * 有宿主调用栈时最多再画 4 行。没有栈就不画空行。
+ * 字形表只有 ASCII。记录在进来之前已经收成这个范围。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
  * ---------------------------------------------------------------------------
- *   1. 画面
+ *   1. 导入
+ *   2. 画面
  */
+
+/* -------------------------------------------------------------------------- */
+/* 1. 导入                                                                     */
+/* -------------------------------------------------------------------------- */
+
+import { type ZerOS as FaultRoot } from "../Hardware/Cpu/Structure/FaultRecord";
+import { ZerOS as SourceRoot } from "../Hardware/Cpu/Enum/FaultSource";
 
 export namespace ZerOS {
   export namespace Boot {
-    const Columns = 80;
-    const TextLimit = 240;
+    type FaultRecord = FaultRoot.Hardware.Cpu.FaultRecord;
+    const FaultSourceName = SourceRoot.Hardware.Cpu.FaultSourceName;
+
+    /* ------------------------------------------------------------------ */
+    /* 2. 画面                                                             */
+    /* ------------------------------------------------------------------ */
+
+    const FrameWidth = 640;
+    const FrameHeight = 480;
+    const Glyph = 8;
     const Ink = 16777215;
-
-    const sourceName: readonly string[] = [
-      "Board",
-      "Cpu",
-      "Memory",
-      "Gpu",
-      "Display",
-      "Expansion",
-      "Keyboard",
-    ];
-
-    /** 留下登记表里的错误码、来源，以及能画上面板的说明。 */
-    export function describeFault(message: string): { code: number; source: number; text: string } {
-      const source = sourceOf(message);
-      const code = codeOf(message);
-      let text = "";
-      for (let index = 0; index < message.length && text.length < TextLimit; index += 1) {
-        const unit = message.charCodeAt(index);
-        if (unit >= 0x20 && unit <= 0x7e) {
-          text += message.charAt(index);
-        }
-      }
-      if (text.length < 1) {
-        text = "unspecified";
-      }
-      return { code, source, text };
-    }
+    const Columns = FrameWidth / Glyph;
 
     /**
-     * 黑底。第一行 ERROR，接着十进制错误码、来源短名，然后说明。
-     * 官方帧宽 640，一行 80 个字形。超出帧高的行不再生成。
-     * 这段不被 call 进入。r0 至 r5 是盒子操作数，盒子编号借用 r6，文本编号借用 r7。
+     * 全幅清成 0，再按协议逐行写失败字段。
+     * r6 是底，r7 是文本。最后 compose、present、halt，调用方等到停。
      */
-    export function errorPicture(code: number, source: number, text: string): readonly string[] {
-      const name = sourceName[source] ?? "Board";
-      const rows = [
-        "ERROR",
-        `CODE ${String(code)}`,
-        `SRC ${String(source)} ${name}`,
-      ];
-      for (let index = 0; index < text.length; index += Columns) {
-        rows.push(text.slice(index, index + Columns));
-      }
+    export function errorPicture(record: FaultRecord): readonly string[] {
       const lines = [
         "place r0, 0",
         "place r1, 0",
         "place r2, 0",
-        "place r3, 640",
-        "place r4, 480",
+        `place r3, ${String(FrameWidth)}`,
+        `place r4, ${String(FrameHeight)}`,
         "place r5, 0",
         "gpu.box r6, r0, r1, r2, r3, r4, r5",
       ];
-      let top = 0;
-      for (const row of rows) {
-        if (top > 472) {
+      const name = FaultSourceName[record.Source] ?? "Board";
+      const core = record.Core < 0 ? "CORE -" : `CORE ${String(record.Core)}`;
+      const op = record.Op.length > 0 ? `AT ${String(record.Index)} ${record.Op}` : `AT ${String(record.Index)}`;
+      const blocks = [
+        "ERROR",
+        `CODE ${String(record.Code)}`,
+        `SRC ${String(record.Source)} ${name}`,
+        core,
+        op,
+        `SITE ${record.Site}`,
+        record.Text,
+      ];
+      let row = 0;
+      for (const block of blocks) {
+        const rows = Math.max(1, Math.ceil(block.length / Columns));
+        paint(lines, block, row, rows);
+        row += rows;
+      }
+      const stackLimit = Math.min(4, record.Stack.length);
+      for (let index = 0; index < stackLimit; index += 1) {
+        const frame = record.Stack[index] ?? "";
+        const visible = `STACK ${frame}`.slice(0, Columns);
+        if (row * Glyph >= FrameHeight) {
           break;
         }
-        lines.push(
-          "place r1, 0",
-          `place r2, ${String(top)}`,
-          "place r3, 640",
-          "place r4, 8",
-          "gpu.text r7, r6, r1, r2, r3, r4",
-          `place r1, ${String(Ink)}`,
-          "place r2, 0",
-          "gpu.paint r7, r1, r2",
-        );
-        for (let index = 0; index < row.length; index += 1) {
-          lines.push(`place r1, ${String(row.charCodeAt(index))}`, "gpu.glyph r7, r1");
-        }
-        top += 8;
+        paint(lines, visible, row, 1);
+        row += 1;
       }
       lines.push("gpu.compose", "gpu.present", "halt");
       return lines;
     }
 
-    function sourceOf(message: string): number {
-      if (message.includes("Keyboard")) {
-        return 6;
+    /**
+     * 一块文本一个节点。高度按行数留足，放不下的字符裁掉，不画出帧外。
+     * 底色是 0，空字位不会把上一帧的颜色留住。
+     */
+    function paint(lines: string[], text: string, row: number, rows: number): void {
+      const y = row * Glyph;
+      if (y >= FrameHeight || text.length < 1 || rows < 1) {
+        return;
       }
-      if (message.includes("Display")) {
-        return 4;
+      const roomRows = Math.min(rows, Math.floor((FrameHeight - y) / Glyph));
+      const visible = text.slice(0, roomRows * Columns);
+      if (visible.length < 1) {
+        return;
       }
-      if (message.includes("Gpu") || message.includes("显卡")) {
-        return 3;
+      lines.push(
+        "place r1, 0",
+        `place r2, ${String(y)}`,
+        `place r3, ${String(FrameWidth)}`,
+        `place r4, ${String(roomRows * Glyph)}`,
+        "gpu.text r7, r6, r1, r2, r3, r4",
+        `place r1, ${String(Ink)}`,
+        "place r2, 0",
+        "gpu.paint r7, r1, r2",
+      );
+      for (let index = 0; index < visible.length; index += 1) {
+        lines.push(`place r1, ${String(visible.charCodeAt(index))}`, "gpu.glyph r7, r1");
       }
-      if (message.includes("Memory") || message.includes("内存") || message.includes("访存")) {
-        return 2;
-      }
-      if (message.includes("Cpu") || message.includes("CPU") || message.includes("核心")) {
-        return 1;
-      }
-      if (message.includes("扩展")) {
-        return 5;
-      }
-      return 0;
-    }
-
-    function codeOf(message: string): number {
-      if (message.includes("attach")) {
-        return 21;
-      }
-      if (message.includes("capture") || message.includes("restore")) {
-        return 20;
-      }
-      if (message.includes("install")) {
-        return 12;
-      }
-      if (message.includes("bound")) {
-        return 13;
-      }
-      if (message.includes("schedule")) {
-        return 14;
-      }
-      if (message.includes("pass") || message.includes("保持位")) {
-        return 15;
-      }
-      if (message.includes("syscall")) {
-        return 16;
-      }
-      if (message.includes("gate")) {
-        return 17;
-      }
-      if (message.includes("release")) {
-        return 18;
-      }
-      if (message.includes("slice")) {
-        return 19;
-      }
-      if (message.includes("跳转")) {
-        return 1;
-      }
-      if (message.includes("寄存器")) {
-        return 2;
-      }
-      if (message.includes("不在执行中")) {
-        return 3;
-      }
-      if (message.includes("没做完")) {
-        return 4;
-      }
-      if (message.includes("Hz")) {
-        return 5;
-      }
-      if (message.includes("操作码")) {
-        return 6;
-      }
-      if (message.includes("指标")) {
-        return 7;
-      }
-      if (message.includes("交换") || message.includes("扩展口")) {
-        return 8;
-      }
-      if (message.includes("查询") || message.includes("字段")) {
-        return 9;
-      }
-      if (message.includes("显卡") || message.includes("Gpu")) {
-        return 10;
-      }
-      if (message.includes("访存") || message.includes("内存")) {
-        return 11;
-      }
-      if (message.includes("特权")) {
-        return 22;
-      }
-      return 0;
     }
   }
 }

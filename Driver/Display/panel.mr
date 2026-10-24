@@ -1,0 +1,5 @@
+/* 显示器尺寸驱动。固件选出宽高后只调用这里，不直接发显卡命令。 */
+namespace panel {
+/* 把颜色目标和面板换成这个宽高。成功返回 0。边长不合法时失败。 */
+deRfun apply(long width, long height): long;
+}

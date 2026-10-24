@@ -93,17 +93,26 @@ deRfun taskCount(long core): long {
   return count;
 }
 
-/* except 是正在让出的那一格。-1 表示不排除。只返回已经抄进槽的就绪任务。 */
+/* except 是正在让出的那一格。-1 表示从第 0 格找。只返回已经抄进槽的就绪任务。
+   从 except 的下一格起绕一圈，先等到的先跑，不总是表里最靠前的那一格。 */
 deRfun taskReady(long core, long except): long {
-  long index = 0L;
-  while (index < 8L) {
+  long start = 0L;
+  if (except >= 0L) {
+    start = except + 1L;
+  }
+  long step = 0L;
+  while (step < 8L) {
+    long index = start + step;
+    if (index >= 8L) {
+      index = index - 8L;
+    }
     if (index != except) {
       Task* task = taskAt(index);
       if (task.pid != 0L && task.core == core && task.state == TaskState::Ready && task.held == 1L) {
         return index;
       }
     }
-    index = index + 1L;
+    step = step + 1L;
   }
   return -1L;
 }

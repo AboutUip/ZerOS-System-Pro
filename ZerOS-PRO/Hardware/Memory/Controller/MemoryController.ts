@@ -47,7 +47,6 @@ import type { ZerOS as MemorySignalRoot } from "../Structure/MemorySignal";
 import { ZerOS as SideChannelRoot } from "../Structure/SideChannel";
 import { ZerOS as Uint64Root } from "../Structure/Uint64";
 import { ZerOS as FloatBitsRoot } from "../Structure/FloatBits";
-import { ZerOS as LittleEndianRoot } from "../Structure/LittleEndian";
 import { ZerOS as IntegerWidthRoot } from "../Enum/IntegerWidth";
 
 export namespace ZerOS {
@@ -100,6 +99,27 @@ export namespace ZerOS {
          * 总控级信号。Ready 表示至少有一颗颗粒已经正式可用。
          */
         public readonly Signals: MemorySignalRoot.Hardware.Memory.MemorySignal[];
+
+        /**
+         * 各颗 CellCount 的缓存。构造时按序号算一次。
+         * 线性地址不再每次访问都新建一张计数表。
+         */
+        private readonly linearCellCounts: Uint32Root.Hardware.Memory.Uint32[] = [];
+
+        /** 各颗八位组起点和终点。终点是下颗的起点，最后一颗的终点是整机八位组数。 */
+        private readonly linearOctetOrigin: bigint[] = [];
+        private readonly linearOctetEnd: bigint[] = [];
+
+        /**
+         * 一次线性整数的落点。内存线程一次只做一条访问，所以可以反复使用，
+         * 不必每次 new 数组。读和写都先收齐落点，再碰存储体。
+         */
+        private readonly spanUnits = new Uint16Array(8);
+        private readonly spanOctets = new Uint32Array(8);
+        private readonly readScratch = new Uint8Array(8);
+        private readonly writeScratch = new Uint8Array(8);
+        private hitUnit = 0;
+        private hitOctet = 0;
 
         /**
          * 构造总控（ZMP1 主路径阶段 D：全部初始化完成后正式可用）：
@@ -237,6 +257,7 @@ export namespace ZerOS {
           this.Units =
             FreezeUnitMapRoot.Hardware.Memory.freezeUnitMap(working);
           this.UnitsByOrdinal = Object.freeze(byOrdinal);
+          this.rememberLinearSpans();
 
           // —— (5) 浅切必须先完成，才允许进入阶段 D ——
           // 块数 = ShallowDimension。跨度按各颗 CellCount 拼接后均分。
@@ -571,8 +592,8 @@ export namespace ZerOS {
          * 可以跨过颗粒边界。最低的线性八位组是最低有效字节。
          */
         public ReadLinearInteger(LinearOctetIndex: bigint, OctetWidth: number): bigint {
-          const octets: readonly number[] = this.readLinearOctets(LinearOctetIndex, OctetWidth);
-          return LittleEndianRoot.Hardware.Memory.signedFromLittleEndian(octets);
+          const width = this.fillReadScratch(LinearOctetIndex, OctetWidth);
+          return this.signedFromScratch(width);
         }
 
         /**
@@ -598,9 +619,9 @@ export namespace ZerOS {
               },
             });
           }
-          const unpacked: number[] | null =
-            LittleEndianRoot.Hardware.Memory.unpackLittleEndian(IntegerValue, width);
-          if (unpacked === null) {
+          const min = IntegerWidthRoot.Hardware.Memory.integerSignedMin(width);
+          const max = IntegerWidthRoot.Hardware.Memory.integerSignedMax(width);
+          if (IntegerValue < min || IntegerValue > max) {
             this.recordAndThrow({
               ExceptionCode:
                 ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IllegalIntegerValue,
@@ -612,26 +633,22 @@ export namespace ZerOS {
               },
             });
           }
-          const places: readonly BlockSpanRoot.Hardware.Memory.LinearPlace[] =
-            this.requireLinearOctets(LinearOctetIndex, width);
-          // 先收齐每一个落点。中途对不上就 Abort，此时一个八位组都还没写。
-          const planned: {
-            readonly unitOrdinal: Uint32Root.Hardware.Memory.Uint32;
-            readonly octetIndex: Uint32Root.Hardware.Memory.Uint32;
-            readonly octet: number;
-          }[] = [];
+          const modulus = IntegerWidthRoot.Hardware.Memory.integerModulus(width);
+          let rest = IntegerValue < 0n ? IntegerValue + modulus : IntegerValue;
+          let packed = 0;
+          while (packed < width) {
+            this.writeScratch[packed] = Number(rest & 0xffn);
+            rest >>= 8n;
+            packed += 1;
+          }
+          /* 先收齐每一个落点。中途对不上就 Abort，此时一个八位组都还没写。 */
+          this.collectLinearOctets(LinearOctetIndex, width);
           let step = 0;
-          while (step < places.length) {
-            const place: BlockSpanRoot.Hardware.Memory.LinearPlace | undefined = places[step];
-            const octet: number | undefined = unpacked[step];
-            const octetIndex: Uint32Root.Hardware.Memory.Uint32 | null =
-              place === undefined ? null : Uint32Root.Hardware.Memory.toUint32(place.CellIndex / 8);
-            if (
-              place === undefined ||
-              octet === undefined ||
-              octetIndex === null ||
-              place.CellIndex % 8 !== 0
-            ) {
+          while (step < width) {
+            const unitOrdinal = Uint32Root.Hardware.Memory.toUint32(this.spanUnits[step] ?? 0);
+            const octetIndex = Uint32Root.Hardware.Memory.toUint32(this.spanOctets[step] ?? 0);
+            const octet = this.writeScratch[step] ?? 0;
+            if (unitOrdinal === null || octetIndex === null) {
               this.recordAndThrow({
                 ExceptionCode:
                   ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IntegerSpanOutOfRange,
@@ -643,15 +660,8 @@ export namespace ZerOS {
                 },
               });
             }
-            planned.push({
-              unitOrdinal: place.UnitOrdinal,
-              octetIndex,
-              octet,
-            });
+            this.requireUnit(unitOrdinal).WriteOctet(octetIndex, octet);
             step += 1;
-          }
-          for (const item of planned) {
-            this.requireUnit(item.unitOrdinal).WriteOctet(item.octetIndex, item.octet);
           }
         }
 
@@ -923,14 +933,10 @@ export namespace ZerOS {
         ): BlockSpanRoot.Hardware.Memory.LinearPlace {
           const gated: Uint64Root.Hardware.Memory.Uint64 | null =
             Uint64Root.Hardware.Memory.toUint64(linearBitIndex);
-          const counts: Uint32Root.Hardware.Memory.Uint32[] = [];
-          for (const unit of this.UnitsByOrdinal) {
-            counts.push(unit.CellCount);
-          }
           const place: BlockSpanRoot.Hardware.Memory.LinearPlace | null =
             gated === null
               ? null
-              : BlockSpanRoot.Hardware.Memory.locateLinear(gated, counts);
+              : BlockSpanRoot.Hardware.Memory.locateLinear(gated, this.linearCellCounts);
           if (place === null) {
             this.recordAndThrow({
               ExceptionCode:
@@ -948,12 +954,48 @@ export namespace ZerOS {
         }
 
         /**
-         * 线性八位组必须按 8 位对齐落在某一颗上，并且连续 width 个都存在。
+         * 把各颗的位元数和八位组区间记下来。
+         * 颗粒数量在构造时就冻结，成功路径不再改 CellCount。
          */
-        private requireLinearOctets(
+        private rememberLinearSpans(): void {
+          let origin = 0n;
+          for (const unit of this.UnitsByOrdinal) {
+            this.linearCellCounts.push(unit.CellCount);
+            const octets = Math.floor(unit.CellCount / 8);
+            this.linearOctetOrigin.push(origin);
+            origin += BigInt(octets);
+            this.linearOctetEnd.push(origin);
+          }
+        }
+
+        /**
+         * 线性八位组落在哪一颗、哪一个下标。
+         * 命中时写进 hitUnit / hitOctet，不新建落点对象。
+         */
+        private findLinearOctet(index: bigint): boolean {
+          const ends = this.linearOctetEnd;
+          let unit = 0;
+          while (unit < ends.length) {
+            const start = this.linearOctetOrigin[unit] ?? 0n;
+            const end = ends[unit] ?? 0n;
+            if (index >= start && index < end) {
+              this.hitUnit = unit;
+              this.hitOctet = Number(index - start);
+              return true;
+            }
+            unit += 1;
+          }
+          return false;
+        }
+
+        /**
+         * 连续 width 个八位组都必须存在。结果留在 spanUnits / spanOctets。
+         * 对不上时一个八位组都不读、不写。
+         */
+        private collectLinearOctets(
           linearOctetIndex: bigint,
           width: IntegerWidthRoot.Hardware.Memory.IntegerWidth,
-        ): readonly BlockSpanRoot.Hardware.Memory.LinearPlace[] {
+        ): void {
           const gated: Uint64Root.Hardware.Memory.Uint64 | null =
             Uint64Root.Hardware.Memory.toUint64(linearOctetIndex);
           if (gated === null) {
@@ -964,43 +1006,50 @@ export namespace ZerOS {
                 ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
               ExceptionSummary: "LinearOctetIndex 不是 Uint64",
               ExceptionChain: {
-                Source: "ZerOS.Hardware.Memory.MemoryController.requireLinearOctets",
+                Source: "ZerOS.Hardware.Memory.MemoryController.collectLinearOctets",
               },
             });
           }
-          const counts: Uint32Root.Hardware.Memory.Uint32[] = [];
-          for (const unit of this.UnitsByOrdinal) {
-            counts.push(unit.CellCount);
-          }
-          const places: BlockSpanRoot.Hardware.Memory.LinearPlace[] = [];
+          let cursor: bigint = gated;
           let step = 0;
           while (step < width) {
-            const bit: bigint = (gated + BigInt(step)) * 8n;
-            const place: BlockSpanRoot.Hardware.Memory.LinearPlace | null =
-              BlockSpanRoot.Hardware.Memory.locateLinear(bit, counts);
-            if (place === null || place.CellIndex % 8 !== 0) {
+            if (!this.findLinearOctet(cursor)) {
               this.recordAndThrow({
                 ExceptionCode:
-                  ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue
-                    .IntegerSpanOutOfRange,
+                  ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IntegerSpanOutOfRange,
                 ExceptionCategory:
                   ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
                 ExceptionSummary: "线性整数跨度越出整机八位组",
                 ExceptionChain: {
-                  Source: "ZerOS.Hardware.Memory.MemoryController.requireLinearOctets",
+                  Source: "ZerOS.Hardware.Memory.MemoryController.collectLinearOctets",
                 },
               });
             }
-            places.push(place);
+            const unitOrdinal = Uint32Root.Hardware.Memory.toUint32(this.hitUnit);
+            const octetIndex = Uint32Root.Hardware.Memory.toUint32(this.hitOctet);
+            if (unitOrdinal === null || octetIndex === null) {
+              this.recordAndThrow({
+                ExceptionCode:
+                  ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IntegerSpanOutOfRange,
+                ExceptionCategory:
+                  ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
+                ExceptionSummary: "线性八位组下标不是 Uint32",
+                ExceptionChain: {
+                  Source: "ZerOS.Hardware.Memory.MemoryController.collectLinearOctets",
+                },
+              });
+            }
+            this.spanUnits[step] = unitOrdinal;
+            this.spanOctets[step] = octetIndex;
+            cursor += 1n;
             step += 1;
           }
-          return places;
         }
 
         /**
-         * 读出线性整数要用的八位组。宽度非法时先拒绝，避免读一半。
+         * 把线性整数读进 readScratch。宽度非法时先拒绝，避免读一半。
          */
-        private readLinearOctets(linearOctetIndex: bigint, octetWidth: number): readonly number[] {
+        private fillReadScratch(linearOctetIndex: bigint, octetWidth: number): IntegerWidthRoot.Hardware.Memory.IntegerWidth {
           const width: IntegerWidthRoot.Hardware.Memory.IntegerWidth | null =
             IntegerWidthRoot.Hardware.Memory.toIntegerWidth(octetWidth);
           if (width === null) {
@@ -1011,17 +1060,16 @@ export namespace ZerOS {
                 ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
               ExceptionSummary: `OctetWidth=${String(octetWidth)} 不是 2、4 或 8`,
               ExceptionChain: {
-                Source: "ZerOS.Hardware.Memory.MemoryController.readLinearOctets",
+                Source: "ZerOS.Hardware.Memory.MemoryController.fillReadScratch",
               },
             });
           }
-          const places: readonly BlockSpanRoot.Hardware.Memory.LinearPlace[] =
-            this.requireLinearOctets(linearOctetIndex, width);
-          const octets: number[] = [];
-          for (const place of places) {
-            const octetIndex: Uint32Root.Hardware.Memory.Uint32 | null =
-              Uint32Root.Hardware.Memory.toUint32(place.CellIndex / 8);
-            if (octetIndex === null) {
+          this.collectLinearOctets(linearOctetIndex, width);
+          let step = 0;
+          while (step < width) {
+            const unitOrdinal = Uint32Root.Hardware.Memory.toUint32(this.spanUnits[step] ?? 0);
+            const octetIndex = Uint32Root.Hardware.Memory.toUint32(this.spanOctets[step] ?? 0);
+            if (unitOrdinal === null || octetIndex === null) {
               this.recordAndThrow({
                 ExceptionCode:
                   ExceptionCodeRoot.Hardware.Memory.ExceptionCodeValue.IntegerSpanOutOfRange,
@@ -1029,13 +1077,33 @@ export namespace ZerOS {
                   ExceptionCategoryRoot.Hardware.Memory.ExceptionCategoryCode.Abort,
                 ExceptionSummary: "线性八位组下标不是 Uint32",
                 ExceptionChain: {
-                  Source: "ZerOS.Hardware.Memory.MemoryController.readLinearOctets",
+                  Source: "ZerOS.Hardware.Memory.MemoryController.fillReadScratch",
                 },
               });
             }
-            octets.push(this.requireUnit(place.UnitOrdinal).ReadOctet(octetIndex));
+            this.readScratch[step] = this.requireUnit(unitOrdinal).ReadOctet(octetIndex);
+            step += 1;
           }
-          return octets;
+          return width;
+        }
+
+        /**
+         * 把 readScratch 里的小端八位组收成补码。最低下标是最低有效字节。
+         */
+        private signedFromScratch(width: number): bigint {
+          let packed = 0n;
+          let index = 0;
+          while (index < width) {
+            const octet = this.readScratch[index] ?? 0;
+            packed += BigInt(octet) << (BigInt(index) * 8n);
+            index += 1;
+          }
+          const bits = BigInt(width) * 8n;
+          const sign = 1n << (bits - 1n);
+          if (packed >= sign) {
+            return packed - (sign << 1n);
+          }
+          return packed;
         }
 
         /**

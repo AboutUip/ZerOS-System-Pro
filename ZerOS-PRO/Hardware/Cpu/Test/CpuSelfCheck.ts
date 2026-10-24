@@ -6,7 +6,8 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 核对已挂载核心的停止状态、调度和保持位，再核对寄存器与一次访存。
- * 自检结束时 0 号核心回到停止。写过的内存八位组恢复为 0。
+ * 寄存器核对之前，还会跑直循环、用户核失败、系统调用恢复和上下文槽。
+ * 那些核对各自交还核心。自检结束时 0 号核心回到停止。写过的内存八位组恢复为 0。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -26,6 +27,12 @@ import { ZerOS as OpcodeRoot } from "../../Motherboard/Enum/MemoryOpcode";
 import { ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
 import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
 import { ZerOS as ConfigRoot } from "../Config/CpuConfig";
+import { ZerOS as StraightRoot } from "./LocalStraightCheck";
+import { ZerOS as UserFaultRoot } from "./UserFaultCheck";
+import { ZerOS as SyscallResumeRoot } from "./SyscallResumeCheck";
+import { ZerOS as ContextSlotRoot } from "./ContextSlotCheck";
+import { ZerOS as FaultDeliveryRoot } from "./FaultDeliveryCheck";
+import { ZerOS as FaultFrameRoot } from "./FaultFrameCheck";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -36,6 +43,7 @@ export namespace ZerOS {
       const coreState = RuntimeRoot.Hardware.Cpu.coreState;
       const schedule = RuntimeRoot.Hardware.Cpu.schedule;
       const halt = RuntimeRoot.Hardware.Cpu.halt;
+      const restoreMounted = RuntimeRoot.Hardware.Cpu.restoreMounted;
       const pass = RuntimeRoot.Hardware.Cpu.pass;
       const take = RuntimeRoot.Hardware.Cpu.take;
       const place = RuntimeRoot.Hardware.Cpu.place;
@@ -58,6 +66,12 @@ export namespace ZerOS {
       const clearGate = RuntimeRoot.Hardware.Cpu.clearGate;
       const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const RelocateDataFloor = ConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
+      const runLocalStraightCheck = StraightRoot.Hardware.Cpu.runLocalStraightCheck;
+      const runUserFaultCheck = UserFaultRoot.Hardware.Cpu.runUserFaultCheck;
+      const runSyscallResumeCheck = SyscallResumeRoot.Hardware.Cpu.runSyscallResumeCheck;
+      const runContextSlotCheck = ContextSlotRoot.Hardware.Cpu.runContextSlotCheck;
+      const runFaultDeliveryCheck = FaultDeliveryRoot.Hardware.Cpu.runFaultDeliveryCheck;
+      const runFaultFrameCheck = FaultFrameRoot.Hardware.Cpu.runFaultFrameCheck;
       const checkPrefix = "[ZerOS.Hardware.Cpu.CpuSelfCheck]";
 
       function fail(message: string): never {
@@ -71,25 +85,25 @@ export namespace ZerOS {
       export function runCpuSelfCheck(): void {
         const count = declaredCount();
         if (count < 1) {
-          fail("还没有声明核心数");
+          fail("the core count has not been declared");
         }
         for (let ordinal = 0; ordinal < count; ordinal += 1) {
           if (coreState(ordinal) !== CoreStateHalted) {
-            fail("新挂上的核心不是停止状态");
+            fail("a newly mounted core was not halted");
           }
         }
         schedule(0);
         if (coreState(0) !== CoreStateRunning) {
-          fail("调度之后核心仍不在执行中");
+          fail("the core was still not running after schedule");
         }
         halt(0);
         if (coreState(0) !== CoreStateHalted) {
-          fail("停止之后核心仍在执行中");
+          fail("the core was still running after halt");
         }
         if (count >= 2) {
           pass(0, 1, 7n);
           if (take(1) !== 7n) {
-            fail("保持位取出的值不是放进去的那个整数");
+            fail("the latch value is not the integer that was passed");
           }
           let emptyRejected = false;
           try {
@@ -98,7 +112,7 @@ export namespace ZerOS {
             emptyRejected = true;
           }
           if (!emptyRejected) {
-            fail("空的保持位仍然被取走");
+            fail("an empty latch was still taken");
           }
         }
       }
@@ -122,32 +136,33 @@ export namespace ZerOS {
           "jz r0, 3",
           "install r1, r2, r3",
           "attach r0, r1, r2, r3",
+          "dwell r1",
         ];
         const parsed: InstructionRoot.Hardware.Cpu.CpuInstruction[] = [];
         for (const line of lines) {
           const step = parseCpuInstruction(line);
           if (step === null) {
-            fail("样例指令是空的");
+            fail("the sample program is empty");
           }
           parsed.push(step);
         }
         const decoded = decodeProgramBinary(encodeProgramBinary(parsed));
         if (decoded.length !== parsed.length) {
-          fail("程序二进制的条数和原文不一致");
+          fail("the binary instruction count does not match the source");
         }
         for (let index = 0; index < parsed.length; index += 1) {
           const before = parsed[index];
           const after = decoded[index];
           if (before === undefined || after === undefined) {
-            fail("程序二进制缺了一条");
+            fail("the binary is missing an instruction");
           }
           if (formatCpuInstruction(before) !== formatCpuInstruction(after)) {
-            fail("程序二进制读回的指令和原文不一致");
+            fail("the binary decoded to different instructions");
           }
         }
         const guest = await runGuest(0, decoded.slice(0, 4));
         if (!guest.Ok || guest.Registers[2] !== 42n) {
-          fail("核心没有直接执行程序二进制");
+          fail("the core did not execute the program binary");
         }
       }
 
@@ -165,7 +180,7 @@ export namespace ZerOS {
         for (const line of imageLines) {
           const step = parseCpuInstruction(line);
           if (step === null) {
-            fail("装入样例是空的");
+            fail("the install sample is empty");
           }
           image.push(step);
         }
@@ -185,46 +200,46 @@ export namespace ZerOS {
         for (const line of lines) {
           const step = parseCpuInstruction(line);
           if (step === null) {
-            fail("装入程序是空的");
+            fail("the installed program is empty");
           }
           steps.push(step);
         }
         const guest = await runGuest(0, steps);
         if (!guest.Ok) {
-          fail(`装入没有完成 ${guest.Message}`);
+          fail(`install did not finish ${guest.Message}`);
         }
         if (coreState(1) !== CoreStateHalted) {
-          fail("装入后目标不是停止");
+          fail("the target was not halted after install");
         }
         const cleared = await readRegisters(1);
         if (cleared[2] !== 0n) {
-          fail("装入没有把寄存器清零");
+          fail("install did not clear the registers");
         }
         schedule(1);
         await startedRun(1);
         if (coreState(1) !== CoreStateHalted) {
-          fail("装入的程序没有停");
+          fail("the installed program did not halt");
         }
         const ran = await readRegisters(1);
         if (ran[2] !== 42n) {
-          fail("装入的程序没有在目标核心上执行");
+          fail("the installed program did not run on the target core");
         }
         const refusedLines = ["place r1, 0", "place r2, 0", "place r3, 1", "install r1, r2, r3", "halt"];
         const refused: InstructionRoot.Hardware.Cpu.CpuInstruction[] = [];
         for (const line of refusedLines) {
           const step = parseCpuInstruction(line);
           if (step === null) {
-            fail("拒绝样例是空的");
+            fail("the rejected sample is empty");
           }
           refused.push(step);
         }
         const denied = await runGuest(0, refused);
         if (denied.Ok || !denied.Message.includes("install")) {
-          fail("对自己装入仍然成功了");
+          fail("install onto itself still succeeded");
         }
         const kept = await readRegisters(1);
         if (kept[2] !== 42n || coreState(1) !== CoreStateHalted) {
-          fail("失败的装入改动了目标核心");
+          fail("a failed install changed the target core");
         }
       }
 
@@ -233,7 +248,7 @@ export namespace ZerOS {
         for (const line of lines) {
           const step = parseCpuInstruction(line);
           if (step === null) {
-            fail(`样例无法解析 ${line}`);
+            fail(`sample did not parse ${line}`);
           }
           steps.push(step);
         }
@@ -255,19 +270,55 @@ export namespace ZerOS {
         try {
           const guest = await runGuest(0, steps);
           if (!guest.Ok || guest.Registers[2] !== 2n || coreState(0) !== CoreStateHalted) {
-            fail(`时间片没有停在第二条赋值 ${guest.Message}`);
+            fail(`the time slice did not stop on the second store ${guest.Message}`);
           }
           /* runGuest 不留下已装入映像，所以从原来的指令继续，而不是走 Schedule。 */
           await runSequence(0, steps);
           const resumed = await readRegisters(0);
           if (resumed[2] !== 3n || coreState(0) !== CoreStateHalted) {
-            fail("时间片之后没有从下一条继续");
+            fail("execution did not continue at the next instruction after the slice");
           }
         } finally {
           const cleared = await runGuest(0, linesOf(["place r1, 0", "slice r1", "halt"]));
           if (!cleared.Ok && coreState(0) !== CoreStateRunning) {
-            fail(`时间片没有交还 ${cleared.Message}`);
+            fail(`the time slice was not cleared ${cleared.Message}`);
           }
+        }
+      }
+
+      /**
+       * 0 毫秒马上继续。1 毫秒等完再执行下一条。超过 1000 必须失败，而且不能把后面的赋值做掉。
+       */
+      async function checkDwell(): Promise<void> {
+        const stayed = await runGuest(0, linesOf([
+          "place r1, 0",
+          "dwell r1",
+          "place r2, 5",
+          "halt",
+        ]));
+        if (!stayed.Ok || stayed.Registers[2] !== 5n || coreState(0) !== CoreStateHalted) {
+          fail(`dwell 0 did not continue ${stayed.Message}`);
+        }
+        const waited = await runGuest(0, linesOf([
+          "place r1, 1",
+          "dwell r1",
+          "place r2, 6",
+          "halt",
+        ]));
+        if (!waited.Ok || waited.Registers[2] !== 6n) {
+          fail(`dwell 1 did not continue ${waited.Message}`);
+        }
+        const rejected = await runGuest(0, linesOf([
+          "place r1, 1001",
+          "dwell r1",
+          "place r2, 9",
+          "halt",
+        ]));
+        if (rejected.Ok || !rejected.Message.includes("dwell is outside")) {
+          fail(`dwell accepted a millisecond count past 1000 ${rejected.Message}`);
+        }
+        if (rejected.Registers[2] === 9n) {
+          fail("dwell past 1000 still executed the next instruction");
         }
       }
 
@@ -307,11 +358,11 @@ export namespace ZerOS {
           ]),
         ]);
         if (denied.Ok || !denied.Message.includes("install")) {
-          fail("动态库被整段装入了");
+          fail("a dynamic library was installed as a whole image");
         }
         const kept = await readRegisters(1);
         if (kept[2] !== 42n) {
-          fail("失败的动态库装入改动了目标");
+          fail("a failed library install changed the target");
         }
         const linked = await runGuest(0, [
           ...storeLines(caller, callerBase),
@@ -329,13 +380,13 @@ export namespace ZerOS {
           ]),
         ]);
         if (!linked.Ok || linked.Registers[0] !== 5n) {
-          fail(`接入没有停在导出入口 ${linked.Message}`);
+          fail(`attach did not stop on the exported entry ${linked.Message}`);
         }
         schedule(1);
         await startedRun(1);
         const ran = await readRegisters(1);
         if (ran[0] !== 42n || ran[3] !== 7n) {
-          fail("接入后的调用没有得到和，或数据没有挪到 1 号核心");
+          fail("the call after attach did not produce the sum, or the data was not moved to core 1");
         }
         const again = await runGuest(0, linesOf([
           "place r1, 1",
@@ -345,7 +396,7 @@ export namespace ZerOS {
           "halt",
         ]));
         if (!again.Ok || again.Registers[0] !== 5n) {
-          fail(`重复接入改了入口 ${again.Message}`);
+          fail(`attaching the same export again changed the entry ${again.Message}`);
         }
       }
 
@@ -361,7 +412,7 @@ export namespace ZerOS {
         }
         const marked = await runGuest(1, linesOf(["place r2, 99", "halt"]));
         if (!marked.Ok || marked.Registers[2] !== 99n) {
-          fail("重定位失败用例没有留下寄存器");
+          fail("the failed relocation case did not leave the registers");
         }
         const bad = withLink(
           linesOf(["add r0, r0, r1", "halt"]),
@@ -382,11 +433,11 @@ export namespace ZerOS {
           ]),
         ]);
         if (refused.Ok || !refused.Message.includes("install")) {
-          fail("对不上的数据重定位仍然装入了");
+          fail("a data relocation that does not match was still installed");
         }
         const kept = await readRegisters(1);
         if (kept[2] !== 99n) {
-          fail("失败的重定位清掉了目标寄存器");
+          fail("a failed relocation cleared the target registers");
         }
         const home = RelocateDataFloor + RelocateSlotBits;
         const planted = await runGuest(0, linesOf([
@@ -395,7 +446,7 @@ export namespace ZerOS {
           "halt",
         ]));
         if (!planted.Ok || planted.Registers[4] !== 62n) {
-          fail("窗口样例没有写进寄存器");
+          fail("the window sample was not written into the register");
         }
         const image = withLink(
           linesOf([
@@ -425,13 +476,13 @@ export namespace ZerOS {
           ]),
         ]);
         if (!linked.Ok) {
-          fail(`可重定位装入失败 ${linked.Message}`);
+          fail(`relocatable install failed ${linked.Message}`);
         }
         schedule(1);
         await startedRun(1);
         const ran = await readRegisters(1);
         if (ran[0] !== 62n || ran[2] !== 0n) {
-          fail("数据立即数没有挪到 1 号核心，或跳转没有改到序列末尾");
+          fail("the data immediate was not relocated to core 1, or the jump was not retargeted to the end");
         }
         const cleared = await runGuest(0, linesOf([
           "place r4, 0",
@@ -439,7 +490,7 @@ export namespace ZerOS {
           "halt",
         ]));
         if (!cleared.Ok) {
-          fail("窗口样例没有清掉");
+          fail("the window sample was not cleared");
         }
       }
 
@@ -529,7 +580,7 @@ export namespace ZerOS {
             "halt",
           ]));
           if (!opened.Ok) {
-            fail(`划定范围失败 ${opened.Message}`);
+            fail(`bound failed ${opened.Message}`);
           }
           const denied = await runGuest(1, linesOf([
             "place r1, 1",
@@ -537,7 +588,7 @@ export namespace ZerOS {
             "halt",
           ]));
           if (denied.Ok || !denied.Message.includes("bound")) {
-            fail("范围外的写入仍然成功");
+            fail("a write outside the window still succeeded");
           }
           const restored = await runGuest(0, linesOf([
             "place r1, 1",
@@ -548,7 +599,7 @@ export namespace ZerOS {
             "halt",
           ]));
           if (restored.Ok || !restored.Message.includes("gate")) {
-            fail("第二个监督核仍然成功");
+            fail("a second supervisor still succeeded");
           }
         } finally {
           clearGate();
@@ -573,15 +624,15 @@ export namespace ZerOS {
             "halt",
           ]));
           if (!opened.Ok) {
-            fail(`客核心没有划定 ${opened.Message}`);
+            fail(`the guest core was not bounded ${opened.Message}`);
           }
           const denied = await runGuest(1, linesOf(["gpu.compose", "halt"]));
-          if (denied.Ok || !denied.Message.includes("特权")) {
-            fail(`客核心仍然执行了显卡指令 ${denied.Message}`);
+          if (denied.Ok || !denied.Message.includes("privileged")) {
+            fail(`the guest core still executed a GPU instruction ${denied.Message}`);
           }
-          const kept = await runGuest(1, linesOf(["place r2, 7", "halt"]));
+          const kept = await runGuest(1, linesOf(["place r1, 0", "dwell r1", "place r2, 7", "halt"]));
           if (!kept.Ok || kept.Registers[2] !== 7n) {
-            fail(`客核心的运算没有留下 ${kept.Message}`);
+            fail(`the guest core did not keep the arithmetic result ${kept.Message}`);
           }
         } finally {
           await runGuest(0, linesOf(["place r1, 1", "release r1", "halt"]));
@@ -593,36 +644,43 @@ export namespace ZerOS {
         await checkProgramBinary();
         await checkInstall();
         await checkSlice();
+        await checkDwell();
         await checkBound();
         await checkAttach();
         await checkPieInstall();
         await checkGuestPrivilege();
+        await runLocalStraightCheck();
+        await runUserFaultCheck();
+        await runSyscallResumeCheck();
+        await runContextSlotCheck();
+        await runFaultDeliveryCheck();
+        await runFaultFrameCheck();
         schedule(0);
         const placedLeft = await place(0, 0, 1n);
         const placedRight = await place(0, 1, 2n);
         if (placedLeft.Value !== 1n || placedRight.Value !== 2n) {
-          fail("Place 没有把整数写入寄存器");
+          fail("place did not write the integer into the register");
         }
         const sum = await add(0, 2, 0, 1);
         if (sum.Value !== 3n) {
-          fail("Add 的和不是两个寄存器的精确相加");
+          fail("add was not the exact sum of the two registers");
         }
         await store(0, MemoryOpcodeStoreOctet, 0n, 2);
         try {
           const loaded = await load(0, MemoryOpcodeLoadOctet, 0n, 3);
           if (loaded.Value !== 3n) {
-            fail("Load 读回的八位组不是寄存器里存进去的和");
+            fail("load did not read back the sum stored from the register");
           }
           await place(0, 0, -2n);
           await place(0, 1, 3n);
           const product = await binary(0, "mul", 2, 0, 1);
           if (product.Value !== -6n) {
-            fail("Mul 的积不是精确相乘");
+            fail("mul was not the exact product");
           }
           await store(0, MemoryOpcodeStore64, 64n, 2);
           const signed = await load(0, MemoryOpcodeLoad64, 64n, 3);
           if (signed.Value !== -6n) {
-            fail("Load 没有把补码负数读回寄存器");
+            fail("load did not read the two's-complement negative back into the register");
           }
           await place(0, 2, 0n);
           await store(0, MemoryOpcodeStore64, 64n, 2);
@@ -630,22 +688,27 @@ export namespace ZerOS {
           await place(0, 1, 0x4008000000000000n);
           const scaled = await binary(0, "fmul", 2, 0, 1);
           if (scaled.Value !== 0x4018000000000000n) {
-            fail("浮点乘法没有得到 6 的二进制 64 位型");
+            fail("float multiply did not produce the binary64 of 6");
           }
           const remainder = await binary(0, "fmod", 2, 0, 1);
           if (remainder.Value !== 0x4000000000000000n) {
-            fail("浮点取模没有得到 2 的二进制 64 位型");
+            fail("float remainder did not produce the binary64 of 2");
           }
           await place(0, 0, -1n);
           await place(0, 1, 2n);
           const order = await binary(0, "lt", 2, 0, 1);
           if (order.Value !== 1n) {
-            fail("Lt 没有按数学整数序比较负数");
+            fail("lt did not compare the negative in mathematical integer order");
           }
         } finally {
           await place(0, 2, 0n);
           await store(0, MemoryOpcodeStoreOctet, 0n, 2);
           halt(0);
+        }
+        /* release 把窗口收成 0。装入程序和内核不是客程序，第一条写栈要回到刚挂载。 */
+        const mounted = declaredCount();
+        for (let ordinal = 1; ordinal < mounted; ordinal += 1) {
+          restoreMounted(ordinal);
         }
       }
     }

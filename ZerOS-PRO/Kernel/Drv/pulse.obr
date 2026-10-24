@@ -4,8 +4,12 @@ import memory;
 import obr.os;
 
 deRfun main(): int {
-  obr::os::slice(16L);
   long home = query(1L, 8L, obr::os::core());
+  /* 960 是放行字。0 时按本核心的 Hz 空转，不发系统调用。 */
+  while (memory::load64(home + 960L) == 0L) {
+    obr::os::core();
+  }
+  obr::os::slice(16L);
   while (1) {
     memory::store64(0L, home + 128L);
     memory::store64(64L, home + 256L);

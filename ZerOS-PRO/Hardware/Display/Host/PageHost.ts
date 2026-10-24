@@ -9,7 +9,14 @@ import { ZerOS as SealRoot } from "./DomSeal";
 import { ZerOS as DisplaySelfCheckRoot } from "../Test/DisplaySelfCheck";
 import { ZerOS as AcceptGpuFrameRoot } from "./AcceptGpuFrame";
 import { ZerOS as PublishKeyboardRoot } from "./PublishKeyboard";
+import { ZerOS as PublishPointerRoot } from "./PublishPointer";
 import { ZerOS as MotherboardRoot } from "../../Motherboard/Bootstrap/Motherboard";
+import { ZerOS as NasRuntimeRoot } from "../../Nas/Bootstrap/NasRuntime";
+import { ZerOS as PageCoreStopRoot } from "../../Cpu/Host/PageCoreStop";
+import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
+import { ZerOS as SurfaceRoot } from "../../Debug/Host/DebugSurface";
+import { type ZerOS as FaultRoot } from "../../Cpu/Structure/FaultRecord";
+import { type ZerOS as StopRoot } from "../../Cpu/Structure/CoreStop";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -25,12 +32,31 @@ export namespace ZerOS {
         MotherboardRoot.Hardware.Motherboard.Motherboard.PublishPanel(display.Width, display.Height, display.Hertz);
         SealRoot.Hardware.Display.sealHostPage(canvas);
         PublishKeyboardRoot.Hardware.Display.publishKeyboard();
+        PublishPointerRoot.Hardware.Display.publishPointer();
         const runDisplaySelfCheck = DisplaySelfCheckRoot.Hardware.Display.runDisplaySelfCheck;
         const acceptGpuFrame = AcceptGpuFrameRoot.Hardware.Display.acceptGpuFrame;
+        const acceptGpuBitmap = AcceptGpuFrameRoot.Hardware.Display.acceptGpuBitmap;
         const page = MotherboardRoot.Hardware.Motherboard.Motherboard;
-        page.WhenFrame((frameWidth, frameHeight, pixels): void => {
+        const saveDisplaySize = NasRuntimeRoot.Hardware.Nas.saveDisplaySize;
+        page.WhenPanel((width, height): void => {
           try {
-            acceptGpuFrame(frameWidth, frameHeight, pixels);
+            display.SetResolution(width, height);
+            page.PublishPanel(width, height, display.Hertz);
+          } catch {
+            return;
+          }
+          /* 面板已经换成这一档，再把宽高落进 NAS 的 /boot/display。 */
+          void saveDisplaySize(width, height);
+        });
+        page.WhenFrame((frameWidth, frameHeight, pixels, bitmap): void => {
+          try {
+            if (bitmap !== null) {
+              acceptGpuBitmap(frameWidth, frameHeight, bitmap);
+              return;
+            }
+            if (pixels !== null) {
+              acceptGpuFrame(frameWidth, frameHeight, pixels);
+            }
           } catch {
             return;
           }
@@ -40,8 +66,26 @@ export namespace ZerOS {
         } catch {
           return;
         }
-        const host = globalThis as { ZerOSExchange?: (index: number, direction: number, word: bigint) => Promise<bigint> };
-        host.ZerOSExchange = (index, direction, word): Promise<bigint> => page.Exchange(index, direction, word);
+        const readCoreStop = PageCoreStopRoot.Hardware.Cpu.readCoreStop;
+        const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
+        type FaultRecord = FaultRoot.Hardware.Cpu.FaultRecord;
+        type CoreStop = StopRoot.Hardware.Cpu.CoreStop;
+        const hooks = {
+          faults: (): readonly FaultRecord[] => page.Faults(),
+          last: (): FaultRecord | null => page.LastFault(),
+          stop: (ordinal: number): CoreStop | null => readCoreStop(ordinal),
+          exchange: (index: number, direction: number, word: bigint): Promise<bigint> => page.Exchange(index, direction, word),
+          run: (lines: readonly string[]): Promise<string> => page.DebugRun(lines),
+        };
+        /* 开关关闭时这里什么都不挂。打开时全局和被封住的控制台各有一份只读入口。 */
+        SurfaceRoot.Hardware.Debug.installDebugSurface(globalThis, DebugEnabled, hooks);
+        if (DebugEnabled) {
+          try {
+            SurfaceRoot.Hardware.Debug.installDebugSurface(console, DebugEnabled, hooks);
+          } catch {
+            /* 控制台对象不允许再挂属性时，全局入口仍然在。 */
+          }
+        }
         void import("../../../Boot/Boot");
       }
 

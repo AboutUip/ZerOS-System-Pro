@@ -55,6 +55,14 @@ export namespace ZerOS {
         Redraw(): void {
           device.Redraw();
         },
+
+        /**
+         * 把显卡交来的位图贴上面板。
+         * 这是宿主呈现，不是 ZDP1 方法名。帧缓冲仍留着上一份像素。
+         */
+        ShowBitmap(bitmap: ImageBitmap): void {
+          device.ShowBitmap(bitmap);
+        },
       };
     }
   }

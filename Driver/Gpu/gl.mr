@@ -59,6 +59,8 @@ deRfun round(long x, long y, long width, long height): void;
 deRfun ellipse(long x, long y, long width, long height): void;
 /* 0 返回颜色目标的宽，1 返回高。 */
 deRfun frame(long edge): long;
+/* 换成这个宽高，单位是像素。成功返回 0，帧变成全 0。边长不在 1 到 16384，或像素个数超过 16777216 时失败，旧帧不动。 */
+deRfun resize(long width, long height): long;
 deRfun raster(long x, long y, long width, long height): long;
 deRfun align(long node, long horizontal, long vertical): void;
 deRfun bitmap(long node, long code): void;

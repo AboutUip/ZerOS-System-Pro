@@ -1,0 +1,9 @@
+/* 界面驱动。选择器只画和排位置，不保存当前项，也不改分辨率。 */
+namespace obr {
+namespace widget {
+/* 闭合的一条。高 28，圆角 6。open 不是 0 时用强调色铺底。宽小于 1 时什么都不画。 */
+deRfun bar(long x, long y, long wide, long open, string label, long ink, long dim, long accent): void;
+/* 下拉列表里的一行。高 26。on 不是 0 时铺强调色。 */
+deRfun row(long x, long y, long wide, long on, string label, long ink, long accent): void;
+}
+}

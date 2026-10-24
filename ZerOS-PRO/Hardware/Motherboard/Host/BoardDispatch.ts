@@ -20,12 +20,18 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as ErrorPictureRoot } from "../../../Boot/ErrorPicture";
+import { ZerOS as FaultDeliveryRoot } from "../../../Boot/FaultDelivery";
+import { ZerOS as FaultRecordRoot } from "../../Cpu/Structure/FaultRecord";
+import { ZerOS as DebugMapRoot } from "../../Debug/Host/DebugMap";
+import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
+import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
 import { ZerOS as BoardRuntimeRoot } from "../Bootstrap/BoardRuntime";
 import { ZerOS as CpuSeatRoot } from "../Seat/CpuSeat";
 import { ZerOS as GpuSeatRoot } from "../Seat/GpuSeat";
 import { ZerOS as InboxRoot } from "./Inbox";
 import { ZerOS as MailboxRoot } from "./Mailbox";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
+import { ZerOS as PointerConfigRoot } from "../../Pointer/Config/PointerConfig";
 import { ZerOS as QueryRoot } from "./HardwareQuery";
 
 export namespace ZerOS {
@@ -35,29 +41,92 @@ export namespace ZerOS {
       const powerBoard = BoardRuntimeRoot.Hardware.Motherboard.powerBoard;
       const presentFrame = GpuSeatRoot.Hardware.Motherboard.presentFrame;
       const runInstructionLines = CpuSeatRoot.Hardware.Motherboard.runInstructionLines;
+      const runFaultPicture = CpuSeatRoot.Hardware.Motherboard.runFaultPicture;
       const runInstructionBinary = CpuSeatRoot.Hardware.Motherboard.runInstructionBinary;
       const startResidentLines = CpuSeatRoot.Hardware.Motherboard.startResidentLines;
       const startResidentBinary = CpuSeatRoot.Hardware.Motherboard.startResidentBinary;
+      const requestDebugRun = CpuSeatRoot.Hardware.Motherboard.requestDebugRun;
       const seatBinary = CpuSeatRoot.Hardware.Motherboard.seatBinary;
       const pushInbox = InboxRoot.Hardware.Motherboard.pushInbox;
       const notePanel = QueryRoot.Hardware.Motherboard.notePanel;
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
-      const describeFault = ErrorPictureRoot.Boot.describeFault;
+      const PointerPort = PointerConfigRoot.Hardware.Pointer.PointerConfig.OfficialPort;
       const errorPicture = ErrorPictureRoot.Boot.errorPicture;
+      const faultChannel = FaultDeliveryRoot.Boot.faultChannel;
+      const faultFromText = FaultRecordRoot.Hardware.Cpu.faultFromText;
+      const faultFromWire = FaultRecordRoot.Hardware.Cpu.faultFromWire;
+      const formatSevere = FaultRecordRoot.Hardware.Cpu.formatSevere;
+      const readDebugSites = DebugMapRoot.Hardware.Debug.readDebugSites;
+      const applySite = DebugMapRoot.Hardware.Debug.applySite;
+      const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
+      const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
+      type DebugSiteRun = DebugMapRoot.Hardware.Debug.DebugSiteRun;
+      type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
       let errorShown = false;
+      /** 各核心当前程序的源位置。0 号先是 logo，固件循环换上之后改成固件表。 */
+      const siteMaps = new Map<number, readonly DebugSiteRun[]>();
+      let driveSites: readonly DebugSiteRun[] = [];
 
-      /** 指令失败后只画一次。画面写出错误码、来源和能显示的说明。 */
-      function showError(message: string): void {
-        if (errorShown) {
+      /**
+       * 能画就画一帧。显卡来源或这一帧自己失败，只写控制台，不再求显卡画第二次。
+       * 控制台这一行带错误码、来源、核心、指令编号和源位置。普通失败不走这里。
+       */
+      function showFault(record: FaultRecord): void {
+        const placed = applySite(record, siteMaps);
+        const channel = faultChannel(placed, errorShown);
+        if (channel === "drop") {
           return;
         }
+        if (channel === "console") {
+          const line = formatSevere(placed);
+          console.error(line);
+          reportFault(line, false);
+          return;
+        }
+        /* 只在真的去画的时候记住。显卡故障走控制台，不能因此挡住后面还能画的失败。 */
         errorShown = true;
-        const fault = describeFault(message);
-        const lines = errorPicture(fault.code, fault.source, fault.text);
-        void runInstructionLines(lines).catch((error: unknown): void => {
-          const text = error instanceof Error ? error.message : "异常画面没有画成";
-          reportFault(text);
-        });
+        const lines = errorPicture(placed);
+        void runFaultPicture(lines).then(
+          (): void => {
+            reportFault(placed.Text, true);
+          },
+          (error: unknown): void => {
+            const text = error instanceof Error ? error.message : "fault picture was not drawn";
+            const line = `${formatSevere(placed)} draw=${text}`;
+            console.error(line);
+            reportFault(line, false);
+          },
+        );
+      }
+
+      function showError(message: string): void {
+        showFault(faultFromText(message, -1, 0, "", ""));
+      }
+
+      /**
+       * 调试运行先在这条线程上拒绝非法文本和关闭的开关。
+       * 核心是否停着由 CPU 再判一次。这里把 halted 传真，只是还没问到那颗核心。
+       */
+      function onDebugRun(record: Record<string, unknown>): void {
+        const incoming = record["lines"];
+        const lines: string[] = [];
+        if (!Array.isArray(incoming)) {
+          globalThis.postMessage({ kind: MailMessage.DebugResult, ok: false, message: "debug run was refused" });
+          return;
+        }
+        for (const line of incoming) {
+          if (typeof line !== "string") {
+            globalThis.postMessage({ kind: MailMessage.DebugResult, ok: false, message: "debug run was refused" });
+            return;
+          }
+          lines.push(line);
+        }
+        const decision = debugRunDecision(DebugEnabled, lines, true);
+        if (decision !== "") {
+          globalThis.postMessage({ kind: MailMessage.DebugResult, ok: false, message: decision });
+          return;
+        }
+        requestDebugRun(lines);
       }
 
       function asRecord(data: unknown): Record<string, unknown> | null {
@@ -75,11 +144,15 @@ export namespace ZerOS {
         return value;
       }
 
-      /** 把失败原句送回页面。成功时另发一条 checked，让页面接着做显示器自检。 */
-      function reportFault(text: string): void {
+      /**
+       * 把失败送回页面。
+       * window 为假时页面只能写控制台：错误帧没有画出来，或者这一次本来就不能画。
+       */
+      function reportFault(text: string, window: boolean): void {
         globalThis.postMessage({
           kind: MailMessage.Fault,
           message: text,
+          window,
         });
       }
 
@@ -111,12 +184,12 @@ export namespace ZerOS {
       function onRun(record: Record<string, unknown>): void {
         const program = readProgram(record["binary"] ?? record["lines"]);
         if (program === null) {
-          reportFault("指令序列不完整");
+          showError("instruction sequence is incomplete");
           return;
         }
         void runProgram(program).catch((error: unknown): void => {
-          const message = error instanceof Error ? error.message : "指令序列失败";
-          reportFault(message);
+          const message = error instanceof Error ? error.message : "instruction sequence failed";
+          showError(message);
         });
       }
       let powering = false;
@@ -128,7 +201,7 @@ export namespace ZerOS {
             const pixels = frame.pixels;
             const buffer = pixels.buffer;
             if (!(buffer instanceof ArrayBuffer)) {
-              reportFault("显卡帧副本无法转交");
+              showError("gpu frame could not be transferred");
               return;
             }
             globalThis.postMessage(
@@ -142,10 +215,50 @@ export namespace ZerOS {
             );
           },
           (error: unknown): void => {
-            const text = error instanceof Error ? error.message : "显卡没有交出帧";
-            reportFault(text);
+            const text = error instanceof Error ? error.message : "gpu did not present a frame";
+            showError(text);
           },
         );
+      }
+
+      /**
+       * 把一次鼠标事件的六个字写进官方鼠标口。
+       * 不进键盘的入站队列，免得固件把坐标当成按键。
+       * 口还没引导或某一字不合法时整段停下，设备会丢掉没写完的事件。
+       */
+      function deliverPointer(record: Record<string, unknown>): void {
+        const incoming = record["words"];
+        if (!Array.isArray(incoming) || incoming.length !== 6) {
+          return;
+        }
+        const words: bigint[] = [];
+        for (const word of incoming) {
+          if (typeof word !== "bigint") {
+            return;
+          }
+          words.push(word);
+        }
+        try {
+          for (const word of words) {
+            const payload = new Uint8Array(8);
+            let rest = word;
+            for (let octet = 0; octet < 8; octet += 1) {
+              payload[octet] = Number(rest & 0xffn);
+              rest >>= 8n;
+            }
+            /* 官方鼠标的交换当场返回。若实现改成异步，这一字还没落地，后面的字不能接着写。 */
+            const result = exchangePort(PointerPort, 0, payload);
+            if (result instanceof Promise) {
+              void result.then(
+                (): void => undefined,
+                (): void => undefined,
+              );
+              return;
+            }
+          }
+        } catch {
+          /* 这一段没有写完。设备里未收满的字已经丢掉。 */
+        }
       }
 
       /** 把一个 64 位字按小端交给扩展口，再把返回的 8 个八位组拼回一个字。 */
@@ -217,6 +330,10 @@ export namespace ZerOS {
           onPresent();
           return;
         }
+        if (readKind(record) === MailMessage.Pointer) {
+          deliverPointer(record);
+          return;
+        }
         if (readKind(record) === MailMessage.Inbox) {
           const incoming = record["words"];
           if (!Array.isArray(incoming)) {
@@ -245,6 +362,10 @@ export namespace ZerOS {
           }
           return;
         }
+        if (readKind(record) === MailMessage.DebugRun) {
+          onDebugRun(record);
+          return;
+        }
         if (readKind(record) !== MailMessage.Power) {
           return;
         }
@@ -255,36 +376,38 @@ export namespace ZerOS {
         const drive = readProgram(record["drive"]);
         const loader = record["loader"];
         if (logo === null || drive === null || !(loader instanceof Uint8Array)) {
-          reportFault("引导指令不完整");
+          showError("boot program is incomplete");
           return;
         }
+        siteMaps.set(0, readDebugSites(record["logoSites"]));
+        driveSites = readDebugSites(record["driveSites"]);
+        siteMaps.set(3, readDebugSites(record["loaderSites"]));
         powering = true;
         void powerBoard(logo).then(
           async (): Promise<void> => {
             powering = false;
             globalThis.postMessage({ kind: MailMessage.Checked });
             try {
-              const onFault = (message: string): void => {
-                reportFault(message);
-                showError(message);
+              const onFault = (data: Record<string, unknown>): void => {
+                showFault(faultFromWire(data));
               };
               /* 核心 3 与 Load.obr 的 -slot、固件的 schedule(3) 是同一个编号。先装上，等固件自己启动。 */
               await seatBinary(3, loader);
+              /* 引导画面已经结束。0 号核心接下来跑的是固件循环，源位置改对这份程序。 */
+              siteMaps.set(0, driveSites);
               if (drive instanceof Uint8Array) {
                 startResidentBinary(drive, onFault);
               } else {
                 startResidentLines(drive, onFault);
               }
             } catch (error: unknown) {
-              const message = error instanceof Error ? error.message : "指令序列失败";
-              reportFault(message);
+              const message = error instanceof Error ? error.message : "instruction sequence failed";
               showError(message);
             }
           },
           (error: unknown): void => {
             powering = false;
-            const text = error instanceof Error ? error.message : "主板线程失败";
-            reportFault(text);
+            const text = error instanceof Error ? error.message : "board thread failed";
             showError(text);
           },
         );

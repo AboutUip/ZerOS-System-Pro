@@ -1,4 +1,4 @@
-/* 界面库。只有函数头。布局和动画在编译器里收成整数运算，绘制收成 gpu.accel。 */
+/* 界面库。只有函数头。布局和动画在编译器里收成整数运算，绘制收成 gpu.accel。宽和高收成 query，读已发布的帧边，不提交绘制。 */
 namespace obr {
 namespace ui {
 /* 一段空间里靠哪一头。0 起点，1 正中，2 终点。 */
@@ -67,9 +67,9 @@ deRfun translate(long x, long y): void;
 deRfun restore(): void;
 /* 呈现这一帧。加速画过的颜色目标会写入帧存储。 */
 deRfun present(): void;
-/* 颜色目标的宽。 */
+/* 已发布的帧宽。座位 3 字段 0。 */
 deRfun width(): long;
-/* 颜色目标的高。 */
+/* 已发布的帧高。座位 3 字段 1。 */
 deRfun height(): long;
 /* 每次调用加 1，第一次返回 1。 */
 deRfun frame(): long;

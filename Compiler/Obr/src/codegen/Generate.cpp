@@ -5,7 +5,7 @@
 
 namespace obr {
 
-std::string Generator::run(Unit& unit) {
+Generated Generator::run(Unit& unit) {
     unit.exports.clear();
     unit.imports.clear();
     int mainIndex = -1;
@@ -31,15 +31,25 @@ std::string Generator::run(Unit& unit) {
     functions_ = &unit.functions;
     classes_ = &unit.classes;
     structs_ = &unit.structs;
+    auto finish = [&]() {
+      return Generated{out_.str(), std::move(sites_)};
+    };
     auto emitStubs = [&]() {
       for (const Function& function : unit.functions) {
         if (!function.imported) continue;
+        DebugSite next;
+        next.file = function.origin;
+        next.function = function.name;
+        next.line = function.line;
+        const SiteGuard guard(*this, next);
         emit(function.label + ":");
         emit("halt");
       }
     };
     auto emitTails = [&]() {
       emitStubs();
+      /* 运行时例程没有源行。清掉上一个函数，避免把它们记成用户函数。 */
+      const SiteGuard guard(*this, DebugSite{});
       if (needString_) {
         emitCopyRoutine();
         emitConcatRoutine();
@@ -54,32 +64,39 @@ std::string Generator::run(Unit& unit) {
         emitFunction(function);
       }
       emitTails();
-      return out_.str();
+      return finish();
     }
     if (mainIndex < 0) fail("没有 main");
     const Function& entry = unit.functions[static_cast<std::size_t>(mainIndex)];
+    site_.file = entry.origin;
+    site_.function = entry.name;
+    site_.line = entry.line;
     if (entry.body.size() == 1 && entry.body[0].kind == Stmt::Kind::Zap) {
-      emitZap(entry.body[0].name);
+      emitZap(entry.body[0].name, entry.body[0].line);
       for (Function& function : unit.functions) {
         if (&function == &entry || !standalone(function)) continue;
         emitFunction(function);
       }
       emitTails();
-      return out_.str();
+      return finish();
     }
-    emit("place r0, " + std::to_string(kStack));
-    emit("store.64 r0, " + std::to_string(kSp));
-    emit("call " + unit.functions[static_cast<std::size_t>(mainIndex)].label);
-    emit("halt");
+    {
+      /* main 外面的启动指令没有语句。不把它们记到 deRfun 那一行。 */
+      const SiteGuard guard(*this, DebugSite{});
+      emit("place r0, " + std::to_string(kStack));
+      emit("store.64 r0, " + std::to_string(kSp));
+      emit("call " + unit.functions[static_cast<std::size_t>(mainIndex)].label);
+      emit("halt");
+    }
     for (Function& function : unit.functions) {
       if (!standalone(function)) continue;
       emitFunction(function);
     }
     emitTails();
-    return out_.str();
+    return finish();
   }
 
-std::string generate(Unit& unit) {
+Generated generate(Unit& unit) {
   Generator generator;
   return generator.run(unit);
 }

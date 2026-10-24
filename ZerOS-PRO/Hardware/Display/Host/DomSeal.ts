@@ -1,10 +1,13 @@
 /**
  * @file DomSeal.ts
  * @desc 页面宿主封印。画布接上之后，文档里只留这一块画布。
- *       点击、指针和滚轮在捕获阶段被截住，不作为显示器功能。
- *       键盘事件不在这里丢掉：因为浏览器的存在，迫不得已做出的让步，
- *       由 PublishKeyboard 收成整数后交给主板。
+ *       触摸、拖放，以及指针的进入、离开和悬停在捕获阶段被截住。
+ *       指针的按下、移动、松开不在这里丢掉：对这些事件 preventDefault
+ *       会取消随后的兼容鼠标事件，页面就收不到点击。
+ *       PublishPointer 自己听这三件。键盘同样不在这里丢掉。
  */
+
+import { ZerOS as SevereRoot } from "../../Debug/Host/SevereConsole";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -15,16 +18,10 @@ export namespace ZerOS {
         "dblclick",
         "auxclick",
         "contextmenu",
-        "mousedown",
-        "mouseup",
-        "mousemove",
         "mouseenter",
         "mouseleave",
         "mouseover",
         "mouseout",
-        "pointerdown",
-        "pointerup",
-        "pointermove",
         "pointerenter",
         "pointerleave",
         "pointerover",
@@ -34,7 +31,6 @@ export namespace ZerOS {
         "touchmove",
         "touchend",
         "touchcancel",
-        "wheel",
         "beforeinput",
         "input",
         "drag",
@@ -161,8 +157,12 @@ export namespace ZerOS {
         sealConsole();
       }
 
-      /** 控制台不属于这台机器。页面上的输出方法全部改成空操作。 */
+      /**
+       * 控制台不属于这台机器。页面上的输出方法改成空操作。
+       * 替换之前先留下原来的 error。显卡故障和错误帧画失败时还要靠它写一行。
+       */
       function sealConsole(): void {
+        SevereRoot.Hardware.Debug.rememberSevereConsole();
         const methods = [
           "log",
           "info",

@@ -5,14 +5,14 @@
  * ---------------------------------------------------------------------------
  * 文件职责
  * ---------------------------------------------------------------------------
- * 只在页面线程调用。尺寸必须和当前面板一致，像素必须全部合法，才整帧写入。
- * 任一条件不满足就整份丢弃，不改帧缓冲。不导入显卡实现。
+ * 只在页面线程调用。像素帧必须和当前面板一致，并且每个像素合法，才整帧写入。
+ * 位图帧尺寸一致就直接贴上画布，不写帧缓冲。任一条件不满足就整份丢弃。不导入显卡实现。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
  * ---------------------------------------------------------------------------
  *   1. 导入
- *   2. acceptGpuFrame
+ *   2. acceptGpuFrame / acceptGpuBitmap
  */
 
 /* -------------------------------------------------------------------------- */
@@ -49,6 +49,23 @@ export namespace ZerOS {
         }
         Display.Framebuffer.set(pixels);
         Display.Redraw();
+      }
+
+      /**
+       * 稳态画面。尺寸不一致就关掉位图并丢掉，面板保持上一幅。
+       * 不写入帧缓冲：这一幅已经在画布上，再拆成整数没有用。
+       */
+      export function acceptGpuBitmap(frameWidth: number, frameHeight: number, bitmap: ImageBitmap): void {
+        if (
+          frameWidth !== Display.Width
+          || frameHeight !== Display.Height
+          || bitmap.width !== frameWidth
+          || bitmap.height !== frameHeight
+        ) {
+          bitmap.close();
+          throw new Error(`${framePrefix} 位图尺寸和面板不一致`);
+        }
+        Display.ShowBitmap(bitmap);
       }
     }
   }

@@ -1,4 +1,6 @@
-/* 调度。用户核上至多两份任务。时间片用尽时，若另一份已经在槽里，就换上它。停机的交给进程层。 */
+/* 调度。用户核上至多两份任务，堆仍各占一半。时间片用尽时，若另一份已经在槽里，就换上它。
+   监督核每次空转之前也看一眼：这颗核还在跑，且同一核上有一份在槽里的就绪任务，就在下一条指令边界抢占再换。
+   停在系统调用里的不换。停机的交给进程层。跨核迁移要等每个任务自己的映射。 */
 #LINK /start.obr, /exec.obr, /vfs.obr, /task.obr
 import proc;
 import board;
@@ -75,6 +77,31 @@ deRfun schedSweep(): void {
           taskAt(index).state = TaskState::Ready;
           obr::os::schedule(core);
           taskAt(index).state = TaskState::Running;
+        }
+      }
+    }
+    core = core + 1L;
+  }
+}
+
+/* 30 Hz 空转前调用一次。核心还在取指，且同核有一份在槽里的就绪任务，capture 会先停在下一条再抄走。 */
+deRfun schedTick(): void {
+  long core = 3L;
+  while (core < 8L) {
+    long index = taskFind(core);
+    if (index >= 0L) {
+      long running = query(1L, 5L, core);
+      long why = query(1L, 11L, core);
+      long state = taskAt(index).state;
+      if (running == 1L && why != 2L && state == TaskState::Running) {
+        long next = taskReady(core, index);
+        if (next >= 0L) {
+          obr::os::capture(core, index);
+          taskAt(index).held = 1L;
+          taskAt(index).state = TaskState::Ready;
+          obr::os::restore(core, next);
+          taskAt(next).state = TaskState::Running;
+          obr::os::schedule(core);
         }
       }
     }

@@ -6,7 +6,8 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 坐上 ActiveGpuProvider。Clear / Plot / Present 都在这条线程里完成。
- * Present 把副本交给主板。一队不返回编号的命令在这里按顺序做完，只回答一次。
+ * Present 把副本交给主板。view 为真时优先交位图，否则交像素。
+ * 一队不返回编号的命令在这里按顺序做完，只回答一次。
  * 本文件不导入显示器，也不导入内存实现。
  *
  * ---------------------------------------------------------------------------
@@ -88,7 +89,7 @@ export namespace ZerOS {
         });
       }
 
-      function postOk(extra?: { readonly id?: number; readonly value?: number }): void {
+      function postOk(extra?: { readonly id?: number; readonly value?: number; readonly frameWidth?: number; readonly frameHeight?: number }): void {
         const message: Record<string, unknown> = {
           kind: "ok",
           hertz: provider.Hertz(),
@@ -99,6 +100,12 @@ export namespace ZerOS {
         }
         if (extra?.value !== undefined) {
           message["value"] = extra.value;
+        }
+        if (extra?.frameWidth !== undefined) {
+          message["frameWidth"] = extra.frameWidth;
+        }
+        if (extra?.frameHeight !== undefined) {
+          message["frameHeight"] = extra.frameHeight;
         }
         globalThis.postMessage(message);
       }
@@ -114,25 +121,41 @@ export namespace ZerOS {
         postOk();
       }
 
-      async function onPresent(): Promise<void> {
+      /** 像素副本或位图，连同节拍一起交回主板。位图和像素缓冲都只转交一次。 */
+      function postFrame(view: ImageBitmap | Uint32Array): void {
+        const frameWidth = provider.FrameWidth;
+        const frameHeight = provider.FrameHeight;
+        const hertz = provider.Hertz();
+        const executed = provider.Executed();
+        if (view instanceof ImageBitmap) {
+          globalThis.postMessage(
+            { kind: "frame", frameWidth, frameHeight, hertz, executed, bitmap: view },
+            { transfer: [view] },
+          );
+          return;
+        }
+        const buffer = view.buffer;
+        if (!(buffer instanceof ArrayBuffer)) {
+          postFault(`${seatPrefix} Present 副本无法交出`);
+          return;
+        }
+        globalThis.postMessage(
+          { kind: "frame", frameWidth, frameHeight, hertz, executed, pixels: view },
+          { transfer: [buffer] },
+        );
+      }
+
+      /**
+       * 页面主动要的 Present 仍是像素。
+       * 客程序带 view 时优先要位图。启动画面那一次由主板不带 view，好让页面认出六个点。
+       */
+      async function onPresent(record: Record<string, unknown>): Promise<void> {
         try {
-          const pixels = await provider.Present();
-          const buffer = pixels.buffer;
-          if (!(buffer instanceof ArrayBuffer)) {
-            postFault(`${seatPrefix} Present 副本无法交出`);
+          if (record["view"] === true) {
+            postFrame(await provider.PresentView());
             return;
           }
-          globalThis.postMessage(
-            {
-              kind: "frame",
-              frameWidth: provider.FrameWidth,
-              frameHeight: provider.FrameHeight,
-              hertz: provider.Hertz(),
-              executed: provider.Executed(),
-              pixels,
-            },
-            { transfer: [buffer] },
-          );
+          postFrame(await provider.Present());
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} Present 失败`;
           postFault(message);
@@ -351,7 +374,11 @@ export namespace ZerOS {
         }
         try {
           const id = await provider.Accel(op, a, b, c, d);
-          postOk({ id });
+          if (op === 39) {
+            postOk({ id, frameWidth: provider.FrameWidth, frameHeight: provider.FrameHeight });
+          } else {
+            postOk({ id });
+          }
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} 加速命令失败`;
           postFault(message);
@@ -368,6 +395,7 @@ export namespace ZerOS {
           postFault(`${seatPrefix} 显卡队列不完整`);
           return;
         }
+        let resized = false;
         try {
           for (const item of commands) {
             const command = asRecord(item);
@@ -456,6 +484,9 @@ export namespace ZerOS {
                 return;
               }
               await provider.Accel(op, a, b, c, d);
+              if (op === 39) {
+                resized = true;
+              }
             } else if (gpuOp === "store") {
               const address = readNumber(command, "address");
               const value = readNumber(command, "value");
@@ -469,7 +500,11 @@ export namespace ZerOS {
               return;
             }
           }
-          postOk();
+          if (resized) {
+            postOk({ frameWidth: provider.FrameWidth, frameHeight: provider.FrameHeight });
+          } else {
+            postOk();
+          }
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} 显卡队列失败`;
           postFault(message);
@@ -491,7 +526,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "present") {
-          void onPresent();
+          void onPresent(record);
           return;
         }
         if (kind === "clear") {

@@ -35,6 +35,17 @@ deRfun obr::proc::close(long home, long fd): long {
   return obr::os::svc(6L);
 }
 
+deRfun obr::proc::dup(long home, long fd): long {
+  memory::store64(fd, home + 128L);
+  return obr::os::svc(24L);
+}
+
+deRfun obr::proc::dup2(long home, long from, long to): long {
+  memory::store64(from, home + 128L);
+  memory::store64(to, home + 192L);
+  return obr::os::svc(25L);
+}
+
 deRfun obr::proc::stat(long home): long {
   return obr::os::svc(4L);
 }

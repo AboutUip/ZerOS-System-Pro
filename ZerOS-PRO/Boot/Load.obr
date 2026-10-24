@@ -19,7 +19,7 @@ deRfun main(): int {
     halt();
     return 0;
   }
-  if (kind != 1L || size < 1L || size > 327680L) {
+  if (kind != 1L || size < 1L || size > 393216L) {
     *done = 1L;
     halt();
     return 0;

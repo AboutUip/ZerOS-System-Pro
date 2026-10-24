@@ -57,6 +57,7 @@ export namespace ZerOS {
         Round: 36,
         Ellipse: 37,
         Frame: 38,
+        Resize: 39,
       } as const;
     }
   }

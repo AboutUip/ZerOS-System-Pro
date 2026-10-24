@@ -5,6 +5,11 @@ deRfun vfsForget(long core): void;
 deRfun vfsForgetTask(long taskIndex): void;
 deRfun vfsCall(long caller, long service): long;
 deRfun vfsPrepare(long caller, long path): long;
+/* 子任务得到调用者已经打开的描述符。关掉一边，另一边还在。 */
+deRfun vfsHand(long fromTask, long toTask): void;
+/* 路径是内存文件时，把正文抄到 dest，*size 是八位组数，回复 0。
+   不是内存文件回复 1，调用方再向 NAS 要。其它回复是走路径时的错误。 */
+deRfun vfsPlant(long caller, long path, long dest, long* size): long;
 deRfun scratch(): long;
 deRfun devPublish(long core, long pid, long name, long nameLen): long;
 deRfun devDrop(long pid): void;

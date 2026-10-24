@@ -1,0 +1,23 @@
+/* 鼠标驱动。读扩展口 3 上的 ZPP1。口编号是官方标定，不是协议强制。 */
+namespace pointer {
+/* 已完成次数。还没有事件时是 0。 */
+deRfun count(): long;
+/* 上一次种类。0 移动，1 按下，2 松开，3 滚轮。 */
+deRfun kind(): long;
+/* 上一次键。0 无，1 左，2 右，3 中，4 后退，5 前进。 */
+deRfun button(): long;
+/* 上一次横坐标，向右增大。 */
+deRfun x(): long;
+/* 上一次纵坐标，向下增大。 */
+deRfun y(): long;
+/* 上一次修饰位。位 0 Shift，1 Ctrl，2 Alt，3 Meta。 */
+deRfun modifiers(): long;
+/* 上一次滚轮。低 16 位是垂直补码，接着 16 位是水平补码。 */
+deRfun wheel(): long;
+/* 当前还按着的键。位 0 左，1 右，2 中，3 后退，4 前进。 */
+deRfun held(): long;
+/* 还没移出的事件个数。 */
+deRfun depth(): long;
+/* 移出最旧的一次，返回剩下的个数。队列空时返回 0。 */
+deRfun pop(): long;
+}

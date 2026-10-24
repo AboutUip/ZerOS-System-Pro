@@ -6,4 +6,9 @@ declare module "zeros-boot-firmware" {
   export const biosProgram: readonly number[];
   export const logoProgram: readonly number[];
   export const loadProgram: readonly number[];
+  /** 指令编号的连续段：起点、终点开区间、文件名、行号、函数名。 */
+  export type FirmwareSite = readonly [number, number, string, number, string];
+  export const biosProgramSites: readonly FirmwareSite[];
+  export const logoProgramSites: readonly FirmwareSite[];
+  export const loadProgramSites: readonly FirmwareSite[];
 }

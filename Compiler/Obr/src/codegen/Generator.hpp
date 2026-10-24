@@ -3,6 +3,7 @@
 #include "Layout.hpp"
 #include "../Ast.hpp"
 #include "../Diagnostic.hpp"
+#include "../image/Debug.hpp"
 
 #include <map>
 #include <sstream>
@@ -14,10 +15,12 @@ namespace obr {
 
 class Generator {
  public:
-  std::string run(Unit& unit);
+  Generated run(Unit& unit);
 
  private:
   std::ostringstream out_;
+  DebugSite site_;
+  std::vector<DebugSite> sites_;
   int labels_ = 0;
   int words_ = 0;
   int temp_ = 0;
@@ -71,7 +74,7 @@ class Generator {
   int structWords(const std::string& name) const;
   void emitStore(TypeKind type);
   void emitLoad(TypeKind type);
-  void emitZap(const std::string& body);
+  void emitZap(const std::string& body, int startLine);
   void storeSlot(int slot, TypeKind type);
   void loadSlot(int slot, TypeKind type);
   int spill();
@@ -115,6 +118,34 @@ class Generator {
   bool endsWithReturn(const std::vector<Stmt>& body);
   void emitReturn();
   void emitStmt(const Stmt& stmt, TypeKind ret);
+
+  /** 暂时把后面的指令记到这一行。行号不大于 0 时保持原行。 */
+  class LineGuard {
+   public:
+    LineGuard(Generator& owner, int line) : owner_(owner), saved_(owner.site_.line) {
+      if (line > 0) owner_.site_.line = line;
+    }
+    ~LineGuard() { owner_.site_.line = saved_; }
+    LineGuard(const LineGuard&) = delete;
+    LineGuard& operator=(const LineGuard&) = delete;
+
+   private:
+    Generator& owner_;
+    int saved_;
+  };
+
+  /** 暂时换成另一处源位置。展开进调用处的函数体用被调用的函数，而不是调用方。 */
+  class SiteGuard {
+   public:
+    SiteGuard(Generator& owner, DebugSite next) : owner_(owner), saved_(owner.site_) { owner.site_ = std::move(next); }
+    ~SiteGuard() { owner_.site_ = saved_; }
+    SiteGuard(const SiteGuard&) = delete;
+    SiteGuard& operator=(const SiteGuard&) = delete;
+
+   private:
+    Generator& owner_;
+    DebugSite saved_;
+  };
 };
 
 }  // namespace obr

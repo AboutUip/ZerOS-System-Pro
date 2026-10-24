@@ -2,8 +2,8 @@
    窗口里的字：
    +0 分配的位数、释放的块地址、装入或卸下的核心号。
    +64 释放时的位数。
-   +128 打开标志、描述符、目录下标、权限、属主、等待的 pid、spawn 的核心、信号的目标、管道的读端、驱动方向。
-   +192 打开得到的描述符、读写偏移、目录容量、属组、退出码、spawn 得到的 pid、信号号、管道的写端、接入得到的入口。
+   +128 打开标志、描述符、目录下标、权限、属主、等待的 pid、spawn 的核心、信号的目标、管道的读端、驱动方向、dup 与 dup2 的旧描述符。
+   +192 打开得到的描述符、读写偏移、目录容量、属组、退出码、spawn 得到的 pid、信号号、管道的写端、接入得到的入口、dup 的新描述符、dup2 要占用的描述符。
    +256 读写个数、目录读回的名字长度。
    +320 实际读写的个数。
    +512 路径，排法见 obr.text。
@@ -23,6 +23,10 @@ deRfun read(long home, long fd, long offset, long count): long;
 deRfun write(long home, long fd, long offset, long count): long;
 /* 服务 6。 */
 deRfun close(long home, long fd): long;
+/* 服务 24。成功时新描述符在 +192，是该任务最小的空位。没有空位是 7。旧描述符不存在是 -1。 */
+deRfun dup(long home, long fd): long;
+/* 服务 25。to 不在 0 到 7，或旧描述符不存在，是 -1。两个号码相同则回复 0，不关闭。 */
+deRfun dup2(long home, long from, long to): long;
 /* 服务 4。路径在 +512。种类在 +128，大小在 +192，权限在 +256，属主在 +320，属组在 +384。 */
 deRfun stat(long home): long;
 /* 服务 9。路径在 +512。名字八位组写到 +4096，个数在 +256。 */

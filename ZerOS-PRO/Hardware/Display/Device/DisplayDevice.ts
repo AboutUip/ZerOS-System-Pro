@@ -9,6 +9,7 @@
  * 节拍按绝对时间轴：第 n 拍到期于起点 + n × 1000 / Hertz。错过的拍丢掉。
  * 帧缓冲没有新内容时，这一拍只推进时间轴，不再把同一幅拆进画布。
  * 启动画面的六个点例外：它们按墙上的毫秒换色，不看固件循环快慢，也不看读盘。
+ * 启动画面之后的画面是显卡交来的位图，直接贴上画布，不再把帧缓冲拆进画布。
  * 不创建 Worker。内存和主板在各自的线程里，不会堵住这里的计时。
  *
  * ---------------------------------------------------------------------------
@@ -85,6 +86,12 @@ export namespace ZerOS {
 
         /** 启动画面还在。新的一帧不再是这幅 logo 时清掉。 */
         private splash: SplashDots | null = null;
+
+        /**
+         * 启动画面已经结束。
+         * 之后不再整幅扫描帧缓冲去认 logo。位图贴上画布时也置上，免得节拍再用旧帧盖住画面。
+         */
+        private splashDone = false;
 
         /** 当前宽度。 */
         public get Width(): number {
@@ -170,6 +177,31 @@ export namespace ZerOS {
           this.paint();
         }
 
+        /**
+         * 把显卡交来的位图贴上面板。
+         * 尺寸必须已经和面板一致。贴上之后这一幅算画过，节拍不再用帧缓冲盖住它。
+         * 启动画面如果还在换色，到这里停止：这一张已经是下一幅画面。
+         */
+        public ShowBitmap(bitmap: ImageBitmap): void {
+          const context = this.context;
+          if (context === null) {
+            bitmap.close();
+            throw new Error(`${displayPrefix} 面板还没有接上`);
+          }
+          if (bitmap.width !== this.width || bitmap.height !== this.height) {
+            bitmap.close();
+            throw new Error(`${displayPrefix} 位图尺寸和面板不一致`);
+          }
+          try {
+            context.drawImage(bitmap, 0, 0);
+          } finally {
+            bitmap.close();
+          }
+          this.splash = null;
+          this.splashDone = true;
+          this.shown = true;
+        }
+
         /** 让画布栅格等于当前分辨率。改属性会清掉旧位图，随后由 Redraw 重画。 */
         private applyCanvasSize(): void {
           const canvas = this.canvas;
@@ -185,11 +217,15 @@ export namespace ZerOS {
          * 仍是同一幅 logo 就继续换色。换成别的画面，包括全黑，换色停止。
          */
         private observeSplash(): void {
+          if (this.splashDone) {
+            return;
+          }
           const current = this.splash;
           const source = this.framebuffer;
           if (current !== null) {
             if (!sameSplash(current, source)) {
               this.splash = null;
+              this.splashDone = true;
             }
             return;
           }

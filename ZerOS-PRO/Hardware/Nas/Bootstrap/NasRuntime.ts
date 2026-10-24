@@ -37,6 +37,7 @@ export namespace ZerOS {
       const ServiceUrl = ConfigRoot.Hardware.Nas.NasConfig.ServiceUrl;
       const ServiceTimeoutMs = ConfigRoot.Hardware.Nas.NasConfig.ServiceTimeoutMs;
       const ModeRead = ConfigRoot.Hardware.Nas.NasConfig.ModeRead;
+      const ModeWrite = ConfigRoot.Hardware.Nas.NasConfig.ModeWrite;
       const ModeAppend = ConfigRoot.Hardware.Nas.NasConfig.ModeAppend;
       const NasKindFile = KindRoot.Hardware.Nas.NasKindFile;
       const NasKindDirectory = KindRoot.Hardware.Nas.NasKindDirectory;
@@ -58,6 +59,7 @@ export namespace ZerOS {
       const NasStatusIo = StatusRoot.Hardware.Nas.NasStatusIo;
       const NasStatusBusy = StatusRoot.Hardware.Nas.NasStatusBusy;
       const NasStatusNoSession = StatusRoot.Hardware.Nas.NasStatusNoSession;
+      const NasStatusExists = StatusRoot.Hardware.Nas.NasStatusExists;
       const NasStatusBadArgument = StatusRoot.Hardware.Nas.NasStatusBadArgument;
       const NasVerbStat = VerbRoot.Hardware.Nas.NasVerbStat;
       const NasVerbOpen = VerbRoot.Hardware.Nas.NasVerbOpen;
@@ -672,6 +674,52 @@ export namespace ZerOS {
             settleWaiter(waiter, null, new Error(`${runtimePrefix} 服务没有应答`));
           }
         });
+      }
+
+      /**
+       * 把面板宽高写到客路径 `/boot/display`。
+       * 四个八位组，小端：宽的低 8 位、宽的高 8 位、高的低 8 位、高的高 8 位。
+       * 这次询问不进入客机会话，装入程序正在读盘时也不会把会话冲掉。
+       * 服务没起来、或这一笔失败时直接返回，不抛出。
+       */
+      export async function saveDisplaySize(width: number, height: number): Promise<void> {
+        if (!Number.isInteger(width) || width < 1 || width > 16384 || !Number.isInteger(height) || height < 1 || height > 16384) {
+          return;
+        }
+        const octets = [width & 255, (width >> 8) & 255, height & 255, (height >> 8) & 255];
+        let handle = 0;
+        try {
+          const made = await postNas({ ...emptyRequest(), op: "mkdir", path: "/boot" });
+          if (made.status !== NasStatusOk && made.status !== NasStatusExists) {
+            return;
+          }
+          const opened = await postNas({ ...emptyRequest(), op: "open", path: "/boot/display", mode: ModeWrite });
+          if (opened.status !== NasStatusOk || !Number.isInteger(opened.handle) || opened.handle < 1) {
+            return;
+          }
+          handle = opened.handle;
+          const written = await postNas({
+            ...emptyRequest(),
+            op: "write",
+            handle,
+            offset: 0,
+            length: octets.length,
+            data: encodeBase64(octets),
+          });
+          if (written.status !== NasStatusOk || written.length !== octets.length) {
+            return;
+          }
+        } catch {
+          /* 服务没起来时设置留在这一次运行里，下次再写。 */
+        } finally {
+          if (handle >= 1) {
+            try {
+              await postNas({ ...emptyRequest(), op: "close", handle });
+            } catch {
+              /* 连接已经断了，句柄随服务进程收掉。 */
+            }
+          }
+        }
       }
 
       /**

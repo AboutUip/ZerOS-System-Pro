@@ -41,6 +41,8 @@ struct Stmt {
   Expr expr;
   std::vector<Stmt> body;
   std::vector<Stmt> other;
+  /** 语句开头的行。`__zap__` 记第一行正文。0 表示没有。 */
+  int line = 0;
 };
 
 struct Param {
@@ -112,6 +114,8 @@ struct Function {
   std::vector<Param> params;
   std::vector<Stmt> body;
   int words = 0;
+  /** `deRfun` 所在的行。0 表示没有。 */
+  int line = 0;
 };
 
 struct LinkName {

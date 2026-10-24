@@ -1,0 +1,43 @@
+/* 鼠标驱动。固件和客程序用这些函数读最近一次事件，不自己拼六个字。 */
+import pointer;
+import board;
+
+deRfun pointer::count(): long {
+  return xchg(3L, 1L, 0L);
+}
+
+deRfun pointer::kind(): long {
+  return xchg(3L, 1L, 1L);
+}
+
+deRfun pointer::button(): long {
+  return xchg(3L, 1L, 2L);
+}
+
+deRfun pointer::x(): long {
+  return xchg(3L, 1L, 3L);
+}
+
+deRfun pointer::y(): long {
+  return xchg(3L, 1L, 4L);
+}
+
+deRfun pointer::modifiers(): long {
+  return xchg(3L, 1L, 5L);
+}
+
+deRfun pointer::wheel(): long {
+  return xchg(3L, 1L, 6L);
+}
+
+deRfun pointer::held(): long {
+  return xchg(3L, 1L, 7L);
+}
+
+deRfun pointer::depth(): long {
+  return xchg(3L, 1L, 8L);
+}
+
+deRfun pointer::pop(): long {
+  return xchg(3L, 1L, 9L);
+}

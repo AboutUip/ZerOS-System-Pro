@@ -73,9 +73,10 @@ export namespace ZerOS {
     /**
      * 装入程序把入口映像读进位元线时使用的长度，单位是八位组。
      * 这一段由核心 3 上的 Load.obr 执行，不在本文件里读盘。
-     * 327680 正好停在核心 4 的数据槽之前。再长就会写进那颗核心的窗口。
+     * 393216 跨进核心 4 窗口的前缀，停在那颗核心的编译器栈之前。
+     * 装入时核心 4 还没有程序。栈、静态区和堆都不在这一段里。
      */
-    const ImageStageOctets = 327680;
+    const ImageStageOctets = 393216;
 
     /** 核心 2 相对编译器地址的位移。 */
     const AddressSlot = ResidentCore * SlotBits;

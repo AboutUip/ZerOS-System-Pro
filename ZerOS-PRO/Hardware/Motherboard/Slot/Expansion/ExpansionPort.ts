@@ -22,6 +22,7 @@
 
 import type { ZerOS as ExpansionProviderRoot } from "./ExpansionProvider";
 import { ZerOS as ConfigRoot } from "../../Config/ExpansionConfig";
+import { ZerOS as MetricPageRoot } from "../../Host/MetricPage";
 import { ZerOS as ProviderMetaRoot } from "../Structure/ProviderMeta";
 
 export namespace ZerOS {
@@ -165,6 +166,7 @@ export namespace ZerOS {
           }
           seated.provider.Load();
           seated.state = PortStateLoaded;
+          MetricPageRoot.Hardware.Motherboard.writeMetric(5, 0, index, BigInt(seated.state));
         }
 
         /** 调用已加载设备的 Boot。成功后状态变为 2。 */
@@ -176,6 +178,7 @@ export namespace ZerOS {
           }
           seated.provider.Boot();
           seated.state = PortStateBooted;
+          MetricPageRoot.Hardware.Motherboard.writeMetric(5, 0, index, BigInt(seated.state));
         }
 
         /**

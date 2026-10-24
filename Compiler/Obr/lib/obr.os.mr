@@ -19,6 +19,8 @@ deRfun gate(): void;
 deRfun release(long core): void;
 /* 停在下一条，寄存器保留。 */
 deRfun yield(): void;
+/* 按毫秒等待。0 马上继续，最大 1000。等待时核心仍在执行。 */
+deRfun dwell(long milliseconds): void;
 /* 正在执行的核心编号。 */
 deRfun core(): long;
 /* 把一段程序映像装到另一颗已停止的核心。 */

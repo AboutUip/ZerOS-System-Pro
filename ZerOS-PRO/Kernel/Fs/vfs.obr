@@ -1,5 +1,8 @@
 /* 文件层。目录项和索引节点在监督核的窗口里。NAS 只负责字节，属主和权限位在这里。
-   种类 1 是文件，2 是 NAS 上的目录，3 是字符设备，4 是只活在这张表里的目录。/dev 是种类 4。 */
+   种类 1 是 NAS 上的文件，2 是 NAS 上的目录，3 是字符设备，4 是只活在这张表里的目录。/dev 是种类 4。
+   种类 5 是内存文件，6 是内存目录。根在 NAS 没就绪，或 /boot/root 正好是 mem 时，用种类 6。
+   描述符可以复制。几个描述符共用同一个打开对象时，关掉一个不关掉其余的。
+   派生会把调用者已经打开的描述符交给子任务，两边各算一份。 */
 #LINK /start.obr, /exec.obr, /task.obr
 import proc;
 import sched;
@@ -149,10 +152,134 @@ deRfun modeDev(): long {
 }
 
 deRfun isDir(long kind): long {
-  if (kind == 2L || kind == 4L) {
+  if (kind == 2L || kind == 4L || kind == 6L) {
     return 1L;
   }
   return 0L;
+}
+
+/* 内存文件的槽号表紧挨在设备环后面。32 个字，-1 表示这个索引节点没有正文。
+   正文从这张表之后开始，三份，每份 32768 个八位组。末尾仍停在编译器栈之前。 */
+deRfun memSlotAt(long ino): long {
+  return vfsEnd() + ino * 64L;
+}
+
+deRfun memBody(long slot): long {
+  return vfsEnd() + 32L * 64L + slot * 32768L * 8L;
+}
+
+deRfun memCap(): long {
+  return 32768L;
+}
+
+deRfun memSlots(): long {
+  return 3L;
+}
+
+/* 放下这一份正文。索引节点还在不在，由调用方决定。 */
+deRfun memDrop(long ino): void {
+  if (ino < 0L || ino >= 32L) {
+    return;
+  }
+  memory::store64(-1L, memSlotAt(ino));
+}
+
+/* 三份里还没被任何索引节点指着的那一格。没有就回复 -1。 */
+deRfun memTake(): long {
+  long slot = 0L;
+  while (slot < memSlots()) {
+    long ino = 0L;
+    long held = 0L;
+    while (ino < 32L) {
+      if (memory::load64(memSlotAt(ino)) == slot) {
+        held = 1L;
+      }
+      ino = ino + 1L;
+    }
+    if (held == 0L) {
+      return slot;
+    }
+    slot = slot + 1L;
+  }
+  return -1L;
+}
+
+/* 在内存文件和调用窗口之间搬八位组。偏移和个数仍由调用者放在 +192、+256。 */
+deRfun memMove(File* file, long home, long writing): long {
+  long slot = memory::load64(memSlotAt(file.ino));
+  if (slot < 0L || slot >= memSlots()) {
+    return 5L;
+  }
+  long offset = memory::load64(home + 192L);
+  long count = memory::load64(home + 256L);
+  if (offset < 0L || count < 0L) {
+    return 13L;
+  }
+  Inode* node = inodeAt(file.ino);
+  long cap = memCap();
+  long got = 0L;
+  long stop = 0L;
+  while (got < count && stop == 0L) {
+    long at = offset + got;
+    if (at < 0L || at >= cap) {
+      stop = 1L;
+    } else if (writing == 0L && at >= node.size) {
+      stop = 1L;
+    } else if (writing == 0L) {
+      long value = memory::loadOctet(memBody(slot) + at * 8L);
+      memory::storeOctet(value, home + 4096L + got * 8L);
+      got = got + 1L;
+    } else {
+      long value = memory::loadOctet(home + 4096L + got * 8L);
+      memory::storeOctet(value, memBody(slot) + at * 8L);
+      got = got + 1L;
+    }
+  }
+  if (writing == 1L && offset + got > node.size) {
+    if (offset + got <= cap) {
+      node.size = offset + got;
+    } else if (offset < cap) {
+      node.size = cap;
+    }
+  }
+  file.offset = offset + got;
+  memory::store64(got, home + 320L);
+  return 0L;
+}
+
+/* /boot/root 正好三个八位组 mem，或 NAS 还没就绪，根就用内存目录。
+   文件不在、读不到、内容不是 mem，根仍是 NAS 上的目录。 */
+deRfun memoryRoot(): long {
+  if (obr::nas::ready() != 1L) {
+    return 1L;
+  }
+  long kind = 0L;
+  long bytes = 0L;
+  long status = obr::nas::stat("/boot/root", &kind, &bytes);
+  if (status != 0L || kind != 1L || bytes != 3L) {
+    return 0L;
+  }
+  long handle = 0L;
+  status = obr::nas::open("/boot/root", 0L, &handle);
+  if (status != 0L) {
+    return 0L;
+  }
+  long got = 0L;
+  status = obr::nas::read(handle, 0L, scratch() + 64L, 3L, &got);
+  obr::nas::close(handle);
+  if (status != 0L || got != 3L) {
+    return 0L;
+  }
+  if (memory::loadOctet(scratch() + 64L) != 109L) {
+    return 0L;
+  }
+  if (memory::loadOctet(scratch() + 72L) != 101L) {
+    return 0L;
+  }
+  if (memory::loadOctet(scratch() + 80L) != 109L) {
+    return 0L;
+  }
+  return 1L;
 }
 
 deRfun vfsInit(): void {
@@ -167,6 +294,7 @@ deRfun vfsInit(): void {
     node.size = 0L;
     node.parent = 0L;
     node.nlink = 0L;
+    memory::store64(-1L, memSlotAt(index));
     Dentry* dent = dentryAt(index);
     dent.used = 0L;
     dent.parent = -1L;
@@ -203,6 +331,9 @@ deRfun vfsInit(): void {
   root.uid = 0L;
   root.gid = 0L;
   root.nlink = 1L;
+  if (memoryRoot() == 1L) {
+    root.kind = 6L;
+  }
   Dentry* top = dentryAt(0L);
   top.used = 1L;
   top.parent = -1L;
@@ -448,7 +579,8 @@ deRfun resolve(long parent, long path, long from, long count, long* out): long {
     *out = child;
     return 0L;
   }
-  if (inodeAt(dentryAt(parent).ino).kind == 4L) {
+  long parentKind = inodeAt(dentryAt(parent).ino).kind;
+  if (parentKind == 4L || parentKind == 6L) {
     return 2L;
   }
   return attachChild(parent, path, from, count, out);
@@ -548,16 +680,16 @@ deRfun vfsForgetTask(long taskIndex): void {
   }
   long fd = 0L;
   while (fd < 8L) {
-    File* file = fileAt(slotOf(taskIndex, fd));
-    if (file.used == 1L && file.ino < 0L) {
-      pipeShut(file.handle, file.flags);
-    } else if (file.used == 1L && file.ino >= 0L && inodeAt(file.ino).kind == 3L) {
+    long slot = slotOf(taskIndex, fd);
+    /* 占用的格和 close 走同一条释放，复制过的句柄只在最后一格真正关闭。
+       空格仍把句柄写成 0，丢掉任务时和以前一样。 */
+    if (fileAt(slot).used == 1L) {
+      releaseFd(taskIndex, fd);
+    } else {
+      File* file = fileAt(slot);
+      file.used = 0L;
       file.handle = 0L;
-    } else if (file.used == 1L && file.handle != 0L) {
-      obr::nas::close(file.handle);
     }
-    file.used = 0L;
-    file.handle = 0L;
     fd = fd + 1L;
   }
 }
@@ -582,6 +714,9 @@ deRfun dropDent(long dent): void {
     fd = fd + 1L;
   }
   inodeAt(ino).used = 0L;
+  if (inodeAt(ino).kind == 5L) {
+    memDrop(ino);
+  }
 }
 
 deRfun wantOf(long flags): long {
@@ -625,6 +760,17 @@ deRfun pipeShut(long index, long flags): void {
     pipe.count = 0L;
     pipe.readWait = -1L;
     pipe.writeWait = -1L;
+  }
+}
+
+/* 又有一个描述符握住这条管道端。关闭只减一份，最后一份才把端拆掉。 */
+deRfun pipeHold(long index, long flags): void {
+  Pipe* pipe = pipeAt(index);
+  if (flags == 0L) {
+    pipe.readers = pipe.readers + 1L;
+  }
+  if (flags != 0L) {
+    pipe.writers = pipe.writers + 1L;
   }
 }
 
@@ -787,13 +933,58 @@ deRfun vfsPrepare(long caller, long path): long {
     return status;
   }
   long ino = dentryAt(dent).ino;
-  if (inodeAt(ino).kind != 1L) {
+  if (inodeAt(ino).kind != 1L && inodeAt(ino).kind != 5L) {
     return 4L;
   }
   if (may(taskIndex, ino, 1L) == 0L) {
     return -1L;
   }
   return pathOf(dent);
+}
+
+/* 子任务的描述符表一开始是空的。这里按号抄过去，管道和 NAS 句柄各多记一份。 */
+deRfun vfsHand(long fromTask, long toTask): void {
+  if (fromTask < 0L || toTask < 0L || fromTask == toTask) {
+    return;
+  }
+  long fd = 0L;
+  while (fd < 8L) {
+    long fromSlot = slotOf(fromTask, fd);
+    if (fileAt(fromSlot).used == 1L) {
+      shareFd(fromSlot, slotOf(toTask, fd));
+    }
+    fd = fd + 1L;
+  }
+}
+
+/* 只抄种类 5。正文按八位组放到 dest，相邻隔 8 位，和 NAS 读进暂存的排法一样。 */
+deRfun vfsPlant(long caller, long path, long dest, long* size): long {
+  long taskIndex = taskFind(caller);
+  long dent = 0L;
+  long status = walk(taskIndex, path, &dent);
+  if (status != 0L) {
+    return status;
+  }
+  long ino = dentryAt(dent).ino;
+  Inode* node = inodeAt(ino);
+  if (node.kind != 5L) {
+    return 1L;
+  }
+  if (node.size < 1L || node.size > memCap()) {
+    return 4L;
+  }
+  long slot = memory::load64(memSlotAt(ino));
+  if (slot < 0L || slot >= memSlots()) {
+    return 5L;
+  }
+  long index = 0L;
+  while (index < node.size) {
+    long value = memory::loadOctet(memBody(slot) + index * 8L);
+    memory::storeOctet(value, dest + index * 8L);
+    index = index + 1L;
+  }
+  *size = node.size;
+  return 0L;
 }
 
 deRfun doStat(long caller, long home): long {
@@ -832,6 +1023,31 @@ deRfun doOpen(long caller, long home): long {
     }
     if (may(taskIndex, dentryAt(parent).ino, 3L) == 0L) {
       return -1L;
+    }
+    if (inodeAt(dentryAt(parent).ino).kind == 6L) {
+      long slot = memTake();
+      if (slot < 0L) {
+        return 7L;
+      }
+      Task* made = taskAt(taskIndex);
+      dent = takeChild(parent, home + 512L, from, count, 5L, 0L, made.cred.euid, made.cred.egid, modeFile());
+      if (dent < 0L) {
+        return 7L;
+      }
+      memory::store64(slot, memSlotAt(dentryAt(dent).ino));
+      long fresh = allocFd(taskIndex);
+      if (fresh < 0L) {
+        dropDent(dent);
+        return 7L;
+      }
+      File* madeFile = fileAt(slotOf(taskIndex, fresh));
+      madeFile.used = 1L;
+      madeFile.ino = dentryAt(dent).ino;
+      madeFile.offset = 0L;
+      madeFile.flags = flags;
+      madeFile.handle = slot;
+      memory::store64(fresh, home + 192L);
+      return 0L;
     }
     long built = pathOf(parent);
     if (built != 0L) {
@@ -904,6 +1120,24 @@ deRfun doOpen(long caller, long home): long {
   if (may(taskIndex, dentryAt(dent).ino, wantOf(flags)) == 0L) {
     return -1L;
   }
+  if (node.kind == 5L) {
+    if (flags == 1L) {
+      node.size = 0L;
+    }
+    long fd = allocFd(taskIndex);
+    if (fd < 0L) {
+      return 7L;
+    }
+    long body = memory::load64(memSlotAt(dentryAt(dent).ino));
+    File* kept = fileAt(slotOf(taskIndex, fd));
+    kept.used = 1L;
+    kept.ino = dentryAt(dent).ino;
+    kept.offset = 0L;
+    kept.flags = flags;
+    kept.handle = body;
+    memory::store64(fd, home + 192L);
+    return 0L;
+  }
   long built = pathOf(dent);
   if (built != 0L) {
     return built;
@@ -931,33 +1165,58 @@ deRfun doOpen(long caller, long home): long {
   return 0L;
 }
 
-deRfun doClose(long caller, long home): long {
-  long taskIndex = taskFind(caller);
-  long fd = memory::load64(home + 128L);
+/* 这个 NAS 句柄是否还被别的普通文件描述符握着。skip 是正要关掉的那一格，它还标着占用，不能把自己算进去。
+   设备槽号和句柄都是小整数，数值碰巧相同也不算同一份打开。管道的索引节点号是负的，进不了这里。 */
+deRfun nasHeld(long handle, long skip): long {
+  long index = 0L;
+  while (index < 64L) {
+    if (index != skip) {
+      File* other = fileAt(index);
+      if (other.used == 1L && other.ino >= 0L && other.handle == handle) {
+        long otherKind = inodeAt(other.ino).kind;
+        if (otherKind != 3L && otherKind != 5L) {
+          return 1L;
+        }
+      }
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 关掉任务里的一个描述符。管道按端上的计数减一。设备只放下这一格，设备本身还在。
+   普通文件要等没有别的描述符还握着同一个 NAS 句柄，才向 NAS 关闭。先关再清这一格，单独打开时和原来的 close 一样。
+   号码不在 0 到 7，或这一格是空的，回复 5。 */
+deRfun releaseFd(long taskIndex, long fd): long {
   long slot = slotOf(taskIndex, fd);
   if (slot < 0L) {
     return 5L;
   }
-  File* file = fileAt(slot);
-  if (file.used == 0L) {
+  if (fileAt(slot).used == 0L) {
     return 5L;
   }
-  if (file.ino < 0L) {
-    pipeShut(file.handle, file.flags);
+  long ino = fileAt(slot).ino;
+  long flags = fileAt(slot).flags;
+  long handle = fileAt(slot).handle;
+  if (ino < 0L) {
+    pipeShut(handle, flags);
+    File* file = fileAt(slot);
     file.used = 0L;
     file.handle = 0L;
     return 0L;
   }
-  if (inodeAt(file.ino).kind == 3L) {
+  if (inodeAt(ino).kind == 3L) {
+    File* file = fileAt(slot);
     file.used = 0L;
     file.handle = 0L;
     return 0L;
   }
   long status = 0L;
-  if (file.handle != 0L) {
-    status = obr::nas::close(file.handle);
+  long kind = inodeAt(ino).kind;
+  if (kind != 5L && handle != 0L && nasHeld(handle, slot) == 0L) {
+    status = obr::nas::close(handle);
   }
-  long ino = file.ino;
+  File* file = fileAt(slot);
   file.used = 0L;
   file.handle = 0L;
   long still = 0L;
@@ -978,10 +1237,87 @@ deRfun doClose(long caller, long home): long {
       dent = dent + 1L;
     }
     if (live == 0L) {
+      if (kind == 5L) {
+        memDrop(ino);
+      }
       inodeAt(ino).used = 0L;
     }
   }
   return status;
+}
+
+deRfun doClose(long caller, long home): long {
+  return releaseFd(taskFind(caller), memory::load64(home + 128L));
+}
+
+/* 新格记下同一份打开对象，不向 NAS 再要句柄。文件共用句柄，管道多记一份读者或写者，设备仍指着原来的槽。
+   同一格再记一份会把管道计数加错，直接留下。 */
+deRfun shareFd(long fromSlot, long toSlot): void {
+  if (fromSlot == toSlot) {
+    return;
+  }
+  File* from = fileAt(fromSlot);
+  long ino = from.ino;
+  long offset = from.offset;
+  long flags = from.flags;
+  long handle = from.handle;
+  File* into = fileAt(toSlot);
+  into.used = 1L;
+  into.ino = ino;
+  into.offset = offset;
+  into.flags = flags;
+  into.handle = handle;
+  if (ino < 0L) {
+    pipeHold(handle, flags);
+  }
+}
+
+/* 24。新描述符是该任务最小的空位。没有空位回复 7，和打开、管道用尽同一号。旧的不存在回复 -1。 */
+deRfun doDup(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  long fd = memory::load64(home + 128L);
+  long slot = slotOf(taskIndex, fd);
+  if (slot < 0L) {
+    return -1L;
+  }
+  if (fileAt(slot).used == 0L) {
+    return -1L;
+  }
+  long fresh = allocFd(taskIndex);
+  if (fresh < 0L) {
+    return 7L;
+  }
+  shareFd(slot, slotOf(taskIndex, fresh));
+  memory::store64(fresh, home + 192L);
+  return 0L;
+}
+
+/* 25。目标不在 0 到 7 回复 -1。两个号码相同则什么也不做，这一格开没开都不关。
+   旧的不存在也回复 -1，并且不去关目标，避免把还要用的描述符拆掉。
+   目标已经打开就先按 close 释放。释放得到非 0 时把这个状态交回去，目标不再占用。 */
+deRfun doDup2(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  long from = memory::load64(home + 128L);
+  long to = memory::load64(home + 192L);
+  if (to < 0L || to > 7L) {
+    return -1L;
+  }
+  if (from == to) {
+    return 0L;
+  }
+  long fromSlot = slotOf(taskIndex, from);
+  if (fromSlot < 0L || fileAt(fromSlot).used == 0L) {
+    return -1L;
+  }
+  long toSlot = slotOf(taskIndex, to);
+  if (fileAt(toSlot).used == 1L) {
+    long closed = releaseFd(taskIndex, to);
+    if (closed != 0L) {
+      return closed;
+    }
+  }
+  shareFd(fromSlot, toSlot);
+  return 0L;
 }
 
 deRfun doRead(long caller, long home, long writing): long {
@@ -1036,6 +1372,9 @@ deRfun doRead(long caller, long home, long writing): long {
   if (writing == 1L && file.flags == 0L) {
     return -1L;
   }
+  if (inodeAt(file.ino).kind == 5L) {
+    return memMove(file, home, writing);
+  }
   long offset = memory::load64(home + 192L);
   long count = memory::load64(home + 256L);
   if (count > 65535L && writing == 1L) {
@@ -1076,7 +1415,7 @@ deRfun doReaddir(long caller, long home): long {
   if (may(taskIndex, dentryAt(dent).ino, 5L) == 0L) {
     return -1L;
   }
-  if (node.kind == 4L) {
+  if (node.kind == 4L || node.kind == 6L) {
     return devList(dent, home);
   }
   status = pathOf(dent);
@@ -1103,6 +1442,20 @@ deRfun doMkdir(long caller, long home): long {
   }
   if (count == 0L) {
     return 11L;
+  }
+  if (inodeAt(dentryAt(parent).ino).kind == 6L) {
+    if (findChild(parent, home + 512L, from, count) >= 0L) {
+      return 11L;
+    }
+    if (may(taskIndex, dentryAt(parent).ino, 3L) == 0L) {
+      return -1L;
+    }
+    Task* task = taskAt(taskIndex);
+    long dent = takeChild(parent, home + 512L, from, count, 6L, 0L, task.cred.euid, task.cred.egid, modeDir());
+    if (dent < 0L) {
+      return 7L;
+    }
+    return 0L;
   }
   if (inodeAt(dentryAt(parent).ino).kind == 4L) {
     return 13L;
@@ -1155,6 +1508,21 @@ deRfun doUnlink(long caller, long home): long {
   }
   if (inodeAt(dentryAt(dent).ino).kind == 4L) {
     return 3L;
+  }
+  if (inodeAt(dentryAt(dent).ino).kind == 6L) {
+    long child = 1L;
+    while (child < 32L) {
+      if (dentryAt(child).used == 1L && dentryAt(child).parent == dent) {
+        return 11L;
+      }
+      child = child + 1L;
+    }
+    dropDent(dent);
+    return 0L;
+  }
+  if (inodeAt(dentryAt(dent).ino).kind == 5L) {
+    dropDent(dent);
+    return 0L;
   }
   if (inodeAt(dentryAt(dent).ino).kind == 3L) {
     dropDent(dent);
@@ -1528,17 +1896,18 @@ deRfun conWrite(long home): void {
   }
 }
 
-/* 固件铺上加载画面之后把 4096 写成 1。等到这一步再往下初始化，画面才不会被盖掉。
-   这里不能 yield：引导还没进主循环，让出之后没有人再把监督核叫醒。
-   固件在另一颗核心上写 4096。这一步不再往控制台写字。 */
+/* 4096 是固件模式。0 仍是启动点，加载画面是 1，设置是 2。
+   设置开着时不能干等加载画面，否则空转和驱动都排不上去，CPU 页会一直是 STOP。
+   离开启动点就继续。这里不能 yield：引导还没进主循环，让出之后没有人再把监督核叫醒。
+   这一步不再往控制台写字。 */
 deRfun conShow(): void {
   __zap__ {
     conWait:
     place r1, 4096
     ldi.64 r0, r1
-    place r2, 1
+    place r2, 0
     eq r0, r0, r2
-    jz r0, conWait
+    jnz r0, conWait
   }
 }
 
@@ -1698,6 +2067,12 @@ deRfun vfsCall(long caller, long service): long {
   }
   if (service == 23L) {
     return devIo(caller, home);
+  }
+  if (service == 24L) {
+    return doDup(caller, home);
+  }
+  if (service == 25L) {
+    return doDup2(caller, home);
   }
   return 13L;
 }

@@ -50,6 +50,7 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"obr::os::gate", "gate", TypeKind::Void, 0, 0, false, false},
       {"obr::os::release", "release", TypeKind::Void, 1, 0, false, false},
       {"obr::os::yield", "yield", TypeKind::Void, 0, 0, false, false},
+      {"obr::os::dwell", "dwell", TypeKind::Void, 1, 0, false, false},
       {"obr::os::core", "core", TypeKind::Long, 0, 1, false, false},
       {"obr::os::install", "install", TypeKind::Void, 3, 0, false, false},
       {"obr::os::hertz", "hertz", TypeKind::Void, 2, 0, false, false},

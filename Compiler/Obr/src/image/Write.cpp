@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -89,6 +90,7 @@ const NamedCode kNamed[] = {
     {"gate", 72, 0},
     {"release", 73, 1},
     {"yield", 74, 0},
+    {"dwell", 81, 1},
     {"core", 75, 1},
     {"fill", 76, 4},
     {"carry", 77, 6},
@@ -353,6 +355,7 @@ bool isPseudoCall(const std::string& line) {
 
 struct Expanded {
   std::vector<std::string> lines;
+  std::vector<DebugSite> sites;
   std::map<std::string, uint32_t> labels;
   std::vector<std::string> body;
 };
@@ -381,50 +384,70 @@ const LinkName* importNamed(const Unit& unit, const std::string& label) {
   return nullptr;
 }
 
-Expanded expand(const std::string& zapText) {
+bool plainField(const std::string& text) {
+  for (const char item : text) {
+    if (item == '\t' || item == '\n' || item == '\r') return false;
+  }
+  return true;
+}
+
+Expanded expand(const std::string& zapText, const std::vector<DebugSite>* sites) {
+  const std::vector<std::string> rawLines = splitLines(zapText);
+  if (sites != nullptr && sites->size() != rawLines.size()) fail("对照表和程序行数不一致");
   Expanded image;
   std::vector<std::string> expanded;
-  for (const std::string& raw : splitLines(zapText)) {
-    const std::string line = trim(raw);
+  std::vector<DebugSite> expandedSites;
+  const bool noted = sites != nullptr;
+  auto add = [&](const std::string& line, const DebugSite& site) {
+    expanded.push_back(line);
+    if (noted) expandedSites.push_back(site);
+  };
+  for (std::size_t index = 0; index < rawLines.size(); index += 1) {
+    const std::string line = trim(rawLines[index]);
     if (line.empty()) continue;
+    const DebugSite site = noted ? (*sites)[index] : DebugSite{};
     if (line.rfind("chars ", 0) == 0) {
       const std::string text = trim(line.substr(6));
       if (text.size() < 2 || text.front() != '"' || text.back() != '"') fail("字符串不完整 " + line);
       const std::string body = text.substr(1, text.size() - 2);
       for (unsigned char item : body) {
-        expanded.push_back("place r0, " + std::to_string(static_cast<unsigned>(item)));
-        expanded.push_back("gpu.glyph r1, r0");
+        add("place r0, " + std::to_string(static_cast<unsigned>(item)), site);
+        add("gpu.glyph r1, r0", site);
       }
       continue;
     }
     if (isPseudoCall(line)) {
-      expanded.push_back("link r7, " + trim(line.substr(5)));
+      add("link r7, " + trim(line.substr(5)), site);
       continue;
     }
     if (line.rfind("icall ", 0) == 0) {
-      expanded.push_back("link r6, " + trim(line.substr(6)));
+      add("link r6, " + trim(line.substr(6)), site);
       continue;
     }
     if (line == "ret") {
-      expanded.push_back("jmp r7");
+      add("jmp r7", site);
       continue;
     }
     if (line == "iret") {
-      expanded.push_back("jmp r6");
+      add("jmp r6", site);
       continue;
     }
-    expanded.push_back(line);
+    add(line, site);
   }
 
-  for (const std::string& line : expanded) {
+  std::vector<DebugSite> bodySites;
+  for (std::size_t index = 0; index < expanded.size(); index += 1) {
+    const std::string& line = expanded[index];
     if (isLabel(line)) {
       image.labels.emplace(line.substr(0, line.size() - 1), static_cast<uint32_t>(image.body.size()));
       continue;
     }
     image.body.push_back(line);
+    if (noted) bodySites.push_back(expandedSites[index]);
   }
 
-  for (const std::string& line : image.body) {
+  for (std::size_t index = 0; index < image.body.size(); index += 1) {
+    const std::string& line = image.body[index];
     const std::vector<std::string> parts = tokensOf(line);
     if (parts.empty()) fail("空指令");
     const std::string& head = parts[0];
@@ -432,13 +455,29 @@ Expanded expand(const std::string& zapText) {
     const bool jump = head == "jz" || head == "jnz" || head == "link" || head == "call";
     if (!jump || parts.size() < 2 || isRegisterToken(target) || isNumberToken(target)) {
       image.lines.push_back(line);
-      continue;
+    } else {
+      const auto found = image.labels.find(target);
+      if (found == image.labels.end()) fail("没有标号 " + target);
+      image.lines.push_back(head + " " + parts[1] + ", " + std::to_string(found->second));
     }
-    const auto found = image.labels.find(target);
-    if (found == image.labels.end()) fail("没有标号 " + target);
-    image.lines.push_back(head + " " + parts[1] + ", " + std::to_string(found->second));
+    if (noted) image.sites.push_back(bodySites[index]);
   }
   return image;
+}
+
+void writeDebug(const std::string& path, const std::vector<DebugSite>& sites) {
+  std::ostringstream text;
+  text << "obr-debug 1\n";
+  for (std::size_t index = 0; index < sites.size(); index += 1) {
+    const DebugSite& site = sites[index];
+    if (!plainField(site.file) || !plainField(site.function)) fail("对照表字段含有制表符或换行");
+    text << index << '\t' << site.file << '\t' << site.line << '\t' << site.function << '\n';
+  }
+  std::ofstream output(path, std::ios::binary);
+  if (!output) fail("写不出 " + path);
+  const std::string bytes = text.str();
+  output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  if (!output) fail("写不出 " + path);
 }
 
 void writeName(std::vector<uint8_t>& out, const std::string& name) {
@@ -452,8 +491,9 @@ void writeName(std::vector<uint8_t>& out, const std::string& name) {
 
 }  // namespace
 
-void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit) {
-  const Expanded image = expand(zapText);
+void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit, const std::vector<DebugSite>* sites) {
+  const Expanded image = expand(zapText, sites);
+  if (sites != nullptr && image.sites.size() != image.lines.size()) fail("对照表和指令条数不一致");
   std::vector<LinkSite> exports;
   std::vector<LinkSite> imports;
   std::vector<LinkReloc> relocs;
@@ -521,6 +561,7 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
   if (!output) fail("写不出 " + path);
   output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
   if (!output) fail("写不出 " + path);
+  if (sites != nullptr) writeDebug(path + ".debug", image.sites);
 }
 
 }  // namespace obr

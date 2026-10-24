@@ -92,8 +92,21 @@ export namespace ZerOS {
         Trace: "trace",
         Inbox: "inbox",
         Panel: "panel",
+        PanelSize: "panel-size",
+        Pointer: "pointer",
         Exchange: "exchange",
         ExchangeResult: "exchange-result",
+        /** 一颗核心最近一次停机。页面留下它，不写进客程序能读的内存。 */
+        CoreStop: "core-stop",
+        /**
+         * 客核心任务失败。页面只留记录，不换错误帧，也不停监督核。
+         * 和 Fault 分开，避免自检或页面把它当成整机失败。
+         */
+        FaultLog: "fault-log",
+        /** 调试开关打开时，页面请求在已经停止的 0 号核心上跑一段短 ZAP。 */
+        DebugRun: "debug-run",
+        /** 上一次调试运行的结果。开关关闭时不会出现。 */
+        DebugResult: "debug-run-result",
       } as const;
 
       /* ------------------------------------------------------------------ */

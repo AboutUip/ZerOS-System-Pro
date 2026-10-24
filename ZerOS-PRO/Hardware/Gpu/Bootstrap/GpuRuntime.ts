@@ -6,7 +6,8 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 只在显卡线程里使用。帧存储不进入系统内存，也不写面板。
- * Clear / Plot / Image / Character 失败时一个像素都不改。Present 交出副本。
+ * Clear / Plot / Image / Character 失败时一个像素都不改。Present 交出像素副本。
+ * 稳态画面走 PresentView：加速器画过就交位图，没画过才退回像素副本。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -41,6 +42,7 @@ export namespace ZerOS {
       const spend = ClockRoot.Hardware.Gpu.spend;
       const resizeAccel = AccelRoot.Hardware.Gpu.resize;
       const blitAccel = AccelRoot.Hardware.Gpu.blit;
+      const snapshotAccel = AccelRoot.Hardware.Gpu.snapshot;
       const runtimePrefix = "[ZerOS.Hardware.Gpu.GpuRuntime]";
 
       let frameWidth = 0;
@@ -135,6 +137,26 @@ export namespace ZerOS {
         return { width: frameWidth, height: frameHeight };
       }
 
+      /**
+       * 换成一块全 0 的新帧，并让加速颜色目标跟这个尺寸。
+       * 边长或像素个数不合法时，原来的帧、宽高都不动。
+       * 节点树换成只含新根的一棵，旧节点编号作废。
+       */
+      export function resizeFrame(width: number, height: number): void {
+        if (!edgeOk(width) || !edgeOk(height)) {
+          fail("帧边长不在 1 到 16384");
+        }
+        const count = width * height;
+        if (count > FramePixelMaxCount) {
+          fail("帧的像素个数超过 16777216");
+        }
+        frameWidth = width;
+        frameHeight = height;
+        frame = new Uint32Array(count);
+        SceneRoot.Hardware.Gpu.resetScene(width, height);
+        resizeAccel(width, height);
+      }
+
       function begin(): void {
         if (frameWidth < 1 || frame.length !== frameWidth * frameHeight) {
           fail("帧存储还没有建立");
@@ -189,6 +211,29 @@ export namespace ZerOS {
       export async function present(): Promise<Uint32Array> {
         begin();
         try {
+          await blitAccel(frame, frameWidth, frameHeight);
+          const copy = frame.slice();
+          await spend(frame.length);
+          return copy;
+        } finally {
+          end();
+        }
+      }
+
+      /**
+       * 交出当前画面，供客程序的稳态 Present 使用。
+       * 加速器画过时直接是一张位图，页面贴上画布即可，不必再拆两百多万个像素。
+       * 没画过，或位图没做成，就退回和 present 一样的像素副本。
+       * 无论哪一种都按帧里的像素个数记一拍。位图不是少算工作，只是宿主不再读回。
+       */
+      export async function presentView(): Promise<ImageBitmap | Uint32Array> {
+        begin();
+        try {
+          const bitmap = await snapshotAccel();
+          if (bitmap !== null) {
+            await spend(frame.length);
+            return bitmap;
+          }
           await blitAccel(frame, frameWidth, frameHeight);
           const copy = frame.slice();
           await spend(frame.length);

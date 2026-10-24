@@ -1,0 +1,32 @@
+/* 选择器的外观。调用方决定打开哪一条、当前是第几项。点中与否用 obr::ui::hit。 */
+import obr.widget;
+import obr.ui;
+
+deRfun obr::widget::bar(long x, long y, long wide, long open, string label, long ink, long dim, long accent): void {
+  if (wide < 1L) {
+    return;
+  }
+  long fill = obr::ui::rgb(24L, 36L, 52L);
+  long mark = dim;
+  if (open != 0L) {
+    fill = accent;
+    mark = ink;
+  }
+  obr::ui::round(x, y, wide, 28L, 6L, fill, 255L);
+  obr::ui::text(x + 10L, y + 6L, 16L, label, ink, 255L);
+  obr::ui::text(x + wide - 18L, y + 6L, 16L, "v", mark, 255L);
+}
+
+deRfun obr::widget::row(long x, long y, long wide, long on, string label, long ink, long accent): void {
+  if (wide < 1L) {
+    return;
+  }
+  long fill = obr::ui::rgb(18L, 24L, 34L);
+  long color = ink;
+  if (on != 0L) {
+    fill = accent;
+    color = ink;
+  }
+  obr::ui::rect(x, y, wide, 26L, fill, 255L);
+  obr::ui::text(x + 10L, y + 5L, 16L, label, color, 255L);
+}

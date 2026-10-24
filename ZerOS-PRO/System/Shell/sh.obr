@@ -1,0 +1,141 @@
+/* 从标准输入读一行，再派生。用 -pie -slot 0 编译，放到 /os/sh。
+   一行里没有空格，就是要跑的路径。
+   中间一个 >、< 或 |，后面是另一个路径：分别是写到文件、从文件读、接成管道。
+   读不到标准输入就结束。没有键盘时，调用者先把这一行放进 0 号描述符。 */
+import memory;
+import obr.proc;
+
+deRfun skip(long home, long got, long index): long {
+  while (index < got) {
+    long value = memory::loadOctet(home + 4096L + index * 8L);
+    if (value != 32L && value != 10L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return index;
+}
+
+deRfun token(long home, long got, long index, long* count): long {
+  long start = index;
+  while (index < got) {
+    long value = memory::loadOctet(home + 4096L + index * 8L);
+    if (value == 32L || value == 10L) {
+      *count = index - start;
+      return start;
+    }
+    index = index + 1L;
+  }
+  *count = index - start;
+  return start;
+}
+
+deRfun plant(long home, long from, long count): void {
+  memory::store64(count, home + 512L);
+  long index = 0L;
+  while (index < count) {
+    long value = memory::loadOctet(home + 4096L + (from + index) * 8L);
+    memory::storeOctet(value, home + 512L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun launch(long home, long from, long count): long {
+  plant(home, from, count);
+  return obr::proc::spawn(home, 0L);
+}
+
+/* 先占住 0 或 1，再派生。壳自己马上结束，不必把原来的描述符救回来。 */
+deRfun steer(long home, long cmdFrom, long cmdCount, long argFrom, long argCount, long flags, long target): long {
+  plant(home, argFrom, argCount);
+  long opened = obr::proc::open(home, flags);
+  if (opened != 0L) {
+    return opened;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = obr::proc::dup2(home, fd, target);
+  if (status != 0L) {
+    return status;
+  }
+  if (fd != target) {
+    obr::proc::close(home, fd);
+  }
+  return launch(home, cmdFrom, cmdCount);
+}
+
+/* 左边的标准输出接右边的标准输入。父任务关掉自己那份写端，右边才能在左边结束时读到 0。 */
+deRfun pipeTo(long home, long leftFrom, long leftCount, long rightFrom, long rightCount): long {
+  long status = obr::proc::pipe(home);
+  if (status != 0L) {
+    return status;
+  }
+  long reading = obr::proc::slot(home, 128L);
+  long writing = obr::proc::slot(home, 192L);
+  if (writing != 1L) {
+    status = obr::proc::dup2(home, writing, 1L);
+    if (status != 0L) {
+      return status;
+    }
+    obr::proc::close(home, writing);
+  }
+  status = launch(home, leftFrom, leftCount);
+  if (status != 0L) {
+    return status;
+  }
+  obr::proc::close(home, 1L);
+  if (reading != 0L) {
+    status = obr::proc::dup2(home, reading, 0L);
+    if (status != 0L) {
+      return status;
+    }
+    obr::proc::close(home, reading);
+  }
+  return launch(home, rightFrom, rightCount);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long status = obr::proc::read(home, 0L, 0L, 64L);
+  if (status != 0L) {
+    return 0;
+  }
+  long got = obr::proc::slot(home, 320L);
+  if (got < 1L) {
+    return 0;
+  }
+  long index = skip(home, got, 0L);
+  if (index >= got) {
+    return 0;
+  }
+  long cmdCount = 0L;
+  long cmdFrom = token(home, got, index, &cmdCount);
+  if (cmdCount < 1L) {
+    return 0;
+  }
+  index = skip(home, got, cmdFrom + cmdCount);
+  if (index >= got) {
+    launch(home, cmdFrom, cmdCount);
+    return 0;
+  }
+  long opCount = 0L;
+  long opFrom = token(home, got, index, &opCount);
+  index = skip(home, got, opFrom + opCount);
+  long argCount = 0L;
+  long argFrom = token(home, got, index, &argCount);
+  if (opCount != 1L || argCount < 1L) {
+    return 0;
+  }
+  long op = memory::loadOctet(home + 4096L + opFrom * 8L);
+  if (op == 62L) {
+    steer(home, cmdFrom, cmdCount, argFrom, argCount, 1L, 1L);
+    return 0;
+  }
+  if (op == 60L) {
+    steer(home, cmdFrom, cmdCount, argFrom, argCount, 0L, 0L);
+    return 0;
+  }
+  if (op == 124L) {
+    pipeTo(home, cmdFrom, cmdCount, argFrom, argCount);
+  }
+  return 0;
+}

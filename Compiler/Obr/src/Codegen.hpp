@@ -1,11 +1,10 @@
 #pragma once
 
 #include "Ast.hpp"
-
-#include <string>
+#include "image/Debug.hpp"
 
 namespace obr {
 
-std::string generate(Unit& unit);
+Generated generate(Unit& unit);
 
 }  // namespace obr

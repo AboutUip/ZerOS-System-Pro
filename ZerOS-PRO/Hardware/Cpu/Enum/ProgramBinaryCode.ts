@@ -148,6 +148,8 @@ export namespace ZerOS {
       export const ProgramBinaryRelease = 73;
       /** 没有操作数。停在下一条，寄存器保留。 */
       export const ProgramBinaryYield = 74;
+      /** 一个寄存器：等待的宿主毫秒，0 至 1000。核心保持执行中。 */
+      export const ProgramBinaryDwell = 81;
       /** 一个寄存器：写入本核心编号。 */
       export const ProgramBinaryCore = 75;
       /** 四个寄存器：目的、扩展口、位元地址、八位组个数。 */

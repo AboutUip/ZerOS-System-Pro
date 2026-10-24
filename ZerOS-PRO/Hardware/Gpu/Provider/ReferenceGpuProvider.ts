@@ -31,6 +31,22 @@ export namespace ZerOS {
       const OfficialFrameHeight = ConfigRoot.Hardware.Gpu.Config.OfficialFrameHeight;
       const OfficialMemoryBytes = ConfigRoot.Hardware.Gpu.Config.OfficialMemoryBytes;
       const declareFrame = RuntimeRoot.Hardware.Gpu.declareFrame;
+      const resizeFrame = RuntimeRoot.Hardware.Gpu.resizeFrame;
+      const flushScreen = AccelRoot.Hardware.Gpu.flushScreen;
+      const presentView = RuntimeRoot.Hardware.Gpu.presentView;
+      const frameSize = RuntimeRoot.Hardware.Gpu.frameSize;
+      const ResizeOp = 39;
+
+      /** 加速参数是浮点的位型。这里只取能落回整数的有限值。 */
+      function bitsToInt(bits: bigint): number {
+        const view = new DataView(new ArrayBuffer(8));
+        view.setBigInt64(0, BigInt.asIntN(64, bits), true);
+        const value = view.getFloat64(0, true);
+        if (!Number.isFinite(value)) {
+          throw new Error("[ZerOS.Hardware.Gpu.ReferenceGpuProvider] 帧边长不是有限数");
+        }
+        return Math.trunc(value);
+      }
       const clear = RuntimeRoot.Hardware.Gpu.clear;
       const plot = RuntimeRoot.Hardware.Gpu.plot;
       const image = RuntimeRoot.Hardware.Gpu.image;
@@ -61,8 +77,12 @@ export namespace ZerOS {
         ProviderId: "ZerOS-Reference-Gpu",
         ProviderVendor: "ZerOS-Team",
         ActiveProtocol: "ZGP1",
-        FrameWidth: OfficialFrameWidth,
-        FrameHeight: OfficialFrameHeight,
+        get FrameWidth(): number {
+          return frameSize().width;
+        },
+        get FrameHeight(): number {
+          return frameSize().height;
+        },
         MemoryBytes: OfficialMemoryBytes,
         Hertz(): number {
           return gpuHertz();
@@ -106,7 +126,15 @@ export namespace ZerOS {
         Present(): Promise<Uint32Array> {
           return present();
         },
-        Accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number> {
+        PresentView(): Promise<ImageBitmap | Uint32Array> {
+          return presentView();
+        },
+        async Accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number> {
+          if (op === ResizeOp) {
+            await flushScreen();
+            resizeFrame(bitsToInt(a), bitsToInt(b));
+            return 0;
+          }
           return accel(op, a, b, c, d);
         },
         SetHertz(hertz: number): Promise<void> {

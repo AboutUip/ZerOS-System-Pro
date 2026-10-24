@@ -108,6 +108,7 @@ export namespace ZerOS {
       const ProgramBinaryGate = CodeRoot.Hardware.Cpu.ProgramBinaryGate;
       const ProgramBinaryRelease = CodeRoot.Hardware.Cpu.ProgramBinaryRelease;
       const ProgramBinaryYield = CodeRoot.Hardware.Cpu.ProgramBinaryYield;
+      const ProgramBinaryDwell = CodeRoot.Hardware.Cpu.ProgramBinaryDwell;
       const ProgramBinaryCore = CodeRoot.Hardware.Cpu.ProgramBinaryCore;
       const ProgramBinaryFill = CodeRoot.Hardware.Cpu.ProgramBinaryFill;
       const ProgramBinaryCarry = CodeRoot.Hardware.Cpu.ProgramBinaryCarry;
@@ -338,6 +339,10 @@ export namespace ZerOS {
             return;
           case "yield":
             writeCode(writer, ProgramBinaryYield);
+            return;
+          case "dwell":
+            writeCode(writer, ProgramBinaryDwell);
+            writeRegister(writer, step.Time);
             return;
           case "core":
             writeCode(writer, ProgramBinaryCore);
@@ -751,6 +756,9 @@ export namespace ZerOS {
         }
         if (code === ProgramBinaryYield) {
           return { Op: "yield" };
+        }
+        if (code === ProgramBinaryDwell) {
+          return { Op: "dwell", Time: readRegister(reader) };
         }
         if (code === ProgramBinaryCore) {
           return { Op: "core", Register: readRegister(reader) };

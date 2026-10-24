@@ -21,8 +21,8 @@
 | `codegen/Runtime.cpp` | 字符串复制和拼接 |
 | `codegen/Collect.cpp` | 数组、列表、集合和映射的堆运行时 |
 | `codegen/Generate.cpp` | 程序入口和 `main` |
-| `image/Write.cpp` | 把展开后的 ZAP 写成无扩展名二进制 |
-| `obrc.cpp` | 读文件。默认只写无扩展名二进制。`-zap` 才写旁边的文本。`-shared` 编动态库，`-pie` 编可重定位程序 |
+| `image/Write.cpp` | 把展开后的 ZAP 写成无扩展名二进制。`-debug` 时在旁边再写 `.debug`，不改这串字节 |
+| `obrc.cpp` | 读文件。默认只写无扩展名二进制。`-zap` 才写旁边的文本。`-debug` 写对照表。`-shared` 编动态库，`-pie` 编可重定位程序 |
 
 ## 这一版接受
 
@@ -38,7 +38,7 @@
 
 `__zap__ {` 与 `}` 之间的每一行原样成为 ZAP。`export deRfun` 的标号就是函数名，`__zap__` 里可以 `call` 这个名字。普通 Obr 调用仍按函数解析，不增加新的 CPU 指令。`main` 的函数体如果只有一条 `__zap__`，这段指令原样放在开头，其余函数仍会输出，没有 `call main` 和栈帧。
 
-头文件里名字与参数和下面这张表一致的声明，调用时收成一条已有指令，不建栈帧，也不能再写函数体：`gpu::box`、`gpu::text`、`gpu::align`、`gpu::paint`、`gpu::glyph`、`gpu::character`、`gpu::drop`、`gpu::compose`、`gpu::present`、`gpu::accel`、`port::state`、`port::char`、`query`、`xchg`、`bulk`、`carry`、`halt`、`obr::os::schedule`、`obr::os::slice`、`obr::os::pass`、`obr::os::take`、`obr::os::svc`、`obr::os::bound`、`obr::os::gate`、`obr::os::release`、`obr::os::yield`、`obr::os::core`、`obr::os::install`、`obr::os::hertz`、`obr::os::capture`、`obr::os::restore`、`obr::os::attach`，以及 `memory::loadOctet`、`memory::load16`、`memory::load32`、`memory::load64`、`memory::loadFloat32`、`memory::loadFloat64`、`memory::storeOctet`、`memory::store16`、`memory::store32`、`memory::store64`、`memory::storeFloat32`、`memory::storeFloat64`、`memory::hertz`、`memory::metric`。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double` 以外，参数都是 `long`。读出的数在 `r0`，地址在 `r1`。写入时值在 `r0`、地址在 `r1`，对应 `sti` 的值、地址顺序。`memory::loadFloat32` 读回的是二进制 32 的位型，仍放在 `long` 里。`inbox(long* word): long` 发出 `inbox`，把读到的字写进指针，返回是否读到。六个输入的 `gpu::box` 把新编号放进 `r6` 再拷回 `r0`，因为 `r0` 到 `r5` 已被输入占满。`gpu::accel(long op, double a, double b, double c, double d): long` 同样把结果放进 `r6` 再拷回 `r0`，发出 `gpu.accel r6, r0, r1, r2, r3, r4`。`gpu::character(long x, long y, long code, long foreground, long background): void` 发出 `gpu.character r0, r1, r2, r3, r4`，直接改帧上的 8×8 字形。整数字面量配到 `double` 参数时先 `itof`，不再把整数本身当成位型。`char` 可以加宽成 `int` 或 `long`，用来把字符交给 `gpu::glyph`。寄存器之间的拷贝用一条 `or rD, rS, rS`。帧基址还在 `r4` 里时不再从固定地址重读。立即数和不会冲掉 `r1`–`r3` 的参数直接放进指令用的寄存器。常量指针直接用 `load` / `store` 的绝对地址，不再先放进栈槽再间接读写。只被调用一次、不递归、不含 `__zap__` 的函数在那一处展开，不再另外输出一份函数体。被调用两次或以上的函数只输出一份，调用处用 `call`。`main` 和 `export` 的函数始终输出。
+头文件里名字与参数和下面这张表一致的声明，调用时收成一条已有指令，不建栈帧，也不能再写函数体：`gpu::box`、`gpu::text`、`gpu::align`、`gpu::paint`、`gpu::glyph`、`gpu::character`、`gpu::drop`、`gpu::compose`、`gpu::present`、`gpu::accel`、`port::state`、`port::char`、`query`、`xchg`、`bulk`、`carry`、`halt`、`obr::os::schedule`、`obr::os::slice`、`obr::os::pass`、`obr::os::take`、`obr::os::svc`、`obr::os::bound`、`obr::os::gate`、`obr::os::release`、`obr::os::yield`、`obr::os::dwell`、`obr::os::core`、`obr::os::install`、`obr::os::hertz`、`obr::os::capture`、`obr::os::restore`、`obr::os::attach`，以及 `memory::loadOctet`、`memory::load16`、`memory::load32`、`memory::load64`、`memory::loadFloat32`、`memory::loadFloat64`、`memory::storeOctet`、`memory::store16`、`memory::store32`、`memory::store64`、`memory::storeFloat32`、`memory::storeFloat64`、`memory::hertz`、`memory::metric`。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double` 以外，参数都是 `long`。读出的数在 `r0`，地址在 `r1`。写入时值在 `r0`、地址在 `r1`，对应 `sti` 的值、地址顺序。`memory::loadFloat32` 读回的是二进制 32 的位型，仍放在 `long` 里。`inbox(long* word): long` 发出 `inbox`，把读到的字写进指针，返回是否读到。`obr::os::dwell(long milliseconds): void` 发出 `dwell r0`。寄存器里的毫秒必须是 `0` 至 `1000`，等待时核心保持执行中。六个输入的 `gpu::box` 把新编号放进 `r6` 再拷回 `r0`，因为 `r0` 到 `r5` 已被输入占满。`gpu::accel(long op, double a, double b, double c, double d): long` 同样把结果放进 `r6` 再拷回 `r0`，发出 `gpu.accel r6, r0, r1, r2, r3, r4`。`gpu::character(long x, long y, long code, long foreground, long background): void` 发出 `gpu.character r0, r1, r2, r3, r4`，直接改帧上的 8×8 字形。整数字面量配到 `double` 参数时先 `itof`，不再把整数本身当成位型。`char` 可以加宽成 `int` 或 `long`，用来把字符交给 `gpu::glyph`。寄存器之间的拷贝用一条 `or rD, rS, rS`。帧基址还在 `r4` 里时不再从固定地址重读。立即数和不会冲掉 `r1`–`r3` 的参数直接放进指令用的寄存器。常量指针直接用 `load` / `store` 的绝对地址，不再先放进栈槽再间接读写。只被调用一次、不递归、不含 `__zap__` 的函数在那一处展开，不再另外输出一份函数体。被调用两次或以上的函数只输出一份，调用处用 `call`。`main` 和 `export` 的函数始终输出。
 
 `struct 名字 { 字段; }` 是值。每个标量字段占 64 位，嵌套结构体就地排开，局部变量是连续栈槽，未写的字段为 0。`变量.字段` 按偏移读写。整份赋值只在两个同类型变量之间复制这些槽。结构体没有方法、不能继承、不能 `new`、不能作参数或返回值、不能 `static`、不能写在声明初值里，也不能把自身嵌进自身。`结构体*` 是指针，字段写成 `指针.字段`。类字段不能内嵌结构体。
 
@@ -47,6 +47,20 @@
 `for (初始; 条件; 步进) 语句` 和 `while` 一样，`continue` 先做步进。`class` 里可以写字段和 `deRfun`。`class 派生 : 基类` 把基类字段放在偏移 0，派生字段排在后面，所以一份派生对象也能按基类的字段位置来读。方法按变量声明的类型往基类找，没有虚函数表。`class C : A, B` 会拒绝，因为两个基类不能同时从偏移 0 开始。`new 类名(参数)` 在堆上分配并把全部字段清零。类里同名的 `deRfun` 是构造，清零后按参数调用；没有构造时只能写 `new 类名()`。基类构造不会自动跑，要在派生构造里自己调用。字段按 64 位排列。`对象.字段` 读写字段，`对象.方法()` 把对象当作第一个参数。类方法里写字段名，就是在写这份对象。`@Callfun(文件.obr)` 只允许列出的源文件调用；`@Callfun(!*)` 禁止用户代码调用；不写则谁都能调。`async deRfun` 里才能写 `await 调用()`。调用完成后发出已有的 `yield`，这颗核心停在下一条，停止原因是 1，寄存器、栈和 `r0` 里的返回值都留着。监督核再按时间片把它调度回来。这些都落成已有 ZAP，没有新的 CPU 指令。
 
 `#VERSION` 缺省或写 `1`。`#LINK` 用 `/` 或 `/文件名.obr` 限制跨文件调用，按调用方的文件名匹配，行尾的回车不参与匹配。未写初值的局部变量置 0。`undefined` 可以赋给基础类型，布尔上下文为假；`null` 在布尔上下文为假。`static` 变量只在第一次执行到声明时赋初值，之后保持原值。指针只有一层，值是 ZMP1 线性位地址。`int**` 会在编译期拒绝。
+
+## 指令对照表
+
+`obrc -debug` 在程序二进制旁边再写一份对照表。二进制和没有 `-debug` 时逐字节相同，版本也不变。CPU 不读对照表。`-zap` 仍然只写助记符，不把对照写进 `.zap`。这不是 Obr 语法，也不是新的 CPU 指令。
+
+文件名是二进制路径加上 `.debug`。`-o Bios` 得到 `Bios` 和 `Bios.debug`。`-o program.zap` 时二进制是 `program`，对照表是 `program.debug`。
+
+对照表是 UTF-8 文本，每一行以 LF 结束。第一行是 `obr-debug 1`，中间一个空格。后面每条最终指令一行，四个字段用一个制表符分开：
+
+```text
+指令编号	源文件	行号	函数名
+```
+
+指令编号从 0 起，和 CPU 取指用的编号相同。标号不算指令。`call` 展开成 `link`，`ret` 展开成 `jmp`，各算一条。一行 `chars` 展开出的多条指令共用这一行的位置。源文件是交给 obrc 的路径。行号从 1 起。函数名是 `main` 或 `名字::方法`。只被调用一次、因而展开进调用处的函数，指令仍记下那个函数自己的文件、行号和名字。`main` 外面的启动指令没有语句，行号是 0，源文件和函数名留空。函数入口的建帧和结尾补上的拆帧记下这个函数的文件和名字，行号用 `deRfun` 那一行。运行时例程同样没有源行。空字段留空，不要写成占位词。源文件和函数名里没有制表符，也没有换行。
 
 ## 还没有
 
@@ -62,7 +76,9 @@ obrc main.obr math.obr -o program.zap
 
 `import obr.nas;` 读 `lib/obr.nas.mr`，函数体在 `lib/obr.nas.obr`。使用时要把这个 `.obr` 和程序一起交给编译器，并让 `board.mr`、`memory.mr` 处在搜索路径里。会话字仍由扩展口上的 `xchg` 组成。按句柄读取用 `carry` 一次做完，读回的字节直接写到位元线。路径是 `string`，或已经放在位元线上的计数字符串（`statAt`、`openAt`、`readdirAt`、`mkdirAt`、`unlinkAt`、`renameAt`）。`rename` 的两条路径分别放进槽 0 和槽 1。读写缓冲区是线性位地址，相邻八位组相隔 8 位。一次读取从 262144 个八位组起，搬满则加倍，最多 268435456。比这更短的对象一次读完。写入仍走 16 位窗口，最多 65535。官方库使用扩展口 2，这是标定，不是协议。
 
-`import obr.ui;` 只读 `lib/obr.ui.mr`。`pad`、`span`、`alignStart`、`alignCenter`、`alignEnd`、`align`、`advance`、`textWidth`、`lerp`、`ease`、`rgb` 在调用处收成整数运算。`meter` 用跨度、当前值和最大值算出填充像素，最大值小于 1 或跨度小于 0 时失败。`bar` 先画轨道，再从左边盖上这段填充，宽度和 `meter` 是同一段计算。`Align` 是 `long` 枚举，`Start`、`Center`、`End` 分别是 0、1、2。`rect`、`round`、`ellipse`、`bar`、`glyph`、`text`、`clear`、`clip`、`unclip`、`width`、`height` 收成 `gpu.accel`，`present` 收成 `gpu.present`。`save`、`translate`、`restore` 维护绘制原点，栈深 32，空栈恢复会失败。`frame` 是帧计数。`key` 读新的按下或重复，`enter` 判断键位名是不是 Enter。屏幕坐标左上为原点，y 向下，绘制会加上当前原点。字号小于 2 时字形步进是 1，否则是字号除以 2 再加 1。多出的 1 像素是字与字之间的空隙，墨仍只占字号的一半。字距使步进小于 1 时失败。`shadow` 给之后的 `text` 和 `glyph` 加 1 到 8 层偏移阴影，越远越淡。`noshadow` 关掉它。`title(字号)` 是标题栏高度，字号小于 1 时失败，否则是字号加 8。`below(顶, 字号)` 是下沿。`hit` 判断点是否在矩形内，宽或高小于 1 时是 0。这三份是整数运算，客程序可以调用。没有对应的 `.obr` 函数体，也不新增中央处理器指令。
+`import obr.ui;` 只读 `lib/obr.ui.mr`。`pad`、`span`、`alignStart`、`alignCenter`、`alignEnd`、`align`、`advance`、`textWidth`、`lerp`、`ease`、`rgb` 在调用处收成整数运算。`meter` 用跨度、当前值和最大值算出填充像素，最大值小于 1 或跨度小于 0 时失败。`bar` 先画轨道，再从左边盖上这段填充，宽度和 `meter` 是同一段计算。`Align` 是 `long` 枚举，`Start`、`Center`、`End` 分别是 0、1、2。`rect`、`round`、`ellipse`、`bar`、`glyph`、`text`、`clear`、`clip`、`unclip` 收成 `gpu.accel`，`present` 收成 `gpu.present`。`width` 和 `height` 收成 `query`，座位 3 的字段 0 和 1，读已经发布的帧宽和帧高，不提交绘制。`save`、`translate`、`restore` 维护绘制原点，栈深 32，空栈恢复会失败。`frame` 是帧计数。`key` 读新的按下或重复，`enter` 判断键位名是不是 Enter。屏幕坐标左上为原点，y 向下，绘制会加上当前原点。字号小于 2 时字形步进是 1，否则是字号除以 2 再加 1。多出的 1 像素是字与字之间的空隙，墨仍只占字号的一半。字距使步进小于 1 时失败。`shadow` 给之后的 `text` 和 `glyph` 加 1 到 8 层偏移阴影，越远越淡。`noshadow` 关掉它。`title(字号)` 是标题栏高度，字号小于 1 时失败，否则是字号加 8。`below(顶, 字号)` 是下沿。`hit` 判断点是否在矩形内，宽或高小于 1 时是 0。这三份是整数运算，客程序可以调用。没有对应的 `.obr` 函数体，也不新增中央处理器指令。
+
+`import obr.widget;` 读 `lib/obr.widget.mr`，函数体在 `lib/obr.widget.obr`。使用时要把这个 `.obr` 和程序一起交给编译器。`obr::widget::bar` 画闭合的一条选择器，高 28，圆角 6，`open` 不是 0 时用强调色铺底，右侧写 `v`。`obr::widget::row` 画下拉列表的一行，高 26，`on` 不是 0 时铺强调色。宽小于 1 时两条都不画。它们不保存当前项，也不改分辨率。点中与否由调用方用 `obr::ui::hit` 判断。
 
 `import obr.text;`、`import obr.proc;`、`import obr.con;` 的函数体在同名 `.obr`。使用时和程序一起交给编译器，并让 `board.mr`、`memory.mr` 处在搜索路径里。这三份不进内核链接。计数字符串是长度字加从 `+64` 起、隔 8 位的八位组，路径最长 240。`obr::text::same` 按码点比较，相同是 1。`obr::proc::home` 是本核心的界限。文件、等待、派生和管道的参数放在这个窗口：`+128`、`+192`、`+256`、`+320`，路径在 `+512`，读写字节在 `+4096`。分配、释放、装入和卸下用窗口开头。`obr::con::open` 以只写打开 `/dev/con`，`obr::con::write` 一次最多 64 个八位组。返回值就是内核状态，`0` 是成功。
 

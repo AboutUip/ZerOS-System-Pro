@@ -126,6 +126,7 @@ export namespace ZerOS {
         | { readonly Op: "gate" }
         | { readonly Op: "release"; readonly Core: number }
         | { readonly Op: "yield" }
+        | { readonly Op: "dwell"; readonly Time: number }
         | { readonly Op: "capture"; readonly Core: number; readonly Slot: number }
         | { readonly Op: "restore"; readonly Core: number; readonly Slot: number }
         | { readonly Op: "core"; readonly Register: number }
@@ -697,6 +698,13 @@ export namespace ZerOS {
         if (head === "yield" && parts.length === 1) {
           return { Op: "yield" };
         }
+        if (head === "dwell" && parts.length === 2) {
+          const time = registerOf(parts[1] ?? "");
+          if (time === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "dwell", Time: time };
+        }
         if ((head === "capture" || head === "restore") && parts.length === 3) {
           const core = registerOf(parts[1] ?? "");
           const slot = registerOf(parts[2] ?? "");
@@ -835,6 +843,9 @@ export namespace ZerOS {
         }
         if (instruction.Op === "yield") {
           return "yield";
+        }
+        if (instruction.Op === "dwell") {
+          return `dwell r${String(instruction.Time)}`;
         }
         if (instruction.Op === "capture") {
           return `capture r${String(instruction.Core)}, r${String(instruction.Slot)}`;

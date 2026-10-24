@@ -21,9 +21,11 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as WindowCheckRoot } from "./Test/KernelWindowCheck";
+import { ZerOS as GlassCheckRoot } from "./Test/FaultGlassCheck";
 import { ZerOS as BiosRoot } from "./Bios";
 import { ZerOS as MotherboardRoot } from "../Hardware/Motherboard/Bootstrap/Motherboard";
-import { loadProgram, logoProgram } from "zeros-boot-firmware";
+import { ZerOS as SevereRoot } from "../Hardware/Debug/Host/SevereConsole";
+import { biosProgramSites, loadProgram, loadProgramSites, logoProgram, logoProgramSites } from "zeros-boot-firmware";
 
 export namespace ZerOS {
   /* ------------------------------------------------------------------------ */
@@ -55,6 +57,8 @@ export namespace ZerOS {
      */
     export const Loader: Uint8Array = Uint8Array.from(loadProgram);
     const runKernelWindowCheck = WindowCheckRoot.Boot.runKernelWindowCheck;
+    const runFaultGlassCheck = GlassCheckRoot.Boot.runFaultGlassCheck;
+    const reportSevere = SevereRoot.Hardware.Debug.reportSevere;
 
     /**
      * 登记 logo 和固件循环后通电。
@@ -63,10 +67,20 @@ export namespace ZerOS {
      */
     export function Run(): void {
       runKernelWindowCheck();
-      Motherboard.SetLogo(Logo);
-      Motherboard.SetDrive(Drive);
-      Motherboard.SetLoader(Loader);
-      Motherboard.Power();
+      /* 失败帧核对在通电之前做完。它要等调试入口的一次回答，所以通电放在这次核对之后。 */
+      void runFaultGlassCheck().then(
+        (): void => {
+          Motherboard.SetLogo(Logo);
+          Motherboard.SetDrive(Drive);
+          Motherboard.SetLoader(Loader);
+          Motherboard.SetDebugSites(logoProgramSites, biosProgramSites, loadProgramSites);
+          Motherboard.Power();
+        },
+        (error: unknown): void => {
+          const text = error instanceof Error ? error.message : "fault glass check failed";
+          reportSevere(text);
+        },
+      );
     }
   }
 }

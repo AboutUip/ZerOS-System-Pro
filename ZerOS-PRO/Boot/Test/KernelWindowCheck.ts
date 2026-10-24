@@ -7,7 +7,8 @@
  * ---------------------------------------------------------------------------
  * 通电前调用。只做整数比较，不访问内存，也不访问 NAS。
  * 窗口被改到和沙盒槽距或编译器地址冲突时，这里失败，主板不通电。
- * 客程序本身在 Kernel/ 的 .obr 里，本文件不编译进映像。
+ * 用户核两份堆、任务表和内存文件正文也在这里对一下，避免加长后压进编译器栈。
+ * 客程序本身在 Kernel/ 的 .obr 里，本文件不编译进映像。这些数要和 task.obr、vfs.obr 一起改。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -138,9 +139,51 @@ export namespace ZerOS {
       if (stageOrigin + widen(KernelWindow.ImageStageBits) > lineBits) {
         fail("映像暂存越出位元线");
       }
-      const core4Origin = dataFloor + (resident + 2) * slotBits;
-      if (stageOrigin + widen(KernelWindow.ImageStageBits) > core4Origin) {
-        fail("映像暂存写进核心 4 的数据槽");
+      const core4Stack = widen(KernelWindow.CompilerStack) + (resident + 2) * slotBits;
+      if (stageOrigin + widen(KernelWindow.ImageStageBits) > core4Stack) {
+        fail("映像暂存写进核心 4 的栈");
+      }
+      /* 入口划定的跨度。task.obr 的 kSpan 是 5632 × 1024，和核心 0 的编译器映像一样宽。 */
+      if (windowLimit - windowOrigin !== widen(5632 * 1024)) {
+        fail("窗口跨度不是入口划定的那一段");
+      }
+      /*
+       * 任务表在核心 2 窗口 +65536，8 份，每份 19 个字。
+       * 内存文件表接在文件区末尾：32 个槽位字，然后三份正文，每份 32768 个八位组。
+       * 文件区本身是任务表之后 73728 位的目录，再加 8192 位的设备区。
+       * 核心 2 的分配也从文件区末尾开始，和这张表相邻。现在没有任务在核心 2 上分配。
+       * 这里只锁正文末尾仍在编译器栈之前。
+       */
+      const stackOffset = widen(KernelWindow.CompilerStack) - dataFloor;
+      const taskStride = widen(19 * 64);
+      const tableOffset = widen(65536);
+      if (tableOffset + widen(8) * taskStride >= stackOffset) {
+        fail("任务表写进了编译器栈");
+      }
+      const vfsEndOffset = tableOffset + widen(8) * taskStride + widen(73728) + widen(8192);
+      const memEndOffset = vfsEndOffset + widen(32 * 64) + widen(3) * widen(32768) * widen(8);
+      const memEnd = windowOrigin + memEndOffset;
+      const stack2 = widen(KernelWindow.CompilerStack) + resident * slotBits;
+      if (memEnd >= stack2 || memEnd >= windowLimit) {
+        fail("内存文件正文写进了编译器栈");
+      }
+      /* 用户核从窗口 +16384 起放两份堆，每份 516096 位，正好铺到编译器栈。第三份放不下。 */
+      const heapOffset = widen(16384);
+      const heapSpan = widen(516096);
+      if (heapOffset + widen(2) * heapSpan !== stackOffset) {
+        fail("用户核两份堆没有正好铺到编译器栈");
+      }
+      let userCore = resident + 1;
+      const coreCount = widen(OfficialCoreCount);
+      while (userCore < coreCount) {
+        const origin = dataFloor + userCore * slotBits;
+        const heapEnd = origin + heapOffset + widen(2) * heapSpan;
+        const stack = widen(KernelWindow.CompilerStack) + userCore * slotBits;
+        const next = dataFloor + (userCore + 1) * slotBits;
+        if (heapEnd !== stack || heapEnd > next) {
+          fail("用户核的堆没有停在编译器栈，或写进了下一颗核心");
+        }
+        userCore += 1;
       }
     }
   }

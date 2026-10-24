@@ -3,6 +3,7 @@
 #include "Diagnostic.hpp"
 
 #include <cctype>
+#include <utility>
 
 namespace obr {
 namespace {
@@ -57,9 +58,15 @@ char escape(char unit) {
 std::vector<Token> lex(const std::string& source) {
   std::vector<Token> tokens;
   std::size_t index = 0;
+  int line = 1;
+  auto push = [&](Token token) {
+    if (token.line <= 0) token.line = line;
+    tokens.push_back(std::move(token));
+  };
   while (index < source.size()) {
     const char unit = source[index];
     if (unit == ' ' || unit == '\t' || unit == '\r' || unit == '\n') {
+      if (unit == '\n') line += 1;
       index += 1;
       continue;
     }
@@ -67,24 +74,24 @@ std::vector<Token> lex(const std::string& source) {
       std::size_t end = index;
       while (end < source.size() && source[end] != '\n') end += 1;
       const std::string raw = source.substr(index, end - index);
-      const std::string line = !raw.empty() && raw.back() == '\r' ? raw.substr(0, raw.size() - 1) : raw;
-      if (line.rfind("#VERSION", 0) == 0) {
+      const std::string directive = !raw.empty() && raw.back() == '\r' ? raw.substr(0, raw.size() - 1) : raw;
+      if (directive.rfind("#VERSION", 0) == 0) {
         Token token;
         token.kind = Tok::Version;
-        token.text = line;
-        tokens.push_back(token);
-      } else if (line.rfind("#LINK", 0) == 0) {
+        token.text = directive;
+        push(token);
+      } else if (directive.rfind("#LINK", 0) == 0) {
         Token token;
         token.kind = Tok::Link;
-        token.text = line;
-        tokens.push_back(token);
-      } else if (line.rfind("#DYN", 0) == 0) {
+        token.text = directive;
+        push(token);
+      } else if (directive.rfind("#DYN", 0) == 0) {
         Token token;
         token.kind = Tok::Dyn;
-        token.text = line;
-        tokens.push_back(token);
+        token.text = directive;
+        push(token);
       } else {
-        fail("这一版编译器还不接受 " + line);
+        fail("这一版编译器还不接受 " + directive);
       }
       index = end;
       continue;
@@ -102,18 +109,22 @@ std::vector<Token> lex(const std::string& source) {
           closed = true;
           break;
         }
+        if (source[index] == '\n') line += 1;
         index += 1;
       }
       if (!closed) fail("注释没有结束");
       continue;
     }
     if (unit == '"') {
+      const int at = line;
       index += 1;
       std::string value;
       while (index < source.size() && source[index] != '"') {
+        if (source[index] == '\n') line += 1;
         if (source[index] == '\\') {
           index += 1;
           if (index >= source.size()) fail("字符串没有结束");
+          if (source[index] == '\n') line += 1;
           value.push_back(escape(source[index]));
         } else {
           value.push_back(source[index]);
@@ -125,7 +136,8 @@ std::vector<Token> lex(const std::string& source) {
       Token token;
       token.kind = Tok::StringLit;
       token.text = value;
-      tokens.push_back(token);
+      token.line = at;
+      push(token);
       continue;
     }
     if (unit == '\'') {
@@ -149,7 +161,7 @@ std::vector<Token> lex(const std::string& source) {
       Token token;
       token.kind = Tok::CharLit;
       token.integer = static_cast<unsigned char>(value);
-      tokens.push_back(token);
+      push(token);
       continue;
     }
     if (unit == '0' && index + 1 < source.size() && (source[index + 1] == 'x' || source[index + 1] == 'X')) {
@@ -168,7 +180,7 @@ std::vector<Token> lex(const std::string& source) {
       token.integer = std::stoll(digits, nullptr, 16);
       if (!asLong && token.integer >= -2147483648LL && token.integer <= 2147483647LL) token.text = "";
       else token.text = "L";
-      tokens.push_back(token);
+      push(token);
       continue;
     }
     if (std::isdigit(static_cast<unsigned char>(unit))) {
@@ -200,37 +212,45 @@ std::vector<Token> lex(const std::string& source) {
         token.text = "";
         if (suffix == 'L' || suffix == 'l' || token.integer < -2147483648LL || token.integer > 2147483647LL) token.text = "L";
       }
-      tokens.push_back(token);
+      push(token);
       index = end;
       continue;
     }
     if (source.compare(index, 7, "__zap__") == 0 && (index + 7 >= source.size() || !identPart(source[index + 7]))) {
       index += 7;
-      while (index < source.size() && (source[index] == ' ' || source[index] == '\t' || source[index] == '\n' || source[index] == '\r')) index += 1;
+      while (index < source.size() && (source[index] == ' ' || source[index] == '\t' || source[index] == '\n' || source[index] == '\r')) {
+        if (source[index] == '\n') line += 1;
+        index += 1;
+      }
       if (index >= source.size() || source[index] != '{') fail("__zap__ 后面必须是 {");
       index += 1;
       if (index < source.size() && source[index] == '\r') index += 1;
-      if (index < source.size() && source[index] == '\n') index += 1;
+      if (index < source.size() && source[index] == '\n') {
+        line += 1;
+        index += 1;
+      }
+      /* 第一行正文的行号。对照表用它，记号文本仍是原来的各行。 */
+      const int bodyLine = line;
       std::string body;
       while (index < source.size()) {
         std::size_t end = index;
         while (end < source.size() && source[end] != '\n') end += 1;
-        std::string line = source.substr(index, end - index);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
+        std::string row = source.substr(index, end - index);
+        if (!row.empty() && row.back() == '\r') row.pop_back();
         std::size_t trim = 0;
-        while (trim < line.size() && (line[trim] == ' ' || line[trim] == '\t')) trim += 1;
-        if (line.substr(trim) == "}") {
-          index = end < source.size() ? end + 1 : end;
-          break;
-        }
-        body += line;
-        body.push_back('\n');
+        while (trim < row.size() && (row[trim] == ' ' || row[trim] == '\t')) trim += 1;
+        const bool closed = row.substr(trim) == "}";
+        if (end < source.size() && source[end] == '\n') line += 1;
         index = end < source.size() ? end + 1 : end;
+        if (closed) break;
+        body += row;
+        body.push_back('\n');
       }
       Token token;
       token.kind = Tok::Zap;
       token.text = body;
-      tokens.push_back(token);
+      token.line = bodyLine;
+      push(token);
       continue;
     }
     if (identStart(unit)) {
@@ -239,7 +259,7 @@ std::vector<Token> lex(const std::string& source) {
       Token token;
       token.text = source.substr(index, end - index);
       token.kind = keyword(token.text);
-      tokens.push_back(token);
+      push(token);
       index = end;
       continue;
     }
@@ -294,9 +314,9 @@ std::vector<Token> lex(const std::string& source) {
     else if (unit == '.') take(Tok::Dot, 1);
     else if (unit == '@') take(Tok::At, 1);
     else fail(std::string("无法识别的字符 ") + unit);
-    tokens.push_back(token);
+    push(token);
   }
-  tokens.push_back(Token{});
+  push(Token{});
   return tokens;
 }
 

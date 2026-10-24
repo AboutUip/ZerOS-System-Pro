@@ -20,13 +20,17 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as BoardSupportRoot } from "../Config/BoardSupport";
+import { ZerOS as MetricPageRoot } from "../Host/MetricPage";
 import { ZerOS as ClockRoot } from "../../Clock/Bootstrap/HostClock";
+import { ZerOS as MailboxRoot } from "../Host/Mailbox";
 import { ZerOS as QueuedRoot } from "../Host/QueuedWorker";
 
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Motherboard {
       const seatPrefix = "[ZerOS.Hardware.Motherboard.GpuSeat]";
+      const PanelSize = MailboxRoot.Hardware.Motherboard.MailMessage.PanelSize;
+      const writeMetric = MetricPageRoot.Hardware.Motherboard.writeMetric;
 
       let gpuWorker: Worker | null = null;
       let gpuWidth = 0;
@@ -61,6 +65,22 @@ export namespace ZerOS {
         };
       }
 
+      /**
+       * 换帧成功时，查询用的宽高跟着变，并请页面把显示器调成同一尺寸。
+       * 没有这两个字段的回答保持原来的面板。
+       */
+      function noteFrame(record: Record<string, unknown>): void {
+        const width = record["frameWidth"];
+        const height = record["frameHeight"];
+        if (typeof width !== "number" || typeof height !== "number") {
+          return;
+        }
+        gpuWidth = width;
+        gpuHeight = height;
+        publishGpu();
+        globalThis.postMessage({ kind: PanelSize, width, height });
+      }
+
       function notePace(record: Record<string, unknown>): void {
         const hertz = record["hertz"];
         const executed = record["executed"];
@@ -70,6 +90,16 @@ export namespace ZerOS {
         if (typeof executed === "number") {
           gpuExecuted = executed;
         }
+        publishGpu();
+      }
+
+      /** 帧边和频率都在查询页上。画界面时直接读，不必再问一次显卡线程。 */
+      function publishGpu(): void {
+        writeMetric(3, 0, 0, BigInt(gpuWidth));
+        writeMetric(3, 1, 0, BigInt(gpuHeight));
+        writeMetric(3, 5, 0, BigInt(gpuMemoryBytes));
+        writeMetric(3, 6, 0, BigInt(gpuHertz));
+        writeMetric(3, 7, 0, BigInt(gpuExecuted));
       }
 
       function asRecord(data: unknown): Record<string, unknown> | null {
@@ -188,6 +218,43 @@ export namespace ZerOS {
       }
 
       /**
+       * 向显卡要当前画面。加速器画过时是一张位图，否则仍是像素副本。
+       * 两种都带尺寸。调用方负责把位图或像素缓冲转交给页面，不能两边都留着。
+       */
+      export async function presentSurface(): Promise<{
+        readonly frameWidth: number;
+        readonly frameHeight: number;
+        readonly pixels: Uint32Array | null;
+        readonly bitmap: ImageBitmap | null;
+      }> {
+        const worker = gpuWorker;
+        if (worker === null) {
+          throw new Error(`${seatPrefix} 显卡还没有坐上`);
+        }
+        worker.postMessage({ kind: "present", view: true });
+        const frame = await waitMessage(
+          worker,
+          (record): boolean => record["kind"] === "frame",
+          `${seatPrefix} 显卡没有交出画面`,
+        );
+        const frameWidth = frame["frameWidth"];
+        const frameHeight = frame["frameHeight"];
+        const bitmap = frame["bitmap"];
+        const pixels = frame["pixels"];
+        if (typeof frameWidth !== "number" || typeof frameHeight !== "number") {
+          throw new Error(`${seatPrefix} 画面尺寸不完整`);
+        }
+        notePace(frame);
+        if (bitmap instanceof ImageBitmap) {
+          return { frameWidth, frameHeight, pixels: null, bitmap };
+        }
+        if (pixels instanceof Uint32Array) {
+          return { frameWidth, frameHeight, pixels, bitmap: null };
+        }
+        throw new Error(`${seatPrefix} 画面不完整`);
+      }
+
+      /**
        * 把一条显卡命令原样送进显卡线程。
        * clear / plot / character 成功时只等 ok，不读像素。
        */
@@ -235,6 +302,7 @@ export namespace ZerOS {
         );
         const id = reply["id"];
         notePace(reply);
+        noteFrame(reply);
         if (typeof id === "number") {
           return id;
         }
@@ -261,6 +329,7 @@ export namespace ZerOS {
           `${seatPrefix} 显卡队列没有完成`,
         );
         notePace(reply);
+        noteFrame(reply);
       }
     }
   }

@@ -416,8 +416,16 @@ void Generator::gen(const Expr& expr) {
       }
       auto materialize = [&](int index, int dest) {
         if (direct[static_cast<std::size_t>(index)] == 1) return;
-        if (slots[static_cast<std::size_t>(index)] < 0) gen(expr.kids[static_cast<std::size_t>(index)]);
-        else loadSlot(slots[static_cast<std::size_t>(index)], kinds[static_cast<std::size_t>(index)]);
+        const std::size_t at = static_cast<std::size_t>(index);
+        if (slots[at] < 0) {
+          const Expr& argument = expr.kids[at];
+          gen(argument);
+          if ((kinds[at] == TypeKind::Float || kinds[at] == TypeKind::Double) && argument.type != TypeKind::Float && argument.type != TypeKind::Double) {
+            emit("itof r0, r0");
+          }
+        } else {
+          loadSlot(slots[at], kinds[at]);
+        }
         copy(dest, 0);
       };
       auto plant = [&](int count) {
@@ -645,6 +653,11 @@ void Generator::arith(Tok op, TypeKind left, TypeKind right, TypeKind result) {
   }
 
 void Generator::emitFunction(Function& function) {
+    DebugSite next;
+    next.file = function.origin;
+    next.function = function.name;
+    next.line = function.line;
+    const SiteGuard guard(*this, next);
     prepareInline();
     userWords_ = function.words;
     bias_ = 0;
@@ -705,8 +718,9 @@ void Generator::emitReturn() {
   }
 
 void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
+    const LineGuard at(*this, stmt.line);
     if (stmt.kind == Stmt::Kind::Zap) {
-      emitZap(stmt.name);
+      emitZap(stmt.name, stmt.line);
       emit("load.64 r4, " + std::to_string(kSp));
       emit("place r5, " + std::to_string(frameBits()));
       emit("sub r4, r4, r5");

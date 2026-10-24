@@ -605,10 +605,10 @@ void Generator::emitUi(const Expr& expr, const Function& target) {
     return;
   }
   if (name == "obr::ui::width" || name == "obr::ui::height") {
-    emit("place r1, " + std::string(name == "obr::ui::width" ? "0" : "1"));
-    emit("itof r1, r1");
-    zeroDoubles(2);
-    accel(38);
+    emit("place r1, 3");
+    emit("place r2, " + std::string(name == "obr::ui::width" ? "0" : "1"));
+    emit("place r3, 0");
+    emit("query r0, r1, r2, r3");
     return;
   }
   if (name == "obr::ui::title" || name == "obr::ui::below") {

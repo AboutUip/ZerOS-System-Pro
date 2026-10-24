@@ -22,6 +22,7 @@
 
 import { ZerOS as BoardSupportRoot } from "../Config/BoardSupport";
 import { ZerOS as ExpansionConfigRoot } from "../Config/ExpansionConfig";
+import { ZerOS as MetricPageRoot } from "./MetricPage";
 import { ZerOS as GpuSeatRoot } from "../Seat/GpuSeat";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 
@@ -32,6 +33,7 @@ export namespace ZerOS {
       const FieldChar = PortRoot.Hardware.Motherboard.Slot.FieldChar;
       const State = PortRoot.Hardware.Motherboard.Slot.State;
       const gpuInfo = GpuSeatRoot.Hardware.Motherboard.gpuInfo;
+      const writeMetric = MetricPageRoot.Hardware.Motherboard.writeMetric;
       const queryPrefix = "[ZerOS.Hardware.Motherboard.HardwareQuery]";
 
       const protocols: readonly string[] = [
@@ -80,6 +82,7 @@ export namespace ZerOS {
         if (Number.isInteger(executed)) {
           memoryExecuted = executed;
         }
+        publishMemory();
       }
 
       /** 一次访问或改频率之后，信箱文本里的两行。 */
@@ -93,6 +96,15 @@ export namespace ZerOS {
         if (Number.isInteger(executed)) {
           memoryExecuted = executed;
         }
+        publishMemory();
+      }
+
+      /** 把内存这四项写进指标页。查询直接读页，不再为了 Hz 和条数停下。 */
+      function publishMemory(): void {
+        writeMetric(2, 0, 0, BigInt(memoryInit));
+        writeMetric(2, 1, 0, BigInt(memoryDrawn));
+        writeMetric(2, 5, 0, BigInt(memoryHertz));
+        writeMetric(2, 6, 0, BigInt(memoryExecuted));
       }
 
       /** 页面报来的面板宽、高和刷新率。 */
@@ -103,6 +115,27 @@ export namespace ZerOS {
         panelWidth = width;
         panelHeight = height;
         panelHertz = hertz;
+        writeMetric(4, 0, 0, BigInt(panelWidth));
+        writeMetric(4, 1, 0, BigInt(panelHeight));
+        writeMetric(4, 2, 0, BigInt(panelHertz));
+      }
+
+      /**
+       * 打开指标页，并写下主板个数和当前已经记下的内存、面板、扩展口。
+       * 第一次要在坐显卡之前。之后再调用只是把这些数再写一遍，不碰显卡那几格。
+       */
+      export function openQueryPage(): SharedArrayBuffer {
+        const buffer = MetricPageRoot.Hardware.Motherboard.openMetricPage();
+        writeMetric(0, 0, 0, BigInt(PortCount));
+        writeMetric(0, 1, 0, BigInt(protocols.length));
+        publishMemory();
+        writeMetric(4, 0, 0, BigInt(panelWidth));
+        writeMetric(4, 1, 0, BigInt(panelHeight));
+        writeMetric(4, 2, 0, BigInt(panelHertz));
+        for (let index = 0; index < PortCount; index += 1) {
+          writeMetric(5, 0, index, BigInt(State(index)));
+        }
+        return buffer;
       }
 
       /**

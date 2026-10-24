@@ -174,6 +174,15 @@ function isDirectRun() {
 if (isDirectRun()) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../Root");
   fs.mkdirSync(root, { recursive: true });
+  const boot = path.join(root, "boot");
+  fs.mkdirSync(boot, { recursive: true });
+  const display = path.join(boot, "display");
+  if (!fs.existsSync(display)) {
+    const bytes = Buffer.alloc(4);
+    bytes.writeUInt16LE(640, 0);
+    bytes.writeUInt16LE(480, 2);
+    fs.writeFileSync(display, bytes);
+  }
   void startServer(root, Port).then((started) => {
     process.stdout.write(`ZNP1 NAS ws://${Host}:${String(started.port)}/fs\n${root}\n`);
   }).catch((error) => {

@@ -154,8 +154,15 @@ void Generator::emitInline(const Expr& expr, const Function& target) {
     }
     const std::string end = fresh("e");
     inlineReturn_ = end;
-    for (const Stmt& stmt : target.body) emitStmt(stmt, target.ret);
-    emit(end + ":");
+    DebugSite next = site_;
+    next.file = target.origin;
+    next.function = target.name;
+    next.line = target.line;
+    {
+      const SiteGuard guard(*this, next);
+      for (const Stmt& stmt : target.body) emitStmt(stmt, target.ret);
+      emit(end + ":");
+    }
     inlineReturn_ = savedReturn;
     bias_ = savedBias;
     userWords_ = savedUser;
