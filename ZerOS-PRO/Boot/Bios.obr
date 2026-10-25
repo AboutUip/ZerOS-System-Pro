@@ -754,7 +754,6 @@ deRfun paint(): void {
   obr::ui::restore();
   obr::ui::unclip();
   panelFace();
-  cursorAt();
   long max = bottom - (high - 4L);
   if (max < 0L) {
     max = 0L;
@@ -1732,24 +1731,6 @@ deRfun panelFace(): void {
       row = row + 1L;
     }
   }
-}
-
-/* 箭头尖在事件坐标上。浏览器光标已经藏起，这一笔就是屏幕上的鼠标。还没有事件时不画。 */
-deRfun cursorAt(): void {
-  if (*(long*)7808 == 0L) {
-    return;
-  }
-  long x = *(long*)7680;
-  long y = *(long*)7744;
-  long ink = obr::ui::rgb(248L, 252L, 255L);
-  long edge = obr::ui::rgb(8L, 12L, 20L);
-  obr::ui::rect(x, y, 1L, 15L, edge, 255L);
-  long row = 0L;
-  while (row < 11L) {
-    obr::ui::rect(x, y + row, row + 1L, 1L, ink, 255L);
-    row = row + 1L;
-  }
-  obr::ui::rect(x, y + 11L, 2L, 4L, ink, 255L);
 }
 
 /* 焦点在右侧时才调用。7616 是当前选择器：0 尺寸，1 比例。回车打开或关上它。方向键在列表里换项并立刻应用；列表没开时只在两个选择器之间移动。 */

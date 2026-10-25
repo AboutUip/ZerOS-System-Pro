@@ -13,10 +13,13 @@
         cursor: none;
         background-color: black;
       }
+      canvas {
+        /* 原项目箭头和 0,0 热点走专用光标图像通道，不等待 JS 或大画布重绘。 */
+        cursor: url("./Assets/Pointer.svg") 0 0, none;
+      }
     </style>
   </head>
   <body>
     <canvas></canvas>
   </body>
 </html>
-  
