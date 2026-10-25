@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 
@@ -87,9 +87,11 @@ function hostCompilerPath(): string {
 }
 
 /**
- * 用已经编好的宿主编译器把 Boot 旁的 .obr 收成程序。
- * 交给页面的是无扩展名二进制。旁边的 .zap 和 .debug 只留在工具链目录里。
- * .debug 是指令对照表，不打进页面包，也不装入客程序。CPU 不读它。
+ * 用已经编好的宿主编译器把上电前就必须在的三份固件收成程序。
+ * Logo 在探针和扩展口之前跑完并停机，画出第一帧。Bios 留在核心 0。
+ * Load 按核心 3 的槽编译，倒计时结束后才读 NAS。三份同时存在，不能合成一个，也不放到 NAS。
+ * 交给页面的是无扩展名二进制。旁边的 .debug 只用来收失败帧的源位置，不打进页面包，CPU 不读它。
+ * 这里不写 .zap。文本对照要人手用 -zap 另编。
  * Vite 不调用 g++。产品源码只导入虚拟模块，不写产物路径。
  * 源文件变了就再编译并整页重载。
  */
@@ -156,7 +158,6 @@ function obrFirmwarePlugin(): Plugin {
           memoryHeader,
           ...(job.slot === undefined ? [] : ["-slot", String(job.slot)]),
           "-debug",
-          "-zap",
           "-o",
           job.output,
         ],
@@ -165,6 +166,10 @@ function obrFirmwarePlugin(): Plugin {
       if (result.status !== 0) {
         const detail = (result.stderr || result.stdout || result.error?.message || "obrc 失败").trim();
         throw new Error(detail);
+      }
+      const listing = `${job.output}.zap`;
+      if (existsSync(listing)) {
+        unlinkSync(listing);
       }
     }
   };

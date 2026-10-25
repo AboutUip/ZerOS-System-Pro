@@ -20,8 +20,8 @@ Compiler/Obr/examples/*
 !Compiler/Obr/examples/*.mr
 !Compiler/Obr/examples/*.md
 
-# Preview firmware from Boot/*.obr. The extensionless file is what the CPU runs.
-# The .zap beside it is the same program as text, kept for debugging.
+# Preview firmware from Boot/*.obr. Logo, Bios, and Load are the three ROM images.
+# The .debug beside each is the fault map. This build does not write .zap.
 Toolchain/Zap/
 
 # Guest tree of the reference NAS. None of it is source.

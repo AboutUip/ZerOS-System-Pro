@@ -19,8 +19,8 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
-import { ZerOS as ErrorPictureRoot } from "../../../Boot/ErrorPicture";
-import { ZerOS as FaultDeliveryRoot } from "../../../Boot/FaultDelivery";
+import { ZerOS as ErrorPictureRoot } from "./ErrorPicture";
+import { ZerOS as FaultDeliveryRoot } from "./FaultDelivery";
 import { ZerOS as FaultRecordRoot } from "../../Cpu/Structure/FaultRecord";
 import { ZerOS as DebugMapRoot } from "../../Debug/Host/DebugMap";
 import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
@@ -50,9 +50,9 @@ export namespace ZerOS {
       const notePanel = QueryRoot.Hardware.Motherboard.notePanel;
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
       const PointerPort = PointerConfigRoot.Hardware.Pointer.PointerConfig.OfficialPort;
-      const errorPicture = ErrorPictureRoot.Boot.errorPicture;
+      const errorPicture = ErrorPictureRoot.Hardware.Motherboard.errorPicture;
       const gpuInfo = GpuSeatRoot.Hardware.Motherboard.gpuInfo;
-      const faultChannel = FaultDeliveryRoot.Boot.faultChannel;
+      const faultChannel = FaultDeliveryRoot.Hardware.Motherboard.faultChannel;
       const faultFromText = FaultRecordRoot.Hardware.Cpu.faultFromText;
       const faultFromWire = FaultRecordRoot.Hardware.Cpu.faultFromWire;
       const formatSevere = FaultRecordRoot.Hardware.Cpu.formatSevere;

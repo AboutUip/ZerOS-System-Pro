@@ -1,6 +1,6 @@
 /**
  * @file PageHost.ts
- * @desc 这一页的启动顺序：先接上显示器并封印页面，再动态加载 Boot。
+ * @desc 这一页的启动顺序：先接上显示器并封印页面，再动态加载主板上电入口。
  *       静态导入会把主板加电提前到画布出现之前。
  */
 
@@ -113,7 +113,7 @@ export namespace ZerOS {
           }
           applyDebugSwitch(byte === 1);
         });
-        void import("../../../Boot/Boot");
+        void import("../../Motherboard/Bootstrap/FirmwarePower");
       }
 
       openDisplayPage();

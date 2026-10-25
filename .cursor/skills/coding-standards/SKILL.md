@@ -28,7 +28,7 @@ description: >-
 5. **命名空间分层**：产品代码挂在 `ZerOS.*` 命名空间；子系统根路径与命名空间对应（如 `ZerOS.Hardware.Memory` ↔ `Hardware/Memory/`）。子目录是**物理整理**，不强制加深命名空间层数（除非协议另有挂载面要求）。
 6. **工具链隔离**：`package.json` / `node_modules` / `Dist` / Vite 仅在 `Toolchain/`；禁止污染 `ZerOS-PRO/`。
 7. **一责一文件 + 按职责分目录**：**禁止**把枚举量、对象结构、工厂、类全部堆在同一文件或子系统根目录平铺；必须拆文件并落入对应子目录（见「目录与命名」）。
-8. **虚拟硬件可插拔**：插座在主板上。内存经 ZVHP1 `MemorySlot` + 固定 `Hardware/Memory/ActiveProvider/` 目录替换；主板只导入该目录入口。Boot 只给主板通电，禁止为换内存实现而改 Boot 或主板源码路径。
+8. **虚拟硬件可插拔**：插座在主板上。内存经 ZVHP1 `MemorySlot` + 固定 `Hardware/Memory/ActiveProvider/` 目录替换；主板只导入该目录入口。页面从 `Hardware/Motherboard/Bootstrap/FirmwarePower.ts` 通电。禁止为换内存实现而改这个入口或主板源码路径。
 
 ## 目录与命名
 
@@ -69,7 +69,7 @@ description: >-
 - 新增枚举 → **必须**进 `Enum/`（独立文件，一枚举或一组紧密常量一个文件）。
 - 新增结构 / 接口 / 结构工厂 → **必须**进 `Structure/`。
 - 新增类按角色进 `Unit/` / `Block/` / `Test/` / `Controller/` / `Bootstrap/` / `Config/` / `Provider/`，**禁止**回退到 `Memory/` 根目录。
-- **替换社区内存实现（推荐）**：整体替换 `ActiveProvider/` 文件夹，保持 `Provider.ts` 与导出名 `ActiveMemoryProvider`；**禁止**为换实现而改主板或 `Boot.ts` 导入路径。
+- **替换社区内存实现（推荐）**：整体替换 `ActiveProvider/` 文件夹，保持 `Provider.ts` 与导出名 `ActiveMemoryProvider`；**禁止**为换实现而改主板或 `FirmwarePower.ts` 的导入路径。
 - 协议只有一份，放在 `Documents/Protocol/`。`Hardware/Memory/Docs/` 只描述本仓库这份官方虚拟内存实现的 API；其它实现不必沿用同名方法或同目录文档。主板说明在 `Hardware/Motherboard/Docs/`，那不是协议。
 - 跨子目录引用使用相对路径（如 `../Enum/ExceptionCode`）。
 - 其它硬件子系统（日后 CPU 等）**应**套用同构：`Config` / `Enum` / `Structure` / 主体角色目录。CPU 自己的协议出现后，由主板决定是否支持，并在主板文档里如实写下协议标识。

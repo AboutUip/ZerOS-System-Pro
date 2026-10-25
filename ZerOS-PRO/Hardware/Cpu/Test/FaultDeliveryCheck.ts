@@ -96,7 +96,7 @@ export namespace ZerOS {
         ["[ZerOS.Hardware.Display.PageHost] canvas is missing", 0, 4],
         ["[ZerOS.Hardware.Keyboard.Host] key is missing", 0, 6],
         ["[ZerOS.Hardware.Pointer.Host] pointer is missing", 0, 5],
-        ["[ZerOS.Boot.Run] boot program is incomplete", 0, 0],
+        ["[ZerOS.Hardware.Motherboard.FirmwarePower] boot program is incomplete", 0, 0],
         ["[ZerOS.Hardware.Cpu.CpuRuntime] register is outside 0 to 7", 2, 1],
       ];
 

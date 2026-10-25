@@ -21,7 +21,7 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
-import { ZerOS as AssembleRoot } from "../../../Boot/Assemble";
+import { ZerOS as AssembleRoot } from "../Host/Assemble";
 import { ZerOS as ConfigRoot } from "../Config/SandboxConfig";
 import { ZerOS as StatusRoot } from "../Enum/SandboxStatus";
 
@@ -44,7 +44,7 @@ export namespace ZerOS {
       const SandboxStatusRunning = StatusRoot.Hardware.Sandbox.SandboxStatusRunning;
       const SandboxStatusPassed = StatusRoot.Hardware.Sandbox.SandboxStatusPassed;
       const SandboxStatusFailed = StatusRoot.Hardware.Sandbox.SandboxStatusFailed;
-      const assemble = AssembleRoot.Boot.assemble;
+      const assemble = AssembleRoot.Hardware.Sandbox.assemble;
       const GuestCore = ConfigRoot.Hardware.Sandbox.SandboxConfig.GuestCore;
       const CoreSlotBits = ConfigRoot.Hardware.Sandbox.SandboxConfig.CoreSlotBits;
       const DataFloor = ConfigRoot.Hardware.Sandbox.SandboxConfig.DataFloor;
