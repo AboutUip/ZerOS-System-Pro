@@ -27,11 +27,17 @@
 import { ZerOS as OpRoot } from "../Enum/AccelOp";
 import { ZerOS as GlyphRoot } from "../Structure/UiGlyph";
 import { ZerOS as MemoryRoot } from "./VideoMemory";
+import { ZerOS as FontBytesRoot } from "../Font/FontBytes";
+import { ZerOS as FontSessionRoot } from "../Font/FontSession";
+import { type ZerOS as StampRoot } from "../Structure/FontStamp";
 
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Gpu {
       const Op = OpRoot.Hardware.Gpu.AccelOp;
+      const takeFontBytes = FontBytesRoot.Hardware.Gpu.takeFontBytes;
+      const machineFont = FontSessionRoot.Hardware.Gpu.machineFont;
+      type FontStamp = StampRoot.Hardware.Gpu.FontStamp;
       const glyphRows = GlyphRoot.Hardware.Gpu.UiGlyphRows;
       const readBytes = MemoryRoot.Hardware.Gpu.readBytes;
       const accelPrefix = "[ZerOS.Hardware.Gpu.WebGpuAccel]";
@@ -179,11 +185,16 @@ struct Vout {
         throw new Error(`${accelPrefix} ${message}`);
       }
 
+      /**
+       * 还原浮点用的八个字节。
+       * 进度条、圆角和每个字形都要把寄存器里的位型换回浮点。每次新开一块，一帧会生出几千个短命对象。
+       */
+      const floatBits = new DataView(new ArrayBuffer(8));
+
       /** 寄存器里的二进制 64 位型，按小端还原成有限浮点。 */
       function f64(bits: bigint): number {
-        const view = new DataView(new ArrayBuffer(8));
-        view.setBigInt64(0, BigInt.asIntN(64, bits), true);
-        const value = view.getFloat64(0, true);
+        floatBits.setBigInt64(0, BigInt.asIntN(64, bits), true);
+        const value = floatBits.getFloat64(0, true);
         if (!Number.isFinite(value)) {
           fail("加速参数不是有限数");
         }
@@ -313,9 +324,18 @@ struct Vout {
         alpha: number;
         clearDepth: boolean;
         z: number;
-        verts: number[];
+        /** 这一段第一个顶点在 scratch 里的下标。 */
+        first: number;
+        /** 这一段的顶点个数。 */
+        count: number;
       }
       const screenPasses: ScreenPass[] = [];
+      /**
+       * 屏幕顶点写在这一块里。每个角再 new 一个短数组的话，CPU 页一帧有几百个字形，
+       * 鼠标连着动时回收会把页面线程拖住。提交前先抄出这一帧：准备设备会让出，下一批从开头写。
+       */
+      let screenScratch = new Float32Array(65536);
+      let screenUsed = 0;
       /** 只清深度时先记下，下一段或提交时再用。 */
       let screenDepthPending = false;
       let fontTexture: GPUTexture | null = null;
@@ -904,11 +924,74 @@ struct Vout {
           alpha: clearAlpha,
           clearDepth: screenDepthPending,
           z: clearZ,
-          verts: [],
+          first: screenUsed / screenFloats,
+          count: 0,
         };
         screenDepthPending = false;
         screenPasses.push(created);
         return created;
+      }
+
+      /** 顶点要写到的位置超出现有缓冲时加倍。只抄已经写入的前缀。 */
+      function ensureScreen(count: number): void {
+        const need = screenUsed + count;
+        if (need <= screenScratch.length) {
+          return;
+        }
+        let size = screenScratch.length;
+        while (size < need) {
+          size *= 2;
+        }
+        const next = new Float32Array(size);
+        next.set(screenScratch.subarray(0, screenUsed));
+        screenScratch = next;
+      }
+
+      /** 按与原来每个角相同的 24 个数写下标，不再为这个角分配数组。 */
+      function writeScreenVertex(
+        at: number,
+        px: number,
+        py: number,
+        su: number,
+        sv: number,
+        font: number,
+        mode: number,
+        radius: number,
+        clipOn: number,
+        originX: number,
+        originY: number,
+        cellWidth: number,
+        cellHeight: number,
+        tintR: number,
+        tintG: number,
+        tintB: number,
+        tintA: number,
+      ): void {
+        const scratch = screenScratch;
+        scratch[at] = px;
+        scratch[at + 1] = py;
+        scratch[at + 2] = 0;
+        scratch[at + 3] = tintR;
+        scratch[at + 4] = tintG;
+        scratch[at + 5] = tintB;
+        scratch[at + 6] = tintA;
+        scratch[at + 7] = su;
+        scratch[at + 8] = sv;
+        scratch[at + 9] = font;
+        scratch[at + 10] = 0;
+        scratch[at + 11] = 0;
+        scratch[at + 12] = mode;
+        scratch[at + 13] = radius;
+        scratch[at + 14] = clipOn;
+        scratch[at + 15] = 0;
+        scratch[at + 16] = originX;
+        scratch[at + 17] = originY;
+        scratch[at + 18] = cellWidth;
+        scratch[at + 19] = cellHeight;
+        scratch[at + 20] = scissorX;
+        scratch[at + 21] = scissorY;
+        scratch[at + 22] = scissorW;
+        scratch[at + 23] = scissorH;
       }
 
       /**
@@ -925,7 +1008,7 @@ struct Vout {
           return;
         }
         const last = screenPasses[screenPasses.length - 1];
-        if (last?.verts.length === 0) {
+        if (last?.count === 0) {
           last.clearColor = true;
           last.red = clearRed;
           last.green = clearGreen;
@@ -946,7 +1029,8 @@ struct Vout {
           alpha: clearAlpha,
           clearDepth: screenDepthPending,
           z: clearZ,
-          verts: [],
+          first: screenUsed / screenFloats,
+          count: 0,
         });
         screenDepthPending = false;
       }
@@ -967,24 +1051,18 @@ struct Vout {
         const top = 1 - (y / height) * 2;
         const bottom = 1 - ((y + cellHeight) / height) * 2;
         const clipOn = scissorOn ? 1 : 0;
-        const corner = (px: number, py: number, su: number, sv: number): number[] => [
-          px, py, 0,
-          tintR, tintG, tintB, tintA,
-          su, sv,
-          font, 0, 0,
-          mode, radius, clipOn, 0,
-          x, y, cellWidth, cellHeight,
-          scissorX, scissorY, scissorW, scissorH,
-        ];
-        const verts = screenTail().verts;
-        verts.push(
-          ...corner(left, top, u0, v0),
-          ...corner(right, top, u1, v0),
-          ...corner(right, bottom, u1, v1),
-          ...corner(left, top, u0, v0),
-          ...corner(right, bottom, u1, v1),
-          ...corner(left, bottom, u0, v1),
-        );
+        const pass = screenTail();
+        const quad = screenFloats * 6;
+        ensureScreen(quad);
+        const base = screenUsed;
+        writeScreenVertex(base, left, top, u0, v0, font, mode, radius, clipOn, x, y, cellWidth, cellHeight, tintR, tintG, tintB, tintA);
+        writeScreenVertex(base + screenFloats, right, top, u1, v0, font, mode, radius, clipOn, x, y, cellWidth, cellHeight, tintR, tintG, tintB, tintA);
+        writeScreenVertex(base + screenFloats * 2, right, bottom, u1, v1, font, mode, radius, clipOn, x, y, cellWidth, cellHeight, tintR, tintG, tintB, tintA);
+        writeScreenVertex(base + screenFloats * 3, left, top, u0, v0, font, mode, radius, clipOn, x, y, cellWidth, cellHeight, tintR, tintG, tintB, tintA);
+        writeScreenVertex(base + screenFloats * 4, right, bottom, u1, v1, font, mode, radius, clipOn, x, y, cellWidth, cellHeight, tintR, tintG, tintB, tintA);
+        writeScreenVertex(base + screenFloats * 5, left, bottom, u0, v1, font, mode, radius, clipOn, x, y, cellWidth, cellHeight, tintR, tintG, tintB, tintA);
+        screenUsed = base + quad;
+        pass.count += 6;
       }
 
       /**
@@ -993,6 +1071,10 @@ struct Vout {
        */
       export async function flushScreen(): Promise<void> {
         const passes = screenPasses.splice(0);
+        const used = screenUsed;
+        /* 准备设备会让出线程。先把这一帧抄出来，下一批字形才能从缓冲开头接着写。 */
+        const snapshot = used > 0 ? screenScratch.slice(0, used) : null;
+        screenUsed = 0;
         if (screenDepthPending) {
           passes.push({
             clearColor: false,
@@ -1002,7 +1084,8 @@ struct Vout {
             alpha: clearAlpha,
             clearDepth: true,
             z: clearZ,
-            verts: [],
+            first: 0,
+            count: 0,
           });
           screenDepthPending = false;
         }
@@ -1018,17 +1101,13 @@ struct Vout {
         const mvp = new Float32Array(17);
         mvp.set(identity());
         active.queue.writeBuffer(uniform, 0, mvp);
-        const joined: number[] = [];
         const draws: { readonly first: number; readonly count: number }[] = [];
         for (const pass of passes) {
-          draws.push({ first: joined.length / screenFloats, count: pass.verts.length / screenFloats });
-          for (const value of pass.verts) {
-            joined.push(value);
-          }
+          draws.push({ first: pass.first, count: pass.count });
         }
         let buffer = screenVertices;
-        if (joined.length > 0) {
-          const data = new Float32Array(joined);
+        if (snapshot !== null) {
+          const data = snapshot;
           const bytes = data.byteLength;
           if (buffer === null || screenVertexBytes < bytes) {
             if (buffer !== null) {
@@ -1172,20 +1251,13 @@ struct Vout {
       }
 
       /**
-       * 执行一条加速命令。
-       * 返回值写入调用方的结果寄存器；多数命令返回 0，生成纹理时返回新编号。
-       * 屏幕图元只追加。要画到三维管线或读像素之前，才把列表提交。
+       * 只追加屏幕图元或改它的状态，不提交，也不等待。
+       * 不是这类操作时返回 null。调用方先把已经记下的图元提交，再走会等待的那条。
+       * 进度条的轨道、填充和亮线，以及每个字形，都是这类操作。
        */
-      export async function accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number> {
+      function heldAccel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): number | null {
         if (!screenHolds(op)) {
-          await flushScreen();
-        }
-        if (op === Op.Viewport) {
-          viewportX = f64(a);
-          viewportY = f64(b);
-          viewportW = f64(c);
-          viewportH = f64(d);
-          return 0;
+          return null;
         }
         if (op === Op.Scissor) {
           scissorX = Math.trunc(f64(a));
@@ -1214,6 +1286,104 @@ struct Vout {
           green = f64(b);
           blue = f64(c);
           alpha = f64(d);
+          return 0;
+        }
+        if (op === Op.Enable) {
+          capability(iarg(a), true);
+          return 0;
+        }
+        if (op === Op.Disable) {
+          capability(iarg(a), false);
+          return 0;
+        }
+        if (op === Op.Corner) {
+          const radius = f64(a);
+          if (radius < 0) {
+            fail("圆角半径是负数");
+          }
+          cornerRadius = radius;
+          return 0;
+        }
+        if (op === Op.Frame) {
+          const edge = f64(a);
+          if (edge === 0) {
+            return width;
+          }
+          if (edge === 1) {
+            return height;
+          }
+          fail("没有这条帧边");
+        }
+        if (op === Op.Fill || op === Op.Round || op === Op.Ellipse || op === Op.ScreenGlyph) {
+          const mode = op === Op.ScreenGlyph ? 1 : op === Op.Round ? 2 : op === Op.Ellipse ? 3 : 0;
+          return paintScreen(mode, iarg(a), iarg(b), iarg(c), iarg(d));
+        }
+        fail("没有这种加速操作");
+      }
+
+      /** 给一批屏幕命令用。做不到当场完成时返回 null。 */
+      export function accelImmediate(op: number, a: bigint, b: bigint, c: bigint, d: bigint): number | null {
+        return heldAccel(op, a, b, c, d);
+      }
+
+      /**
+       * 把一枚字形掩码按当前颜色盖上去。合成和 Fill 一样，完全落在目标外的行不提交。
+       * 着墨是 255。0 留空，不抗锯齿。
+       */
+      function paintStamp(stamp: FontStamp): void {
+        for (let row = 0; row < stamp.height; row += 1) {
+          let column = 0;
+          while (column < stamp.width) {
+            while (column < stamp.width && stamp.coverage[row * stamp.width + column] !== 255) {
+              column += 1;
+            }
+            const start = column;
+            while (column < stamp.width && stamp.coverage[row * stamp.width + column] === 255) {
+              column += 1;
+            }
+            const run = column - start;
+            if (run > 0 && coversTarget(stamp.x + start, stamp.y + row, run, 1)) {
+              pushScreenQuad(stamp.x + start, stamp.y + row, run, 1, 0, 0, 1, 1, 0, 0, 0);
+            }
+          }
+        }
+      }
+
+      /**
+       * 字体面三条命令。字节已经由执行核心从线性位元读出。
+       * 失败时一条图章都不追加，颜色目标保持调用前的内容。
+       */
+      function paintFont(op: number, a: bigint, b: bigint, c: bigint, d: bigint): number {
+        const answer = machineFont().command(op, a, b, c, d, takeFontBytes());
+        if (!answer.ok) {
+          fail("font command was rejected");
+        }
+        for (const stamp of answer.ink) {
+          paintStamp(stamp);
+        }
+        return answer.id;
+      }
+
+      /**
+       * 执行一条加速命令。
+       * 返回值写入调用方的结果寄存器；多数命令返回 0，生成纹理时返回新编号。
+       * 屏幕图元只追加。要画到三维管线或读像素之前，才把列表提交。
+       * 字体面在追加之前解析。失败不把已经记下的屏幕图元提前提交。
+       */
+      export async function accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number> {
+        if (op === Op.FontFace || op === Op.FontSelect || op === Op.FontDraw) {
+          return paintFont(op, a, b, c, d);
+        }
+        const held = heldAccel(op, a, b, c, d);
+        if (held !== null) {
+          return held;
+        }
+        await flushScreen();
+        if (op === Op.Viewport) {
+          viewportX = f64(a);
+          viewportY = f64(b);
+          viewportW = f64(c);
+          viewportH = f64(d);
           return 0;
         }
         if (op === Op.Vertex) {
@@ -1356,14 +1526,6 @@ struct Vout {
           far = f64(b);
           return 0;
         }
-        if (op === Op.Enable) {
-          capability(iarg(a), true);
-          return 0;
-        }
-        if (op === Op.Disable) {
-          capability(iarg(a), false);
-          return 0;
-        }
         if (op === Op.GenTexture) {
           const id = nextTexture;
           nextTexture += 1;
@@ -1439,28 +1601,6 @@ struct Vout {
           frontCw = order === 1;
           pipeline = null;
           return 0;
-        }
-        if (op === Op.Corner) {
-          const radius = f64(a);
-          if (radius < 0) {
-            fail("圆角半径是负数");
-          }
-          cornerRadius = radius;
-          return 0;
-        }
-        if (op === Op.Frame) {
-          const edge = f64(a);
-          if (edge === 0) {
-            return width;
-          }
-          if (edge === 1) {
-            return height;
-          }
-          fail("没有这条帧边");
-        }
-        if (op === Op.Fill || op === Op.Round || op === Op.Ellipse || op === Op.ScreenGlyph) {
-          const mode = op === Op.ScreenGlyph ? 1 : op === Op.Round ? 2 : op === Op.Ellipse ? 3 : 0;
-          return paintScreen(mode, iarg(a), iarg(b), iarg(c), iarg(d));
         }
         fail("没有这种加速操作");
       }

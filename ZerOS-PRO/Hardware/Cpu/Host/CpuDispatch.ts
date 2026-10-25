@@ -26,7 +26,6 @@ import { ZerOS as CpuSlotRoot } from "../../Motherboard/Slot/Cpu/CpuSlot";
 import { ZerOS as CpuSelfCheckRoot } from "../Test/CpuSelfCheck";
 import { ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
 import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
-import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
 import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
 import { ZerOS as MailboxRoot } from "../../Motherboard/Host/Mailbox";
 
@@ -52,7 +51,7 @@ export namespace ZerOS {
       const runGuest = RuntimeRoot.Hardware.Cpu.runGuest;
       const coreIsHalted = RuntimeRoot.Hardware.Cpu.coreIsHalted;
       const seatImage = RuntimeRoot.Hardware.Cpu.seatImage;
-      const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
+      const seatNativeImage = RuntimeRoot.Hardware.Cpu.seatNativeImage;
       const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
       const DebugRunMessage = MailboxRoot.Hardware.Motherboard.MailMessage.DebugRun;
       const DebugResultMessage = MailboxRoot.Hardware.Motherboard.MailMessage.DebugResult;
@@ -87,12 +86,12 @@ export namespace ZerOS {
       function onBind(record: Record<string, unknown>): void {
         const supported = readSupported(record);
         if (supported?.includes(provider.ActiveProtocol) !== true) {
-          postFault(`${seatPrefix} 主板不支持 CPU 协议 ${provider.ActiveProtocol}`);
+          postFault(`${seatPrefix} board does not support CPU protocol ${provider.ActiveProtocol}`);
           return;
         }
         CpuSlot.Bind(provider);
         if (CpuSlot.GetActive() !== provider) {
-          postFault(`${seatPrefix} CPU 插头没有坐上插座`);
+          postFault(`${seatPrefix} the CPU provider is not seated`);
           return;
         }
         noteCpuIdentity(provider.ProviderId, provider.ProviderVendor, provider.ActiveProtocol);
@@ -111,14 +110,14 @@ export namespace ZerOS {
         const ordinal = record["ordinal"];
         const port = record["port"];
         if (typeof ordinal !== "number" || !(port instanceof MessagePort)) {
-          postFault(`${seatPrefix} 挂载消息缺少核心编号或端口`);
+          postFault(`${seatPrefix} a mount message is missing the core or the port`);
           return;
         }
         try {
           acceptMountedCore(ordinal, port);
           port.start();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 挂载失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} mount failed`;
           postFault(message);
         }
       }
@@ -137,7 +136,7 @@ export namespace ZerOS {
           runCpuSelfCheck();
           globalThis.postMessage({ kind: "ok" });
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} CPU 自检失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} CPU self-check failed`;
           postFault(message);
         }
       }
@@ -152,7 +151,7 @@ export namespace ZerOS {
           },
           (error: unknown): void => {
             parkInstalledFaults(false);
-            const message = error instanceof Error ? error.message : `${seatPrefix} 核心试执行失败`;
+            const message = error instanceof Error ? error.message : `${seatPrefix} the core trial did not finish`;
             postFault(message);
           },
         );
@@ -195,26 +194,38 @@ export namespace ZerOS {
       function onSeat(record: Record<string, unknown>): void {
         const ordinal = record["ordinal"];
         if (typeof ordinal !== "number") {
-          postFault(`${seatPrefix} 装入目标不完整`);
+          postFault(`${seatPrefix} the install target is incomplete`);
+          return;
+        }
+        const binary = record["binary"];
+        if (binary instanceof Uint8Array && binary.length >= 4 && binary[0] === 0x5a && binary[1] === 0x4e && binary[2] === 0x42 && binary[3] === 0x31) {
+          try {
+            seatNativeImage(ordinal, binary);
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : `${seatPrefix} install failed`;
+            postFault(message);
+            return;
+          }
+          globalThis.postMessage({ kind: "ok" });
           return;
         }
         let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
         try {
           const parsed = stepsOf(record);
           if (parsed === null) {
-            postFault(`${seatPrefix} 装入程序不完整`);
+            postFault(`${seatPrefix} the program image is incomplete`);
             return;
           }
           steps = parsed;
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 装入程序无法解析`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} the program image could not be decoded`;
           postFault(message);
           return;
         }
         try {
           seatImage(ordinal, steps);
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 装入失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} install failed`;
           postFault(message);
           return;
         }
@@ -263,12 +274,12 @@ export namespace ZerOS {
         try {
           const parsed = stepsOf(record);
           if (parsed === null) {
-            postFault(`${seatPrefix} 指令序列不完整`);
+            postFault(`${seatPrefix} the instruction sequence is incomplete`);
             return;
           }
           steps = parsed;
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 指令无法解析`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} the instructions could not be decoded`;
           postFault(message);
           return;
         }
@@ -277,7 +288,7 @@ export namespace ZerOS {
             globalThis.postMessage({ kind: "ok" });
           },
           (error: unknown): void => {
-            const message = error instanceof Error ? error.message : `${seatPrefix} 指令序列失败`;
+            const message = error instanceof Error ? error.message : `${seatPrefix} the instruction sequence failed`;
             postFault(message);
           },
         );
@@ -339,7 +350,9 @@ export namespace ZerOS {
           postDebug("debug run was refused");
           return;
         }
-        const decision = debugRunDecision(DebugEnabled, lines, coreIsHalted(0));
+        /* 页面把固件开关放在消息里。这里的模块副本不是那一档。 */
+        const enabled = record["enabled"] === true;
+        const decision = debugRunDecision(enabled, lines, coreIsHalted(0));
         if (decision !== "") {
           postDebug(decision);
           return;
@@ -396,19 +409,19 @@ export namespace ZerOS {
         const ordinal = record["ordinal"];
         const ticket = record["ticket"];
         if (typeof ordinal !== "number" || typeof ticket !== "number") {
-          postGuest(ticketOf(record), false, `${seatPrefix} 客程序不完整`, []);
+          postGuest(ticketOf(record), false, `${seatPrefix} the guest program is incomplete`, []);
           return;
         }
         let steps: InstructionRoot.Hardware.Cpu.CpuInstruction[];
         try {
           const parsed = stepsOf(record);
           if (parsed === null) {
-            postGuest(ticket, false, `${seatPrefix} 客程序不完整`, []);
+            postGuest(ticket, false, `${seatPrefix} the guest program is incomplete`, []);
             return;
           }
           steps = parsed;
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 指令无法解析`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} the instructions could not be decoded`;
           postGuest(ticket, false, message, []);
           return;
         }
@@ -417,7 +430,7 @@ export namespace ZerOS {
             postGuest(ticket, result.Ok, result.Message, result.Registers);
           },
           (error: unknown): void => {
-            const message = error instanceof Error ? error.message : `${seatPrefix} 客程序失败`;
+            const message = error instanceof Error ? error.message : `${seatPrefix} the guest program failed`;
             postGuest(ticket, false, message, []);
           },
         );

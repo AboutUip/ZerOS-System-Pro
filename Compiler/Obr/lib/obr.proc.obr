@@ -7,6 +7,16 @@ deRfun obr::proc::home(): long {
   return query(1L, 8L, obr::os::core());
 }
 
+/* 请求路径的起点。字体服务的回复仍写在 +512。 */
+deRfun obr::proc::path(long home): long {
+  return home + 16384L;
+}
+
+/* 读写字节的起点。一次最多 262144 个八位组。 */
+deRfun obr::proc::bytes(long home): long {
+  return home + 131072L;
+}
+
 deRfun obr::proc::slot(long home, long offset): long {
   return memory::load64(home + offset);
 }
@@ -131,4 +141,9 @@ deRfun obr::proc::loadlib(long home): long {
 deRfun obr::proc::devio(long home, long dir): long {
   memory::store64(dir, home + 128L);
   return obr::os::svc(23L);
+}
+
+deRfun obr::proc::font(long home, long index): long {
+  memory::store64(index, home);
+  return obr::os::svc(26L);
 }

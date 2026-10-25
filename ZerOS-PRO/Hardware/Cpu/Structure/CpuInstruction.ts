@@ -127,6 +127,8 @@ export namespace ZerOS {
         | { readonly Op: "release"; readonly Core: number }
         | { readonly Op: "yield" }
         | { readonly Op: "dwell"; readonly Time: number }
+        | { readonly Op: "mmap"; readonly Destination: number; readonly Port: number; readonly Handle: number; readonly Length: number }
+        | { readonly Op: "munmap"; readonly Address: number; readonly Length: number }
         | { readonly Op: "capture"; readonly Core: number; readonly Slot: number }
         | { readonly Op: "restore"; readonly Core: number; readonly Slot: number }
         | { readonly Op: "core"; readonly Register: number }
@@ -698,6 +700,24 @@ export namespace ZerOS {
         if (head === "yield" && parts.length === 1) {
           return { Op: "yield" };
         }
+        if (head === "mmap" && parts.length === 5) {
+          const destination = registerOf(parts[1] ?? "");
+          const port = registerOf(parts[2] ?? "");
+          const handle = registerOf(parts[3] ?? "");
+          const length = registerOf(parts[4] ?? "");
+          if (destination === null || port === null || handle === null || length === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "mmap", Destination: destination, Port: port, Handle: handle, Length: length };
+        }
+        if (head === "munmap" && parts.length === 3) {
+          const address = registerOf(parts[1] ?? "");
+          const length = registerOf(parts[2] ?? "");
+          if (address === null || length === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "munmap", Address: address, Length: length };
+        }
         if (head === "dwell" && parts.length === 2) {
           const time = registerOf(parts[1] ?? "");
           if (time === null) {
@@ -846,6 +866,12 @@ export namespace ZerOS {
         }
         if (instruction.Op === "dwell") {
           return `dwell r${String(instruction.Time)}`;
+        }
+        if (instruction.Op === "mmap") {
+          return `mmap r${String(instruction.Destination)}, r${String(instruction.Port)}, r${String(instruction.Handle)}, r${String(instruction.Length)}`;
+        }
+        if (instruction.Op === "munmap") {
+          return `munmap r${String(instruction.Address)}, r${String(instruction.Length)}`;
         }
         if (instruction.Op === "capture") {
           return `capture r${String(instruction.Core)}, r${String(instruction.Slot)}`;

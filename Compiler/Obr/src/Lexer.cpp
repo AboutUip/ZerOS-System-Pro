@@ -1,6 +1,7 @@
 #include "Lexer.hpp"
 
 #include "Diagnostic.hpp"
+#include "Utf8.hpp"
 
 #include <cctype>
 #include <utility>
@@ -143,24 +144,28 @@ std::vector<Token> lex(const std::string& source) {
     if (unit == '\'') {
       index += 1;
       if (index >= source.size()) fail("字符字面量没有结束");
-      char value = 0;
+      long long value = 0;
       if (source[index] == '\'') {
         value = 0;
-      } else {
-        if (source[index] == '\\') {
-          index += 1;
-          if (index >= source.size()) fail("字符字面量没有结束");
-          value = escape(source[index]);
-        } else {
-          value = source[index];
-        }
+        index += 1;
+      } else if (source[index] == '\\') {
+        index += 1;
+        if (index >= source.size()) fail("字符字面量没有结束");
+        value = static_cast<unsigned char>(escape(source[index]));
         index += 1;
         if (index >= source.size() || source[index] != '\'') fail("字符字面量必须恰好一个字符");
+        index += 1;
+      } else {
+        const Utf8Step step = takeUtf8(source, index);
+        if (!step.ok) fail("字符字面量不是合法的 UTF-8");
+        value = step.scalar;
+        index = step.next;
+        if (index >= source.size() || source[index] != '\'') fail("字符字面量必须恰好一个字符");
+        index += 1;
       }
-      index += 1;
       Token token;
       token.kind = Tok::CharLit;
-      token.integer = static_cast<unsigned char>(value);
+      token.integer = value;
       push(token);
       continue;
     }

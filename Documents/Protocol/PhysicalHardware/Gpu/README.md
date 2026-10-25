@@ -9,6 +9,7 @@
 | [ZGP1.md](./ZGP1.md) | 协议正文 | 显存、频率、帧、绘图命令与 `Present` |
 | [Glyph.md](./Glyph.md) | 封闭字形 | `0x20` 至 `0x7E` 的 8 行字节 |
 | [AccelGlyph.md](./AccelGlyph.md) | 封闭字形 | `ScreenGlyph` 的 5×7 位图 |
+| [Font.md](./Font.md) | 字体面 | TrueType 子集、Unicode 标量光栅。不扩展封闭点阵 |
 | [AccelRegistry.md](./AccelRegistry.md) | 登记表 | `gpu.accel` 的操作码 |
 | [AccelIndex.md](./AccelIndex.md) | 索引 | 操作码检索 |
 

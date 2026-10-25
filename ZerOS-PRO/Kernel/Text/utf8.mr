@@ -1,0 +1,6 @@
+/* UTF-8。整段解开成 Unicode 标量，或再收成 FontDraw 要的小端四字节。
+   成功是 0，written 是标量个数。字节不合法是 1，written 是第一个坏序列的起始字节。
+   装不下是 7，written 是本应写下的标量个数，目标里一个字都不改。
+   失败不留下已经解开的前缀。不做规范化。 */
+deRfun utf8Decode(long address, long count, long dest, long capacity, long* written): long;
+deRfun utf8Pack(long address, long count, long dest, long capacity, long* written): long;

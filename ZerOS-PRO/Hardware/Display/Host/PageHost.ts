@@ -67,7 +67,9 @@ export namespace ZerOS {
           return;
         }
         const readCoreStop = PageCoreStopRoot.Hardware.Cpu.readCoreStop;
-        const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
+        const setDebugEnabled = FlagRoot.Hardware.Debug.setDebugEnabled;
+        const readBootOctet = NasRuntimeRoot.Hardware.Nas.readBootOctet;
+        const saveBootOctet = NasRuntimeRoot.Hardware.Nas.saveBootOctet;
         type FaultRecord = FaultRoot.Hardware.Cpu.FaultRecord;
         type CoreStop = StopRoot.Hardware.Cpu.CoreStop;
         const hooks = {
@@ -77,15 +79,40 @@ export namespace ZerOS {
           exchange: (index: number, direction: number, word: bigint): Promise<bigint> => page.Exchange(index, direction, word),
           run: (lines: readonly string[]): Promise<string> => page.DebugRun(lines),
         };
-        /* 开关关闭时这里什么都不挂。打开时全局和被封住的控制台各有一份只读入口。 */
-        SurfaceRoot.Hardware.Debug.installDebugSurface(globalThis, DebugEnabled, hooks);
-        if (DebugEnabled) {
+        /**
+         * 已经挂上的那一档。null 表示还没按文件或固件摆过。
+         * 同一档再来一次就不再改全局对象，免得把控制台里已经拿住的入口换掉。
+         */
+        let applied: boolean | null = null;
+        /** 固件已经写过开关。之后到达的启动读取不再把新的一档盖回旧文件。 */
+        let sawFirmware = false;
+        function applyDebugSwitch(on: boolean): void {
+          setDebugEnabled(on);
+          if (applied === on) {
+            return;
+          }
+          applied = on;
+          /* 关闭时摘掉入口。打开时全局和被封住的控制台各有一份。 */
+          SurfaceRoot.Hardware.Debug.installDebugSurface(globalThis, on, hooks);
           try {
-            SurfaceRoot.Hardware.Debug.installDebugSurface(console, DebugEnabled, hooks);
+            SurfaceRoot.Hardware.Debug.installDebugSurface(console, on, hooks);
           } catch {
             /* 控制台对象不允许再挂属性时，全局入口仍然在。 */
           }
         }
+        applyDebugSwitch(false);
+        page.WhenDebugSwitch((on): void => {
+          sawFirmware = true;
+          applyDebugSwitch(on);
+          /* 固件不占客机会话。这一位由页面写进 /boot/debug。 */
+          void saveBootOctet("/boot/debug", on ? 1 : 0);
+        });
+        void readBootOctet("/boot/debug").then((byte): void => {
+          if (sawFirmware || byte === null) {
+            return;
+          }
+          applyDebugSwitch(byte === 1);
+        });
         void import("../../../Boot/Boot");
       }
 

@@ -111,6 +111,7 @@ class Generator {
   int extraWords(int index);
   void emitInline(const Expr& expr, const Function& target);
   void emitLibrary(const Expr& expr, const Function& target);
+  void emitFont(const Expr& expr, const Function& target);
   void emitUi(const Expr& expr, const Function& target);
   void emitUiRoutines();
   int uiAt(int index) const;

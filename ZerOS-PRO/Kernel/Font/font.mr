@@ -1,0 +1,7 @@
+/* 系统字体。引导时核对 NAS 上的两份等宽无衬线，服务 26 把路径交回调用者。 */
+deRfun fontCensus(): void;
+deRfun fontQuery(long home): long;
+deRfun termPhase(): long;
+deRfun termSet(long value): void;
+deRfun termOpen(): long;
+deRfun termShow(): void;

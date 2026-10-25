@@ -20,7 +20,7 @@ struct Mm {
   long heap;
 }
 
-/* 19 个 64 位字。taskStride 必须等于 19×64。改字段时两处一起改。cwd 是当前目录。sig 从第 1 号信号起，每位一个信号。code 是退出码。waitFor 为 0 表示没在等，-1 表示等任意子任务，正数是指定的 pid。held 为 0 表示槽里还没有这份任务，为 1 表示槽号（任务表下标）里是它。 */
+/* 19 个 64 位字。taskStride 必须等于 19×64。改字段时两处一起改。cwd 是当前目录。sig 从第 1 号信号起，每位一个信号。code 是退出码。waitFor 为 0 表示没在等，-1 表示等任意子任务，正数是指定的 pid。held 为 0 表示还没进槽。大于 0 时，槽号是 held 减 1，槽号不必等于任务表下标。 */
 struct Task {
   long pid;
   long ppid;
@@ -36,8 +36,13 @@ struct Task {
   long held;
 }
 
-deRfun kSlot(): long;
+deRfun taskLimit(): long;
+deRfun slotLimit(): long;
+deRfun slotPick(long index): long;
+deRfun slotHold(long index): long;
+deRfun poolGrow(long core, long extra): long;
 deRfun kSpan(): long;
+deRfun kSlot(): long;
 deRfun kArena(long core): long;
 deRfun taskStride(): long;
 deRfun tableBase(): long;

@@ -115,6 +115,8 @@ export namespace ZerOS {
       const ProgramBinaryCapture = CodeRoot.Hardware.Cpu.ProgramBinaryCapture;
       const ProgramBinaryRestore = CodeRoot.Hardware.Cpu.ProgramBinaryRestore;
       const ProgramBinaryAttach = CodeRoot.Hardware.Cpu.ProgramBinaryAttach;
+      const ProgramBinaryMmap = CodeRoot.Hardware.Cpu.ProgramBinaryMmap;
+      const ProgramBinaryMunmap = CodeRoot.Hardware.Cpu.ProgramBinaryMunmap;
       const ProgramBinaryVersionLink = CodeRoot.Hardware.Cpu.ProgramBinaryVersionLink;
       const ProgramBinaryImmediateSigned = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateSigned;
       const ProgramBinaryImmediateWide = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateWide;
@@ -367,6 +369,14 @@ export namespace ZerOS {
           case "attach":
             writeCode(writer, ProgramBinaryAttach);
             writeRegisters(writer, [step.Destination, step.Core, step.Address, step.Length]);
+            return;
+          case "mmap":
+            writeCode(writer, ProgramBinaryMmap);
+            writeRegisters(writer, [step.Destination, step.Port, step.Handle, step.Length]);
+            return;
+          case "munmap":
+            writeCode(writer, ProgramBinaryMunmap);
+            writeRegisters(writer, [step.Address, step.Length]);
             return;
           case "gpu.plot":
             writeCode(writer, ProgramBinaryGpuPlot);
@@ -797,6 +807,18 @@ export namespace ZerOS {
             Address: readRegister(reader),
             Length: readRegister(reader),
           };
+        }
+        if (code === ProgramBinaryMmap) {
+          return {
+            Op: "mmap",
+            Destination: readRegister(reader),
+            Port: readRegister(reader),
+            Handle: readRegister(reader),
+            Length: readRegister(reader),
+          };
+        }
+        if (code === ProgramBinaryMunmap) {
+          return { Op: "munmap", Address: readRegister(reader), Length: readRegister(reader) };
         }
         if (code === ProgramBinaryGpuPlot) {
           return { Op: "gpu.plot", X: readRegister(reader), Y: readRegister(reader), Pixel: readRegister(reader) };

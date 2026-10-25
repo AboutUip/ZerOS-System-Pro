@@ -1,6 +1,6 @@
-/* 调度。用户核上至多两份任务，堆仍各占一半。时间片用尽时，若另一份已经在槽里，就换上它。
+/* 调度。用户核上的任务数不再按核封顶。时间片用尽时，若另一份已经领到槽，就换上它。
    监督核每次空转之前也看一眼：这颗核还在跑，且同一核上有一份在槽里的就绪任务，就在下一条指令边界抢占再换。
-   停在系统调用里的不换。停机的交给进程层。跨核迁移要等每个任务自己的映射。 */
+   停在系统调用里的不换。停机的交给进程层。领不到槽的不换，等有槽空出来。跨核迁移要等每个任务自己的映射。 */
 #LINK /start.obr, /exec.obr, /vfs.obr, /task.obr
 import proc;
 import board;
@@ -32,13 +32,17 @@ deRfun schedStop(long core): void {
   taskAt(index).state = TaskState::Stopped;
 }
 
-/* 槽号就是任务表下标。放回后仍要 schedule 才会跑。没有就绪的兄弟就什么也不做。 */
+/* 槽号由进程层分配，不必等于任务表下标。放回后仍要 schedule 才会跑。没有就绪的兄弟就什么也不做。 */
 deRfun schedResume(long core): void {
   long next = taskReady(core, -1L);
   if (next < 0L) {
     return;
   }
-  obr::os::restore(core, next);
+  long slot = taskAt(next).held - 1L;
+  if (slot < 0L) {
+    return;
+  }
+  obr::os::restore(core, slot);
   taskAt(next).state = TaskState::Running;
   obr::os::schedule(core);
 }
@@ -67,12 +71,15 @@ deRfun schedSweep(): void {
           next = taskReady(core, index);
         }
         if (next >= 0L) {
-          obr::os::capture(core, index);
-          taskAt(index).held = 1L;
-          taskAt(index).state = TaskState::Ready;
-          obr::os::restore(core, next);
-          taskAt(next).state = TaskState::Running;
-          obr::os::schedule(core);
+          long from = slotHold(index);
+          long to = taskAt(next).held - 1L;
+          if (from >= 0L && to >= 0L) {
+            obr::os::capture(core, from);
+            taskAt(index).state = TaskState::Ready;
+            obr::os::restore(core, to);
+            taskAt(next).state = TaskState::Running;
+            obr::os::schedule(core);
+          }
         } else {
           taskAt(index).state = TaskState::Ready;
           obr::os::schedule(core);
@@ -96,12 +103,15 @@ deRfun schedTick(): void {
       if (running == 1L && why != 2L && state == TaskState::Running) {
         long next = taskReady(core, index);
         if (next >= 0L) {
-          obr::os::capture(core, index);
-          taskAt(index).held = 1L;
-          taskAt(index).state = TaskState::Ready;
-          obr::os::restore(core, next);
-          taskAt(next).state = TaskState::Running;
-          obr::os::schedule(core);
+          long from = slotHold(index);
+          long to = taskAt(next).held - 1L;
+          if (from >= 0L && to >= 0L) {
+            obr::os::capture(core, from);
+            taskAt(index).state = TaskState::Ready;
+            obr::os::restore(core, to);
+            taskAt(next).state = TaskState::Running;
+            obr::os::schedule(core);
+          }
         }
       }
     }

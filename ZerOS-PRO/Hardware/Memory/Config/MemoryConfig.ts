@@ -194,11 +194,11 @@ export namespace ZerOS {
 
         /**
          * ShallowDimension：浅切所得的内存块个数（官方标定）。
-         * 必须通过 Uint32 门闩。当前：16。不是「16 颗颗粒」。
+         * 必须通过 Uint32 门闩。当前：145。与颗粒数相同，每一块正好是一颗的位元数。
          */
         export const ShallowDimension: ShallowDimension =
           Uint32Root.Hardware.Memory.uint32OrThrow(
-            16,
+            145,
             "ZerOS.Hardware.Memory.Config.ShallowDimension",
           );
 
@@ -214,9 +214,10 @@ export namespace ZerOS {
 
         /**
          * UnitCount：内存颗粒数量（官方标定，ZMP1 强制项）。
-         * 当前：8。协议上界是 4294967296。
+         * 当前：145。八颗核心的窗口和后面的映射区都在这 145 颗里。
+         * 协议上界是 4294967296。
          */
-        export const UnitCount: UnitCount = 8;
+        export const UnitCount: UnitCount = 145;
 
         /**
          * UnitSizeBytes：单个内存颗粒大小（标定值，ZMP1 强制项）。

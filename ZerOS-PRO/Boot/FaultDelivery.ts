@@ -20,7 +20,7 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
-import { type ZerOS as FaultRoot } from "../Hardware/Cpu/Structure/FaultRecord";
+import type { ZerOS as FaultRoot } from "../Hardware/Cpu/Structure/FaultRecord";
 import { ZerOS as SourceRoot } from "../Hardware/Cpu/Enum/FaultSource";
 
 export namespace ZerOS {

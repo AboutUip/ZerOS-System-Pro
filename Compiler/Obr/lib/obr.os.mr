@@ -21,6 +21,10 @@ deRfun release(long core): void;
 deRfun yield(): void;
 /* 按毫秒等待。0 马上继续，最大 1000。等待时核心仍在执行。 */
 deRfun dwell(long milliseconds): void;
+/* 把扩展口上的句柄按页映射进线性位元。返回起始位地址。客核心不能调用。 */
+deRfun mmap(long port, long handle, long length): long;
+/* 卸下 mmap 返回的那一段。地址和长度必须与当时一致。 */
+deRfun munmap(long address, long length): void;
 /* 正在执行的核心编号。 */
 deRfun core(): long;
 /* 把一段程序映像装到另一颗已停止的核心。 */

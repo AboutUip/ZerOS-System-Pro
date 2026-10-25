@@ -14,11 +14,12 @@ ZerOS-System-Pro/
 │   ├── Boot/                 # 通电、启动画面、F12 进入设置
 │   ├── Kernel/               # 内核 .obr，编译进 NAS 的 /kernel/
 │   ├── System/               # 用户态。Init 是 1 号，Session 是 /os/session
+│   ├── Resource/Font/        # 字体源。编译时拷到 NAS 的 /font，副本只读
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板与插座
 │       ├── Cpu/  Gpu/  Memory/
 │       ├── Display/  Keyboard/  Sandbox/  Nas/
-├── Driver/Gpu/               # OpenGL 切片驱动（.mr 头 + .obr 体）
+├── Driver/                   # Display、Gpu、Pointer。默认宽高在 Display/panel
 ├── Compiler/Obr/             # 宿主编译器，.obr → ZAP
 ├── Toolchain/                # Vite、TypeScript、ESLint；不放产品源码
 └── Documents/
@@ -48,6 +49,8 @@ npm run dev
 
 开发服的根是 `ZerOS-PRO/Hardware/Display`。引导在页面里给主板通电，再把启动画面和固件交给 CPU。浏览器包里没有内核映像，也没有 `System/` 里的用户态映像。这两份都在 NAS 上。
 
+`ZerOS-PRO/Hardware/Nas/Root` 是客路径 `/`，整目录不进版本库。编译写出 `/kernel` 和 `/os`。`node ZerOS-PRO/Hardware/Nas/Server/provision.mjs` 把 `Resource/Font` 拷到 `/font` 并标成只读。`/boot/display` 和 `/boot/debug` 只在缺文件时写下驱动默认值，之后保持可写：BIOS 和驱动可以改，重编不覆盖。
+
 ## 协议
 
 第三方只读 `Documents/Protocol/`。登记表优先于索引，索引优先于正文里的摘要。封闭数值留在正文里。
@@ -72,12 +75,12 @@ npm run dev
 | 主板 | `Hardware/Motherboard/` | 插座、查询、扩展口 |
 | CPU / GPU / 内存 | 同名目录 | 官方插头在各自的 `ActiveProvider/` |
 | 显示器 / 键盘 / 沙盒 / NAS | 同名目录 | 显示器不经插座；键盘、沙盒和 NAS 坐在扩展口上。NAS 进程要单独启动 |
-| 驱动 | `Driver/Gpu/` | 固件调用的 OpenGL 切片 |
+| 驱动 | `Driver/` | 显示器默认宽高在 `Display/panel`。`Gpu/` 是固件调用的 OpenGL 切片 |
 | 语言 | `Compiler/Obr/` | 默认交出无扩展名二进制。同一次编译另写 `.zap` 供对照。语法见 [编译器说明](./Compiler/Obr/README.md) |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
 | 系统 | `System/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`Session/session.obr` 客路径 `/os/session` |
 
-设置画面只展示查询得到的状态，不改配置。内核由固件在倒计时结束时装入，不从设置画面进入。
+设置画面可以改显示器宽高和调试开关，分别写进 `/boot/display` 和 `/boot/debug`。其余行只展示查询得到的状态。内核由固件在倒计时结束时装入，不从设置画面进入。
 
 ## 换插头
 
@@ -85,7 +88,7 @@ npm run dev
 
 CPU、GPU、键盘、沙盒、NAS 同样各有一个 `ActiveProvider/`。换哪一块就换哪一个目录。
 
-NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO/Hardware/Nas/Server/serve.mjs`。客路径 `/` 是 `ZerOS-PRO/Hardware/Nas/Root`。进程没起来时，引导仍然成功，交换返回未就绪。
+NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO/Hardware/Nas/Server/serve.mjs`。客路径 `/` 是 `ZerOS-PRO/Hardware/Nas/Root`，这棵树不进版本库。进程没起来时，引导仍然成功，交换返回未就绪。
 
 ## 技能
 

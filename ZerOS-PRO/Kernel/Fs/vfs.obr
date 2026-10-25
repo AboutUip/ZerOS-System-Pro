@@ -48,7 +48,7 @@ struct Pipe {
   long writeWait;
 }
 
-/* 12 个字。后面 768 位起是两条 64 八位组的环：先是驱动发给用户的，再是用户发给驱动的。 */
+/* 12 个字。环不在这个结构里，按设备下标排在设备头后面。每条环 ringRoom 个八位组。 */
 struct Dev {
   long used;
   long core;
@@ -65,27 +65,143 @@ struct Dev {
 }
 
 deRfun vfsBase(): long {
-  return tableBase() + 8L * taskStride();
+  return tableBase() + taskLimit() * taskStride();
+}
+
+deRfun inodeCount(): long {
+  return 128L;
+}
+
+deRfun dentryCount(): long {
+  return 256L;
+}
+
+/* 512 份任务、每份 8 个描述符。 */
+deRfun fileCount(): long {
+  return 4096L;
+}
+
+deRfun pipeCount(): long {
+  return 64L;
+}
+
+/* 管道和设备环同一长度。一次系统调用可以写满一整条。 */
+deRfun ringRoom(): long {
+  return 4096L;
+}
+
+deRfun pipeRoom(): long {
+  return ringRoom();
+}
+
+/* 调用者窗口里的读写字节。+4096 到调用帧之间只剩约 1024 个八位组，写满管道就会盖住路径。
+   改放到路径之后。一次最多 262144 个八位组，和 NAS 批量读取的下界一样。 */
+deRfun byteAt(long home): long {
+  return home + 131072L;
+}
+
+deRfun byteRoom(): long {
+  return 262144L;
+}
+
+deRfun devCount(): long {
+  return 16L;
+}
+
+/* 一个路径分量最长 512 个八位组。名字槽按这个宽度排。 */
+deRfun nameStride(): long {
+  return 4096L;
+}
+
+/* 从根数到叶子，最多 128 层。32 层盖不住现在的目录嵌套。 */
+deRfun pathDepth(): long {
+  return 128L;
+}
+
+/* pathOf 拼出来的整条路径。一个分量放得下，多层短名字也放得下。 */
+deRfun scratchRoom(): long {
+  return 8192L;
+}
+
+deRfun inodeBytes(): long {
+  return inodeCount() * 512L;
+}
+
+deRfun dentryBytes(): long {
+  return dentryCount() * 256L;
+}
+
+deRfun nameBase(): long {
+  return vfsBase() + inodeBytes() + dentryBytes();
+}
+
+deRfun nameBytes(): long {
+  return dentryCount() * nameStride();
+}
+
+deRfun fileBase(): long {
+  return nameBase() + nameBytes();
+}
+
+deRfun fileBytes(): long {
+  return fileCount() * 320L;
+}
+
+deRfun scratchBytes(): long {
+  return 64L + scratchRoom() * 8L;
+}
+
+deRfun scratch(): long {
+  return fileBase() + fileBytes();
+}
+
+deRfun stackAt(): long {
+  return scratch() + scratchBytes();
+}
+
+deRfun pipeBase(): long {
+  return stackAt() + pathDepth() * 64L;
+}
+
+deRfun pipeBytes(): long {
+  return pipeCount() * 448L;
+}
+
+deRfun pipeDataBase(): long {
+  return pipeBase() + pipeBytes();
+}
+
+deRfun pipeDataBytes(): long {
+  return pipeCount() * pipeRoom() * 8L;
 }
 
 deRfun devBase(): long {
-  return vfsBase() + 73728L;
+  return pipeDataBase() + pipeDataBytes();
 }
 
 deRfun vfsEnd(): long {
-  return devBase() + 8192L;
+  return devRingBase() + devCount() * 2L * ringRoom() * 8L;
+}
+
+/* 设备头 12 个字。两条环另排在所有设备头后面，不再挤在 2048 位的槽里。 */
+deRfun devStride(): long {
+  return 768L;
 }
 
 deRfun devAt(long index): Dev* {
-  return (Dev*)(devBase() + index * 2048L);
+  return (Dev*)(devBase() + index * devStride());
+}
+
+deRfun devRingBase(): long {
+  return devBase() + devCount() * devStride();
 }
 
 deRfun devUp(long index): long {
-  return devBase() + index * 2048L + 768L;
+  return devRingBase() + index * 2L * ringRoom() * 8L;
 }
 
 deRfun devDown(long index): long {
-  return devBase() + index * 2048L + 1280L;
+  return devUp(index) + ringRoom() * 8L;
 }
 
 deRfun inodeAt(long index): Inode* {
@@ -93,31 +209,23 @@ deRfun inodeAt(long index): Inode* {
 }
 
 deRfun dentryAt(long index): Dentry* {
-  return (Dentry*)(vfsBase() + 16384L + index * 256L);
+  return (Dentry*)(vfsBase() + inodeBytes() + index * 256L);
 }
 
 deRfun nameAt(long index): long {
-  return vfsBase() + 24576L + index * 256L;
+  return nameBase() + index * nameStride();
 }
 
 deRfun fileAt(long slot): File* {
-  return (File*)(vfsBase() + 32768L + slot * 320L);
+  return (File*)(fileBase() + slot * 320L);
 }
 
 deRfun pipeAt(long index): Pipe* {
-  return (Pipe*)(vfsBase() + 65536L + index * 448L);
+  return (Pipe*)(pipeBase() + index * 448L);
 }
 
 deRfun pipeData(long index): long {
-  return vfsBase() + 65536L + 4096L + index * 512L;
-}
-
-deRfun scratch(): long {
-  return vfsBase() + 57344L;
-}
-
-deRfun stackAt(): long {
-  return vfsBase() + 60032L;
+  return pipeDataBase() + index * pipeRoom() * 8L;
 }
 
 deRfun octetAt(long address, long index): long {
@@ -131,7 +239,7 @@ deRfun scratchClear(): void {
 deRfun scratchPush(long value): long {
   long at = scratch();
   long count = memory::load64(at);
-  if (count >= 240L) {
+  if (count >= scratchRoom()) {
     return 7L;
   }
   memory::storeOctet(value, at + 64L + count * 8L);
@@ -158,39 +266,40 @@ deRfun isDir(long kind): long {
   return 0L;
 }
 
-/* 内存文件的槽号表紧挨在设备环后面。32 个字，-1 表示这个索引节点没有正文。
-   正文从这张表之后开始，三份，每份 32768 个八位组。末尾仍停在编译器栈之前。 */
+/* 内存文件的槽号表紧挨在设备环后面。每个索引节点一个字，-1 表示没有正文。
+   正文 6 份，每份 1048576 个八位组。以前一份只有 262144，连入口映像都放不下。
+   份数停在编译器栈之前，栈在窗口 +67125248。 */
 deRfun memSlotAt(long ino): long {
   return vfsEnd() + ino * 64L;
 }
 
 deRfun memBody(long slot): long {
-  return vfsEnd() + 32L * 64L + slot * 32768L * 8L;
+  return vfsEnd() + inodeCount() * 64L + slot * memCap() * 8L;
 }
 
 deRfun memCap(): long {
-  return 32768L;
+  return 1048576L;
 }
 
 deRfun memSlots(): long {
-  return 3L;
+  return 6L;
 }
 
 /* 放下这一份正文。索引节点还在不在，由调用方决定。 */
 deRfun memDrop(long ino): void {
-  if (ino < 0L || ino >= 32L) {
+  if (ino < 0L || ino >= inodeCount()) {
     return;
   }
   memory::store64(-1L, memSlotAt(ino));
 }
 
-/* 三份里还没被任何索引节点指着的那一格。没有就回复 -1。 */
+/* 六份里还没被任何索引节点指着的那一格。没有就回复 -1。 */
 deRfun memTake(): long {
   long slot = 0L;
   while (slot < memSlots()) {
     long ino = 0L;
     long held = 0L;
-    while (ino < 32L) {
+    while (ino < inodeCount()) {
       if (memory::load64(memSlotAt(ino)) == slot) {
         held = 1L;
       }
@@ -215,6 +324,9 @@ deRfun memMove(File* file, long home, long writing): long {
   if (offset < 0L || count < 0L) {
     return 13L;
   }
+  if (count > byteRoom()) {
+    return 7L;
+  }
   Inode* node = inodeAt(file.ino);
   long cap = memCap();
   long got = 0L;
@@ -227,10 +339,10 @@ deRfun memMove(File* file, long home, long writing): long {
       stop = 1L;
     } else if (writing == 0L) {
       long value = memory::loadOctet(memBody(slot) + at * 8L);
-      memory::storeOctet(value, home + 4096L + got * 8L);
+      memory::storeOctet(value, byteAt(home) + got * 8L);
       got = got + 1L;
     } else {
-      long value = memory::loadOctet(home + 4096L + got * 8L);
+      long value = memory::loadOctet(byteAt(home) + got * 8L);
       memory::storeOctet(value, memBody(slot) + at * 8L);
       got = got + 1L;
     }
@@ -284,7 +396,7 @@ deRfun memoryRoot(): long {
 
 deRfun vfsInit(): void {
   long index = 0L;
-  while (index < 32L) {
+  while (index < inodeCount()) {
     Inode* node = inodeAt(index);
     node.used = 0L;
     node.kind = 0L;
@@ -302,8 +414,16 @@ deRfun vfsInit(): void {
     dent.nameLen = 0L;
     index = index + 1L;
   }
+  while (index < dentryCount()) {
+    Dentry* dent = dentryAt(index);
+    dent.used = 0L;
+    dent.parent = -1L;
+    dent.ino = 0L;
+    dent.nameLen = 0L;
+    index = index + 1L;
+  }
   index = 0L;
-  while (index < 64L) {
+  while (index < fileCount()) {
     File* file = fileAt(index);
     file.used = 0L;
     file.ino = 0L;
@@ -313,7 +433,7 @@ deRfun vfsInit(): void {
     index = index + 1L;
   }
   index = 0L;
-  while (index < 8L) {
+  while (index < pipeCount()) {
     Pipe* pipe = pipeAt(index);
     pipe.used = 0L;
     pipe.readers = 0L;
@@ -339,7 +459,7 @@ deRfun vfsInit(): void {
   top.parent = -1L;
   top.ino = 0L;
   index = 0L;
-  while (index < 4L) {
+  while (index < devCount()) {
     Dev* dev = devAt(index);
     dev.used = 0L;
     dev.pid = 0L;
@@ -425,7 +545,7 @@ deRfun findChild(long parent, long path, long from, long count): long {
     return up;
   }
   long index = 1L;
-  while (index < 32L) {
+  while (index < dentryCount()) {
     Dentry* entry = dentryAt(index);
     if (entry.used == 1L && entry.parent == parent && nameEq(index, path, from, count) == 1L) {
       return index;
@@ -443,7 +563,7 @@ deRfun pathOf(long dent): long {
   }
   long depth = 0L;
   long cursor = dent;
-  while (cursor > 0L && depth < 8L) {
+  while (cursor > 0L && depth < pathDepth()) {
     memory::store64(cursor, stackAt() + depth * 64L);
     depth = depth + 1L;
     cursor = dentryAt(cursor).parent;
@@ -497,7 +617,7 @@ deRfun copyName(long dent, long path, long from, long count): void {
 
 deRfun allocInode(): long {
   long index = 1L;
-  while (index < 32L) {
+  while (index < inodeCount()) {
     if (inodeAt(index).used == 0L) {
       return index;
     }
@@ -508,7 +628,7 @@ deRfun allocInode(): long {
 
 deRfun allocDentry(): long {
   long index = 1L;
-  while (index < 32L) {
+  while (index < dentryCount()) {
     if (dentryAt(index).used == 0L) {
       return index;
     }
@@ -589,7 +709,7 @@ deRfun resolve(long parent, long path, long from, long count, long* out): long {
 /* 走到最后一段之前。*from 与 *count 是最后一段；count 为 0 表示路径就是当前目录。 */
 deRfun walkParent(long taskIndex, long path, long* parent, long* from, long* count): long {
   long len = memory::load64(path);
-  if (len < 1L || len > 240L) {
+  if (len < 1L || len > scratchRoom()) {
     return 6L;
   }
   long dent = 0L;
@@ -614,7 +734,7 @@ deRfun walkParent(long taskIndex, long path, long* parent, long* from, long* cou
       index = index + 1L;
     }
     long span = index - start;
-    if (span > 32L) {
+    if (span > 512L) {
       return 6L;
     }
     if (seen == 1L) {
@@ -641,6 +761,7 @@ deRfun walkParent(long taskIndex, long path, long* parent, long* from, long* cou
   return 0L;
 }
 
+/* 请求路径在调用者窗口 +16384，整段最长 8192 个八位组，一个分量最长 512。 */
 deRfun walk(long taskIndex, long path, long* out): long {
   long parent = 0L;
   long from = 0L;
@@ -707,7 +828,7 @@ deRfun dropDent(long dent): void {
   entry.used = 0L;
   entry.nameLen = 0L;
   long fd = 0L;
-  while (fd < 64L) {
+  while (fd < fileCount()) {
     if (fileAt(fd).used == 1L && fileAt(fd).ino == ino) {
       return;
     }
@@ -787,9 +908,9 @@ deRfun pipeFinish(long slot): void {
       long got = 0L;
       while (got < count && pipe.count > 0L) {
         long value = memory::loadOctet(pipeData(slot) + pipe.head * 8L);
-        memory::storeOctet(value, home + 4096L + got * 8L);
+        memory::storeOctet(value, byteAt(home) + got * 8L);
         pipe.head = pipe.head + 1L;
-        if (pipe.head == 64L) {
+        if (pipe.head == pipeRoom()) {
           pipe.head = 0L;
         }
         pipe.count = pipe.count - 1L;
@@ -799,17 +920,17 @@ deRfun pipeFinish(long slot): void {
       reply(waiter, 0L);
     }
     pipe = pipeAt(slot);
-    if (pipe.writeWait >= 0L && pipe.count < 64L && pipe.readers > 0L) {
+    if (pipe.writeWait >= 0L && pipe.count < pipeRoom() && pipe.readers > 0L) {
       long waiter = pipe.writeWait;
       pipe.writeWait = -1L;
       long home = query(1L, 8L, waiter);
       long count = memory::load64(home + 256L);
       long got = 0L;
-      while (got < count && pipe.count < 64L) {
-        long value = memory::loadOctet(home + 4096L + got * 8L);
+      while (got < count && pipe.count < pipeRoom()) {
+        long value = memory::loadOctet(byteAt(home) + got * 8L);
         long at = pipe.head + pipe.count;
-        if (at >= 64L) {
-          at = at - 64L;
+        if (at >= pipeRoom()) {
+          at = at - pipeRoom();
         }
         memory::storeOctet(value, pipeData(slot) + at * 8L);
         pipe.count = pipe.count + 1L;
@@ -835,9 +956,9 @@ deRfun pipeCopy(File* file, long home, long writing, long caller): long {
   if (writing == 0L) {
     while (got < count && pipe.count > 0L) {
       long value = memory::loadOctet(pipeData(file.handle) + pipe.head * 8L);
-      memory::storeOctet(value, home + 4096L + got * 8L);
+      memory::storeOctet(value, byteAt(home) + got * 8L);
       pipe.head = pipe.head + 1L;
-      if (pipe.head == 64L) {
+      if (pipe.head == pipeRoom()) {
         pipe.head = 0L;
       }
       pipe.count = pipe.count - 1L;
@@ -847,11 +968,11 @@ deRfun pipeCopy(File* file, long home, long writing, long caller): long {
     if (pipe.readers == 0L) {
       return 5L;
     }
-    while (got < count && pipe.count < 64L) {
-      long value = memory::loadOctet(home + 4096L + got * 8L);
+    while (got < count && pipe.count < pipeRoom()) {
+      long value = memory::loadOctet(byteAt(home) + got * 8L);
       long at = pipe.head + pipe.count;
-      if (at >= 64L) {
-        at = at - 64L;
+      if (at >= pipeRoom()) {
+        at = at - pipeRoom();
       }
       memory::storeOctet(value, pipeData(file.handle) + at * 8L);
       pipe.count = pipe.count + 1L;
@@ -882,10 +1003,10 @@ deRfun pipeCopy(File* file, long home, long writing, long caller): long {
 deRfun doPipe(long caller, long home): long {
   long taskIndex = taskFind(caller);
   long slot = 0L;
-  while (slot < 8L && pipeAt(slot).used == 1L) {
+  while (slot < pipeCount() && pipeAt(slot).used == 1L) {
     slot = slot + 1L;
   }
-  if (slot >= 8L) {
+  if (slot >= pipeCount()) {
     return 7L;
   }
   long readFd = allocFd(taskIndex);
@@ -989,7 +1110,7 @@ deRfun vfsPlant(long caller, long path, long dest, long* size): long {
 
 deRfun doStat(long caller, long home): long {
   long dent = 0L;
-  long status = walk(taskFind(caller), home + 512L, &dent);
+  long status = walk(taskFind(caller), home + 16384L, &dent);
   if (status != 0L) {
     return status;
   }
@@ -1007,7 +1128,7 @@ deRfun doOpen(long caller, long home): long {
   long parent = 0L;
   long from = 0L;
   long count = 0L;
-  long status = walkParent(taskIndex, home + 512L, &parent, &from, &count);
+  long status = walkParent(taskIndex, home + 16384L, &parent, &from, &count);
   if (status != 0L) {
     return status;
   }
@@ -1016,7 +1137,7 @@ deRfun doOpen(long caller, long home): long {
     return 13L;
   }
   long dent = 0L;
-  status = resolve(parent, home + 512L, from, count, &dent);
+  status = resolve(parent, home + 16384L, from, count, &dent);
   if (status == 2L && flags != 0L) {
     if (inodeAt(dentryAt(parent).ino).kind == 4L) {
       return 2L;
@@ -1030,7 +1151,7 @@ deRfun doOpen(long caller, long home): long {
         return 7L;
       }
       Task* made = taskAt(taskIndex);
-      dent = takeChild(parent, home + 512L, from, count, 5L, 0L, made.cred.euid, made.cred.egid, modeFile());
+      dent = takeChild(parent, home + 16384L, from, count, 5L, 0L, made.cred.euid, made.cred.egid, modeFile());
       if (dent < 0L) {
         return 7L;
       }
@@ -1053,7 +1174,7 @@ deRfun doOpen(long caller, long home): long {
     if (built != 0L) {
       return built;
     }
-    built = scratchAdd(home + 512L, from, count);
+    built = scratchAdd(home + 16384L, from, count);
     if (built != 0L) {
       return built;
     }
@@ -1063,7 +1184,7 @@ deRfun doOpen(long caller, long home): long {
       return status;
     }
     Task* task = taskAt(taskIndex);
-    dent = takeChild(parent, home + 512L, from, count, 1L, 0L, task.cred.euid, task.cred.egid, modeFile());
+    dent = takeChild(parent, home + 16384L, from, count, 1L, 0L, task.cred.euid, task.cred.egid, modeFile());
     if (dent < 0L) {
       obr::nas::close(handle);
       return 7L;
@@ -1098,10 +1219,10 @@ deRfun doOpen(long caller, long home): long {
       return -1L;
     }
     long slot = 0L;
-    while (slot < 4L && (devAt(slot).used == 0L || devAt(slot).ino != dentryAt(dent).ino)) {
+    while (slot < devCount() && (devAt(slot).used == 0L || devAt(slot).ino != dentryAt(dent).ino)) {
       slot = slot + 1L;
     }
-    if (slot >= 4L) {
+    if (slot >= devCount()) {
       return 5L;
     }
     long fd = allocFd(taskIndex);
@@ -1169,7 +1290,7 @@ deRfun doOpen(long caller, long home): long {
    设备槽号和句柄都是小整数，数值碰巧相同也不算同一份打开。管道的索引节点号是负的，进不了这里。 */
 deRfun nasHeld(long handle, long skip): long {
   long index = 0L;
-  while (index < 64L) {
+  while (index < fileCount()) {
     if (index != skip) {
       File* other = fileAt(index);
       if (other.used == 1L && other.ino >= 0L && other.handle == handle) {
@@ -1221,7 +1342,7 @@ deRfun releaseFd(long taskIndex, long fd): long {
   file.handle = 0L;
   long still = 0L;
   long index = 0L;
-  while (index < 64L) {
+  while (index < fileCount()) {
     if (fileAt(index).used == 1L && fileAt(index).ino == ino) {
       still = 1L;
     }
@@ -1230,7 +1351,7 @@ deRfun releaseFd(long taskIndex, long fd): long {
   if (still == 0L) {
     long dent = 1L;
     long live = 0L;
-    while (dent < 32L) {
+    while (dent < dentryCount()) {
       if (dentryAt(dent).used == 1L && dentryAt(dent).ino == ino) {
         live = 1L;
       }
@@ -1377,15 +1498,15 @@ deRfun doRead(long caller, long home, long writing): long {
   }
   long offset = memory::load64(home + 192L);
   long count = memory::load64(home + 256L);
-  if (count > 65535L && writing == 1L) {
+  if (count > byteRoom()) {
     return 7L;
   }
   long got = 0L;
   long status = 0L;
   if (writing == 0L) {
-    status = obr::nas::read(file.handle, offset, home + 4096L, count, &got);
+    status = obr::nas::read(file.handle, offset, byteAt(home), count, &got);
   } else {
-    status = obr::nas::write(file.handle, offset, home + 4096L, count, &got);
+    status = obr::nas::write(file.handle, offset, byteAt(home), count, &got);
   }
   if (status != 0L) {
     return status;
@@ -1404,7 +1525,7 @@ deRfun doRead(long caller, long home, long writing): long {
 deRfun doReaddir(long caller, long home): long {
   long taskIndex = taskFind(caller);
   long dent = 0L;
-  long status = walk(taskIndex, home + 512L, &dent);
+  long status = walk(taskIndex, home + 16384L, &dent);
   if (status != 0L) {
     return status;
   }
@@ -1423,7 +1544,7 @@ deRfun doReaddir(long caller, long home): long {
     return status;
   }
   long got = 0L;
-  status = obr::nas::readdirAt(scratch(), memory::load64(home + 128L), home + 4096L, memory::load64(home + 192L), &got);
+  status = obr::nas::readdirAt(scratch(), memory::load64(home + 128L), byteAt(home), memory::load64(home + 192L), &got);
   if (status != 0L) {
     return status;
   }
@@ -1436,7 +1557,7 @@ deRfun doMkdir(long caller, long home): long {
   long parent = 0L;
   long from = 0L;
   long count = 0L;
-  long status = walkParent(taskIndex, home + 512L, &parent, &from, &count);
+  long status = walkParent(taskIndex, home + 16384L, &parent, &from, &count);
   if (status != 0L) {
     return status;
   }
@@ -1444,14 +1565,14 @@ deRfun doMkdir(long caller, long home): long {
     return 11L;
   }
   if (inodeAt(dentryAt(parent).ino).kind == 6L) {
-    if (findChild(parent, home + 512L, from, count) >= 0L) {
+    if (findChild(parent, home + 16384L, from, count) >= 0L) {
       return 11L;
     }
     if (may(taskIndex, dentryAt(parent).ino, 3L) == 0L) {
       return -1L;
     }
     Task* task = taskAt(taskIndex);
-    long dent = takeChild(parent, home + 512L, from, count, 6L, 0L, task.cred.euid, task.cred.egid, modeDir());
+    long dent = takeChild(parent, home + 16384L, from, count, 6L, 0L, task.cred.euid, task.cred.egid, modeDir());
     if (dent < 0L) {
       return 7L;
     }
@@ -1460,7 +1581,7 @@ deRfun doMkdir(long caller, long home): long {
   if (inodeAt(dentryAt(parent).ino).kind == 4L) {
     return 13L;
   }
-  if (findChild(parent, home + 512L, from, count) >= 0L) {
+  if (findChild(parent, home + 16384L, from, count) >= 0L) {
     return 11L;
   }
   if (may(taskIndex, dentryAt(parent).ino, 3L) == 0L) {
@@ -1470,7 +1591,7 @@ deRfun doMkdir(long caller, long home): long {
   if (status != 0L) {
     return status;
   }
-  status = scratchAdd(home + 512L, from, count);
+  status = scratchAdd(home + 16384L, from, count);
   if (status != 0L) {
     return status;
   }
@@ -1479,7 +1600,7 @@ deRfun doMkdir(long caller, long home): long {
     return status;
   }
   Task* task = taskAt(taskIndex);
-  long dent = takeChild(parent, home + 512L, from, count, 2L, 0L, task.cred.euid, task.cred.egid, modeDir());
+  long dent = takeChild(parent, home + 16384L, from, count, 2L, 0L, task.cred.euid, task.cred.egid, modeDir());
   if (dent < 0L) {
     return 7L;
   }
@@ -1491,7 +1612,7 @@ deRfun doUnlink(long caller, long home): long {
   long parent = 0L;
   long from = 0L;
   long count = 0L;
-  long status = walkParent(taskIndex, home + 512L, &parent, &from, &count);
+  long status = walkParent(taskIndex, home + 16384L, &parent, &from, &count);
   if (status != 0L) {
     return status;
   }
@@ -1502,7 +1623,7 @@ deRfun doUnlink(long caller, long home): long {
     return -1L;
   }
   long dent = 0L;
-  status = resolve(parent, home + 512L, from, count, &dent);
+  status = resolve(parent, home + 16384L, from, count, &dent);
   if (status != 0L) {
     return status;
   }
@@ -1511,7 +1632,7 @@ deRfun doUnlink(long caller, long home): long {
   }
   if (inodeAt(dentryAt(dent).ino).kind == 6L) {
     long child = 1L;
-    while (child < 32L) {
+    while (child < dentryCount()) {
       if (dentryAt(child).used == 1L && dentryAt(child).parent == dent) {
         return 11L;
       }
@@ -1543,7 +1664,7 @@ deRfun doUnlink(long caller, long home): long {
 deRfun doChmod(long caller, long home): long {
   long taskIndex = taskFind(caller);
   long dent = 0L;
-  long status = walk(taskIndex, home + 512L, &dent);
+  long status = walk(taskIndex, home + 16384L, &dent);
   if (status != 0L) {
     return status;
   }
@@ -1562,7 +1683,7 @@ deRfun doChown(long caller, long home): long {
     return -1L;
   }
   long dent = 0L;
-  long status = walk(taskIndex, home + 512L, &dent);
+  long status = walk(taskIndex, home + 16384L, &dent);
   if (status != 0L) {
     return status;
   }
@@ -1575,7 +1696,7 @@ deRfun doChown(long caller, long home): long {
 deRfun doChdir(long caller, long home): long {
   long taskIndex = taskFind(caller);
   long dent = 0L;
-  long status = walk(taskIndex, home + 512L, &dent);
+  long status = walk(taskIndex, home + 16384L, &dent);
   if (status != 0L) {
     return status;
   }
@@ -1619,21 +1740,21 @@ deRfun ringMove(Dev* dev, long index, long which, long addr, long count, long in
     if (into == 0L && have < 1L) {
       return got;
     }
-    if (into == 1L && have >= 64L) {
+    if (into == 1L && have >= ringRoom()) {
       return got;
     }
     long at = head;
     if (into == 1L) {
       at = head + have;
-      if (at >= 64L) {
-        at = at - 64L;
+      if (at >= ringRoom()) {
+        at = at - ringRoom();
       }
       memory::storeOctet(memory::loadOctet(addr + got * 8L), devBytes(index, which) + at * 8L);
       have = have + 1L;
     } else {
       memory::storeOctet(memory::loadOctet(devBytes(index, which) + at * 8L), addr + got * 8L);
       head = head + 1L;
-      if (head == 64L) {
+      if (head == ringRoom()) {
         head = 0L;
       }
       have = have - 1L;
@@ -1650,7 +1771,7 @@ deRfun ringMove(Dev* dev, long index, long which, long addr, long count, long in
   return got;
 }
 
-/* 有字节或有空位时，把堵着的那一端放行。一次调用至多搬 64 个八位组。 */
+/* 有字节或有空位时，把堵着的那一端放行。一次调用至多搬满一条环。 */
 deRfun devWake(long index): void {
   long pass = 0L;
   while (pass < 2L) {
@@ -1659,7 +1780,7 @@ deRfun devWake(long index): void {
       long waiter = dev.userReadWait;
       dev.userReadWait = -1L;
       long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 0L, home + 4096L, memory::load64(home + 256L), 0L);
+      long got = ringMove(dev, index, 0L, byteAt(home), memory::load64(home + 256L), 0L);
       memory::store64(got, home + 320L);
       reply(waiter, 0L);
     }
@@ -1668,25 +1789,25 @@ deRfun devWake(long index): void {
       long waiter = dev.drvRecvWait;
       dev.drvRecvWait = -1L;
       long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 1L, home + 4096L, memory::load64(home + 256L), 0L);
+      long got = ringMove(dev, index, 1L, byteAt(home), memory::load64(home + 256L), 0L);
       memory::store64(got, home + 320L);
       reply(waiter, 0L);
     }
     dev = devAt(index);
-    if (dev.userWriteWait >= 0L && dev.downCount < 64L) {
+    if (dev.userWriteWait >= 0L && dev.downCount < ringRoom()) {
       long waiter = dev.userWriteWait;
       dev.userWriteWait = -1L;
       long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 1L, home + 4096L, memory::load64(home + 256L), 1L);
+      long got = ringMove(dev, index, 1L, byteAt(home), memory::load64(home + 256L), 1L);
       memory::store64(got, home + 320L);
       reply(waiter, 0L);
     }
     dev = devAt(index);
-    if (dev.drvSendWait >= 0L && dev.upCount < 64L) {
+    if (dev.drvSendWait >= 0L && dev.upCount < ringRoom()) {
       long waiter = dev.drvSendWait;
       dev.drvSendWait = -1L;
       long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 0L, home + 4096L, memory::load64(home + 256L), 1L);
+      long got = ringMove(dev, index, 0L, byteAt(home), memory::load64(home + 256L), 1L);
       memory::store64(got, home + 320L);
       reply(waiter, 0L);
     }
@@ -1696,7 +1817,7 @@ deRfun devWake(long index): void {
 
 /* waitKind：1 用户读，2 用户写，3 驱动取，4 驱动送。into 与 ringMove 相同。 */
 deRfun devMove(long index, long home, long which, long into, long caller, long waitKind): long {
-  if (index < 0L || index >= 4L) {
+  if (index < 0L || index >= devCount()) {
     return 5L;
   }
   Dev* dev = devAt(index);
@@ -1710,7 +1831,7 @@ deRfun devMove(long index, long home, long which, long into, long caller, long w
   if (into == 1L && waitKind == 2L && devLive(dev) == 0L) {
     return 5L;
   }
-  long got = ringMove(dev, index, which, home + 4096L, count, into);
+  long got = ringMove(dev, index, which, byteAt(home), count, into);
   memory::store64(got, home + 320L);
   devWake(index);
   dev = devAt(index);
@@ -1759,10 +1880,10 @@ deRfun devIo(long caller, long home): long {
   }
   long pid = taskAt(taskIndex).pid;
   long index = 0L;
-  while (index < 4L && (devAt(index).used == 0L || devAt(index).pid != pid)) {
+  while (index < devCount() && (devAt(index).used == 0L || devAt(index).pid != pid)) {
     index = index + 1L;
   }
-  if (index >= 4L) {
+  if (index >= devCount()) {
     return -1L;
   }
   long dir = memory::load64(home + 128L);
@@ -1783,7 +1904,7 @@ deRfun devList(long dent, long home): long {
   }
   long seen = 0L;
   long index = 1L;
-  while (index < 32L) {
+  while (index < dentryCount()) {
     Dentry* entry = dentryAt(index);
     if (entry.used == 1L && entry.parent == dent) {
       if (seen == nth) {
@@ -1792,7 +1913,7 @@ deRfun devList(long dent, long home): long {
         }
         long step = 0L;
         while (step < entry.nameLen) {
-          memory::storeOctet(memory::loadOctet(nameAt(index) + step * 8L), home + 4096L + step * 8L);
+          memory::storeOctet(memory::loadOctet(nameAt(index) + step * 8L), byteAt(home) + step * 8L);
           step = step + 1L;
         }
         memory::store64(entry.nameLen, home + 256L);
@@ -1811,12 +1932,12 @@ deRfun devDir(): long {
   return 1L;
 }
 
-/* 进入时 r1 是调用者窗口。个数在 +256，字节在 +4096，实际个数写回 +320。
-   列在 17838272，行在 17838336，窗口记在 17838592。步数留在 r6，个数留在 r7。
-   这些地址已经是核心 2 装入后的位址，__zap__ 不再按槽位挪动。一次最多 64 个八位组。 */
+/* 进入时 r1 是调用者窗口。个数在 +256，字节在 +131072，实际个数写回 +320。
+   列在 537931968，行在 537932032，窗口记在 537932288。步数留在 r6，个数留在 r7。
+   这些地址已经是核心 2 装入后的位址，__zap__ 不再按槽位挪动。一次最多一条环那么多。 */
 deRfun conWrite(long home): void {
   __zap__ {
-    store.64 r1, 17838592
+    store.64 r1, 537932288
     place r2, 256
     add r5, r1, r2
     ldi.64 r7, r5
@@ -1825,10 +1946,10 @@ deRfun conWrite(long home): void {
     jz r0, conCap
     place r7, 0
     conCap:
-    place r2, 64
+    place r2, 4096
     lt r0, r7, r2
     jnz r0, conUse
-    place r7, 64
+    place r7, 4096
     conUse:
     place r6, 0
     conLoop:
@@ -1836,9 +1957,9 @@ deRfun conWrite(long home): void {
     jz r0, conFlush
     place r2, 8
     mul r0, r6, r2
-    place r2, 4096
+    place r2, 131072
     add r0, r0, r2
-    load.64 r3, 17838592
+    load.64 r3, 537932288
     add r5, r3, r0
     ldi.octet r1, r5
     place r2, 10
@@ -1851,16 +1972,16 @@ deRfun conWrite(long home): void {
     gt r0, r1, r2
     jnz r0, conNext
     or r4, r1, r1
-    load.64 r0, 17838336
+    load.64 r0, 537932032
     place r2, 8
     mul r1, r0, r2
-    load.64 r0, 17838272
+    load.64 r0, 537931968
     mul r0, r0, r2
     or r2, r4, r4
     place r3, 16777215
     place r4, 0
     gpu.character r0, r1, r2, r3, r4
-    load.64 r0, 17838272
+    load.64 r0, 537931968
     place r2, 1
     add r0, r0, r2
     place r2, 80
@@ -1868,9 +1989,9 @@ deRfun conWrite(long home): void {
     jnz r1, conStay
     conNl:
     place r0, 0
-    store.64 r0, 17838272
+    store.64 r0, 537931968
     conDown:
-    load.64 r0, 17838336
+    load.64 r0, 537932032
     place r2, 1
     add r0, r0, r2
     place r2, 60
@@ -1878,18 +1999,18 @@ deRfun conWrite(long home): void {
     jnz r1, conRow
     place r0, 0
     conRow:
-    store.64 r0, 17838336
+    store.64 r0, 537932032
     place r2, 1
     jnz r2, conNext
     conStay:
-    store.64 r0, 17838272
+    store.64 r0, 537931968
     conNext:
     place r2, 1
     add r6, r6, r2
     jnz r2, conLoop
     conFlush:
     gpu.present
-    load.64 r3, 17838592
+    load.64 r3, 537932288
     place r2, 320
     add r5, r3, r2
     sti.64 r7, r5
@@ -1911,34 +2032,34 @@ deRfun conShow(): void {
   }
 }
 
-/* /dev/con 挂在监督核上。名字先放在驱动名暂存 17860608，drvLoad 之后会盖掉。
-   光标两个字一并清掉。栈针在 17825792，第四个参数从这里推进去再调 devPublish。
+/* /dev/con 挂在监督核上。名字先放在驱动名暂存 537954304，drvLoad 之后会盖掉。
+   光标两个字一并清掉。栈针在 537919488，第四个参数从这里推进去再调 devPublish。
    这段不展开进 main，免得占满入口映像。 */
 deRfun conPublish(): void {
   __zap__ {
     place r0, 99
-    store.octet r0, 17860608
+    store.octet r0, 537954304
     place r0, 111
-    store.octet r0, 17860616
+    store.octet r0, 537954312
     place r0, 110
-    store.octet r0, 17860624
+    store.octet r0, 537954320
     place r0, 0
-    store.64 r0, 17838272
-    store.64 r0, 17838336
-    load.64 r4, 17825792
+    store.64 r0, 537931968
+    store.64 r0, 537932032
+    load.64 r4, 537919488
     place r0, 3
     sti.64 r0, r4
     place r5, 64
     add r4, r4, r5
-    store.64 r4, 17825792
+    store.64 r4, 537919488
     place r1, 2
     place r2, 1
-    place r3, 17860608
+    place r3, 537954304
     call devPublish
-    load.64 r4, 17825792
+    load.64 r4, 537919488
     place r5, 64
     sub r4, r4, r5
-    store.64 r4, 17825792
+    store.64 r4, 537919488
   }
 }
 
@@ -1969,10 +2090,10 @@ export deRfun devPublish(long core, long pid, long name, long nameLen): long {
     return 0L;
   }
   long slot = 0L;
-  while (slot < 4L && devAt(slot).used == 1L) {
+  while (slot < devCount() && devAt(slot).used == 1L) {
     slot = slot + 1L;
   }
-  if (slot >= 4L) {
+  if (slot >= devCount()) {
     scratchClear();
     return 7L;
   }
@@ -2002,7 +2123,7 @@ deRfun devDrop(long pid): void {
     return;
   }
   long index = 0L;
-  while (index < 4L) {
+  while (index < devCount()) {
     Dev* dev = devAt(index);
     if (dev.used == 1L && dev.pid == pid) {
       if (dev.userReadWait >= 0L) {

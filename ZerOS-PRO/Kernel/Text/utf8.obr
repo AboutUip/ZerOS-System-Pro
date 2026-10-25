@@ -1,0 +1,135 @@
+/* 把相邻隔 8 位的 UTF-8 八位组收成标量。
+   先整段走一遍，合法并且放得下才写目标。这样失败时目标保持调用前的内容。
+   标量是 U+0000 到 U+10FFFF，不含代理项。过短编码、截断和坏的后续字节都从首字节报。 */
+#LINK /utf8-check.obr, /suite.obr
+import memory;
+import utf8;
+
+/* ldi.octet 按补码扩展。UTF-8 八位组是 0 到 255。
+   高位为 1 时，原生核读出来是负数，再按 ASCII 判断就会把「中」拆成三个字节。
+   与 255 相与之后，ZAP 的无符号读和原生的符号扩展都回到同一个字节。 */
+deRfun byteOf(long address): long {
+  return memory::loadOctet(address) & 255L;
+}
+
+/* 从 index 取一个标量。成功时 scalar 是值，next 是下一字节，返回 0。
+   失败返回 1，不改这两个指针。 */
+deRfun takeOne(long address, long count, long index, long* scalar, long* next): long {
+  if (index >= count) {
+    return 1L;
+  }
+  long first = byteOf(address + index * 8L);
+  if (first <= 127L) {
+    *scalar = first;
+    *next = index + 1L;
+    return 0L;
+  }
+  long width = 0L;
+  long value = 0L;
+  long minimum = 0L;
+  if (first >= 194L && first <= 223L) {
+    width = 2L;
+    value = first & 31L;
+    minimum = 128L;
+  } else if (first >= 224L && first <= 239L) {
+    width = 3L;
+    value = first & 15L;
+    minimum = 2048L;
+  } else if (first >= 240L && first <= 244L) {
+    width = 4L;
+    value = first & 7L;
+    minimum = 65536L;
+  } else {
+    return 1L;
+  }
+  if (index + width > count) {
+    return 1L;
+  }
+  long step = 1L;
+  while (step < width) {
+    long byte = byteOf(address + (index + step) * 8L);
+    if (byte < 128L || byte > 191L) {
+      return 1L;
+    }
+    value = (value << 6) | (byte & 63L);
+    step = step + 1L;
+  }
+  if (value < minimum || value > 1114111L || (value >= 55296L && value <= 57343L)) {
+    return 1L;
+  }
+  *scalar = value;
+  *next = index + width;
+  return 0L;
+}
+
+/* 数一遍标量。失败时 written 是字节下标，返回 1。成功时 written 是个数，返回 0。 */
+deRfun countScalars(long address, long count, long* written): long {
+  long index = 0L;
+  long total = 0L;
+  long scalar = 0L;
+  long next = 0L;
+  while (index < count) {
+    if (takeOne(address, count, index, &scalar, &next) != 0L) {
+      *written = index;
+      return 1L;
+    }
+    total = total + 1L;
+    index = next;
+  }
+  *written = total;
+  return 0L;
+}
+
+deRfun utf8Decode(long address, long count, long dest, long capacity, long* written): long {
+  long total = 0L;
+  long status = countScalars(address, count, &total);
+  if (status != 0L) {
+    *written = total;
+    return 1L;
+  }
+  if (total > capacity) {
+    *written = total;
+    return 7L;
+  }
+  long index = 0L;
+  long slot = 0L;
+  long scalar = 0L;
+  long next = 0L;
+  while (index < count) {
+    takeOne(address, count, index, &scalar, &next);
+    memory::store64(scalar, dest + slot * 64L);
+    slot = slot + 1L;
+    index = next;
+  }
+  *written = total;
+  return 0L;
+}
+
+/* 每个标量四个八位组，小端，相邻标量相隔 32 位。capacity 按标量计。 */
+deRfun utf8Pack(long address, long count, long dest, long capacity, long* written): long {
+  long total = 0L;
+  long status = countScalars(address, count, &total);
+  if (status != 0L) {
+    *written = total;
+    return 1L;
+  }
+  if (total > capacity) {
+    *written = total;
+    return 7L;
+  }
+  long index = 0L;
+  long slot = 0L;
+  long scalar = 0L;
+  long next = 0L;
+  while (index < count) {
+    takeOne(address, count, index, &scalar, &next);
+    memory::storeOctet(scalar & 255L, dest + slot * 32L);
+    memory::storeOctet((scalar >> 8) & 255L, dest + slot * 32L + 8L);
+    memory::storeOctet((scalar >> 16) & 255L, dest + slot * 32L + 16L);
+    memory::storeOctet((scalar >> 24) & 255L, dest + slot * 32L + 24L);
+    slot = slot + 1L;
+    index = next;
+  }
+  *written = total;
+  return 0L;
+}

@@ -32,6 +32,12 @@ export namespace ZerOS {
         /** ZCP1 每个核心的寄存器个数。编号是 0 至 7。 */
         export const RegisterCount = 8;
 
+        /** ZCP1 上下文槽个数下限。实现至少要声明 1 个槽。 */
+        export const SlotCountMin = 1;
+
+        /** ZCP1 上下文槽个数上限。超过这个数的声明不符合协议。 */
+        export const SlotCountMax = 256;
+
         /** 核心频率下限，含端点。单位是 Hz。 */
         export const HertzMin = 1;
 
@@ -56,13 +62,20 @@ export namespace ZerOS {
          * 版本 2 种类 1 的数据重定位，以及动态库的 attach，都加上目标核心相对 0 号的这份位移。
          * 槽距和数据下限与沙盒、内核窗口相同，是标定，不是协议。
          */
-        export const RelocateSlotBits = 8388608;
+        /**
+         * 官方实现的上下文槽个数。
+         * 协议只规定 1 至 256。这一份标定取满 256。
+         * 任务表是 512 份，多出来的由内核在这 256 个槽里自动领。
+         */
+        export const OfficialSlotCount = 256;
+
+        export const RelocateSlotBits = 268435456;
 
         /** 小于这个地址的立即数属于固件格子，-slot 不加。 */
         export const RelocateDataFloor = 1048576;
 
-        /** 位元线长度。8 颗 2MiB。bound 未设置时查询返回这个长度。 */
-        export const LineBits = 134217728;
+        /** 位元线长度。145 颗 2MiB。bound 未设置时查询返回这个长度。 */
+        export const LineBits = 2432696320;
       }
     }
   }

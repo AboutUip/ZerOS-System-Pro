@@ -60,6 +60,7 @@ export namespace ZerOS {
       const compose = RuntimeRoot.Hardware.Gpu.compose;
       const present = RuntimeRoot.Hardware.Gpu.present;
       const accel = AccelRoot.Hardware.Gpu.accel;
+      const accelImmediate = AccelRoot.Hardware.Gpu.accelImmediate;
       const setGpuHertz = RuntimeRoot.Hardware.Gpu.setGpuHertz;
       const metric = RuntimeRoot.Hardware.Gpu.metric;
       const readByte = RuntimeRoot.Hardware.Gpu.readByte;
@@ -136,6 +137,12 @@ export namespace ZerOS {
             return 0;
           }
           return accel(op, a, b, c, d);
+        },
+        AccelImmediate(op: number, a: bigint, b: bigint, c: bigint, d: bigint): number | null {
+          if (op === ResizeOp) {
+            return null;
+          }
+          return accelImmediate(op, a, b, c, d);
         },
         SetHertz(hertz: number): Promise<void> {
           return setGpuHertz(hertz);

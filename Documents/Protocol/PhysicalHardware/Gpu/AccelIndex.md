@@ -43,3 +43,6 @@
 | 37 | Ellipse | [AccelRegistry](./AccelRegistry.md) |
 | 38 | Frame | [AccelRegistry](./AccelRegistry.md) |
 | 39 | Resize | [AccelRegistry](./AccelRegistry.md) |
+| 40 | FontFace | [Font](./Font.md) |
+| 41 | FontSelect | [Font](./Font.md) |
+| 42 | FontDraw | [Font](./Font.md) |

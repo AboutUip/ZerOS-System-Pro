@@ -1,7 +1,9 @@
 /**
  * @file DisplayConfig.ts
  * @desc 显示器的协议固定常量，以及官方标定的默认分辨率与刷新率。
- *       固定常量与 ZDP1 一致。默认 640×480、60 Hz 只属于这一份官方实现。
+ *       固定常量与 ZDP1 一致。默认 640×480、60 Hz 只属于这一份官方实现，
+ *       并与显示器驱动 panel::defaultWidth、panel::defaultHeight 相同。
+ *       运行时的 /boot/display 不是源码，缺文件时才按这一档生成。
  */
 
 export namespace ZerOS {

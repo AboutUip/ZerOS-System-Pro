@@ -150,6 +150,20 @@ export namespace ZerOS {
       if (unnamedBlocks[3] !== "CORE -" || unnamedBlocks[4] !== "AT 0" || unnamedBlocks[5] !== "SITE -") {
         fail("a fault without a core or an op was not labeled");
       }
+      const aligned = faultFromText(
+        "[ZerOS.Hardware.Motherboard.MemoryChannel] 宽度大于 1 时地址必须对齐到八位组",
+        0,
+        0,
+        "",
+        "",
+      );
+      if (aligned.Code !== 11 || aligned.Text.includes("?") || !aligned.Text.includes("not aligned")) {
+        fail("a non-ASCII memory fault was not rewritten in English");
+      }
+      const alignedBlocks = painted(errorPicture(aligned));
+      for (const block of alignedBlocks) {
+        assertAscii(block, "aligned fault");
+      }
       for (let code = 0; code <= 22; code += 1) {
         const frame = painted(errorPicture(faultFromWire({
           message: "n",
@@ -196,6 +210,26 @@ export namespace ZerOS {
       const body = wide[6] ?? "";
       if (body.length !== 90) {
         fail("a wrapped explanation was clipped");
+      }
+      const published = errorPicture(sample, 1024, 768);
+      if (!published.includes("place r3, 1024") || !published.includes("place r4, 768")) {
+        fail("the fault frame ignored the published size");
+      }
+      const crowded = faultFromWire({
+        message: "install program image",
+        code: 12,
+        source: 1,
+        core: 2,
+        index: 4,
+        op: "div",
+        site: "-",
+        stack: ["at fail (http://localhost:5173/@fs/D:/Project/Algorithm/ZerOS-System-Pro/ZerOS-PRO/Hardware/Cpu/Bootstrap/CpuRuntime.ts?t=1:20:3)"],
+        window: true,
+      });
+      const crowdedBlocks = painted(errorPicture(crowded, 640, 480));
+      const stack = crowdedBlocks.find((block) => block.startsWith("STACK "));
+      if (stack === undefined || stack.length > 78 || stack.includes("http://") || !stack.includes("CpuRuntime.ts:20")) {
+        fail("a long stack frame was not shortened to the frame");
       }
       const gpu = faultFromText("gpu command failed", 0, 3, "gpu.present", "");
       if (gpu.Code !== 10 || gpu.Source !== 3 || gpu.Window) {

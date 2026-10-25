@@ -5,13 +5,15 @@ import mm;
 import sched;
 import fs;
 import exec;
+import font;
+import suite;
 import trap;
 import board;
 import memory;
 import obr.nas;
 import obr.os;
 
-/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2 */
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font */
 
 deRfun pack(): long {
   return 4294967296L;
@@ -42,9 +44,13 @@ deRfun spawnOn(long core, long uid, long gid, long cap, long state): long {
 deRfun boot(): void {
   obr::os::gate();
   long me = obr::os::core();
-  obr::os::bound(me, kArena(me), kSpan());
+  obr::os::bound(me, kArena(me), kSlot());
+  /* 标量和 UTF-8 对不上就停在英文点阵上。字体面还没打开，这里不能画中文。 */
+  suiteRun();
   taskClear();
   vfsInit();
+  /* 核对 /font 上的两份系统字体。缺文件也继续引导，服务 26 会回答不在。 */
+  fontCensus();
   /* 监督核不进任务表。1 号留给用户态 init，驱动从 2 号起。 */
   reserveOne();
   conPublish();
@@ -91,7 +97,7 @@ deRfun dispatch(long caller, long service): void {
       taskDrop(core);
     }
     obr::os::install(core, imageAt(), size);
-    obr::os::bound(core, kArena(core), kSpan());
+    obr::os::bound(core, kArena(core), kSlot());
     /* 新装入的程序是普通用户，不继承调用者的根凭证。 */
     long pid = spawnOn(core, 1L, 1L, 0L, TaskState::Ready);
     if (pid == 0L) {
@@ -141,6 +147,10 @@ deRfun dispatch(long caller, long service): void {
     reply(caller, loadLib(caller, home));
     return;
   }
+  if (service == 26L) {
+    reply(caller, fontQuery(home));
+    return;
+  }
   if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L) {
     long filed = vfsCall(caller, service);
     if (filed != -2L) {
@@ -151,8 +161,8 @@ deRfun dispatch(long caller, long service): void {
   reply(caller, 0L);
 }
 
-/* 1 号进入等待，说明会话已经把资源留下。6208 写成 1。
-   这一字和 4096、5952 一样走共享内存。固件不读它，加载画面不离开。 */
+/* 1 号进入等待，说明它已经把 shell 留下并开始等。6208 写成 1，驱动这才放行。
+   这一字和 4096、5952 一样走共享内存。固件不靠它换画面。 */
 deRfun noteInstall(): void {
   long* flag = (long*)6208;
   if (*flag != 0L) {
@@ -165,6 +175,33 @@ deRfun noteInstall(): void {
   *flag = 1L;
 }
 
+/* 0 还没开始。先请固件停笔，再打开字体。两边同时画会卡在宿主上。
+   6336 答应之后才读字体、再画。打不开就停在 3，方标已经停了，这一帧留着。
+   2 是终端已经送出。6272 和 6336 在固件低位，客核心写不到。 */
+deRfun termBring(): void {
+  long phase = termPhase();
+  if (phase == 2L || phase == 3L) {
+    return;
+  }
+  if (phase == 1L) {
+    if (memory::load64(6336L) == 0L) {
+      return;
+    }
+    if (termOpen() == 0L) {
+      termSet(3L);
+      return;
+    }
+    termShow();
+    termSet(2L);
+    return;
+  }
+  if (termShell() == 0L) {
+    return;
+  }
+  memory::store64(1L, 6272L);
+  termSet(1L);
+}
+
 deRfun main(): int {
   boot();
   while (1) {
@@ -174,10 +211,11 @@ deRfun main(): int {
     if (found == 1L) {
       dispatch(value / pack(), value % pack());
     }
-    /* 17838080 为 1 时刚放行了驱动，先回去取调用。没调用时按 30 Hz 空转，核心保持执行中。 */
+    /* 537931776 为 1 时刚放行了驱动，先回去取调用。没调用时按 30 Hz 空转，核心保持执行中。 */
     bootPump();
     noteInstall();
-    if (memory::load64(17838080L) == 0L) {
+    termBring();
+    if (memory::load64(537931776L) == 0L) {
       schedTick();
       obr::os::hertz(obr::os::core(), 30L);
       obr::os::core();

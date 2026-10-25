@@ -1,0 +1,282 @@
+/* 在核心 1 上核对 Utf8.md。用 obrc -slot 1 编译，好让程序自己的栈落在核心 1。
+   缓冲区是这颗核心窗口里、编译器栈下面的一段，地址写死，-slot 不会再加一次。
+   main 返回 0。某一项对不上就返回该项的编号。失败时目标里预先写下的 99 必须还在。 */
+import memory;
+import utf8;
+
+deRfun byteBuf(): long {
+  return 269500416L;
+}
+
+deRfun wordBuf(): long {
+  return 269501440L;
+}
+
+deRfun packBuf(): long {
+  return 269504512L;
+}
+
+deRfun poke(long index, long value): void {
+  memory::storeOctet(value, byteBuf() + index * 8L);
+}
+
+/* 和内核解码一样，先抹掉 ldi.octet 的符号扩展，再和 0 到 255 的期望比较。 */
+deRfun peek(long address): long {
+  return memory::loadOctet(address) & 255L;
+}
+
+deRfun stamp(): void {
+  memory::store64(99L, wordBuf());
+  memory::storeOctet(99L, packBuf());
+}
+
+deRfun stillStamped(): long {
+  if (memory::load64(wordBuf()) != 99L) {
+    return 0L;
+  }
+  if (peek(packBuf()) != 99L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun checkEmpty(): long {
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 0L, wordBuf(), 0L, &written);
+  if (status != 0L || written != 0L) {
+    return 1L;
+  }
+  written = -1L;
+  status = utf8Pack(byteBuf(), 0L, packBuf(), 0L, &written);
+  if (status != 0L || written != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun checkAscii(): long {
+  poke(0L, 0L);
+  poke(1L, 65L);
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 2L, wordBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 2L;
+  }
+  if (memory::load64(wordBuf()) != 0L || memory::load64(wordBuf() + 64L) != 65L) {
+    return 2L;
+  }
+  written = -1L;
+  status = utf8Pack(byteBuf(), 2L, packBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 2L;
+  }
+  if (peek(packBuf()) != 0L || peek(packBuf() + 8L) != 0L) {
+    return 2L;
+  }
+  if (peek(packBuf() + 32L) != 65L || peek(packBuf() + 40L) != 0L) {
+    return 2L;
+  }
+  if (peek(packBuf() + 48L) != 0L || peek(packBuf() + 56L) != 0L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+deRfun checkTwo(): long {
+  poke(0L, 194L);
+  poke(1L, 128L);
+  poke(2L, 223L);
+  poke(3L, 191L);
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 4L, wordBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 3L;
+  }
+  if (memory::load64(wordBuf()) != 128L || memory::load64(wordBuf() + 64L) != 2047L) {
+    return 3L;
+  }
+  return 0L;
+}
+
+deRfun checkThree(): long {
+  poke(0L, 224L);
+  poke(1L, 160L);
+  poke(2L, 128L);
+  poke(3L, 239L);
+  poke(4L, 191L);
+  poke(5L, 191L);
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 6L, wordBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 4L;
+  }
+  if (memory::load64(wordBuf()) != 2048L || memory::load64(wordBuf() + 64L) != 65535L) {
+    return 4L;
+  }
+  return 0L;
+}
+
+deRfun checkFour(): long {
+  poke(0L, 240L);
+  poke(1L, 144L);
+  poke(2L, 128L);
+  poke(3L, 128L);
+  poke(4L, 244L);
+  poke(5L, 143L);
+  poke(6L, 191L);
+  poke(7L, 191L);
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 8L, wordBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 5L;
+  }
+  if (memory::load64(wordBuf()) != 65536L || memory::load64(wordBuf() + 64L) != 1114111L) {
+    return 5L;
+  }
+  return 0L;
+}
+
+deRfun checkBom(): long {
+  poke(0L, 239L);
+  poke(1L, 187L);
+  poke(2L, 191L);
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 3L, wordBuf(), 4L, &written);
+  if (status != 0L || written != 1L || memory::load64(wordBuf()) != 65279L) {
+    return 6L;
+  }
+  return 0L;
+}
+
+deRfun checkMark(): long {
+  poke(0L, 101L);
+  poke(1L, 204L);
+  poke(2L, 129L);
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 3L, wordBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 7L;
+  }
+  if (memory::load64(wordBuf()) != 101L || memory::load64(wordBuf() + 64L) != 769L) {
+    return 7L;
+  }
+  written = -1L;
+  status = utf8Pack(byteBuf(), 3L, packBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 7L;
+  }
+  if (peek(packBuf()) != 101L || peek(packBuf() + 32L) != 1L) {
+    return 7L;
+  }
+  if (peek(packBuf() + 40L) != 3L || peek(packBuf() + 48L) != 0L) {
+    return 7L;
+  }
+  return 0L;
+}
+
+deRfun checkLatin(): long {
+  poke(0L, 65L);
+  poke(1L, 195L);
+  poke(2L, 169L);
+  long written = -1L;
+  long status = utf8Pack(byteBuf(), 3L, packBuf(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 8L;
+  }
+  if (peek(packBuf()) != 65L || peek(packBuf() + 32L) != 233L) {
+    return 8L;
+  }
+  if (peek(packBuf() + 40L) != 0L || peek(packBuf() + 48L) != 0L) {
+    return 8L;
+  }
+  return 0L;
+}
+
+deRfun reject(long count, long offset, long code): long {
+  stamp();
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), count, wordBuf(), 0L, &written);
+  if (status != 1L || written != offset || stillStamped() != 1L) {
+    return code;
+  }
+  written = -1L;
+  status = utf8Pack(byteBuf(), count, packBuf(), 4L, &written);
+  if (status != 1L || written != offset || stillStamped() != 1L) {
+    return code;
+  }
+  return 0L;
+}
+
+deRfun checkRejects(): long {
+  poke(0L, 192L);
+  poke(1L, 128L);
+  if (reject(2L, 0L, 9L) != 0L) {
+    return 9L;
+  }
+  poke(0L, 224L);
+  poke(1L, 159L);
+  poke(2L, 191L);
+  if (reject(3L, 0L, 10L) != 0L) {
+    return 10L;
+  }
+  poke(0L, 237L);
+  poke(1L, 160L);
+  poke(2L, 128L);
+  if (reject(3L, 0L, 11L) != 0L) {
+    return 11L;
+  }
+  poke(0L, 244L);
+  poke(1L, 144L);
+  poke(2L, 128L);
+  poke(3L, 128L);
+  if (reject(4L, 0L, 12L) != 0L) {
+    return 12L;
+  }
+  poke(0L, 224L);
+  poke(1L, 160L);
+  if (reject(2L, 0L, 13L) != 0L) {
+    return 13L;
+  }
+  poke(0L, 65L);
+  poke(1L, 194L);
+  poke(2L, 32L);
+  if (reject(3L, 1L, 14L) != 0L) {
+    return 14L;
+  }
+  poke(0L, 128L);
+  if (reject(1L, 0L, 15L) != 0L) {
+    return 15L;
+  }
+  return 0L;
+}
+
+deRfun checkCapacity(): long {
+  poke(0L, 65L);
+  poke(1L, 66L);
+  stamp();
+  long written = -1L;
+  long status = utf8Decode(byteBuf(), 2L, wordBuf(), 1L, &written);
+  if (status != 7L || written != 2L || stillStamped() != 1L) {
+    return 16L;
+  }
+  written = -1L;
+  status = utf8Pack(byteBuf(), 2L, packBuf(), 1L, &written);
+  if (status != 7L || written != 2L || stillStamped() != 1L) {
+    return 16L;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  if (checkEmpty() != 0L) return 1;
+  if (checkAscii() != 0L) return 2;
+  if (checkTwo() != 0L) return 3;
+  if (checkThree() != 0L) return 4;
+  if (checkFour() != 0L) return 5;
+  if (checkBom() != 0L) return 6;
+  if (checkMark() != 0L) return 7;
+  if (checkLatin() != 0L) return 8;
+  if (checkRejects() != 0L) return 9;
+  if (checkCapacity() != 0L) return 16;
+  return 0;
+}

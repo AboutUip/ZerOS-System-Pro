@@ -1,0 +1,281 @@
+/* 内核启动时在本核心上核对字符串标量和 UTF-8。
+   缓冲区在字体表后面，不碰任务字。失败时字体面还没有，只能用点阵画英文。
+   先请固件停笔，否则 Starting 会把这一帧盖掉。 */
+#LINK /start.obr
+import memory;
+import utf8;
+import board;
+import obr.ui;
+
+deRfun scratch(): long {
+  return 1048576L + 2L * 268435456L + 65536L;
+}
+
+deRfun words(): long {
+  return scratch() + 4096L;
+}
+
+deRfun pack(): long {
+  return scratch() + 8192L;
+}
+
+deRfun poke(long index, long value): void {
+  memory::storeOctet(value, scratch() + index * 8L);
+}
+
+/* ldi.octet 会做符号扩展。比较前先收回 0 到 255。 */
+deRfun peek(long address): long {
+  return memory::loadOctet(address) & 255L;
+}
+
+deRfun stamp(): void {
+  memory::store64(99L, words());
+  memory::storeOctet(99L, pack());
+}
+
+deRfun stillStamped(): long {
+  if (memory::load64(words()) != 99L) {
+    return 0L;
+  }
+  if (peek(pack()) != 99L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun checkText(): long {
+  string han = "中";
+  if (length(han) != 1) {
+    return 1L;
+  }
+  long code = han[0];
+  if (code != 20013L) {
+    return 2L;
+  }
+  string ascii = "A";
+  long letter = ascii[0];
+  if (length(ascii) != 1 || letter != 65L) {
+    return 3L;
+  }
+  return 0L;
+}
+
+deRfun checkHan(): long {
+  poke(0L, 228L);
+  poke(1L, 184L);
+  poke(2L, 173L);
+  long written = -1L;
+  long status = utf8Decode(scratch(), 3L, words(), 4L, &written);
+  if (status != 0L || written != 1L) {
+    return 4L;
+  }
+  if (memory::load64(words()) != 20013L) {
+    return 5L;
+  }
+  return 0L;
+}
+
+deRfun checkEmpty(): long {
+  long written = -1L;
+  long status = utf8Decode(scratch(), 0L, words(), 0L, &written);
+  if (status != 0L || written != 0L) {
+    return 6L;
+  }
+  written = -1L;
+  status = utf8Pack(scratch(), 0L, pack(), 0L, &written);
+  if (status != 0L || written != 0L) {
+    return 6L;
+  }
+  return 0L;
+}
+
+deRfun checkTwo(): long {
+  poke(0L, 194L);
+  poke(1L, 128L);
+  poke(2L, 223L);
+  poke(3L, 191L);
+  long written = -1L;
+  long status = utf8Decode(scratch(), 4L, words(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 7L;
+  }
+  if (memory::load64(words()) != 128L || memory::load64(words() + 64L) != 2047L) {
+    return 7L;
+  }
+  return 0L;
+}
+
+deRfun checkFour(): long {
+  poke(0L, 240L);
+  poke(1L, 144L);
+  poke(2L, 128L);
+  poke(3L, 128L);
+  long written = -1L;
+  long status = utf8Decode(scratch(), 4L, words(), 4L, &written);
+  if (status != 0L || written != 1L) {
+    return 8L;
+  }
+  if (memory::load64(words()) != 65536L) {
+    return 8L;
+  }
+  return 0L;
+}
+
+deRfun checkLatin(): long {
+  poke(0L, 65L);
+  poke(1L, 195L);
+  poke(2L, 169L);
+  long written = -1L;
+  long status = utf8Pack(scratch(), 3L, pack(), 4L, &written);
+  if (status != 0L || written != 2L) {
+    return 9L;
+  }
+  if (peek(pack()) != 65L || peek(pack() + 32L) != 233L) {
+    return 9L;
+  }
+  if (peek(pack() + 40L) != 0L || peek(pack() + 48L) != 0L) {
+    return 9L;
+  }
+  return 0L;
+}
+
+deRfun reject(long count, long offset, long code): long {
+  stamp();
+  long written = -1L;
+  long status = utf8Decode(scratch(), count, words(), 0L, &written);
+  if (status != 1L || written != offset || stillStamped() != 1L) {
+    return code;
+  }
+  written = -1L;
+  status = utf8Pack(scratch(), count, pack(), 4L, &written);
+  if (status != 1L || written != offset || stillStamped() != 1L) {
+    return code;
+  }
+  return 0L;
+}
+
+deRfun checkRejects(): long {
+  poke(0L, 192L);
+  poke(1L, 128L);
+  if (reject(2L, 0L, 10L) != 0L) {
+    return 10L;
+  }
+  poke(0L, 128L);
+  if (reject(1L, 0L, 11L) != 0L) {
+    return 11L;
+  }
+  poke(0L, 65L);
+  poke(1L, 194L);
+  poke(2L, 32L);
+  if (reject(3L, 1L, 12L) != 0L) {
+    return 12L;
+  }
+  return 0L;
+}
+
+deRfun checkCapacity(): long {
+  poke(0L, 65L);
+  poke(1L, 66L);
+  stamp();
+  long written = -1L;
+  long status = utf8Decode(scratch(), 2L, words(), 1L, &written);
+  if (status != 7L || written != 2L || stillStamped() != 1L) {
+    return 13L;
+  }
+  written = -1L;
+  status = utf8Pack(scratch(), 2L, pack(), 1L, &written);
+  if (status != 7L || written != 2L || stillStamped() != 1L) {
+    return 13L;
+  }
+  return 0L;
+}
+
+deRfun suiteShow(long code): void {
+  *(long*)6272 = 1L;
+  string line = "CHECK FAILED";
+  if (code == 1L) {
+    line = "CHECK FAILED 1";
+  }
+  if (code == 2L) {
+    line = "CHECK FAILED 2";
+  }
+  if (code == 3L) {
+    line = "CHECK FAILED 3";
+  }
+  if (code == 4L) {
+    line = "CHECK FAILED 4";
+  }
+  if (code == 5L) {
+    line = "CHECK FAILED 5";
+  }
+  if (code == 6L) {
+    line = "CHECK FAILED 6";
+  }
+  if (code == 7L) {
+    line = "CHECK FAILED 7";
+  }
+  if (code == 8L) {
+    line = "CHECK FAILED 8";
+  }
+  if (code == 9L) {
+    line = "CHECK FAILED 9";
+  }
+  if (code == 10L) {
+    line = "CHECK FAILED 10";
+  }
+  if (code == 11L) {
+    line = "CHECK FAILED 11";
+  }
+  if (code == 12L) {
+    line = "CHECK FAILED 12";
+  }
+  if (code == 13L) {
+    line = "CHECK FAILED 13";
+  }
+  obr::ui::clear(0L, 255L);
+  obr::ui::text(24L, 32L, 16L, line, 16777215L, 255L);
+  obr::ui::present();
+  halt();
+}
+
+deRfun suiteRun(): void {
+  long text = checkText();
+  if (text != 0L) {
+    suiteShow(text);
+    return;
+  }
+  long decoded = checkHan();
+  if (decoded != 0L) {
+    suiteShow(decoded);
+    return;
+  }
+  long empty = checkEmpty();
+  if (empty != 0L) {
+    suiteShow(empty);
+    return;
+  }
+  long pair = checkTwo();
+  if (pair != 0L) {
+    suiteShow(pair);
+    return;
+  }
+  long wide = checkFour();
+  if (wide != 0L) {
+    suiteShow(wide);
+    return;
+  }
+  long latin = checkLatin();
+  if (latin != 0L) {
+    suiteShow(latin);
+    return;
+  }
+  long bad = checkRejects();
+  if (bad != 0L) {
+    suiteShow(bad);
+    return;
+  }
+  long room = checkCapacity();
+  if (room != 0L) {
+    suiteShow(room);
+  }
+}

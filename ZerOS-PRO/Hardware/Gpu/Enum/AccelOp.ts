@@ -58,6 +58,9 @@ export namespace ZerOS {
         Ellipse: 37,
         Frame: 38,
         Resize: 39,
+        FontFace: 40,
+        FontSelect: 41,
+        FontDraw: 42,
       } as const;
     }
   }

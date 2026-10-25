@@ -34,6 +34,7 @@ export namespace ZerOS {
       const WordOctets = ConfigRoot.Hardware.Nas.NasConfig.WordOctets;
       const PathMax = ConfigRoot.Hardware.Nas.NasConfig.PathMax;
       const TransferCeil = ConfigRoot.Hardware.Nas.NasConfig.TransferCeil;
+      const StageMax = ConfigRoot.Hardware.Nas.NasConfig.StageMax;
       const ServiceUrl = ConfigRoot.Hardware.Nas.NasConfig.ServiceUrl;
       const ServiceTimeoutMs = ConfigRoot.Hardware.Nas.NasConfig.ServiceTimeoutMs;
       const ModeRead = ConfigRoot.Hardware.Nas.NasConfig.ModeRead;
@@ -261,6 +262,10 @@ export namespace ZerOS {
             return NasStatusBadHandle;
           }
         }
+        /* 成功长度只有 16 位。更长的阶段报 7，不发给服务，树不动。 */
+        if (verb === NasVerbWrite && session.stage.length > StageMax) {
+          return NasStatusTooLong;
+        }
         if (verb === NasVerbStat || verb === NasVerbOpen || verb === NasVerbMkdir || verb === NasVerbRemove || verb === NasVerbReaddir) {
           if (textFromOctets(session.path0) === null) {
             return NasStatusBadName;
@@ -426,7 +431,7 @@ export namespace ZerOS {
             return word(NasStatusBadArgument);
           }
           const target = opcode === NasOpcodePathAppend ? session.builder : session.stage;
-          const limit = opcode === NasOpcodePathAppend ? PathMax : TransferCeil;
+          const limit = opcode === NasOpcodePathAppend ? PathMax : StageMax;
           if (target.length + count > limit) {
             return word(NasStatusTooLong);
           }
@@ -711,6 +716,95 @@ export namespace ZerOS {
           }
         } catch {
           /* 服务没起来时设置留在这一次运行里，下次再写。 */
+        } finally {
+          if (handle >= 1) {
+            try {
+              await postNas({ ...emptyRequest(), op: "close", handle });
+            } catch {
+              /* 连接已经断了，句柄随服务进程收掉。 */
+            }
+          }
+        }
+      }
+
+      /**
+       * 读客路径上的一个八位组。
+       * 服务没起来、不是正好一个八位组的文件、或这一笔失败时返回 null，调用方保持原值。
+       * 这次询问不进入客机会话。
+       */
+      export async function readBootOctet(path: string): Promise<number | null> {
+        let handle = 0;
+        try {
+          const looked = await postNas({ ...emptyRequest(), op: "stat", path });
+          if (looked.status !== NasStatusOk || looked.kind !== NasKindFile || looked.size !== 1) {
+            return null;
+          }
+          const opened = await postNas({ ...emptyRequest(), op: "open", path, mode: ModeRead });
+          if (opened.status !== NasStatusOk || !Number.isInteger(opened.handle) || opened.handle < 1) {
+            return null;
+          }
+          handle = opened.handle;
+          const read = await postNas({
+            ...emptyRequest(),
+            op: "read",
+            handle,
+            offset: 0,
+            length: 1,
+          });
+          if (read.status !== NasStatusOk || read.length !== 1) {
+            return null;
+          }
+          const bytes = decodeBase64(read.data);
+          const byte = bytes?.[0];
+          if (byte === undefined) {
+            return null;
+          }
+          return byte;
+        } catch {
+          return null;
+        } finally {
+          if (handle >= 1) {
+            try {
+              await postNas({ ...emptyRequest(), op: "close", handle });
+            } catch {
+              /* 连接已经断了，句柄随服务进程收掉。 */
+            }
+          }
+        }
+      }
+
+      /**
+       * 把一个八位组写到客路径。目录不存在时先建 `/boot` 这一层。
+       * 服务没起来、或这一笔失败时直接返回，不抛出。不进入客机会话。
+       */
+      export async function saveBootOctet(path: string, byte: number): Promise<void> {
+        if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+          return;
+        }
+        let handle = 0;
+        try {
+          const made = await postNas({ ...emptyRequest(), op: "mkdir", path: "/boot" });
+          if (made.status !== NasStatusOk && made.status !== NasStatusExists) {
+            return;
+          }
+          const opened = await postNas({ ...emptyRequest(), op: "open", path, mode: ModeWrite });
+          if (opened.status !== NasStatusOk || !Number.isInteger(opened.handle) || opened.handle < 1) {
+            return;
+          }
+          handle = opened.handle;
+          const written = await postNas({
+            ...emptyRequest(),
+            op: "write",
+            handle,
+            offset: 0,
+            length: 1,
+            data: encodeBase64([byte]),
+          });
+          if (written.status !== NasStatusOk || written.length !== 1) {
+            return;
+          }
+        } catch {
+          /* 服务没起来时这一档只留在这一次运行里。 */
         } finally {
           if (handle >= 1) {
             try {

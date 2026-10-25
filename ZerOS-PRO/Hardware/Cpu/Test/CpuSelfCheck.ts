@@ -6,6 +6,7 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 核对已挂载核心的停止状态、调度和保持位，再核对寄存器与一次访存。
+ * UTF-8 在寄存器核对里，由核心 1 执行 Kernel/Text 编出的程序。
  * 寄存器核对之前，还会跑直循环、用户核失败、系统调用恢复和上下文槽。
  * 那些核对各自交还核心。自检结束时 0 号核心回到停止。写过的内存八位组恢复为 0。
  *
@@ -33,6 +34,10 @@ import { ZerOS as SyscallResumeRoot } from "./SyscallResumeCheck";
 import { ZerOS as ContextSlotRoot } from "./ContextSlotCheck";
 import { ZerOS as FaultDeliveryRoot } from "./FaultDeliveryCheck";
 import { ZerOS as FaultFrameRoot } from "./FaultFrameCheck";
+import { ZerOS as Utf8GuestRoot } from "./Utf8GuestCheck";
+import { ZerOS as LinearMapCheckRoot } from "./LinearMapCheck";
+import { ZerOS as NativeFetchRoot } from "./NativeFetchCheck";
+import { ZerOS as NativeCoreCheckRoot } from "./NativeCoreCheck";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -66,12 +71,17 @@ export namespace ZerOS {
       const clearGate = RuntimeRoot.Hardware.Cpu.clearGate;
       const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const RelocateDataFloor = ConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
+      const OfficialCoreCount = ConfigRoot.Hardware.Cpu.Config.OfficialCoreCount;
+      const runUtf8GuestCheck = Utf8GuestRoot.Hardware.Cpu.runUtf8GuestCheck;
+      const runLinearMapCheck = LinearMapCheckRoot.Hardware.Cpu.runLinearMapCheck;
       const runLocalStraightCheck = StraightRoot.Hardware.Cpu.runLocalStraightCheck;
       const runUserFaultCheck = UserFaultRoot.Hardware.Cpu.runUserFaultCheck;
       const runSyscallResumeCheck = SyscallResumeRoot.Hardware.Cpu.runSyscallResumeCheck;
       const runContextSlotCheck = ContextSlotRoot.Hardware.Cpu.runContextSlotCheck;
       const runFaultDeliveryCheck = FaultDeliveryRoot.Hardware.Cpu.runFaultDeliveryCheck;
       const runFaultFrameCheck = FaultFrameRoot.Hardware.Cpu.runFaultFrameCheck;
+      const runNativeFetchCheck = NativeFetchRoot.Hardware.Cpu.runNativeFetchCheck;
+      const runNativeCoreCheck = NativeCoreCheckRoot.Hardware.Cpu.runNativeCoreCheck;
       const checkPrefix = "[ZerOS.Hardware.Cpu.CpuSelfCheck]";
 
       function fail(message: string): never {
@@ -83,6 +93,7 @@ export namespace ZerOS {
        * 单核实现只检查调度和停止。两个及以上核心再检查一次传递。
        */
       export function runCpuSelfCheck(): void {
+        runNativeFetchCheck();
         const count = declaredCount();
         if (count < 1) {
           fail("the core count has not been declared");
@@ -137,6 +148,8 @@ export namespace ZerOS {
           "install r1, r2, r3",
           "attach r0, r1, r2, r3",
           "dwell r1",
+          "mmap r0, r1, r2, r3",
+          "munmap r0, r3",
         ];
         const parsed: InstructionRoot.Hardware.Cpu.CpuInstruction[] = [];
         for (const line of lines) {
@@ -375,7 +388,7 @@ export namespace ZerOS {
             `place r3, ${String(library.length)}`,
             "attach r0, r1, r2, r3",
             "place r4, 7",
-            "store.64 r4, 9437184",
+            `store.64 r4, ${String(RelocateDataFloor + RelocateSlotBits)}`,
             "halt",
           ]),
         ]);
@@ -603,6 +616,8 @@ export namespace ZerOS {
           }
         } finally {
           clearGate();
+          /* 上面把 1 号收成一段旧的短窗口。探针后面还要在这颗核上跑客程序，窗口必须回到刚挂载。 */
+          restoreMounted(1);
         }
       }
 
@@ -640,7 +655,113 @@ export namespace ZerOS {
         }
       }
 
+      /**
+       * 映射在主板上。这里只走指令：长度为 0 失败，成功的地址按 8 对齐，
+       * 长度对不上不能卸，卸下之后再读失败，再卸一次也失败。客核心不得建立映射。
+       */
+      async function checkMap(): Promise<void> {
+        clearGate();
+        const rejected = await runGuest(0, linesOf([
+          "place r1, 0",
+          "place r2, 0",
+          "place r3, 0",
+          "mmap r0, r1, r2, r3",
+          "halt",
+        ]));
+        if (rejected.Ok || !rejected.Message.includes("map request was rejected")) {
+          fail(`mmap accepted a zero length ${rejected.Message}`);
+        }
+        const mapped = await runGuest(0, linesOf([
+          "place r1, 0",
+          "place r2, 0",
+          "place r3, 64",
+          "mmap r0, r1, r2, r3",
+          "halt",
+        ]));
+        const arena = BigInt(RelocateDataFloor + OfficialCoreCount * RelocateSlotBits);
+        const address = mapped.Registers[0] ?? null;
+        if (!mapped.Ok || address === null || address < arena || address % 8n !== 0n) {
+          fail(`mmap did not return an aligned address ${mapped.Message}`);
+        }
+        try {
+          const wrong = await runGuest(0, linesOf([
+            `place r0, ${address.toString()}`,
+            "place r3, 63",
+            "munmap r0, r3",
+            "halt",
+          ]));
+          if (wrong.Ok || !wrong.Message.includes("map request was rejected")) {
+            fail(`munmap accepted a different length ${wrong.Message}`);
+          }
+          const removed = await runGuest(0, linesOf([
+            `place r0, ${address.toString()}`,
+            "place r3, 64",
+            "munmap r0, r3",
+            "halt",
+          ]));
+          if (!removed.Ok) {
+            fail(`munmap did not remove the map ${removed.Message}`);
+          }
+          const twice = await runGuest(0, linesOf([
+            `place r0, ${address.toString()}`,
+            "place r3, 64",
+            "munmap r0, r3",
+            "halt",
+          ]));
+          if (twice.Ok || !twice.Message.includes("map request was rejected")) {
+            fail(`a second munmap succeeded ${twice.Message}`);
+          }
+          const read = await runGuest(0, linesOf([
+            `place r0, ${address.toString()}`,
+            "ldi.octet r2, r0",
+            "halt",
+          ]));
+          if (read.Ok || !read.Message.includes("map request was rejected")) {
+            fail(`a read after munmap succeeded ${read.Message}`);
+          }
+        } finally {
+          await runGuest(0, linesOf([
+            `place r0, ${address.toString()}`,
+            "place r3, 64",
+            "munmap r0, r3",
+            "halt",
+          ]));
+        }
+        if (declaredCount() < 2) {
+          return;
+        }
+        try {
+          const opened = await runGuest(0, linesOf([
+            "gate",
+            "place r1, 1",
+            "place r2, 0",
+            "place r3, 64",
+            "bound r1, r2, r3",
+            "halt",
+          ]));
+          if (!opened.Ok) {
+            fail(`the guest core was not bounded ${opened.Message}`);
+          }
+          const denied = await runGuest(1, linesOf([
+            "place r1, 0",
+            "place r2, 0",
+            "place r3, 64",
+            "mmap r0, r1, r2, r3",
+            "halt",
+          ]));
+          if (denied.Ok || !denied.Message.includes("privileged")) {
+            fail(`the guest core mapped memory ${denied.Message}`);
+          }
+        } finally {
+          await runGuest(0, linesOf(["place r1, 1", "release r1", "halt"]));
+          clearGate();
+        }
+      }
+
       export async function runCpuRegisterCheck(): Promise<void> {
+        await runNativeCoreCheck();
+        await runUtf8GuestCheck();
+        await runLinearMapCheck();
         await checkProgramBinary();
         await checkInstall();
         await checkSlice();
@@ -649,6 +770,7 @@ export namespace ZerOS {
         await checkAttach();
         await checkPieInstall();
         await checkGuestPrivilege();
+        await checkMap();
         await runLocalStraightCheck();
         await runUserFaultCheck();
         await runSyscallResumeCheck();

@@ -23,7 +23,6 @@ import { ZerOS as ErrorPictureRoot } from "../../../Boot/ErrorPicture";
 import { ZerOS as FaultDeliveryRoot } from "../../../Boot/FaultDelivery";
 import { ZerOS as FaultRecordRoot } from "../../Cpu/Structure/FaultRecord";
 import { ZerOS as DebugMapRoot } from "../../Debug/Host/DebugMap";
-import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
 import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
 import { ZerOS as BoardRuntimeRoot } from "../Bootstrap/BoardRuntime";
 import { ZerOS as CpuSeatRoot } from "../Seat/CpuSeat";
@@ -52,13 +51,13 @@ export namespace ZerOS {
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
       const PointerPort = PointerConfigRoot.Hardware.Pointer.PointerConfig.OfficialPort;
       const errorPicture = ErrorPictureRoot.Boot.errorPicture;
+      const gpuInfo = GpuSeatRoot.Hardware.Motherboard.gpuInfo;
       const faultChannel = FaultDeliveryRoot.Boot.faultChannel;
       const faultFromText = FaultRecordRoot.Hardware.Cpu.faultFromText;
       const faultFromWire = FaultRecordRoot.Hardware.Cpu.faultFromWire;
       const formatSevere = FaultRecordRoot.Hardware.Cpu.formatSevere;
       const readDebugSites = DebugMapRoot.Hardware.Debug.readDebugSites;
       const applySite = DebugMapRoot.Hardware.Debug.applySite;
-      const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
       const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
       type DebugSiteRun = DebugMapRoot.Hardware.Debug.DebugSiteRun;
       type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
@@ -85,7 +84,9 @@ export namespace ZerOS {
         }
         /* 只在真的去画的时候记住。显卡故障走控制台，不能因此挡住后面还能画的失败。 */
         errorShown = true;
-        const lines = errorPicture(placed);
+        /* 帧宽高跟 BIOS 已经发布的那一档。写死 640 时，字会切在旧边界上，右边是空的。 */
+        const gpu = gpuInfo();
+        const lines = errorPicture(placed, gpu.width, gpu.height);
         void runFaultPicture(lines).then(
           (): void => {
             reportFault(placed.Text, true);
@@ -121,12 +122,14 @@ export namespace ZerOS {
           }
           lines.push(line);
         }
-        const decision = debugRunDecision(DebugEnabled, lines, true);
+        /* 只认页面放进消息的那一档。这条线程自己的模块副本不会跟着固件变。 */
+        const enabled = record["enabled"] === true;
+        const decision = debugRunDecision(enabled, lines, true);
         if (decision !== "") {
           globalThis.postMessage({ kind: MailMessage.DebugResult, ok: false, message: decision });
           return;
         }
-        requestDebugRun(lines);
+        requestDebugRun(lines, enabled);
       }
 
       function asRecord(data: unknown): Record<string, unknown> | null {
@@ -270,7 +273,7 @@ export namespace ZerOS {
           globalThis.postMessage({
             kind: MailMessage.ExchangeResult,
             word: 0n,
-            message: "扩展口交换不完整",
+            message: "the expansion exchange is incomplete",
           });
           return;
         }
@@ -300,14 +303,14 @@ export namespace ZerOS {
             void result.then((value: Uint8Array) => {
               deliver(packOctets(value), "");
             }).catch((error: unknown) => {
-              const text = error instanceof Error ? error.message : "扩展口交换失败";
+              const text = error instanceof Error ? error.message : "the expansion exchange failed";
               deliver(0n, text);
             });
             return;
           }
           deliver(packOctets(result), "");
         } catch (error: unknown) {
-          const text = error instanceof Error ? error.message : "扩展口交换失败";
+          const text = error instanceof Error ? error.message : "the expansion exchange failed";
           deliver(0n, text);
         }
       }

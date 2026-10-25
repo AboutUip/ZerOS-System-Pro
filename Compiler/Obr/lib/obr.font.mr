@@ -1,0 +1,11 @@
+/* 字体面。只有函数头。三条都收成已有的 gpu.accel，不新增中央处理器指令，也不解码 UTF-8。 */
+namespace obr {
+namespace font {
+/* 打开一段 TrueType。address 是位地址，octets 是八位组长度，ppem 是像素字号。成功时返回字体面编号。 */
+deRfun face(long address, long octets, long ppem): long;
+/* 把画笔放到颜色目标的像素。原点在左上，y 向下。 */
+deRfun select(long face, long x, long y): void;
+/* 画出 address 处的标量序列。每个标量是小端的 4 个八位组，相邻标量相隔 32 位。count 为 0 时成功并且不移动画笔。 */
+deRfun draw(long address, long count): void;
+}
+}

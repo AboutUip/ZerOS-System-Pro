@@ -12,7 +12,7 @@
  * 动态库必须用 attach 接到末尾。本地指令突发仍按 Hz 逐条记账，短于 1 毫秒才不挂起。
  * 没被核心吸收的访存、查询和端口，只要后一条不读前一条写入的寄存器，就并成一次消息。
  * halt、yield、svc、gate、schedule、release、bound、slice、抢占和时间片仍是单条边界。
- * capture 与 restore 在 8 个槽里保存或放回寄存器、下一条、已装入序列和链接目录，也不创建进程。
+ * capture 与 restore 在官方标定的 64 个槽里保存或放回寄存器、下一条、已装入序列和链接目录，也不创建进程。
  * 映像用和开机相同的解码器解一次，执行时不再从那段地址取指。
  * 停机时把宿主记录发给主板线程。那不是客程序指令，也不写进客程序能读的内存。
  * 用户核 3 到 7 成为客核心之后，指令失败只停这一颗：查询上是停止、原因 0，宿主记录里的原因才是 3。
@@ -42,9 +42,12 @@ import { ZerOS as OpcodeRoot } from "../../Motherboard/Enum/MemoryOpcode";
 import { ZerOS as DirectionRoot } from "../../Motherboard/Enum/ChannelDirection";
 import { type ZerOS as CommandResultRoot } from "../Structure/CpuCommandResult";
 import { type ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
+import { ZerOS as NativeHeaderRoot } from "../Native/NativeHeader";
+import { ZerOS as NativeStateRoot } from "../Structure/NativeState";
 import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
 import { ZerOS as MailboxRoot } from "../../Motherboard/Host/Mailbox";
 import { ZerOS as MetricPageRoot } from "../../Motherboard/Host/MetricPage";
+import { ZerOS as NativeRegisterRoot } from "../Enum/NativeRegister";
 import { ZerOS as StopReasonRoot } from "../Enum/StopReason";
 import { ZerOS as FaultRecordRoot } from "../Structure/FaultRecord";
 import { ZerOS as DebugLogRoot } from "../../Debug/Host/DebugLog";
@@ -55,6 +58,7 @@ export namespace ZerOS {
       type CoreRunState = CoreRunStateRoot.Hardware.Cpu.CoreRunState;
       type CpuCommandResult = CommandResultRoot.Hardware.Cpu.CpuCommandResult;
       type CpuInstruction = InstructionRoot.Hardware.Cpu.CpuInstruction;
+      type NativeState = NativeStateRoot.Hardware.Cpu.NativeState;
       const CoreStopMessage = MailboxRoot.Hardware.Motherboard.MailMessage.CoreStop;
       const FaultMessage = MailboxRoot.Hardware.Motherboard.MailMessage.Fault;
       const FaultLogMessage = MailboxRoot.Hardware.Motherboard.MailMessage.FaultLog;
@@ -64,10 +68,13 @@ export namespace ZerOS {
       const StopReasonYielded = StopReasonRoot.Hardware.Cpu.StopReasonYielded;
       const StopReasonWaiting = StopReasonRoot.Hardware.Cpu.StopReasonWaiting;
       const StopReasonFailed = StopReasonRoot.Hardware.Cpu.StopReasonFailed;
+      const NativeRegisterCount = NativeRegisterRoot.Hardware.Cpu.NativeRegisterCount;
+      const NativeRsp = NativeRegisterRoot.Hardware.Cpu.NativeRsp;
 
       const CoreCountMin = ConfigRoot.Hardware.Cpu.Config.CoreCountMin;
       const CoreCountMax = ConfigRoot.Hardware.Cpu.Config.CoreCountMax;
       const RegisterCount = ConfigRoot.Hardware.Cpu.Config.RegisterCount;
+      const OfficialSlotCount = ConfigRoot.Hardware.Cpu.Config.OfficialSlotCount;
       const OfficialHertz = ConfigRoot.Hardware.Cpu.Config.OfficialHertz;
       const adoptClock = ClockRoot.Hardware.Clock.adoptClock;
       const clockOrigin = ClockRoot.Hardware.Clock.clockOrigin;
@@ -81,9 +88,12 @@ export namespace ZerOS {
       const toMemoryOpcode = OpcodeRoot.Hardware.Motherboard.toMemoryOpcode;
       const ChannelDirectionRead = DirectionRoot.Hardware.Motherboard.ChannelDirectionRead;
       const decodeProgramImage = BinaryRoot.Hardware.Cpu.decodeProgramImage;
+      const nativeCodeBytes = NativeHeaderRoot.Hardware.Cpu.nativeCodeBytes;
+      const MailboxSpanBytes = MailboxRoot.Hardware.Motherboard.MailboxSpanBytes;
       type ProgramImage = BinaryRoot.Hardware.Cpu.ProgramImage;
       type ProgramSymbol = BinaryRoot.Hardware.Cpu.ProgramSymbol;
       const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
+      const RelocateDataFloor = ConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
       const runtimePrefix = "[ZerOS.Hardware.Cpu.CpuRuntime]";
       /** 一次装入最多读这么多个八位组。再长就拒绝，避免一条指令扫完整条地址线。 */
       const InstallOctetLimit = 16777216;
@@ -133,6 +143,9 @@ export namespace ZerOS {
         /** 正在把映像八位组从这颗核心读回来。 */
         span: ((bytes: Uint8Array) => void) | null;
         spanReject: ((error: Error) => void) | null;
+        /** 正在把一段原生写入交给这颗核心，再由它一次送上主板。 */
+        deposited: (() => void) | null;
+        depositReject: ((error: Error) => void) | null;
         /** 目标核心已经把 8 个寄存器写成 0。 */
         wiped: (() => void) | null;
         /** 目标核心已经按给出的 8 个整数写好寄存器。参数是这次是否写上。 */
@@ -167,6 +180,21 @@ export namespace ZerOS {
          * 固件所在的核心、监督核自己，以及监督核出现之前装上的核心，都不是客核心。
          */
         guest: boolean;
+        /** 原生帧。空表示这颗核心没有正在执行的原生指令。 */
+        native: NativeState | null;
+        /**
+         * 原生系统调用的回复要写进这个寄存器。
+         * 编号是 0 至 15。空表示没在等。这不是 ZAP 的 svcDest。
+         */
+        nativeReply: number | null;
+        /** 这段原生指令窗口的起始位地址。调度续跑时按它读回字节。空表示没有。 */
+        nativeWindow: bigint | null;
+        /** 装入时抄下的原生代码。取指读这里，不随后来的 bound 把入口挡在外面。 */
+        nativeCode: Uint8Array | null;
+        /** nativeCode[0] 对应的线性位地址。 */
+        nativeBase: bigint | null;
+        /** 刚装入、还没开始跑。停机之后不再置上，避免从第一条重跑。 */
+        nativeArmed: boolean;
         /** 监督核要求这颗核心在下一条指令边界停下。 */
         preemptRequested: boolean;
         /**
@@ -186,6 +214,12 @@ export namespace ZerOS {
 
       /** 监督核。空表示还没有人调用 gate，这时装入和调度不设限。 */
       let gateOrdinal: number | null = null;
+
+      /**
+       * 原生系统调用的续跑。
+       * 由取指模块在加载时接上。这里不直接引用那个模块，避免和运行时互相导入。
+       */
+      let nativeResume: ((ordinal: number) => Promise<void>) | null = null;
 
       const LineBits = BigInt(ConfigRoot.Hardware.Cpu.Config.LineBits);
 
@@ -458,6 +492,8 @@ export namespace ZerOS {
           imports: [],
           span: null,
           spanReject: null,
+          deposited: null,
+          depositReject: null,
           wiped: null,
           planted: null,
           cached: null,
@@ -473,6 +509,12 @@ export namespace ZerOS {
           boundLength: -1n,
           svcDest: null,
           guest: false,
+          native: null,
+          nativeReply: null,
+          nativeWindow: null,
+          nativeCode: null,
+          nativeBase: null,
+          nativeArmed: false,
           preemptRequested: false,
           preemptResolve: null,
           blockToken: null,
@@ -491,7 +533,7 @@ export namespace ZerOS {
         if (core === undefined) {
           return;
         }
-        const reject = core.pendingReject ?? core.accessReject ?? core.fillReject ?? core.spanReject;
+        const reject = core.pendingReject ?? core.accessReject ?? core.fillReject ?? core.spanReject ?? core.depositReject;
         core.access = null;
         core.accessReject = null;
         const wake = core.preemptResolve;
@@ -626,6 +668,22 @@ export namespace ZerOS {
           if (resolve !== null) {
             resolve(record["ok"] === true);
           }
+          return;
+        }
+        if (record["kind"] === "stored") {
+          const resolve = core.deposited;
+          const reject = core.depositReject;
+          core.deposited = null;
+          core.depositReject = null;
+          if (resolve === null || reject === null) {
+            return;
+          }
+          if (record["ok"] !== true) {
+            const message = record["message"];
+            reject(new Error(typeof message === "string" ? message : `${runtimePrefix} native store failed`));
+            return;
+          }
+          resolve();
           return;
         }
         if (record["kind"] === "span") {
@@ -844,6 +902,61 @@ export namespace ZerOS {
         core.blockToken = null;
         core.state = CoreStateRunning;
         core.port.postMessage({ kind: "state", running: true });
+        /* 原生系统调用或 yield 没有 ZAP 序列。回复到了，或让出后再次调度，都从留下的位地址继续。 */
+        const nativeSvc = core.nativeReply !== null && core.installed === null;
+        const nativeYield = core.installed === null
+          && core.native !== null
+          && core.nativeReply === null
+          && core.stopKind === StopReasonYielded;
+        const nativeImage = core.nativeArmed
+          && core.nativeCode !== null
+          && core.native !== null
+          && core.installed === null
+          && core.nativeReply === null
+          && core.stopKind === 0;
+        if ((nativeSvc || nativeYield) && core.nativeCode !== null) {
+          if (sequenceBusy.has(ordinal)) {
+            return;
+          }
+          if (nativeSvc && core.latch === null) {
+            fail("syscall has no reply yet");
+          }
+          const run = startNativeImage(ordinal);
+          core.started = run;
+          void run.catch((error: unknown): void => {
+            reportInstalledFault(ordinal, error);
+          });
+          return;
+        }
+        if (nativeImage) {
+          if (sequenceBusy.has(ordinal)) {
+            return;
+          }
+          core.nativeArmed = false;
+          const run = startNativeImage(ordinal);
+          core.started = run;
+          void run.catch((error: unknown): void => {
+            reportInstalledFault(ordinal, error);
+          });
+          return;
+        }
+        if (nativeSvc || nativeYield) {
+          if (sequenceBusy.has(ordinal)) {
+            return;
+          }
+          if (nativeSvc && core.latch === null) {
+            fail("syscall has no reply yet");
+          }
+          if (nativeResume === null) {
+            fail("native syscall cannot resume");
+          }
+          const run = nativeResume(ordinal);
+          core.started = run;
+          void run.catch((error: unknown): void => {
+            reportInstalledFault(ordinal, error);
+          });
+          return;
+        }
         if (core.installed === null || sequenceBusy.has(ordinal)) {
           return;
         }
@@ -976,7 +1089,7 @@ export namespace ZerOS {
       }
 
       /**
-       * 客核心不能碰显卡、扩展口、频率，也不能把整数交给别的核或自己再当监督核。
+       * 客核心不能碰显卡、扩展口、频率、映射，也不能把整数交给别的核或自己再当监督核。
        * 运算、访存、halt、yield、dwell、svc、slice、core 不在这张表里。
        */
       function guestBlocked(op: string): boolean {
@@ -988,6 +1101,8 @@ export namespace ZerOS {
           || op === "inbox"
           || op === "fill"
           || op === "carry"
+          || op === "mmap"
+          || op === "munmap"
           || op === "mem.hertz"
           || op === "mem.metric"
           || op === "hertz"
@@ -1346,6 +1461,14 @@ export namespace ZerOS {
         return !reading;
       }
 
+      /**
+       * 原生取指用的窗口判断，规则与 withinBound 相同。
+       * 读到窗口外时调用方把这一条判失败，不能靠抛错中断整机。
+       */
+      export function nativeBitAllowed(ordinal: number, address: bigint, bits: number): boolean {
+        return boundOk(ordinal, address, bits);
+      }
+
       /** 与 withinBound 相同，但不抛出。越界的那一条留在批外面。 */
       function boundOk(ordinal: number, address: bigint, bits: number): boolean {
         if (gateOrdinal === ordinal) {
@@ -1572,6 +1695,332 @@ export namespace ZerOS {
         return beginCommand(ordinal, message);
       }
 
+      /** 显卡整数参数的范围与核心读寄存器时相同。越界就失败，不把命令送出。 */
+      function gpuInteger(value: bigint): number {
+        if (value < -16777216n || value > 0xffffffffn) {
+          fail("GPU command integer is out of range");
+        }
+        return Number(value);
+      }
+
+      function refuseGpu(ordinal: number): void {
+        if (requireOrdinal(ordinal).guest) {
+          fail("privileged instruction");
+        }
+      }
+
+      /**
+       * 交出当前画面。
+       * 值已经不在 ZAP 寄存器里，所以这条不经寄存器编号。客核心失败时命令不会送出。
+       */
+      export async function nativePresent(ordinal: number): Promise<void> {
+        refuseGpu(ordinal);
+        await gpu(ordinal, { kind: "gpu", gpuOp: "present" });
+      }
+
+      /**
+       * 画一个封闭点阵字形。五个整数是坐标、码位和两种颜色。
+       * 核心不再从 ZAP 寄存器里读，直接把这些整数送给显卡。
+       */
+      export async function nativeCharacter(
+        ordinal: number,
+        x: bigint,
+        y: bigint,
+        code: bigint,
+        foreground: bigint,
+        background: bigint,
+      ): Promise<void> {
+        refuseGpu(ordinal);
+        await gpu(ordinal, {
+          kind: "gpu",
+          gpuOp: "character",
+          resolved: true,
+          x: gpuInteger(x),
+          y: gpuInteger(y),
+          code: gpuInteger(code),
+          foreground: gpuInteger(foreground),
+          background: gpuInteger(background),
+        });
+      }
+
+      /**
+       * 做一步固定功能绘制。
+       * 操作码是整数。四个参数是二进制 64 的位型。结果写回调用方的原生寄存器。
+       */
+      export async function nativeAccel(
+        ordinal: number,
+        operation: bigint,
+        a: bigint,
+        b: bigint,
+        c: bigint,
+        d: bigint,
+      ): Promise<bigint> {
+        refuseGpu(ordinal);
+        const result = await gpu(ordinal, {
+          kind: "gpu",
+          gpuOp: "accel",
+          resolved: true,
+          register: 0,
+          operation,
+          a,
+          b,
+          c,
+          d,
+        });
+        return result.Value;
+      }
+
+      /** 读回借走的 ZAP 寄存器。不占一拍。 */
+      async function borrowRegister(ordinal: number, slot: number): Promise<bigint> {
+        return peekRegister(ordinal, slot);
+      }
+
+      async function restoreBorrowed(ordinal: number, saved: readonly bigint[]): Promise<void> {
+        for (let index = 0; index < saved.length; index += 1) {
+          const value = saved[index];
+          if (value !== undefined) {
+            await place(ordinal, index, value);
+          }
+        }
+      }
+
+      /** 交换扩展口的 8 个八位组。结果是换回来的那个字。 */
+      export async function nativeExchange(ordinal: number, port: bigint, direction: bigint, data: bigint): Promise<bigint> {
+        refuseGuest(ordinal, "xchg");
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await place(ordinal, 2, direction);
+          await place(ordinal, 3, data);
+          await beginCommand(ordinal, { kind: "xchg", port: 1, direction: 2, data: 3 });
+          return await borrowRegister(ordinal, 3);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      /** 按句柄把扩展口上的字节写到位地址。回复是实际写下的个数。 */
+      export async function nativeCarry(
+        ordinal: number,
+        port: bigint,
+        handle: bigint,
+        offset: bigint,
+        address: bigint,
+        count: bigint,
+      ): Promise<bigint> {
+        refuseGuest(ordinal, "carry");
+        if (address < 0n || address % 8n !== 0n) {
+          fail("carry address is not aligned");
+        }
+        if (count < 0n || count > 268435456n) {
+          fail("carry length is out of range");
+        }
+        if (count > 0n) {
+          withinBound(ordinal, address, Number(count) * 8);
+        }
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await place(ordinal, 2, handle);
+          await place(ordinal, 3, offset);
+          await place(ordinal, 4, address);
+          await place(ordinal, 5, count);
+          await beginCommand(ordinal, {
+            kind: "carry",
+            destination: 0,
+            port: 1,
+            handle: 2,
+            offset: 3,
+            address: 4,
+            count: 5,
+          });
+          return await borrowRegister(ordinal, 0);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      /** 把扩展口已经准备好的应答写到位地址。至多 4096 个八位组。 */
+      export async function nativeFill(ordinal: number, port: bigint, address: bigint, count: bigint): Promise<bigint> {
+        refuseGuest(ordinal, "fill");
+        if (address < 0n || address % 8n !== 0n) {
+          fail("fill address is not aligned");
+        }
+        if (count < 0n || count > 4096n) {
+          fail("fill length is out of range");
+        }
+        if (count > 0n) {
+          withinBound(ordinal, address, Number(count) * 8);
+        }
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await place(ordinal, 2, address);
+          await place(ordinal, 3, count);
+          await beginCommand(ordinal, { kind: "fill", destination: 0, port: 1, address: 2, count: 3 });
+          return await borrowRegister(ordinal, 0);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      export async function nativePortState(ordinal: number, port: bigint): Promise<bigint> {
+        refuseGuest(ordinal, "port.state");
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await beginCommand(ordinal, { kind: "port-state", destination: 0, port: 1 });
+          return await borrowRegister(ordinal, 0);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      export async function nativePortChar(ordinal: number, port: bigint, offset: bigint): Promise<bigint> {
+        refuseGuest(ordinal, "port.char");
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await place(ordinal, 2, offset);
+          await beginCommand(ordinal, { kind: "port-char", destination: 0, port: 1, offset: 2 });
+          return await borrowRegister(ordinal, 0);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      export async function nativePortByte(ordinal: number, port: bigint, field: bigint, offset: bigint): Promise<bigint> {
+        refuseGuest(ordinal, "port.byte");
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await place(ordinal, 2, field);
+          await place(ordinal, 3, offset);
+          await beginCommand(ordinal, { kind: "port-byte", destination: 0, port: 1, field: 2, offset: 3 });
+          return await borrowRegister(ordinal, 0);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      export async function nativeMap(ordinal: number, port: bigint, handle: bigint, length: bigint): Promise<bigint> {
+        refuseGuest(ordinal, "mmap");
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await place(ordinal, 2, handle);
+          await place(ordinal, 3, length);
+          await beginCommand(ordinal, { kind: "mmap", destination: 0, port: 1, handle: 2, length: 3 });
+          return await borrowRegister(ordinal, 0);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      export async function nativeUnmap(ordinal: number, address: bigint, length: bigint): Promise<void> {
+        refuseGuest(ordinal, "munmap");
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 0, address);
+          await place(ordinal, 1, length);
+          await beginCommand(ordinal, { kind: "munmap", address: 0, length: 1 });
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      export async function nativeInbox(ordinal: number): Promise<{ readonly found: bigint; readonly value: bigint }> {
+        refuseGuest(ordinal, "inbox");
+        const saved = await readRegisters(ordinal);
+        try {
+          await beginCommand(ordinal, { kind: "inbox", found: 0, value: 1 });
+          const found = await borrowRegister(ordinal, 0);
+          const value = await borrowRegister(ordinal, 1);
+          return { found, value };
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      /** 按墙上的毫秒等。0 马上继续。等待时核心仍在执行。 */
+      export async function nativeDwell(ordinal: number, milliseconds: bigint): Promise<void> {
+        if (milliseconds < 0n || milliseconds > 1000n) {
+          fail("dwell is outside 0 to 1000");
+        }
+        requireOrdinal(ordinal).Executed += 1;
+        if (milliseconds >= 1n) {
+          await waitSpan(Number(milliseconds));
+        }
+      }
+
+      export function nativeReadSpan(ordinal: number, address: bigint, length: number): Promise<Uint8Array> {
+        return readSpan(ordinal, address, length);
+      }
+
+      /**
+       * 把一段已经在缓冲里的八位组一次写上主板。
+       * 窗口外的整段都不写。空段直接返回。比一次搬运更长的段由调用方拆开。
+       */
+      export function nativeWriteSpan(ordinal: number, address: bigint, bytes: Uint8Array): Promise<void> {
+        if (bytes.length < 1) {
+          return Promise.resolve();
+        }
+        if (bytes.length > MailboxSpanBytes || !boundOk(ordinal, address, bytes.length * 8)) {
+          fail("native store is outside the window");
+        }
+        return writeSpan(ordinal, address, bytes);
+      }
+
+      export function nativePaceBudget(ordinal: number): number {
+        const core = requireOrdinal(ordinal);
+        const budget = paceBudget(core.Hertz);
+        if (core.sliceQuota > 0 && core.sliceLeft < budget) {
+          return Math.max(core.sliceLeft, 0);
+        }
+        return budget;
+      }
+
+      export function nativeChargePace(ordinal: number, count: number): Promise<void> {
+        return chargePace(requireOrdinal(ordinal), count);
+      }
+
+      /** 记上这一拍的条数。返回 true 时核心已经因抢占或时间片停下。 */
+      export function nativeAccount(ordinal: number, count: number): boolean {
+        const core = requireOrdinal(ordinal);
+        core.Executed += count;
+        return consume(ordinal, 0, count);
+      }
+
+      export function enterNativeImage(ordinal: number): void {
+        if (sequenceBusy.has(ordinal)) {
+          fail("this core is already running another program");
+        }
+        sequenceBusy.add(ordinal);
+      }
+
+      export function leaveNativeImage(ordinal: number): void {
+        sequenceBusy.delete(ordinal);
+      }
+
+      export function finishNativeHalt(ordinal: number): void {
+        nativeReachedHalt(ordinal);
+        halt(ordinal);
+        wakeGate(ordinal);
+      }
+
+      export function finishNativeYield(ordinal: number): void {
+        halt(ordinal);
+        wakeGate(ordinal);
+      }
+
+      export function readNativeProgram(ordinal: number): { code: Uint8Array; base: bigint; state: NativeState } | null {
+        const core = requireOrdinal(ordinal);
+        if (core.nativeCode === null || core.nativeBase === null || core.native === null) {
+          return null;
+        }
+        return { code: core.nativeCode, base: core.nativeBase, state: core.native };
+      }
+
       function installFail(text: string): never {
         fail(`install ${text}`);
       }
@@ -1644,10 +2093,26 @@ export namespace ZerOS {
         return ordinal;
       }
 
+      /**
+       * 让正在执行的核心把一段八位组一次写上主板。
+       * 主板落下之后才应答。应答前丢掉盖住同一段的私有字节，下一次按段读才不会看见旧值。
+       */
+      function writeSpan(ordinal: number, address: bigint, bytes: Uint8Array): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.span !== null || core.deposited !== null || core.pending !== null) {
+          installFail("memory access failed");
+        }
+        return new Promise((resolve, reject): void => {
+          core.deposited = resolve;
+          core.depositReject = reject;
+          core.port.postMessage({ kind: "store-span", address, bytes });
+        });
+      }
+
       /** 向正在执行的核心要一段八位组。核心先交自己写过的，其余再问主板。 */
       function readSpan(ordinal: number, address: bigint, length: number): Promise<Uint8Array> {
         const core = requireOrdinal(ordinal);
-        if (core.span !== null || core.pending !== null) {
+        if (core.span !== null || core.deposited !== null || core.pending !== null) {
           installFail("memory access failed");
         }
         return new Promise((resolve, reject): void => {
@@ -1767,8 +2232,8 @@ export namespace ZerOS {
         });
       }
 
-      /** 全机 8 个上下文槽。槽留下寄存器、下一条、已装入序列，以及别人读不到的写入。槽不是进程。 */
-      const ContextSlotCount = 8;
+      /** 官方标定的上下文槽。槽留下寄存器、下一条、已装入序列，以及别人读不到的写入。槽不是进程。 */
+      const ContextSlotCount = OfficialSlotCount;
 
       /** 一颗核心上别人读不到的八位组、临时字和帧字。地址不换算到别的核心。 */
       interface PrivateOctets {
@@ -1792,6 +2257,12 @@ export namespace ZerOS {
         svcDest: number | null;
         latch: bigint | null;
         cache: PrivateOctets;
+        native: NativeState | null;
+        nativeReply: number | null;
+        nativeWindow: bigint | null;
+        nativeCode: Uint8Array | null;
+        nativeBase: bigint | null;
+        nativeArmed: boolean;
       }
 
       const emptyCache: PrivateOctets = { addresses: [], bytes: [], scratch: [], frameHeld: false, frame: 0n };
@@ -1811,7 +2282,400 @@ export namespace ZerOS {
           svcDest: null,
           latch: null,
           cache: emptyCache,
+          native: null,
+          nativeReply: null,
+          nativeWindow: null,
+          nativeCode: null,
+          nativeBase: null,
+          nativeArmed: false,
         });
+      }
+
+      function copyNative(frame: NativeState | null): NativeState | null {
+        if (frame === null) {
+          return null;
+        }
+        return {
+          reg: frame.reg.slice(),
+          rip: frame.rip,
+          cf: frame.cf,
+          zf: frame.zf,
+          sf: frame.sf,
+          of: frame.of,
+          pf: frame.pf,
+        };
+      }
+
+      /** 读出这颗核心的原生帧。没有时是空。返回的是副本。 */
+      export function readNativeFrame(ordinal: number): NativeState | null {
+        return copyNative(requireOrdinal(ordinal).native);
+      }
+
+      /** 换上原生帧。传入空就是清掉。核心可以正在执行，调用方自己保证没有两条取指同时进行。 */
+      export function adoptNativeFrame(ordinal: number, frame: NativeState | null): void {
+        requireOrdinal(ordinal).native = copyNative(frame);
+      }
+
+      /**
+       * 让一颗没有 ZAP 序列的核心进入执行中，好让原生取指使用它的访存。
+       * 不启动指令数组。已有装入序列时失败，避免和那一段抢同一颗核心。
+       */
+      export function beginNative(ordinal: number): void {
+        const core = requireOrdinal(ordinal);
+        if (core.state !== CoreStateHalted || sequenceBusy.has(ordinal) || core.installed !== null) {
+          fail("native core is not free");
+        }
+        core.state = CoreStateRunning;
+        core.port.postMessage({ kind: "state", running: true });
+      }
+
+      /** 原生取指结束。核心回到停止，不改 ZAP 寄存器。 */
+      export function endNative(ordinal: number): void {
+        const core = requireOrdinal(ordinal);
+        if (core.state !== CoreStateRunning || sequenceBusy.has(ordinal)) {
+          fail("native core is not free");
+        }
+        core.state = CoreStateHalted;
+        core.port.postMessage({ kind: "state", running: false });
+      }
+
+      /** 记下这段原生指令从哪个位地址开始。调度续跑时按它把字节读回来。 */
+      export function noteNativeWindow(ordinal: number, baseBit: bigint): void {
+        requireOrdinal(ordinal).nativeWindow = baseBit;
+      }
+
+      /** 这段原生指令的窗口起点。没有时是空。 */
+      export function readNativeWindow(ordinal: number): bigint | null {
+        return requireOrdinal(ordinal).nativeWindow;
+      }
+
+      /** 取指模块加载时接上续跑。调度发现原生系统调用的回复后调用它。 */
+      export function bindNativeResume(resume: (ordinal: number) => Promise<void>): void {
+        nativeResume = resume;
+      }
+
+      /** 整段原生映像的执行。由取指模块在加载时接上。 */
+      let nativeImageRun: ((ordinal: number) => Promise<void>) | null = null;
+
+      export function bindNativeImage(run: (ordinal: number) => Promise<void>): void {
+        nativeImageRun = run;
+      }
+
+      function startNativeImage(ordinal: number): Promise<void> {
+        if (nativeImageRun === null) {
+          fail("native image cannot start");
+        }
+        return nativeImageRun(ordinal);
+      }
+
+      /**
+       * 自检收尾。
+       * 结束系统调用的空转，清掉原生帧，核心若还在执行且没有 ZAP 序列就回到停止。
+       */
+      export function finishNative(ordinal: number): void {
+        const core = requireOrdinal(ordinal);
+        core.blockToken = null;
+        core.nativeReply = null;
+        core.nativeWindow = null;
+        core.native = null;
+        core.nativeCode = null;
+        core.nativeBase = null;
+        core.nativeArmed = false;
+        core.stopKind = 0;
+        if (core.state === CoreStateRunning && !sequenceBusy.has(ordinal)) {
+          halt(ordinal);
+        }
+      }
+
+      /**
+       * 取得监督权。
+       * 已经有监督核时返回 false，不更换。客核心由调用方看到失败。
+       */
+      export function nativeGate(ordinal: number): boolean {
+        refuseGuest(ordinal, "gate");
+        if (gateOrdinal !== null) {
+          return false;
+        }
+        gateOrdinal = ordinal;
+        requireOrdinal(ordinal).Executed += 1;
+        return true;
+      }
+
+      /** 把整数放进目标核心的空保持位。目标编号放在调用方传来的整数里。 */
+      export function nativePass(ordinal: number, target: bigint, data: bigint): void {
+        refuseGuest(ordinal, "pass");
+        const to = coreOrdinal(target);
+        if (to === null) {
+          fail("pass target is not mounted");
+        }
+        pass(ordinal, to, data);
+        if (to === gateOrdinal) {
+          wakeGate(ordinal);
+        }
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /**
+       * 取出本核心保持位。
+       * 空的时候两个结果都是 0，这和 ZAP 的 take 一样，不把空保持位当成失败。
+       */
+      export function nativeTake(ordinal: number): { readonly found: bigint; readonly value: bigint } {
+        refuseGuest(ordinal, "take");
+        const current = requireOrdinal(ordinal);
+        const found = current.latch === null ? 0n : 1n;
+        const value = current.latch === null ? 0n : take(ordinal);
+        current.Executed += 1;
+        return { found, value };
+      }
+
+      /**
+       * 原生系统调用。
+       * 服务号交给监督核的保持位，回复稍后写入 reply 这个原生寄存器。
+       * 核心保持执行中，只做不取下一条的空转。
+       */
+      export function nativeSvc(ordinal: number, service: bigint, reply: number): void {
+        if (gateOrdinal === null || gateOrdinal === ordinal) {
+          fail("syscall has no supervisor");
+        }
+        if (service < 0n || service > 0xffffffffn) {
+          fail("syscall service is out of range");
+        }
+        if (!Number.isInteger(reply) || reply < 0 || reply >= NativeRegisterCount) {
+          fail("syscall reply register is out of range");
+        }
+        pass(ordinal, gateOrdinal, (BigInt(ordinal) << 32n) | service);
+        const core = requireOrdinal(ordinal);
+        core.nativeReply = reply;
+        core.stopKind = StopReasonWaiting;
+        core.Executed += 1;
+        noteStop(ordinal, StopReasonWaiting, 0, "svc", "");
+        beginBlockedPace(ordinal);
+      }
+
+      /**
+       * 调度续跑时取出回复。
+       * 写入哪个原生寄存器由这次等待记下。取出后清掉等待，不写 ZAP 寄存器。
+       */
+      export function acceptNativeReply(ordinal: number): { readonly reg: number; readonly value: bigint } {
+        const core = requireOrdinal(ordinal);
+        const reg = core.nativeReply;
+        if (reg === null || core.latch === null || core.stopKind !== StopReasonWaiting) {
+          fail("native syscall has no reply");
+        }
+        core.blockToken = null;
+        const value = take(ordinal);
+        core.nativeReply = null;
+        core.stopKind = 0;
+        return { reg, value };
+      }
+
+      /** 这颗核心是否还等着把系统调用回复写进原生寄存器。 */
+      export function nativeReplyPending(ordinal: number): boolean {
+        return requireOrdinal(ordinal).nativeReply !== null;
+      }
+
+      /** 原生停机。停止原因回到 0，帧本身留着，调用方还要读寄存器。 */
+      export function nativeReachedHalt(ordinal: number): void {
+        const core = requireOrdinal(ordinal);
+        core.stopKind = 0;
+        core.nativeReply = null;
+      }
+
+      /**
+       * 调度另一颗核心。
+       * 目标可以是刚装入的 ZAP 序列，也可以是停在 yield 或系统调用里的原生帧。
+       * 已经跑到停机的原生帧不算还有程序。
+       */
+      export function nativeSchedule(ordinal: number, target: bigint): void {
+        const to = coreOrdinal(target);
+        if (to === null || !supervisor(ordinal)) {
+          fail("schedule requires the supervisor");
+        }
+        const chosen = requireOrdinal(to);
+        const hasZap = chosen.installed !== null;
+        const hasYield = chosen.native !== null && chosen.nativeReply === null && chosen.stopKind === StopReasonYielded;
+        const hasSvc = chosen.nativeReply !== null || chosen.svcDest !== null;
+        const hasImage = chosen.nativeArmed && chosen.nativeCode !== null && chosen.native !== null;
+        if (!hasZap && !hasYield && !hasSvc && !hasImage) {
+          fail("schedule found no program");
+        }
+        if ((chosen.nativeReply !== null || chosen.svcDest !== null) && chosen.latch === null) {
+          fail("schedule found a syscall with no reply");
+        }
+        if (!sequenceBusy.has(to)) {
+          schedule(to);
+        }
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /** 卸下另一颗已经停止的核心。可访问长度变成 0，调用方随后再交还挂载状态。 */
+      export async function nativeRelease(ordinal: number, target: bigint): Promise<void> {
+        const to = coreOrdinal(target);
+        if (to === null || to === ordinal || !supervisor(ordinal)) {
+          fail("release requires the supervisor");
+        }
+        const chosen = requireOrdinal(to);
+        await preempt(to);
+        if (chosen.state !== CoreStateHalted || sequenceBusy.has(to)) {
+          fail("release target is not halted");
+        }
+        chosen.installed = null;
+        clearNativeHold(chosen);
+        chosen.exports = [];
+        chosen.imports = [];
+        chosen.resumeCursor = null;
+        chosen.stopKind = 0;
+        chosen.svcDest = null;
+        chosen.sliceQuota = 0;
+        chosen.sliceLeft = 0;
+        chosen.boundOrigin = 0n;
+        chosen.boundLength = 0n;
+        chosen.latch = null;
+        chosen.guest = false;
+        await wipeRegisters(to);
+        await clearPrivate(to, "release");
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /** 划定目标核心的可访问位元。目标不是自己时，先停在下一条边界。 */
+      export async function nativeBound(ordinal: number, target: bigint, origin: bigint, length: bigint): Promise<void> {
+        const to = coreOrdinal(target);
+        if (to === null || !supervisor(ordinal)) {
+          fail("bound requires the supervisor");
+        }
+        if (origin < 0n || length < 0n || origin + length < origin) {
+          fail("bound range is illegal");
+        }
+        const chosen = requireOrdinal(to);
+        if (to !== ordinal) {
+          await preempt(to);
+        }
+        if (to !== ordinal && (chosen.state !== CoreStateHalted || sequenceBusy.has(to))) {
+          fail("bound target is not halted");
+        }
+        chosen.boundOrigin = origin;
+        chosen.boundLength = length;
+        markGuest(to);
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /** 本核心下一轮最多执行这么多条。0 表示一直跑到停机。 */
+      export function nativeSlice(ordinal: number, count: bigint): void {
+        if (count < 0n || count > 0xffffffffn) {
+          fail("slice is out of range");
+        }
+        const core = requireOrdinal(ordinal);
+        core.sliceQuota = Number(count);
+        core.sliceLeft = core.sliceQuota;
+        core.Executed += 1;
+      }
+
+      /**
+       * 原生 yield。
+       * 指令指针已经指到下一条。核心回到停止，停止原因是 1。再次调度从那里继续。
+       */
+      export function nativeYield(ordinal: number): void {
+        const core = requireOrdinal(ordinal);
+        core.stopKind = StopReasonYielded;
+        core.Executed += 1;
+        noteStop(ordinal, StopReasonYielded, 0, "yield", "");
+      }
+
+      /**
+       * 查询一个座位。
+       * 座位 1 在这条线程上回答。其它座位把三个整数放进暂存寄存器，走和 ZAP 相同的查询命令，再把结果取回来。
+       */
+      export async function nativeQuery(ordinal: number, seat: bigint, field: bigint, index: bigint): Promise<bigint> {
+        const seatNumber = numberFromRegister(seat);
+        const fieldNumber = numberFromRegister(field);
+        const indexNumber = numberFromRegister(index);
+        if (requireOrdinal(ordinal).guest && !guestMayQuery(ordinal, seatNumber, fieldNumber, indexNumber)) {
+          fail("privileged instruction");
+        }
+        if (seatNumber !== 1) {
+          const saved = await readRegisters(ordinal);
+          try {
+            await place(ordinal, 1, seat);
+            await place(ordinal, 2, field);
+            await place(ordinal, 3, index);
+            await beginCommand(ordinal, { kind: "query", register: 0, seat: 1, field: 2, index: 3 });
+            return await borrowRegister(ordinal, 0);
+          } finally {
+            await restoreBorrowed(ordinal, saved);
+          }
+        }
+        const value = queryCpu(fieldNumber, indexNumber);
+        if (fieldNumber === 2 || fieldNumber === 3 || fieldNumber === 4) {
+          const values: bigint[] = [];
+          for (let stepIndex = 0; stepIndex < 32; stepIndex += 1) {
+            values.push(queryCpu(fieldNumber, indexNumber + stepIndex));
+          }
+          await rememberQuery(ordinal, seatNumber, fieldNumber, indexNumber, values);
+        } else if (fieldNumber === 0 || fieldNumber === 1) {
+          await rememberQuery(ordinal, seatNumber, fieldNumber, indexNumber, [value]);
+        }
+        requireOrdinal(ordinal).Executed += 1;
+        return value;
+      }
+
+      /** 把调用方线性位元上的程序映像装到另一颗核心。成功后目标仍停止。 */
+      export async function nativeInstall(ordinal: number, target: bigint, address: bigint, length: bigint): Promise<void> {
+        await installImage(ordinal, target, address, length);
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /** 把已停止核心抄进槽。目标和槽号是寄存器里的值。不改这颗核心。 */
+      export async function nativeCapture(ordinal: number, target: bigint, slot: bigint): Promise<void> {
+        await captureContext(ordinal, target, slot);
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /** 把槽放回已停止核心。放回后仍然停止，要另一次调度才继续。 */
+      export async function nativeRestore(ordinal: number, target: bigint, slot: bigint): Promise<void> {
+        await restoreContext(ordinal, target, slot);
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /**
+       * 改一颗已挂载核心的 Hz。
+       * 客核心按特权指令失败，调用前的频率保持不变。
+       */
+      export function nativeHertz(ordinal: number, target: bigint, hertz: bigint): void {
+        if (requireOrdinal(ordinal).guest) {
+          fail("privileged instruction");
+        }
+        const to = coreOrdinal(target);
+        if (to === null) {
+          fail("register integer is out of range");
+        }
+        setHertz(to, numberFromRegister(hertz));
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
+      /**
+       * 把动态库接到已停止核心的指令末尾。
+       * 返回第一个导出在接上之后的指令编号。调用方把它写入原生寄存器，不写 ZAP 寄存器。
+       */
+      export async function nativeAttach(
+        ordinal: number,
+        target: bigint,
+        address: bigint,
+        length: bigint,
+      ): Promise<bigint> {
+        const entry = await attachImage(ordinal, target, address, length);
+        requireOrdinal(ordinal).Executed += 1;
+        return entry;
+      }
+
+      /** 装入、交付或卸下时丢掉上一份原生帧，并停掉还在空转的系统调用。 */
+      function clearNativeHold(core: MountedCore): void {
+        core.native = null;
+        core.nativeReply = null;
+        core.nativeWindow = null;
+        core.nativeCode = null;
+        core.nativeBase = null;
+        core.nativeArmed = false;
+        core.blockToken = null;
       }
 
       function contextSlot(value: bigint): number | null {
@@ -1848,7 +2712,7 @@ export namespace ZerOS {
         if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
           contextFail("capture", "target core is not halted");
         }
-        if (targetCore.installed === null) {
+        if (targetCore.installed === null && targetCore.native === null) {
           contextFail("capture", "target has no program");
         }
         const registers = await readImage(target);
@@ -1860,7 +2724,13 @@ export namespace ZerOS {
         held.filled = true;
         held.cursor = targetCore.resumeCursor;
         held.registers = registers.slice();
-        held.steps = targetCore.installed.slice();
+        held.steps = targetCore.installed === null ? [] : targetCore.installed.slice();
+        held.native = copyNative(targetCore.native);
+        held.nativeReply = targetCore.nativeReply;
+        held.nativeWindow = targetCore.nativeWindow;
+        held.nativeCode = targetCore.nativeCode === null ? null : targetCore.nativeCode.slice();
+        held.nativeBase = targetCore.nativeBase;
+        held.nativeArmed = targetCore.nativeArmed;
         held.exports = copySymbols(targetCore.exports);
         held.imports = copySymbols(targetCore.imports);
         held.stopKind = targetCore.stopKind;
@@ -1898,7 +2768,13 @@ export namespace ZerOS {
         }
         await plantRegisters(target, held.registers);
         await plantPrivate(target, held.cache);
-        targetCore.installed = held.steps.slice();
+        targetCore.installed = held.steps.length === 0 ? null : held.steps.slice();
+        targetCore.native = copyNative(held.native);
+        targetCore.nativeReply = held.nativeReply;
+        targetCore.nativeWindow = held.nativeWindow;
+        targetCore.nativeCode = held.nativeCode === null ? null : held.nativeCode.slice();
+        targetCore.nativeBase = held.nativeBase;
+        targetCore.nativeArmed = held.nativeArmed;
         targetCore.exports = copySymbols(held.exports);
         targetCore.imports = copySymbols(held.imports);
         targetCore.resumeCursor = held.cursor;
@@ -1925,15 +2801,12 @@ export namespace ZerOS {
        * 把一份动态库接到已停止核心的指令末尾。
        * 库按 0 号核心的窗口编译。数据重定位加上 `目标编号 × 槽距`，跳转编号加上接入点。
        * 库自己的导入必须已经能在这颗核心上找到，否则整次失败，目标保持原样。
-       * 同名导出已经都在时不再追加，结果寄存器写回原来的入口编号。
+       * 同名导出已经都在时不再追加。返回值是入口编号，由调用方写入结果寄存器。
        */
-      async function attachImage(caller: number, step: CpuInstruction & { Op: "attach" }): Promise<void> {
+      async function attachImage(caller: number, targetValue: bigint, address: bigint, length: bigint): Promise<bigint> {
         if (!supervisor(caller)) {
           attachFail("requires the supervisor");
         }
-        const targetValue = await peekRegister(caller, step.Core);
-        const address = await peekRegister(caller, step.Address);
-        const length = await peekRegister(caller, step.Length);
         const target = coreOrdinal(targetValue);
         if (target === null || target === caller) {
           attachFail("target core is not halted");
@@ -1977,8 +2850,7 @@ export namespace ZerOS {
           if (existing === null) {
             attachFail("no symbol");
           }
-          await place(caller, step.Destination, BigInt(existing));
-          return;
+          return BigInt(existing);
         }
         if (known > 0) {
           attachFail("duplicate export");
@@ -2031,7 +2903,45 @@ export namespace ZerOS {
         targetCore.installed = prefix.concat(library);
         targetCore.exports = nextExports;
         targetCore.imports = nextImports;
-        await place(caller, step.Destination, BigInt(head.index + codeBase));
+        return BigInt(head.index + codeBase);
+      }
+
+      /**
+       * ZNB1 的代码从文件头之后开始。
+       * 取指用装入时抄下的字节，入口位地址是文件起点加 96。
+       * 头不对时还没抢占，目标核心保持原样。
+       */
+      async function installNativeImage(
+        caller: number,
+        target: number,
+        targetCore: MountedCore,
+        address: bigint,
+        octets: Uint8Array,
+      ): Promise<void> {
+        if (!supervisor(caller)) {
+          installFail("program image");
+        }
+        const code = nativeCodeBytes(octets);
+        if (code === null) {
+          installFail("program image");
+        }
+        await preempt(target);
+        if (targetCore.state !== CoreStateHalted || sequenceBusy.has(target)) {
+          installFail("target core is not halted");
+        }
+        await wipeRegisters(target);
+        await clearPrivate(target, "install");
+        targetCore.installed = null;
+        clearNativeHold(targetCore);
+        placeNative(targetCore, target, code, address + 96n);
+        targetCore.exports = [];
+        targetCore.imports = [];
+        targetCore.resumeCursor = null;
+        targetCore.stopKind = 0;
+        targetCore.svcDest = null;
+        targetCore.sliceQuota = 0;
+        targetCore.sliceLeft = 0;
+        markGuest(target);
       }
 
       /**
@@ -2060,6 +2970,10 @@ export namespace ZerOS {
           installFail("length is out of range");
         }
         const octets = await readSpan(caller, address, Number(length));
+        if (octets[0] === 0x5a && octets[1] === 0x4e && octets[2] === 0x42 && octets[3] === 0x31) {
+          await installNativeImage(caller, target, targetCore, address, octets);
+          return;
+        }
         let image: ProgramImage;
         try {
           image = decodeProgramImage(octets);
@@ -2095,6 +3009,7 @@ export namespace ZerOS {
         await wipeRegisters(target);
         await clearPrivate(target, "install");
         targetCore.installed = placed;
+        clearNativeHold(targetCore);
         targetCore.exports = copySymbols(image.symbols);
         targetCore.imports = copySymbols(image.imports);
         targetCore.resumeCursor = null;
@@ -2113,12 +3028,62 @@ export namespace ZerOS {
        * 寄存器保持挂载时的 0，不必再走一轮清寄存器。
        * 固件循环稍后用 schedule 启动它，读盘因此不必占住换红点的那一核。
        */
+      /**
+       * 硬件栈放在这颗核心窗口的顶端，向低地址长。
+       * 编译器的帧和堆在窗口下半段。调用只在顶端留返回地址，两边碰不到。
+       */
+      function hardwareRsp(ordinal: number): bigint {
+        const top = BigInt(RelocateDataFloor) + BigInt(ordinal + 1) * BigInt(RelocateSlotBits);
+        return top / 8n;
+      }
+
+      /** 抄下代码，入口在代码起点。栈指针先放到窗口顶端，第一条调用才有地方落。 */
+      function placeNative(core: MountedCore, ordinal: number, code: Uint8Array, base: bigint): void {
+        const state = NativeStateRoot.Hardware.Cpu.freshNativeState(base);
+        state.reg[NativeRsp] = hardwareRsp(ordinal);
+        core.nativeCode = code;
+        core.nativeBase = base;
+        core.native = state;
+        core.nativeArmed = true;
+      }
+
+      /**
+       * 上电时把 ZNB1 放上一颗停止的核心，不启动。
+       * 和 seatImage 一样：没有窗口、不是客核心。固件稍后 schedule 它。
+       * 代码不在内存里，取指用装入时抄下的字节，入口是位地址 96。
+       */
+      export function seatNativeImage(ordinal: number, octets: Uint8Array): void {
+        const targetCore = requireOrdinal(ordinal);
+        if (targetCore.state !== CoreStateHalted || sequenceBusy.has(ordinal)) {
+          fail("target core is not halted");
+        }
+        const code = nativeCodeBytes(octets);
+        if (code === null) {
+          fail("program image");
+        }
+        targetCore.installed = null;
+        clearNativeHold(targetCore);
+        placeNative(targetCore, ordinal, code, 96n);
+        targetCore.exports = [];
+        targetCore.imports = [];
+        targetCore.resumeCursor = null;
+        targetCore.stopKind = 0;
+        targetCore.svcDest = null;
+        targetCore.sliceQuota = 0;
+        targetCore.sliceLeft = 0;
+        targetCore.boundOrigin = 0n;
+        targetCore.boundLength = -1n;
+        targetCore.guest = false;
+        targetCore.latch = null;
+      }
+
       export function seatImage(ordinal: number, steps: readonly CpuInstruction[]): void {
         const targetCore = requireOrdinal(ordinal);
         if (targetCore.state !== CoreStateHalted || sequenceBusy.has(ordinal)) {
           fail("target core is not halted");
         }
         targetCore.installed = steps.slice();
+        clearNativeHold(targetCore);
         targetCore.exports = [];
         targetCore.imports = [];
         targetCore.resumeCursor = null;
@@ -2143,6 +3108,7 @@ export namespace ZerOS {
           fail("target core is not halted");
         }
         core.installed = null;
+        clearNativeHold(core);
         core.exports = [];
         core.imports = [];
         core.resumeCursor = null;
@@ -2301,6 +3267,20 @@ export namespace ZerOS {
             sliced.Executed += 1;
             cursor += 1;
             continue;
+          } else if (step.Op === "mmap") {
+            await beginCommand(ordinal, {
+              kind: "mmap",
+              destination: step.Destination,
+              port: step.Port,
+              handle: step.Handle,
+              length: step.Length,
+            });
+          } else if (step.Op === "munmap") {
+            await beginCommand(ordinal, {
+              kind: "munmap",
+              address: step.Address,
+              length: step.Length,
+            });
           } else if (step.Op === "dwell") {
             /* 等的是墙上的毫秒，不按 Hz 折算。0 马上继续。
                核心保持执行中，别的核心可以在这次让出里往前走。 */
@@ -2324,7 +3304,7 @@ export namespace ZerOS {
               fail("schedule requires the supervisor");
             }
             const chosen = requireOrdinal(target);
-            if (chosen.installed === null) {
+            if (chosen.installed === null && !chosen.nativeArmed) {
               fail("schedule found no program");
             }
             if (chosen.svcDest !== null && chosen.latch === null) {
@@ -2346,6 +3326,7 @@ export namespace ZerOS {
               fail("release target is not halted");
             }
             chosen.installed = null;
+            clearNativeHold(chosen);
             chosen.exports = [];
             chosen.imports = [];
             chosen.resumeCursor = null;
@@ -2669,7 +3650,11 @@ export namespace ZerOS {
             requireOrdinal(ordinal).Executed += 1;
           } else if (step.Op === "attach") {
             await waitPace(requireOrdinal(ordinal));
-            await attachImage(ordinal, step);
+            const target = await peekRegister(ordinal, step.Core);
+            const address = await peekRegister(ordinal, step.Address);
+            const length = await peekRegister(ordinal, step.Length);
+            const entry = await attachImage(ordinal, target, address, length);
+            await place(ordinal, step.Destination, entry);
             requireOrdinal(ordinal).Executed += 1;
           } else if (step.Op === "capture") {
             await waitPace(requireOrdinal(ordinal));
@@ -2727,6 +3712,8 @@ export namespace ZerOS {
             core.accessReject = null;
             core.span = null;
             core.spanReject = null;
+            core.deposited = null;
+            core.depositReject = null;
             core.wiped = null;
             core.planted = null;
             core.cached = null;

@@ -84,7 +84,20 @@ deRfun mmAlloc(long core, long size): long {
   long base = task.mm.brk;
   long limit = task.mm.origin + task.mm.length;
   if (base < task.mm.heap || base + 128L + need > limit) {
-    return 0L;
+    long extra = 64L;
+    if (base >= task.mm.heap && base + 128L + need > limit) {
+      extra = base + 128L + need - limit;
+    }
+    if (extra < 64L) {
+      extra = 64L;
+    }
+    if (poolGrow(core, extra) == 0L) {
+      return 0L;
+    }
+    limit = task.mm.origin + task.mm.length;
+    if (base < task.mm.heap || base + 128L + need > limit) {
+      return 0L;
+    }
   }
   memory::store64(need, base);
   memory::store64(-1L, base + 64L);

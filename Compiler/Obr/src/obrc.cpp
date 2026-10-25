@@ -4,6 +4,8 @@
 #include "Parser.hpp"
 #include "Sema.hpp"
 #include "image/Write.hpp"
+#include "image/Native.hpp"
+#include "Utf8.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -64,6 +66,14 @@ std::vector<std::string> builtinLibraries(const char* argv0) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (!obr::nativeEncodeSelfCheck()) {
+    std::cerr << "原生编码自检没有通过\n";
+    return 1;
+  }
+  if (!obr::utf8LiteralSelfCheck()) {
+    std::cerr << "UTF-8 字面量自检没有通过\n";
+    return 1;
+  }
   try {
     std::vector<std::string> inputs;
     std::string output;

@@ -148,7 +148,7 @@ export namespace ZerOS {
         await waitMessage(
           worker,
           (record): boolean => record["kind"] === "ready",
-          `${seatPrefix} 显卡线程没有就绪`,
+          `${seatPrefix} the GPU thread is not ready`,
         );
         worker.postMessage({
           kind: "bind",
@@ -158,18 +158,18 @@ export namespace ZerOS {
         const seated = await waitMessage(
           worker,
           (record): boolean => record["kind"] === "seated",
-          `${seatPrefix} 显卡没有坐上`,
+          `${seatPrefix} the GPU is not seated`,
         );
         const frameWidth = seated["frameWidth"];
         const frameHeight = seated["frameHeight"];
         if (typeof frameWidth !== "number" || typeof frameHeight !== "number") {
-          throw new Error(`${seatPrefix} 显卡没有声明帧尺寸`);
+          throw new Error(`${seatPrefix} the GPU did not declare a frame size`);
         }
         const providerId = seated["providerId"];
         const providerVendor = seated["providerVendor"];
         const protocol = seated["protocol"];
         if (typeof providerId !== "string" || typeof providerVendor !== "string" || typeof protocol !== "string") {
-          throw new Error(`${seatPrefix} 显卡没有声明标识`);
+          throw new Error(`${seatPrefix} the GPU did not declare an identity`);
         }
         gpuWidth = frameWidth;
         gpuHeight = frameHeight;
@@ -183,7 +183,7 @@ export namespace ZerOS {
         const exercised = await waitMessage(
           worker,
           (record): boolean => record["kind"] === "ok",
-          `${seatPrefix} 显卡自检没有完成`,
+          `${seatPrefix} the GPU self-check did not finish`,
         );
         notePace(exercised);
       }
@@ -199,19 +199,19 @@ export namespace ZerOS {
       }> {
         const worker = gpuWorker;
         if (worker === null) {
-          throw new Error(`${seatPrefix} 显卡还没有坐上`);
+          throw new Error(`${seatPrefix} the GPU is not seated yet`);
         }
         worker.postMessage({ kind: "present" });
         const frame = await waitMessage(
           worker,
           (record): boolean => record["kind"] === "frame",
-          `${seatPrefix} 显卡没有交出帧`,
+          `${seatPrefix} the GPU did not present a frame`,
         );
         const frameWidth = frame["frameWidth"];
         const frameHeight = frame["frameHeight"];
         const pixels = frame["pixels"];
         if (typeof frameWidth !== "number" || typeof frameHeight !== "number" || !(pixels instanceof Uint32Array)) {
-          throw new Error(`${seatPrefix} 帧副本不完整`);
+          throw new Error(`${seatPrefix} the frame copy is incomplete`);
         }
         notePace(frame);
         return { frameWidth, frameHeight, pixels };
@@ -229,20 +229,20 @@ export namespace ZerOS {
       }> {
         const worker = gpuWorker;
         if (worker === null) {
-          throw new Error(`${seatPrefix} 显卡还没有坐上`);
+          throw new Error(`${seatPrefix} the GPU is not seated yet`);
         }
         worker.postMessage({ kind: "present", view: true });
         const frame = await waitMessage(
           worker,
           (record): boolean => record["kind"] === "frame",
-          `${seatPrefix} 显卡没有交出画面`,
+          `${seatPrefix} the GPU did not present a picture`,
         );
         const frameWidth = frame["frameWidth"];
         const frameHeight = frame["frameHeight"];
         const bitmap = frame["bitmap"];
         const pixels = frame["pixels"];
         if (typeof frameWidth !== "number" || typeof frameHeight !== "number") {
-          throw new Error(`${seatPrefix} 画面尺寸不完整`);
+          throw new Error(`${seatPrefix} the picture size is incomplete`);
         }
         notePace(frame);
         if (bitmap instanceof ImageBitmap) {
@@ -251,7 +251,7 @@ export namespace ZerOS {
         if (pixels instanceof Uint32Array) {
           return { frameWidth, frameHeight, pixels, bitmap: null };
         }
-        throw new Error(`${seatPrefix} 画面不完整`);
+        throw new Error(`${seatPrefix} the frame is incomplete`);
       }
 
       /**
@@ -262,7 +262,7 @@ export namespace ZerOS {
         const worker = gpuWorker;
         const gpuOp = record["gpuOp"];
         if (worker === null || typeof gpuOp !== "string") {
-          throw new Error(`${seatPrefix} 显卡命令不完整`);
+          throw new Error(`${seatPrefix} the gpu command is incomplete`);
         }
         if (gpuOp === "clear") {
           worker.postMessage({ kind: "clear", pixel: record["pixel"] });
@@ -293,12 +293,12 @@ export namespace ZerOS {
         ) {
           worker.postMessage({ ...record, kind: gpuOp });
         } else {
-          throw new Error(`${seatPrefix} 显卡命令无法识别`);
+          throw new Error(`${seatPrefix} the gpu command was not recognized`);
         }
         const reply = await waitMessage(
           worker,
           (message): boolean => message["kind"] === "ok",
-          `${seatPrefix} 显卡命令没有完成`,
+          `${seatPrefix} the gpu command did not finish`,
         );
         const id = reply["id"];
         notePace(reply);
@@ -320,13 +320,13 @@ export namespace ZerOS {
       export async function applyGpuBatch(commands: readonly Record<string, unknown>[]): Promise<void> {
         const worker = gpuWorker;
         if (worker === null) {
-          throw new Error(`${seatPrefix} 显卡还没有坐上`);
+          throw new Error(`${seatPrefix} the GPU is not seated yet`);
         }
         worker.postMessage({ kind: "batch", commands });
         const reply = await waitMessage(
           worker,
           (message): boolean => message["kind"] === "ok",
-          `${seatPrefix} 显卡队列没有完成`,
+          `${seatPrefix} the GPU batch did not finish`,
         );
         notePace(reply);
         noteFrame(reply);

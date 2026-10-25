@@ -12,7 +12,7 @@ deRfun main(): int {
   obr::os::slice(16L);
   while (1) {
     memory::store64(0L, home + 128L);
-    memory::store64(64L, home + 256L);
+    memory::store64(4096L, home + 256L);
     long status = obr::os::svc(23L);
     if (status != 0L) {
       return 0;

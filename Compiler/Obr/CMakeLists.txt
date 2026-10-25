@@ -18,5 +18,12 @@ add_executable(obrc
   src/codegen/Lower.cpp
   src/codegen/Math.cpp
   src/codegen/Ui.cpp
+  src/codegen/Font.cpp
   src/image/Write.cpp
+  src/image/Native.cpp
+  src/image/NativeImage.cpp
+)
+add_executable(native-encode-check
+  src/image/Native.cpp
+  src/image/NativeCheck.cpp
 )

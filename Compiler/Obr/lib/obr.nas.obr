@@ -37,7 +37,7 @@ deRfun nasFinish(long status): long {
 
 deRfun nasSend(string path): long {
   int raw = length(path);
-  if (raw > 240) {
+  if (raw > 8192) {
     return 7L;
   }
   long count = raw;
@@ -180,7 +180,7 @@ deRfun nasDrain(long count): long {
 
 deRfun nasSendAt(long address): long {
   long raw = memory::load64(address);
-  if (raw > 240L || raw < 0L) {
+  if (raw > 8192L || raw < 0L) {
     return 7L;
   }
   return nasFeed(1L, address + 64L, raw);
@@ -288,6 +288,8 @@ deRfun obr::nas::read(long handle, long offset, long address, long count, long* 
   return 0L;
 }
 
+/* 一次执行的成功长度只有 16 位，所以每截至多 65535。更长的请求拆开重复，合计仍不得超过搬运上界。
+   后面一截失败时，前面已经落下的留在 *wrote 里，这次调用返回 0，调用者按短写重试。 */
 deRfun obr::nas::write(long handle, long offset, long address, long count, long* wrote): long {
   *wrote = 0L;
   if (handle < 1L || handle > 65535L) {
@@ -296,31 +298,64 @@ deRfun obr::nas::write(long handle, long offset, long address, long count, long*
   if (count < 0L || offset < 0L || offset > 4294967295L) {
     return 13L;
   }
-  if (count > 65535L) {
+  if (count > 268435456L) {
     return 7L;
   }
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long done = 0L;
+  while (done < count) {
+    long piece = count - done;
+    if (piece > 65535L) {
+      piece = 65535L;
+    }
+    long opened = nasBegin();
+    if (opened != 0L) {
+      if (done > 0L) {
+        return 0L;
+      }
+      return opened;
+    }
+    long placed = nasHandle(handle);
+    if (placed != 0L) {
+      if (done > 0L) {
+        nasFinish(0L);
+        return 0L;
+      }
+      return nasFinish(placed);
+    }
+    long ranged = nasRange(offset + done, 0L);
+    if (ranged != 0L) {
+      if (done > 0L) {
+        nasFinish(0L);
+        return 0L;
+      }
+      return nasFinish(ranged);
+    }
+    long staged = nasStage(address + done * 8L, piece);
+    if (staged != 0L) {
+      if (done > 0L) {
+        nasFinish(0L);
+        return 0L;
+      }
+      return nasFinish(staged);
+    }
+    long back = nasTalk(6L, 5L, 0L, 0L, 0L, 0L, 0L, 0L);
+    long status = nasOctet(back, 0L);
+    if (status != 0L) {
+      if (done > 0L) {
+        nasFinish(0L);
+        return 0L;
+      }
+      return nasFinish(status);
+    }
+    long n = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+    nasFinish(0L);
+    done = done + n;
+    *wrote = done;
+    if (n < piece) {
+      return 0L;
+    }
   }
-  long placed = nasHandle(handle);
-  if (placed != 0L) {
-    return nasFinish(placed);
-  }
-  long ranged = nasRange(offset, 0L);
-  if (ranged != 0L) {
-    return nasFinish(ranged);
-  }
-  long staged = nasStage(address, count);
-  if (staged != 0L) {
-    return nasFinish(staged);
-  }
-  long back = nasTalk(6L, 5L, 0L, 0L, 0L, 0L, 0L, 0L);
-  long status = nasOctet(back, 0L);
-  if (status == 0L) {
-    *wrote = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
-  }
-  return nasFinish(status);
+  return 0L;
 }
 
 deRfun obr::nas::readdir(string path, long index, long address, long capacity, long* got): long {

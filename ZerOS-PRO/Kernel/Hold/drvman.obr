@@ -8,7 +8,7 @@ deRfun main(): int {
   obr::os::slice(64L);
   long home = query(1L, 8L, obr::os::core());
   long got = 0L;
-  long status = obr::nas::readdir("/kernel/drv", 0L, home + 4096L, 240L, &got);
+  long status = obr::nas::readdir("/kernel/drv", 0L, home + 131072L, 240L, &got);
   memory::store64(status, home);
   memory::store64(got, home + 64L);
   halt();

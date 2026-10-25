@@ -22,6 +22,7 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as ActiveRoot } from "../ActiveProvider/Provider";
+import { ZerOS as FontBytesRoot } from "../Font/FontBytes";
 import { ZerOS as ClockRoot } from "../Bootstrap/GpuClock";
 import { ZerOS as GpuSlotRoot } from "../../Motherboard/Slot/Gpu/GpuSlot";
 import { ZerOS as GpuSelfCheckRoot } from "../Test/GpuSelfCheck";
@@ -30,6 +31,7 @@ export namespace ZerOS {
   export namespace Hardware {
     export namespace Gpu {
       const provider = ActiveRoot.Hardware.Gpu.ActiveGpuProvider;
+      const stageFontBytes = FontBytesRoot.Hardware.Gpu.stageFontBytes;
       const adoptOrigin = ClockRoot.Hardware.Gpu.adoptOrigin;
       const GpuSlot = GpuSlotRoot.Hardware.Motherboard.Slot.GpuSlot;
       const runGpuSelfCheck = GpuSelfCheckRoot.Hardware.Gpu.runGpuSelfCheck;
@@ -64,12 +66,12 @@ export namespace ZerOS {
       function onBind(record: Record<string, unknown>): void {
         const supported = readSupported(record);
         if (supported?.includes(provider.ActiveProtocol) !== true) {
-          postFault(`${seatPrefix} 主板不支持显卡协议 ${provider.ActiveProtocol}`);
+          postFault(`${seatPrefix} board does not support the GPU protocol ${provider.ActiveProtocol}`);
           return;
         }
         GpuSlot.Bind(provider);
         if (GpuSlot.GetActive() !== provider) {
-          postFault(`${seatPrefix} 显卡插头没有坐上插座`);
+          postFault(`${seatPrefix} the GPU provider is not seated`);
           return;
         }
         const origin = record["clockOrigin"];
@@ -114,7 +116,7 @@ export namespace ZerOS {
         try {
           await runGpuSelfCheck();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 显卡自检失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} GPU self-check failed`;
           postFault(message);
           return;
         }
@@ -136,7 +138,7 @@ export namespace ZerOS {
         }
         const buffer = view.buffer;
         if (!(buffer instanceof ArrayBuffer)) {
-          postFault(`${seatPrefix} Present 副本无法交出`);
+          postFault(`${seatPrefix} the present copy could not be transferred`);
           return;
         }
         globalThis.postMessage(
@@ -157,7 +159,7 @@ export namespace ZerOS {
           }
           postFrame(await provider.Present());
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} Present 失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} present failed`;
           postFault(message);
         }
       }
@@ -173,14 +175,14 @@ export namespace ZerOS {
       async function onClear(record: Record<string, unknown>): Promise<void> {
         const pixel = readNumber(record, "pixel");
         if (pixel === null) {
-          postFault(`${seatPrefix} Clear 缺少像素`);
+          postFault(`${seatPrefix} clear is missing a pixel`);
           return;
         }
         try {
           await provider.Clear(pixel);
           postOk();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} Clear 失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} clear failed`;
           postFault(message);
         }
       }
@@ -190,14 +192,14 @@ export namespace ZerOS {
         const y = readNumber(record, "y");
         const pixel = readNumber(record, "pixel");
         if (x === null || y === null || pixel === null) {
-          postFault(`${seatPrefix} Plot 缺少坐标或像素`);
+          postFault(`${seatPrefix} plot is missing a coordinate or a pixel`);
           return;
         }
         try {
           await provider.Plot(x, y, pixel);
           postOk();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} Plot 失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} plot failed`;
           postFault(message);
         }
       }
@@ -212,7 +214,7 @@ export namespace ZerOS {
             const height = readNumber(record, "height");
             const fill = readNumber(record, "fill");
             if (parent === null || x === null || y === null || width === null || height === null || fill === null) {
-              postFault(`${seatPrefix} 盒子缺少参数`);
+              postFault(`${seatPrefix} a box is missing arguments`);
               return;
             }
             const id = await provider.SpawnBox(parent, x, y, width, height, fill);
@@ -226,7 +228,7 @@ export namespace ZerOS {
             const width = readNumber(record, "width");
             const height = readNumber(record, "height");
             if (parent === null || x === null || y === null || width === null || height === null) {
-              postFault(`${seatPrefix} 文本缺少参数`);
+              postFault(`${seatPrefix} a text node is missing arguments`);
               return;
             }
             const id = await provider.SpawnText(parent, x, y, width, height);
@@ -238,7 +240,7 @@ export namespace ZerOS {
             const alignX = readNumber(record, "alignX");
             const alignY = readNumber(record, "alignY");
             if (node === null || alignX === null || alignY === null) {
-              postFault(`${seatPrefix} 对齐缺少参数`);
+              postFault(`${seatPrefix} align is missing arguments`);
               return;
             }
             await provider.Align(node, alignX, alignY);
@@ -247,7 +249,7 @@ export namespace ZerOS {
             const foreground = readNumber(record, "foreground");
             const background = readNumber(record, "background");
             if (node === null || foreground === null || background === null) {
-              postFault(`${seatPrefix} 涂色缺少参数`);
+              postFault(`${seatPrefix} paint is missing arguments`);
               return;
             }
             await provider.Paint(node, foreground, background);
@@ -255,14 +257,14 @@ export namespace ZerOS {
             const node = readNumber(record, "node");
             const code = readNumber(record, "code");
             if (node === null || code === null) {
-              postFault(`${seatPrefix} 字形缺少参数`);
+              postFault(`${seatPrefix} a glyph is missing arguments`);
               return;
             }
             await provider.Glyph(node, code);
           } else if (kind === "drop") {
             const node = readNumber(record, "node");
             if (node === null) {
-              postFault(`${seatPrefix} 摘除缺少节点`);
+              postFault(`${seatPrefix} drop is missing a node`);
               return;
             }
             await provider.Drop(node);
@@ -271,7 +273,7 @@ export namespace ZerOS {
           }
           postOk();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 节点命令失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} a node command failed`;
           postFault(message);
         }
       }
@@ -283,28 +285,28 @@ export namespace ZerOS {
         const foreground = readNumber(record, "foreground");
         const background = readNumber(record, "background");
         if (x === null || y === null || code === null || foreground === null || background === null) {
-          postFault(`${seatPrefix} Character 缺少参数`);
+          postFault(`${seatPrefix} character is missing arguments`);
           return;
         }
         try {
           await provider.Character(x, y, code, foreground, background);
           postOk();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} Character 失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} character failed`;
           postFault(message);
         }
       }
       async function onHertz(record: Record<string, unknown>): Promise<void> {
         const hertz = readNumber(record, "hertz");
         if (hertz === null) {
-          postFault(`${seatPrefix} 显卡频率缺少整数`);
+          postFault(`${seatPrefix} GPU hertz is missing an integer`);
           return;
         }
         try {
           await provider.SetHertz(hertz);
           postOk();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 显卡频率失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} GPU hertz failed`;
           postFault(message);
         }
       }
@@ -312,13 +314,13 @@ export namespace ZerOS {
       async function onMetric(record: Record<string, unknown>): Promise<void> {
         const metricKind = readNumber(record, "metric");
         if (metricKind === null) {
-          postFault(`${seatPrefix} 显卡指标缺少种类`);
+          postFault(`${seatPrefix} a GPU metric is missing its kind`);
           return;
         }
         try {
           postOk({ value: await provider.Metric(metricKind) });
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 显卡指标失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} a GPU metric failed`;
           postFault(message);
         }
       }
@@ -326,13 +328,13 @@ export namespace ZerOS {
       async function onLoadByte(record: Record<string, unknown>): Promise<void> {
         const address = readNumber(record, "address");
         if (address === null) {
-          postFault(`${seatPrefix} 显存读取缺少地址`);
+          postFault(`${seatPrefix} a video read is missing an address`);
           return;
         }
         try {
           postOk({ value: await provider.ReadByte(address) });
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 显存读取失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} a video read failed`;
           postFault(message);
         }
       }
@@ -341,14 +343,14 @@ export namespace ZerOS {
         const address = readNumber(record, "address");
         const value = readNumber(record, "value");
         if (address === null || value === null) {
-          postFault(`${seatPrefix} 显存写入缺少参数`);
+          postFault(`${seatPrefix} a video write is missing arguments`);
           return;
         }
         try {
           await provider.WriteByte(address, value);
           postOk();
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 显存写入失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} a video write failed`;
           postFault(message);
         }
       }
@@ -369,10 +371,12 @@ export namespace ZerOS {
         const c = readBits(record, "c");
         const d = readBits(record, "d");
         if (op === null || a === null || b === null || c === null || d === null) {
-          postFault(`${seatPrefix} 加速命令缺少参数`);
+          postFault(`${seatPrefix} an accel command is missing arguments`);
           return;
         }
         try {
+          const raw = record["bytes"];
+          stageFontBytes(raw instanceof Uint8Array ? raw : null);
           const id = await provider.Accel(op, a, b, c, d);
           if (op === 39) {
             postOk({ id, frameWidth: provider.FrameWidth, frameHeight: provider.FrameHeight });
@@ -380,7 +384,7 @@ export namespace ZerOS {
             postOk({ id });
           }
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 加速命令失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} an accel command failed`;
           postFault(message);
         }
       }
@@ -392,7 +396,7 @@ export namespace ZerOS {
       async function onBatch(record: Record<string, unknown>): Promise<void> {
         const commands = record["commands"];
         if (!Array.isArray(commands)) {
-          postFault(`${seatPrefix} 显卡队列不完整`);
+          postFault(`${seatPrefix} the GPU batch is incomplete`);
           return;
         }
         let resized = false;
@@ -400,14 +404,14 @@ export namespace ZerOS {
           for (const item of commands) {
             const command = asRecord(item);
             if (command === null) {
-              postFault(`${seatPrefix} 显卡队列里有一条不完整`);
+              postFault(`${seatPrefix} one GPU batch command is incomplete`);
               return;
             }
             const gpuOp = command["gpuOp"];
             if (gpuOp === "clear") {
               const pixel = readNumber(command, "pixel");
               if (pixel === null) {
-                postFault(`${seatPrefix} Clear 缺少像素`);
+                postFault(`${seatPrefix} clear is missing a pixel`);
                 return;
               }
               await provider.Clear(pixel);
@@ -416,7 +420,7 @@ export namespace ZerOS {
               const y = readNumber(command, "y");
               const pixel = readNumber(command, "pixel");
               if (x === null || y === null || pixel === null) {
-                postFault(`${seatPrefix} Plot 缺少坐标或像素`);
+                postFault(`${seatPrefix} plot is missing a coordinate or a pixel`);
                 return;
               }
               await provider.Plot(x, y, pixel);
@@ -427,7 +431,7 @@ export namespace ZerOS {
               const foreground = readNumber(command, "foreground");
               const background = readNumber(command, "background");
               if (x === null || y === null || code === null || foreground === null || background === null) {
-                postFault(`${seatPrefix} Character 缺少参数`);
+                postFault(`${seatPrefix} character is missing arguments`);
                 return;
               }
               await provider.Character(x, y, code, foreground, background);
@@ -436,7 +440,7 @@ export namespace ZerOS {
               const alignX = readNumber(command, "alignX");
               const alignY = readNumber(command, "alignY");
               if (node === null || alignX === null || alignY === null) {
-                postFault(`${seatPrefix} 对齐缺少参数`);
+                postFault(`${seatPrefix} align is missing arguments`);
                 return;
               }
               await provider.Align(node, alignX, alignY);
@@ -445,7 +449,7 @@ export namespace ZerOS {
               const foreground = readNumber(command, "foreground");
               const background = readNumber(command, "background");
               if (node === null || foreground === null || background === null) {
-                postFault(`${seatPrefix} 涂色缺少参数`);
+                postFault(`${seatPrefix} paint is missing arguments`);
                 return;
               }
               await provider.Paint(node, foreground, background);
@@ -453,14 +457,14 @@ export namespace ZerOS {
               const node = readNumber(command, "node");
               const code = readNumber(command, "code");
               if (node === null || code === null) {
-                postFault(`${seatPrefix} 字形缺少参数`);
+                postFault(`${seatPrefix} a glyph is missing arguments`);
                 return;
               }
               await provider.Glyph(node, code);
             } else if (gpuOp === "drop") {
               const node = readNumber(command, "node");
               if (node === null) {
-                postFault(`${seatPrefix} 摘除缺少节点`);
+                postFault(`${seatPrefix} drop is missing a node`);
                 return;
               }
               await provider.Drop(node);
@@ -469,7 +473,7 @@ export namespace ZerOS {
             } else if (gpuOp === "hertz") {
               const hertz = readNumber(command, "hertz");
               if (hertz === null) {
-                postFault(`${seatPrefix} 显卡频率缺少整数`);
+                postFault(`${seatPrefix} GPU hertz is missing an integer`);
                 return;
               }
               await provider.SetHertz(hertz);
@@ -480,10 +484,16 @@ export namespace ZerOS {
               const c = readBits(command, "c");
               const d = readBits(command, "d");
               if (op === null || a === null || b === null || c === null || d === null) {
-                postFault(`${seatPrefix} 加速命令缺少参数`);
+                postFault(`${seatPrefix} an accel command is missing arguments`);
                 return;
               }
-              await provider.Accel(op, a, b, c, d);
+              const raw = command["bytes"];
+              stageFontBytes(raw instanceof Uint8Array ? raw : null);
+              /* 字形和进度条只往列表里追加。当场做完，避免一帧里几百次让出。 */
+              const immediate = provider.AccelImmediate(op, a, b, c, d);
+              if (immediate === null) {
+                await provider.Accel(op, a, b, c, d);
+              }
               if (op === 39) {
                 resized = true;
               }
@@ -491,12 +501,12 @@ export namespace ZerOS {
               const address = readNumber(command, "address");
               const value = readNumber(command, "value");
               if (address === null || value === null) {
-                postFault(`${seatPrefix} 显存写入缺少参数`);
+                postFault(`${seatPrefix} a video write is missing arguments`);
                 return;
               }
               await provider.WriteByte(address, value);
             } else {
-              postFault(`${seatPrefix} 显卡队列里有一条无法识别`);
+              postFault(`${seatPrefix} one GPU batch command was not recognized`);
               return;
             }
           }
@@ -506,7 +516,7 @@ export namespace ZerOS {
             postOk();
           }
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 显卡队列失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} the GPU batch failed`;
           postFault(message);
         }
       }

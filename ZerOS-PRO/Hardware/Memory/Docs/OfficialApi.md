@@ -49,9 +49,9 @@
 | `Config.MemoryIdByteLength` | `256` | 协议固定常量 |
 | `Config.MemoryVendorMaxLength` | `16` | 协议固定常量 |
 | `Config.BitsPerByte` | `8` | 协议固定常量 |
-| `Config.ShallowDimension` | `16` | 官方标定。浅切块数 |
+| `Config.ShallowDimension` | `145` | 官方标定。浅切块数 |
 | `Config.DeepDimension` | `8` | 官方标定。单块嵌套深度上限 |
-| `Config.UnitCount` | `8` | 官方标定。协议上界是 `4294967296` |
+| `Config.UnitCount` | `145` | 官方标定。协议上界是 `4294967296` |
 | `Config.UnitSizeBytes` | `2097152` | 官方标定，单位字节；加载时经 `uint32OrThrow` |
 | `Config.TotalSizeBytes` | `0n` | 发布前的初值。发布后等于各颗 `Cells.length` 之和，类型是 `bigint` |
 | `Config.MemoryId` | 256 个字符 `0` | 发布前按 ZMP1 判定为禁用。发布后是一条已启用的可打印 ASCII |
@@ -61,7 +61,7 @@
 
 类型名 `BitsPerByte`、`UnitSizeBytes`、`ShallowDimension`、`DeepDimension`、`UnitCount`、`TotalSizeBytes`、`MemoryId`、`MemoryVendor`，以及 `DimensionConfig`、`UnitConfig`、`IdentityConfig`，是这份实现的 TypeScript 类型。数值规则以 ZMP1 为准。
 
-当前标定下，8 颗都成功时 `TotalSizeBytes` 为 `16777216n`。
+当前标定下，145 颗都成功时 `TotalSizeBytes` 为 `304087040n`。
 
 ## 3. 颗粒与总控
 
@@ -93,7 +93,7 @@
 | 成员 | 官方含义 |
 |------|----------|
 | `Units` | `UnitIndexId → MemoryUnit`。成功时条目数等于 `Config.UnitCount`，构造后冻结增删改绑。键由 `crypto.getRandomValues` 生成，长度 `UnitIndexIdLength`（16），字符来自 `UnitIndexIdAlphabet` |
-| `Blocks` | 浅切根块。长度等于 `Config.ShallowDimension`（当前 16）。`BlockIndex` 从 0 升序。每块 `NestingDepth` 为 1，`ChildIndex` 为 `null`，`Children` 为空，`Owner` 为 `null`。当前标定下每一块是 `8388608` 个位元 |
+| `Blocks` | 浅切根块。长度等于 `Config.ShallowDimension`（当前 145）。`BlockIndex` 从 0 升序。每块 `NestingDepth` 为 1，`ChildIndex` 为 `null`，`Children` 为空，`Owner` 为 `null`。当前标定下每一块是 `16777216` 个位元 |
 | `Events` / `Signals` | 构造收尾追加 `ShallowCutCompleted`（`Subject` 为块数），并写入 `Ready`。`Deepen` 成功追加 `Deepened`。`Claim` / `Release` 成功追加 `Claimed` / `Released` |
 | `Exceptions` | 总控级 `MemoryException` 数组 |
 | `ReadBit` / `WriteBit` / `ReadOctet` / `WriteOctet` / `ReadInteger` / `WriteInteger` | 第一个参数是 `UnitOrdinal`。先检查序号，再转交那一颗 |
@@ -107,7 +107,7 @@
 
 `UnitIndexId` 只是颗粒表的键。它不是 ZMP1 的 `MemoryId`，也不是 `UnitOrdinal`。
 
-当前标定下，8 颗 × `16777216` 位元 = `134217728`。16 块正好各 `8388608` 位元。
+当前标定下，145 颗各 `16777216` 位元，合计 `2432696320`。浅切块数也是 145，所以每一块同样是 `16777216` 位元。前 `2148532224` 个位元是固件和八颗核心的窗口，剩下的一段由监督核按页映射文件。
 
 ### `MemoryBlock`
 
@@ -121,7 +121,7 @@
 | `ReadInteger` / `WriteInteger` | 按块内八位组计的小端整数。跨度越界记 `IntegerSpanOutOfRange`，不记成 `BlockOctetIndexOutOfRange` |
 | `Deepen()` | 无参数。成功后父块深度和 `BitLength` 不变，存储体不变，总控追加 `Deepened` |
 
-当前标定下，第一层子块各 `524288` 个位元。子块还可以再 `Deepen`，直到深度等于 `8`。
+当前标定下，第一层子块是 `115704` 或 `115705` 个位元。子块还可以再 `Deepen`，直到深度等于 `8`。
 
 ## 4. 官方辅助符号
 

@@ -33,6 +33,7 @@
 | `21` | [Attach](./FaultRegistry.md#2-错误码) |
 | `22` | [Privilege](./FaultRegistry.md#2-错误码) |
 | `23` | [Dwell](./FaultRegistry.md#2-错误码) |
+| `24` | [Map](./FaultRegistry.md#2-错误码) |
 
 ## 2. 按来源
 
@@ -68,3 +69,4 @@
 | 监督核 | 错误码 `17`、`18` |
 | 客核心 | 错误码 `22` |
 | 等待 | 错误码 `23` |
+| 映射 | 错误码 `24` |

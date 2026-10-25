@@ -7,6 +7,10 @@ void Generator::emitLibrary(const Expr& expr, const Function& target) {
     emitUi(expr, target);
     return;
   }
+  if (target.name.rfind("obr::font::", 0) == 0) {
+    emitFont(expr, target);
+    return;
+  }
   const TypeKind type = target.ret;
   if (target.name == "obr::math::abs") {
     gen(expr.kids[0]);

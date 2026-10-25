@@ -103,8 +103,10 @@ export namespace ZerOS {
          * 和 Fault 分开，避免自检或页面把它当成整机失败。
          */
         FaultLog: "fault-log",
-        /** 调试开关打开时，页面请求在已经停止的 0 号核心上跑一段短 ZAP。 */
+        /** 调试开关打开时，页面请求在已经停止的 0 号核心上跑一段短 ZAP。enabled 是页面当时的那一档。 */
         DebugRun: "debug-run",
+        /** 固件把调试开关写成 0 或 1。页面据此挂上或摘掉入口，并写入 /boot/debug。不是协议字段。 */
+        DebugSwitch: "debug-switch",
         /** 上一次调试运行的结果。开关关闭时不会出现。 */
         DebugResult: "debug-run-result",
       } as const;

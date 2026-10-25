@@ -5,8 +5,10 @@
  * ---------------------------------------------------------------------------
  * 文件职责
  * ---------------------------------------------------------------------------
- * 核对 Clear、Plot、副本隔离，以及 Image 与 Character。
+ * 先核对 TrueType 子集的打开与像素中心着墨，再核对 Clear、Plot、副本隔离，以及 Image 与 Character。
+ * 最后把同一份方块字体经 FontFace、FontSelect、FontDraw 画进颜色目标，读回一颗着墨像素。
  * 不把帧送到页面。页面上的那一次 Present 由主板在显示器自检之后另发。
+ * 解析自检不碰帧存储，也不改封闭点阵。盖像素的是最后一步。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -20,6 +22,8 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as RuntimeRoot } from "../Bootstrap/GpuRuntime";
+import { ZerOS as TtfCheckRoot } from "./TtfCheck";
+import { ZerOS as FontPaintCheckRoot } from "./FontPaintCheck";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -53,6 +57,7 @@ export namespace ZerOS {
        * 先核对 Plot 与副本隔离，再留下一块 2×2 图像和字符 A。
        */
       export async function runGpuSelfCheck(): Promise<void> {
+        TtfCheckRoot.Hardware.Gpu.runTtfCheck();
         const size = frameSize();
         if (size.width < 16 || size.height < 8) {
           fail("自检需要至少 16×8 的帧");
@@ -112,6 +117,7 @@ export namespace ZerOS {
           fail("文本没有在矩形里居中");
         }
         await drop(box);
+        await FontPaintCheckRoot.Hardware.Gpu.runFontPaintCheck();
       }
     }
   }

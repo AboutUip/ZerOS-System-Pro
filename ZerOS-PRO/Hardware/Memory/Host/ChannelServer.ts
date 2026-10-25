@@ -43,7 +43,7 @@ export namespace ZerOS {
       function requireController(): MemoryController {
         const controller = MachineMemoryRoot.Hardware.Memory.MachineMemory.MemoryController;
         if (controller === null) {
-          throw new Error(`${channelPrefix} 内存通道还没有座上总控`);
+          throw new Error(`${channelPrefix} the memory channel has no controller`);
         }
         return controller;
       }
@@ -82,7 +82,7 @@ export namespace ZerOS {
       /** 八位组对不上时用读探测，避免写路径先改掉一个位元。 */
       function probeMissingOctet(controller: MemoryController, address: bigint): never {
         controller.ReadLinearBit(address + 7n);
-        throw new Error(`${channelPrefix} 这个八位组没有落在某一颗的八位组线上`);
+        throw new Error(`${channelPrefix} this octet is not on a unit line`);
       }
 
       /**
@@ -92,7 +92,7 @@ export namespace ZerOS {
       export function executeChannelRead(address: bigint, width: number): bigint {
         const accepted: ChannelWidth | null = ChannelWidthRoot.Hardware.Motherboard.toChannelWidth(width);
         if (accepted === null) {
-          throw new Error(`${channelPrefix} 通道字宽不是 1、8、16、32、64`);
+          throw new Error(`${channelPrefix} the channel width was not 1, 8, 16, 32, or 64`);
         }
         const controller = requireController();
         if (accepted === ChannelWidthBit) {
@@ -112,7 +112,7 @@ export namespace ZerOS {
       export function executeChannelWrite(address: bigint, width: number, data: bigint): void {
         const accepted: ChannelWidth | null = ChannelWidthRoot.Hardware.Motherboard.toChannelWidth(width);
         if (accepted === null) {
-          throw new Error(`${channelPrefix} 通道字宽不是 1、8、16、32、64`);
+          throw new Error(`${channelPrefix} the channel width was not 1, 8, 16, 32, or 64`);
         }
         const controller = requireController();
         if (accepted === ChannelWidthBit) {
@@ -146,7 +146,7 @@ export namespace ZerOS {
        */
       function moveSpan(address: bigint, bytes: Uint8Array, writing: boolean): void {
         if (address % 8n !== 0n) {
-          throw new Error(`${channelPrefix} 搬运地址必须对齐到八位组`);
+          throw new Error(`${channelPrefix} a transfer address was not aligned to an octet`);
         }
         const controller = requireController();
         const units = Array.from(controller.Units.values()).sort(
@@ -174,7 +174,7 @@ export namespace ZerOS {
               continue;
             }
             if (!row.active) {
-              throw new Error(`${channelPrefix} 搬运落到还没有正式可用的颗粒`);
+              throw new Error(`${channelPrefix} a transfer landed on a unit that is not ready`);
             }
             const local = Number(linear - row.origin);
             const room = Number(row.origin + row.count - linear);
@@ -189,7 +189,7 @@ export namespace ZerOS {
             break;
           }
           if (!placed) {
-            throw new Error(`${channelPrefix} 搬运越出整机位元线`);
+            throw new Error(`${channelPrefix} a transfer left the machine bit line`);
           }
         }
       }

@@ -1,0 +1,15 @@
+/* 默认 obrc 的调用和按比例访存。
+   不导入任何库。paint 被调用两次，所以不会被展开进 main。
+   地址是位地址。一个 long 占 64 位，所以第二格在第一格之后 64 位。 */
+deRfun paint(long base, long index, long value): void {
+  long scaled = base + index * 64L;
+  long* slot = (long*)scaled;
+  *slot = value;
+}
+
+deRfun main(): int {
+  long step = 1L;
+  paint(2097152L, 0L, 42L);
+  paint(2097152L, step, 43L);
+  return 0;
+}

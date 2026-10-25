@@ -51,6 +51,8 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"obr::os::release", "release", TypeKind::Void, 1, 0, false, false},
       {"obr::os::yield", "yield", TypeKind::Void, 0, 0, false, false},
       {"obr::os::dwell", "dwell", TypeKind::Void, 1, 0, false, false},
+      {"obr::os::mmap", "mmap", TypeKind::Long, 3, 1, false, false},
+      {"obr::os::munmap", "munmap", TypeKind::Void, 2, 0, false, false},
       {"obr::os::core", "core", TypeKind::Long, 0, 1, false, false},
       {"obr::os::install", "install", TypeKind::Void, 3, 0, false, false},
       {"obr::os::hertz", "hertz", TypeKind::Void, 2, 0, false, false},
@@ -121,6 +123,9 @@ bool libraryFunction(const Function& function) {
   if (function.name == "obr::ui::frame" || function.name == "obr::ui::key" || function.name == "obr::ui::enter" || function.name == "obr::ui::width" || function.name == "obr::ui::height") {
     return sameShape(function, {}, TypeKind::Long);
   }
+  if (function.name == "obr::font::face") return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Long);
+  if (function.name == "obr::font::select") return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Void);
+  if (function.name == "obr::font::draw") return sameShape(function, {TypeKind::Long, TypeKind::Long}, TypeKind::Void);
   std::size_t count = 0;
   if (function.name == "obr::math::abs") count = 1;
   else if (function.name == "obr::math::min" || function.name == "obr::math::max") count = 2;

@@ -8,8 +8,10 @@
 
 | 文档 | 类型 | 说明 |
 |------|------|------|
-| [ZCP1.md](./ZCP1.md) | 协议正文 | 核心数声明、8 个寄存器、调度、访存、失败记录与面板 |
-| [CallingConvention.md](./CallingConvention.md) | 程序约定 | `r0` 返回值，`r1`–`r3` 参数，`r6` / `r7` 链接。不约束 CPU |
+| [ZCP1.md](./ZCP1.md) | 协议正文 | 核心数声明、8 个 ZAP 寄存器、调度、访存、失败记录、面板，以及 §4.12 的原生取指 |
+| [CallingConvention.md](./CallingConvention.md) | 程序约定 | ZAP 的 `r0` 返回值，`r1`–`r3` 参数，`r6` / `r7` 链接。不约束 CPU，也不约束 §4.12 |
+| [NativeOpcodeRegistry.md](./NativeOpcodeRegistry.md) | 登记表 | §4.12 必须执行的原生操作码 |
+| [NativeOpcodeIndex.md](./NativeOpcodeIndex.md) | 索引 | 原生操作码检索 |
 | [QueryRegistry.md](./QueryRegistry.md) | 登记表 | `query` 的座位与字段 |
 | [QueryIndex.md](./QueryIndex.md) | 索引 | 查询字段检索 |
 | [FaultRegistry.md](./FaultRegistry.md) | 登记表 | 指令失败的错误码与来源 |

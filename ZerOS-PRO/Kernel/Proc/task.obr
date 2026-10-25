@@ -13,11 +13,11 @@ deRfun kFloor(): long {
 }
 
 deRfun kSlot(): long {
-  return 8L * 1024L * 1024L;
+  return 268435456L;
 }
 
 deRfun kSpan(): long {
-  return 5632L * 1024L;
+  return 137904128L;
 }
 
 deRfun kArena(long core): long {
@@ -28,17 +28,27 @@ deRfun fsCore(): long {
   return 4L;
 }
 
+deRfun taskLimit(): long {
+  return 512L;
+}
+
+/* 协议把一颗实现的上下文槽定在 1 至 256。官方标定取满 256。 */
+deRfun slotLimit(): long {
+  return 256L;
+}
+
 /* 与 proc.mr 里 Task 的 19 个字一致。 */
 deRfun taskStride(): long {
   return 19L * 64L;
 }
 
-/* 低地址留给调用帧和引导用的几个字。表从这里排 8 份。 */
+/* 低地址留给调用帧和引导用的几个字。表从这里排 512 份。 */
 deRfun tableBase(): long {
   return kArena(2L) + 65536L;
 }
 
-/* 12416 是下一个 pid。紧接着的列和行，以及 +12800 的写入窗口，给控制台用，这里不要再放别的。 */
+/* 12416 是下一个 pid。紧接着的列和行，以及 +12800 的写入窗口，给控制台用，这里不要再放别的。
+   +20480 起是系统字体表，每份两个字，字体层使用。+32768 起是驱动路径。 */
 deRfun pidWord(): long {
   return kArena(2L) + 12416L;
 }
@@ -53,7 +63,7 @@ deRfun taskFind(long core): long {
   long sleeping = -1L;
   long zombie = -1L;
   long other = -1L;
-  while (index < 8L) {
+  while (index < taskLimit()) {
     Task* task = taskAt(index);
     if (task.pid != 0L && task.core == core) {
       if (task.state == TaskState::Running) {
@@ -83,7 +93,7 @@ deRfun taskFind(long core): long {
 deRfun taskCount(long core): long {
   long count = 0L;
   long index = 0L;
-  while (index < 8L) {
+  while (index < taskLimit()) {
     Task* task = taskAt(index);
     if (task.pid != 0L && task.core == core) {
       count = count + 1L;
@@ -101,14 +111,14 @@ deRfun taskReady(long core, long except): long {
     start = except + 1L;
   }
   long step = 0L;
-  while (step < 8L) {
+  while (step < taskLimit()) {
     long index = start + step;
-    if (index >= 8L) {
-      index = index - 8L;
+    if (index >= taskLimit()) {
+      index = index - taskLimit();
     }
     if (index != except) {
       Task* task = taskAt(index);
-      if (task.pid != 0L && task.core == core && task.state == TaskState::Ready && task.held == 1L) {
+      if (task.pid != 0L && task.core == core && task.state == TaskState::Ready && task.held > 0L) {
         return index;
       }
     }
@@ -119,7 +129,7 @@ deRfun taskReady(long core, long except): long {
 
 deRfun taskClear(): void {
   long index = 0L;
-  while (index < 8L) {
+  while (index < taskLimit()) {
     Task* task = taskAt(index);
     task.pid = 0L;
     task.ppid = 0L;
@@ -158,13 +168,18 @@ deRfun taskRelease(long index): void {
   long pid = taskAt(index).pid;
   devDrop(pid);
   long other = 0L;
-  while (other < 8L) {
+  while (other < taskLimit()) {
     if (other != index && taskAt(other).ppid == pid && pid != 0L) {
       taskAt(other).ppid = 1L;
     }
     other = other + 1L;
   }
   Task* task = taskAt(index);
+  if (task.core >= 3L && task.mm.heap != 0L && task.mm.length > 0L) {
+    poolGive(task.core, task.mm.heap, task.mm.length);
+    task.mm.heap = 0L;
+    task.mm.length = 0L;
+  }
   task.pid = 0L;
   task.ppid = 0L;
   task.state = TaskState::Empty;
@@ -190,43 +205,239 @@ deRfun nextPid(): long {
   return value;
 }
 
-/* 编译器栈从窗口起点再往上 1048576 位开始。用户堆停在这之前，两份任务各一半，互不覆盖。 */
-deRfun heapSpan(): long {
-  return 516096L;
+/* 编译器映像占窗口前 137904128 位。后面到槽尾是这一核的堆池，约 16316416 个八位组。
+   不再按份切死。先给 4194304 个八位组，池里不够就先给 65536，之后紧挨着的空闲块还能长。 */
+deRfun heapGrant(): long {
+  return 33554432L;
+}
+
+deRfun heapMinimum(): long {
+  return 524288L;
+}
+
+deRfun poolBase(long core): long {
+  return kArena(core) + kSpan();
+}
+
+deRfun poolLimit(long core): long {
+  return kArena(core) + kSlot();
+}
+
+deRfun poolHead(long core): long {
+  return poolBase(core) + 64L;
+}
+
+/* 池头一个字是 1 表示已经切开。空闲块从池头 +128 起，头两个字是位数和下一格。 */
+deRfun poolReady(long core): void {
+  long base = poolBase(core);
+  if (memory::load64(base) == 1L) {
+    return;
+  }
+  memory::store64(1L, base);
+  long block = base + 128L;
+  long room = poolLimit(core) - block;
+  memory::store64(room - 128L, block);
+  memory::store64(0L, block + 64L);
+  memory::store64(block, poolHead(core));
+}
+
+deRfun poolTake(long core, long need): long {
+  if (core < 3L || core > 7L || need < 64L) {
+    return 0L;
+  }
+  poolReady(core);
+  long prev = 0L;
+  long cursor = memory::load64(poolHead(core));
+  while (cursor != 0L) {
+    long span = memory::load64(cursor);
+    long next = memory::load64(cursor + 64L);
+    if (span >= need) {
+      long remain = span - need;
+      if (remain >= 192L) {
+        memory::store64(need, cursor);
+        long rest = cursor + 128L + need;
+        memory::store64(remain - 128L, rest);
+        memory::store64(next, rest + 64L);
+        if (prev == 0L) {
+          memory::store64(rest, poolHead(core));
+        } else {
+          memory::store64(rest, prev + 64L);
+        }
+      } else if (prev == 0L) {
+        memory::store64(next, poolHead(core));
+      } else {
+        memory::store64(next, prev + 64L);
+      }
+      return cursor + 128L;
+    }
+    prev = cursor;
+    cursor = next;
+  }
+  return 0L;
+}
+
+deRfun poolGive(long core, long origin, long span): void {
+  if (core < 3L || core > 7L || origin == 0L || span < 64L) {
+    return;
+  }
+  long block = origin - 128L;
+  if (block < poolBase(core) + 128L || origin + span > poolLimit(core)) {
+    return;
+  }
+  memory::store64(span, block);
+  long prev = 0L;
+  long cursor = memory::load64(poolHead(core));
+  while (cursor != 0L && cursor < block) {
+    prev = cursor;
+    cursor = memory::load64(cursor + 64L);
+  }
+  memory::store64(cursor, block + 64L);
+  if (prev == 0L) {
+    memory::store64(block, poolHead(core));
+  } else {
+    memory::store64(block, prev + 64L);
+  }
+  long payload = memory::load64(block);
+  long nxt = memory::load64(block + 64L);
+  if (nxt != 0L && block + 128L + payload == nxt) {
+    long merged = payload + 128L + memory::load64(nxt);
+    memory::store64(merged, block);
+    memory::store64(memory::load64(nxt + 64L), block + 64L);
+  }
+  if (prev != 0L) {
+    long prevSpan = memory::load64(prev);
+    if (prev + 128L + prevSpan == block) {
+      long merged = prevSpan + 128L + memory::load64(block);
+      memory::store64(merged, prev);
+      memory::store64(memory::load64(block + 64L), prev + 64L);
+    }
+  }
+}
+
+/* 当前堆正好顶到一块空闲区时，把相邻的位数并进来。并不到就回复 0。 */
+deRfun poolGrow(long core, long extra): long {
+  long index = taskFind(core);
+  if (index < 0L || extra < 64L) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  if (task.core < 3L || task.mm.heap == 0L) {
+    return 0L;
+  }
+  long block = task.mm.origin + task.mm.length;
+  long prev = 0L;
+  long cursor = memory::load64(poolHead(core));
+  while (cursor != 0L && cursor != block) {
+    prev = cursor;
+    cursor = memory::load64(cursor + 64L);
+  }
+  if (cursor == 0L) {
+    return 0L;
+  }
+  long payload = memory::load64(cursor);
+  long next = memory::load64(cursor + 64L);
+  long whole = payload + 128L;
+  if (whole < extra) {
+    return 0L;
+  }
+  long take = extra;
+  if (whole - extra < 192L) {
+    take = whole;
+  }
+  if (prev == 0L) {
+    memory::store64(next, poolHead(core));
+  } else {
+    memory::store64(next, prev + 64L);
+  }
+  task.mm.length = task.mm.length + take;
+  long left = whole - take;
+  if (left >= 192L) {
+    long rest = block + take;
+    memory::store64(left - 128L, rest);
+    memory::store64(next, rest + 64L);
+    if (prev == 0L) {
+      memory::store64(rest, poolHead(core));
+    } else {
+      memory::store64(rest, prev + 64L);
+    }
+  }
+  return 1L;
 }
 
 deRfun heapOf(long core): long {
   if (core == 2L) {
     return vfsEnd();
   }
-  long order = taskCount(core);
-  if (order > 1L) {
+  if (core < 3L || core > 7L) {
     return 0L;
   }
-  /* 调用帧用到 home+12288。堆从这之后开始，避免和参数、路径、缓冲区叠在一起。 */
-  return kArena(core) + 16384L + order * heapSpan();
+  long got = poolTake(core, heapGrant());
+  if (got == 0L) {
+    got = poolTake(core, heapMinimum());
+  }
+  return got;
+}
+
+/* 0 至 255 优先用和下标相同的槽。256 至 511 以及被占的下标，领任意一格空槽。领不到是 -1。 */
+deRfun slotBusy(long slot): long {
+  long index = 0L;
+  while (index < taskLimit()) {
+    if (taskAt(index).held == slot + 1L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun slotPick(long index): long {
+  if (index >= 0L && index < slotLimit() && slotBusy(index) == 0L) {
+    return index;
+  }
+  long slot = 0L;
+  while (slot < slotLimit()) {
+    if (slotBusy(slot) == 0L) {
+      return slot;
+    }
+    slot = slot + 1L;
+  }
+  return -1L;
+}
+
+/* 已经抄过就用原来的槽。否则领一格并记成槽号加 1，0 仍表示还没进槽。 */
+deRfun slotHold(long index): long {
+  if (index < 0L) {
+    return -1L;
+  }
+  long have = taskAt(index).held;
+  if (have > 0L) {
+    return have - 1L;
+  }
+  long slot = slotPick(index);
+  if (slot < 0L) {
+    return -1L;
+  }
+  taskAt(index).held = slot + 1L;
+  return slot;
 }
 
 deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state): long {
   if (core < 2L || core > 7L || pid < 1L) {
     return 0L;
   }
-  /* 监督核只有一份。用户核至多两份，再多就会撞上编译器栈。 */
+  /* 监督核只有一份。用户核不再按份数封顶，堆池或任务表用尽才拒绝。 */
   if (core == 2L && taskFind(core) >= 0L) {
     return 0L;
   }
-  if (core != 2L && taskCount(core) >= 2L) {
+  long index = 0L;
+  while (index < taskLimit() && taskAt(index).pid != 0L) {
+    index = index + 1L;
+  }
+  if (index >= taskLimit()) {
     return 0L;
   }
   long heap = heapOf(core);
   if (heap == 0L) {
-    return 0L;
-  }
-  long index = 0L;
-  while (index < 8L && taskAt(index).pid != 0L) {
-    index = index + 1L;
-  }
-  if (index >= 8L) {
     return 0L;
   }
   Task* task = taskAt(index);
@@ -243,7 +454,7 @@ deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state):
     task.mm.length = kSpan();
   } else {
     task.mm.origin = heap;
-    task.mm.length = heapSpan();
+    task.mm.length = memory::load64(heap - 128L);
   }
   task.mm.heap = heap;
   task.mm.brk = task.mm.heap;
@@ -278,7 +489,7 @@ deRfun taskAllows(long core, long service): long {
 
 deRfun taskByPid(long pid): long {
   long index = 0L;
-  while (index < 8L) {
+  while (index < taskLimit()) {
     if (taskAt(index).pid == pid && pid != 0L) {
       return index;
     }
@@ -378,6 +589,8 @@ deRfun procExit(long core, long code): void {
   }
   task.state = TaskState::Zombie;
   task.code = code;
+  /* 不会再被放回去。槽交还给还没领到槽的任务。 */
+  task.held = 0L;
   long pid = task.pid;
   if (pid == 1L) {
     reapIndex(index);
@@ -422,7 +635,7 @@ deRfun procWait(long caller, long home): long {
   }
   long live = 0L;
   long index = 0L;
-  while (index < 8L) {
+  while (index < taskLimit()) {
     Task* child = taskAt(index);
     if (child.pid != 0L && child.ppid == me.pid && (want == 0L || want == child.pid)) {
       if (child.state == TaskState::Zombie) {
@@ -451,7 +664,7 @@ deRfun procWait(long caller, long home): long {
 /* 父任务已经不在的僵尸，能挂到 1 号就挂过去，留给它的 wait。1 号也不在才收掉。 */
 deRfun procCollect(): void {
   long index = 0L;
-  while (index < 8L) {
+  while (index < taskLimit()) {
     Task* task = taskAt(index);
     if (task.state == TaskState::Zombie && task.pid != 1L && taskByPid(task.ppid) < 0L) {
       if (taskByPid(1L) >= 0L) {

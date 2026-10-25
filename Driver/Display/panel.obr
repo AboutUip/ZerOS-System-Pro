@@ -1,6 +1,15 @@
-/* 分辨率从显卡驱动进去。显卡换帧之后，页面再把同一组宽高交给显示器。 */
+/* 分辨率从显卡驱动进去。显卡换帧之后，页面再把同一组宽高交给显示器。
+   默认宽高和宿主 DisplayConfig 的 DefaultWidth、DefaultHeight 是同一档。 */
 import panel;
 import gl;
+
+deRfun panel::defaultWidth(): long {
+  return 640L;
+}
+
+deRfun panel::defaultHeight(): long {
+  return 480L;
+}
 
 deRfun panel::apply(long width, long height): long {
   return gl::resize(width, height);

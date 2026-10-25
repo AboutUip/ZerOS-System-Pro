@@ -51,6 +51,7 @@ export namespace ZerOS {
       const FaultCodeRelease = CodeRoot.Hardware.Cpu.FaultCodeRelease;
       const FaultCodeSlice = CodeRoot.Hardware.Cpu.FaultCodeSlice;
       const FaultCodeDwell = CodeRoot.Hardware.Cpu.FaultCodeDwell;
+      const FaultCodeMap = CodeRoot.Hardware.Cpu.FaultCodeMap;
       const FaultCodeContext = CodeRoot.Hardware.Cpu.FaultCodeContext;
       const FaultCodeAttach = CodeRoot.Hardware.Cpu.FaultCodeAttach;
       const FaultCodePrivilege = CodeRoot.Hardware.Cpu.FaultCodePrivilege;
@@ -116,6 +117,7 @@ export namespace ZerOS {
         { phrase: "syscall ", code: FaultCodeSyscall, source: FaultSourceCpu },
         { phrase: "slice is out of range", code: FaultCodeSlice, source: FaultSourceCpu },
         { phrase: "dwell is outside", code: FaultCodeDwell, source: FaultSourceCpu },
+        { phrase: "map request was rejected", code: FaultCodeMap, source: FaultSourceCpu },
         { phrase: "pass target", code: FaultCodePass, source: FaultSourceCpu },
         { phrase: "latch is already full", code: FaultCodePass, source: FaultSourceCpu },
         { phrase: "bound ", code: FaultCodeBound, source: FaultSourceCpu },
@@ -137,6 +139,30 @@ export namespace ZerOS {
 
       interface RuledPhrase extends Ruled {
         readonly phrase: string;
+      }
+
+      /**
+       * 面板只能画 ASCII。内存通道那两句中文换成英文原因，模块前缀仍留着。
+       * 其它写不出来的字仍换成问号，停机帧不会整句消失。
+       */
+      function panelText(message: string): string {
+        const readable = ascii(message, 240, "unspecified fault");
+        if (!readable.includes("?")) {
+          return readable;
+        }
+        let reason = "";
+        if (message.includes("对齐")) {
+          reason = "an access wider than one bit was not aligned to an octet";
+        } else if (message.includes("字宽")) {
+          reason = "the channel width was not 1, 8, 16, 32, or 64";
+        }
+        if (reason.length < 1) {
+          return readable;
+        }
+        const marked = /^\[ZerOS\.[A-Za-z0-9.]+\]/.exec(message);
+        const head = marked?.[0] ?? "";
+        const joined = head.length > 0 ? `${head} ${reason}` : reason;
+        return ascii(joined, 240, "unspecified fault");
       }
 
       /** 只留下面板和协议允许的字符。超长裁掉。空了就用调用方给的替身。 */
@@ -275,7 +301,7 @@ export namespace ZerOS {
         return {
           Code: clampCode(code),
           Source: safeSource,
-          Text: ascii(message, 240, "unspecified fault"),
+          Text: panelText(message),
           Core: clampCore(core),
           Index: clampIndex(index),
           Op: ascii(op, 32, ""),
@@ -326,7 +352,7 @@ export namespace ZerOS {
         return {
           Code: clampCode(data["code"]),
           Source: source,
-          Text: ascii(message, 240, "unspecified fault"),
+          Text: panelText(message),
           Core: clampCore(core),
           Index: clampIndex(index),
           Op: ascii(op, 32, ""),

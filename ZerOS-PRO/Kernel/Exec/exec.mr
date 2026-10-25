@@ -6,6 +6,7 @@ deRfun drvLoad(): void;
 deRfun bootInit(): void;
 deRfun bootIdle(): void;
 deRfun bootArm(): void;
+deRfun termShell(): long;
 deRfun bootPump(): void;
 deRfun execSpawn(long caller, long home): long;
 deRfun loadLib(long caller, long home): long;

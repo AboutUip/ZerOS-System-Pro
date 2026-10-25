@@ -54,11 +54,11 @@ deRfun meterbar(long x, long y, long wide, long value, long maximum, long fill):
   }
 }
 
-/* 当前类别有几个子类。固件 6 个，关于 3 个。 */
+/* 当前类别有几个子类。固件 7 个，关于 3 个。调试是第 7 个，不能和扩展口详情共用页号。 */
 deRfun subcount(): long {
   long* category = (long*)5248;
   if (*category == 0L) {
-    return 6L;
+    return 7L;
   }
   return 3L;
 }
@@ -221,6 +221,8 @@ deRfun fill(): void {
   keep(48L, "MEMORYID");
   keep(49L, "DISPLAY ZDP1");
   keep(50L, "POINTER ZPP1");
+  keep(51L, "DEBUG");
+  keep(52L, "ENTER TOGGLES");
   mark(0L);
   plant(1L, 5L, 28L, 0L);
   plant(1L, 6L, 22L, 0L);
@@ -328,6 +330,10 @@ deRfun fill(): void {
   plant(22L, 0L, 0L, 0L);
   plant(13L, 0L, 0L, 0L);
   plant(3L, 8L, 0L, 0L);
+  plant(0L, 0L, 0L, 0L);
+  mark(10L);
+  plant(1L, 51L, 26L, 0L);
+  plant(2L, 52L, 22L, 0L);
   plant(0L, 0L, 0L, 0L);
   set(5760L, 1L);
 }
@@ -534,8 +540,10 @@ deRfun show(long x, long y, long wide, long kind, long a, long b, long c, long i
   return y;
 }
 
-/* 顺着当前页的行往下画。10 到 11 按核心重复，12 到 13 按四个扩展口重复。 */
-deRfun rows(long x, long y, long wide, long page): long {
+/* 顺着当前页的行往下画。10 到 11 按核心重复，12 到 13 按四个扩展口重复。
+   viewTop、viewBottom 是屏幕上的剪裁，内容纵坐标要先减去滚动才落到这上面。
+   整行在剪裁外只推进 y，行高仍走 rowSpan，和真正画出来的增量一致。 */
+deRfun rows(long x, long y, long wide, long page, long viewTop, long viewBottom): long {
   long pc = at(12288L + page * 64L);
   long back = 0L;
   long index = 0L;
@@ -579,7 +587,18 @@ deRfun rows(long x, long y, long wide, long page): long {
       pc = back;
       continue;
     }
-    y = show(x, y, wide, kind, at(pc + 64L), at(pc + 128L), at(pc + 192L), index);
+    long a = at(pc + 64L);
+    long b = at(pc + 128L);
+    long c = at(pc + 192L);
+    long span = rowSpan(kind, a, b, c, index);
+    long screen = y - *(long*)5312;
+    /* CPU 页把状态、频率和已执行次数按核心各画一行。八个核心排下去会超出 640 高的屏幕。
+       视口外的行不再查询，也不再交字形。滚动条仍用最后的 y，所以行高不能省。 */
+    if (screen + span > viewTop && screen < viewBottom) {
+      y = show(x, y, wide, kind, a, b, c, index);
+    } else {
+      y = y + span;
+    }
     pc = pc + 256L;
   }
   return y;
@@ -592,6 +611,10 @@ deRfun pageOf(): long {
   if (*category == 0L) {
     if (*sub == 5L && *depth != 0L) {
       return 6L;
+    }
+    /* 6 是扩展口详情。调试用页 10。 */
+    if (*sub == 6L) {
+      return 10L;
     }
     return *sub;
   }
@@ -723,6 +746,12 @@ deRfun paint(): void {
       on = 1L;
     }
     sideAt(row, side, on, 10L);
+    row = row + 34L;
+    on = 0L;
+    if (*sub == 6L) {
+      on = 1L;
+    }
+    sideAt(row, side, on, 51L);
   } else {
     long on = 0L;
     if (*sub == 0L) {
@@ -750,10 +779,11 @@ deRfun paint(): void {
   obr::ui::clip(side + 4L, top + 4L, wide - side - 12L, high - top - 8L);
   obr::ui::save();
   obr::ui::translate(0L, 0L - *scroll);
-  long bottom = rows(side + 16L, top + 14L, body, pageOf());
+  long bottom = rows(side + 16L, top + 14L, body, pageOf(), top + 4L, high - 4L);
   obr::ui::restore();
   obr::ui::unclip();
   panelFace();
+  debugFace();
   cursorAt();
   long max = bottom - (high - 4L);
   if (max < 0L) {
@@ -864,6 +894,11 @@ deRfun onkey(): void {
   }
   if (*category == 0L && *sub == 4L && *depth == 0L && *focus == 2L) {
     if (panelKey() == 1) {
+      return;
+    }
+  }
+  if (*category == 0L && *sub == 6L && *depth == 0L && *focus == 2L) {
+    if (debugKey() == 1) {
       return;
     }
   }
@@ -1044,7 +1079,7 @@ deRfun sizeWidth(long index): long {
   if (index == 4L) {
     return 1920L;
   }
-  return 640L;
+  return panel::defaultWidth();
 }
 
 /* 这一档在原始比例下的高度。比例不是 0 时不用它。 */
@@ -1061,7 +1096,7 @@ deRfun sizeHeight(long index): long {
   if (index == 4L) {
     return 1080L;
   }
-  return 480L;
+  return panel::defaultHeight();
 }
 
 /* 0 用预设自己的高。1 是 4:3，2 是 16:9，3 是 16:10。宽仍是这一档的宽。 */
@@ -1133,6 +1168,61 @@ deRfun loadPanel(): void {
   long width = memory::loadOctet(7872L) + memory::loadOctet(7880L) * 256L;
   long height = memory::loadOctet(7888L) + memory::loadOctet(7896L) * 256L;
   matchPanel(width, height);
+}
+
+/* 读 /boot/debug 的一个八位组。0 关，1 开。服务没起来或内容对不上就留着关。
+   写成 8128 之后主板告诉页面。页面再把同一位写回文件，这里不占第二次会话。 */
+deRfun loadDebug(): void {
+  long kind = 0L;
+  long size = 0L;
+  long looked = obr::nas::stat("/boot/debug", &kind, &size);
+  if (looked != 0L || kind != 1L || size != 1L) {
+    return;
+  }
+  long handle = 0L;
+  long opened = obr::nas::open("/boot/debug", 0L, &handle);
+  if (opened != 0L) {
+    return;
+  }
+  long got = 0L;
+  long read = obr::nas::read(handle, 0L, 8128L, 1L, &got);
+  long closed = obr::nas::close(handle);
+  if (read != 0L || closed != 0L || got != 1L) {
+    return;
+  }
+  long value = memory::loadOctet(8128L) & 255L;
+  if (value == 0L) {
+    *(long*)8128 = 0L;
+    return;
+  }
+  *(long*)8128 = 1L;
+}
+
+/* 固件类别里的调试页。 */
+deRfun onDebug(): int {
+  if (*(long*)5248 != 0L) {
+    return 0;
+  }
+  if (*(long*)4160 != 6L) {
+    return 0;
+  }
+  if (*(long*)5376 != 0L) {
+    return 0;
+  }
+  return 1;
+}
+
+deRfun debugBarTop(): long {
+  return 118L;
+}
+
+/* 在关和开之间换一档。整字写到 8128，页面看见之后落进 /boot/debug。 */
+deRfun flipDebug(): void {
+  if (*(long*)8128 == 0L) {
+    *(long*)8128 = 1L;
+    return;
+  }
+  *(long*)8128 = 0L;
 }
 
 /* 固件类别里的显示器页。详情层不算。 */
@@ -1573,6 +1663,9 @@ deRfun clickBios(long x, long y): void {
   if (clickPanel(x, y) == 1) {
     return;
   }
+  if (clickDebug(x, y) == 1) {
+    return;
+  }
   if (clickPort(x, y) == 1) {
     return;
   }
@@ -1734,6 +1827,53 @@ deRfun panelFace(): void {
   }
 }
 
+/* 调试页上的一档。OFF 是关，ON 是开。焦点在右侧时底边留一条强调色。 */
+deRfun debugFace(): void {
+  if (onDebug() == 0) {
+    return;
+  }
+  long left = boxLeft();
+  long y = debugBarTop();
+  long wide = boxWide();
+  long ink = obr::ui::rgb(232L, 236L, 242L);
+  long accent = obr::ui::rgb(88L, 168L, 255L);
+  long fill = obr::ui::rgb(24L, 36L, 52L);
+  if (*(long*)8128 != 0L) {
+    fill = obr::ui::rgb(28L, 72L, 48L);
+    ink = obr::ui::rgb(196L, 236L, 210L);
+    obr::ui::round(left, y, wide, 28L, 6L, fill, 255L);
+    obr::ui::text(left + 10L, y + 6L, 16L, "ON", ink, 255L);
+  } else {
+    obr::ui::round(left, y, wide, 28L, 6L, fill, 255L);
+    obr::ui::text(left + 10L, y + 6L, 16L, "OFF", ink, 255L);
+  }
+  if (*(long*)5184 == 2L) {
+    obr::ui::rect(left, y + 28L, wide, 2L, accent, 255L);
+  }
+}
+
+deRfun clickDebug(long x, long y): int {
+  if (onDebug() == 0) {
+    return 0;
+  }
+  if (obr::ui::hit(x, y, boxLeft(), debugBarTop(), boxWide(), 28L) == 0L) {
+    return 0;
+  }
+  set(5184L, 2L);
+  flipDebug();
+  return 1;
+}
+
+/* 焦点在右侧时才调用。回车、上、下、左、右都换档。 */
+deRfun debugKey(): int {
+  long name = *(long*)4864;
+  if (name == 0x7265746e45L || backward(name) == 1 || forward(name) == 1) {
+    flipDebug();
+    return 1;
+  }
+  return 0;
+}
+
 /* 箭头尖在事件坐标上。浏览器光标已经藏起，这一笔就是屏幕上的鼠标。还没有事件时不画。 */
 deRfun cursorAt(): void {
   if (*(long*)7808 == 0L) {
@@ -1812,10 +1952,10 @@ deRfun panelKey(): int {
 }
 
 /* 把还没看过的鼠标事件按顺序取完。左键点栏、滚动条、选择器和扩展口。
-   移动时如果还按着滑块就跟着滚。滚轮在选择器上换项，别处滚动正文。看过才移出。 */
+   移动时如果还按着滑块就跟着滚。滚轮在选择器上换项，别处滚动正文。看过才移出。
+   这里不重画。设置循环每一拍只画一次；鼠标一动就整页再画时，CPU 页的字形会把光标拖住。 */
 deRfun takePointer(): void {
   long guard = 0L;
-  long used = 0L;
   while (pointer::depth() > 0L && guard < 32L) {
     long x = pointer::x();
     long y = pointer::y();
@@ -1836,18 +1976,47 @@ deRfun takePointer(): void {
       wheelBios(x, y, pointer::wheel());
     }
     pointer::pop();
-    used = 1L;
     guard = guard + 1L;
-  }
-  if (used == 1L && *(long*)4096 == 2L) {
-    paint();
   }
 }
 
-/* 找键盘口，然后一直轮询。红点不在这里换：这一循环的快慢会跟着读盘变。
-   倒计时结束时只调度核心 3。核心 2 把各映像装完后把 5952 写成 1，这里才铺上全屏加载，并把 4096 写成 1。
-   过渡的前 20 拍画得密一些，方标和拖影依次淡入。淡入停住之后拖影继续转，不再换成别的画面。
-   加载期间内核去准备资源并初始化。 */
+/* 内核把 5952 写成 1 之前用这一幅。探活会清掉启动画面，不能空等成黑屏。
+   Starting 带向左阴影，六个点里下标那一颗是红的。下标在 6400，调度核心 3 之后每 40 毫秒往后换。
+   点阵字形只在固件里，这一幅不建立字体面。 */
+deRfun starting(long dot): void {
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long titleSize = 48L;
+  long step = obr::ui::advance(titleSize);
+  long word = obr::ui::textWidth(titleSize, "Starting");
+  long titleX = obr::ui::align(0L, wide, word + step * 6L, obr::ui::Align::Center) + 8L;
+  long titleY = obr::ui::align(0L, high, titleSize, obr::ui::Align::Center);
+  long hintSize = 16L;
+  long hintWide = obr::ui::textWidth(hintSize, "Press F12 to enter BIOS");
+  long hintX = obr::ui::align(0L, wide, hintWide, obr::ui::Align::Center);
+  long hintY = obr::ui::alignEnd(0L, high, obr::ui::pad(hintSize, 36L));
+  long white = obr::ui::rgb(255L, 255L, 255L);
+  long red = obr::ui::rgb(255L, 0L, 0L);
+  obr::ui::clear(0L, 255L);
+  obr::ui::shadow(-4L, 0L, 4L, obr::ui::rgb(140L, 140L, 140L), 255L);
+  obr::ui::text(titleX, titleY, titleSize, "Starting", white, 255L);
+  obr::ui::noshadow();
+  long index = 0L;
+  while (index != 6L) {
+    long color = white;
+    if (index == dot) {
+      color = red;
+    }
+    obr::ui::glyph(46L, titleX + word + index * step, titleY, titleSize, color, 255L);
+    index = index + 1L;
+  }
+  obr::ui::text(hintX, hintY, hintSize, "Press F12 to enter BIOS", obr::ui::rgb(176L, 176L, 176L), 255L);
+  obr::ui::present();
+}
+
+/* 找键盘口，然后一直轮询。倒计时结束前先画一次 Starting，不逐拍等待，免得推迟调度核心 3。
+   核心 3 装内核的期间红点按墙钟换。5952 写成 1 之后才换成四块方标，那是操作系统还在起来。
+   监督核看到 shell 之后把 6272 写成 1。这里先写下 6336 再停笔，方标不再盖住终端。 */
 deRfun main(): int {
   long* mode = (long*)4096;
   long* count = (long*)4352;
@@ -1863,6 +2032,10 @@ deRfun main(): int {
   *tick = 0L;
   *done = 0L;
   *armed = 0L;
+  *(long*)6272 = 0L;
+  *(long*)6336 = 0L;
+  *(long*)6400 = 0L;
+  *(long*)6464 = 0L;
   *(long*)7360 = 0L;
   *(long*)7424 = 0L;
   *(long*)7488 = 0L;
@@ -1875,6 +2048,7 @@ deRfun main(): int {
   *(long*)8000 = 0L;
   *(long*)8064 = 0L;
   loadPanel();
+  loadDebug();
   long index = 0L;
   long matched = 0L;
   while (index != 4L && matched == 0L) {
@@ -1899,25 +2073,25 @@ deRfun main(): int {
     if (event == 1) {
       onkey();
     }
-    /* 设置开着也继续倒计时。停在 CPU 页时核心 3 仍会装上内核，空转起来之后这一页才能看到 RUN。 */
+    /* 设置开着也继续倒计时。停在 CPU 页时核心 3 仍会装上内核，空转起来之后这一页才能看到 RUN。
+       设置每一拍等 16 毫秒，所以这一拍把等待一次减 16，总长仍大约是原来的 800 次空转。 */
     if (*armed == 0L && *done == 0L) {
-      *wait = *wait - 1L;
-      if (*wait == 0L) {
+      if (*mode == 2L) {
+        *wait = *wait - 16L;
+      } else {
+        *wait = *wait - 1L;
+      }
+      if (*wait < 1L) {
         obr::os::schedule(3L);
         *armed = 1L;
+        *wait = 0L;
       }
     }
     if (*mode == 2L) {
-      if (event == 1) {
-        paint();
-        *tick = 0L;
-      } else {
-        *tick = *tick + 1L;
-        if (*tick == 80L) {
-          *tick = 0L;
-          paint();
-        }
-      }
+      /* 画完按墙钟等 16 毫秒。空转收件箱和鼠标口会占满宿主，页面收不到移动。
+         鼠标原来每取出一批事件就整页重画，CPU 页笔画最多，光标就停在上一帧。 */
+      paint();
+      obr::os::dwell(16L);
     } else if (*mode == 0L) {
       if (*armed != 0L && *done != 0L) {
         *mode = 1L;
@@ -1927,21 +2101,52 @@ deRfun main(): int {
         *phase = 0L;
         *intro = 0L;
         loading();
+      } else {
+        /* 不在这里 dwell。内核正在读盘，墙钟等待会和这次读盘卡在同一条宿主线程上。
+           倒计时只画一次。调度之后每 200 圈换一颗红点，画面留在 Starting，读盘仍能继续。 */
+        long* beat = (long*)6464;
+        long* dot = (long*)6400;
+        long show = 0L;
+        if (*armed == 0L) {
+          if (*beat == 0L) {
+            show = 1L;
+          }
+          *beat = 1L;
+        } else {
+          *beat = *beat + 1L;
+          if (*beat >= 200L) {
+            *beat = 0L;
+            *dot = *dot + 1L;
+            if (*dot >= 6L) {
+              *dot = 0L;
+            }
+            show = 1L;
+          }
+        }
+        if (show != 0L) {
+          starting(*dot);
+        }
       }
     } else if (*done != 0L) {
-      long* intro = (long*)6144;
-      if (*intro < 20L) {
-        *intro = *intro + 1L;
+      /* 6272 为 1 时终端已经准备好。先答应 6336，这一拍不再画方标，监督核才铺终端。 */
+      if (*(long*)6272 != 0L) {
+        *(long*)6336 = 1L;
+        obr::os::dwell(40L);
+      } else {
+        long* intro = (long*)6144;
+        if (*intro < 20L) {
+          *intro = *intro + 1L;
+        }
+        long* phase = (long*)6080;
+        *phase = *phase + 1L;
+        if (*phase >= 24L) {
+          *phase = 0L;
+        }
+        loading();
+        /* 画完按墙钟等 40 毫秒。空转收件箱会在宿主上堆出短命对象，
+           放两分钟后回收会把这一圈拖慢。淡入和匀速用同一拍，24 步大约一秒。 */
+        obr::os::dwell(40L);
       }
-      long* phase = (long*)6080;
-      *phase = *phase + 1L;
-      if (*phase >= 24L) {
-        *phase = 0L;
-      }
-      loading();
-      /* 画完按墙钟等 40 毫秒。空转收件箱会在宿主上堆出短命对象，
-         放两分钟后回收会把这一圈拖慢。淡入和匀速用同一拍，24 步大约一秒。 */
-      obr::os::dwell(40L);
     }
   }
 }

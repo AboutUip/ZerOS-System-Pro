@@ -24,16 +24,19 @@ Compiler/Obr/examples/*
 # The .zap beside it is the same program as text, kept for debugging.
 Toolchain/Zap/
 
-# Guest tree of the reference NAS: /kernel/start, /kernel/init, /os/session, /kernel/drv.
-# obrc writes these images here. The server creates the directory.
-# Kernel sources stay under ZerOS-PRO/Kernel/. Userspace sources stay under ZerOS-PRO/System/.
-# /boot is firmware storage (display size). It stays tracked. Images beside it do not.
-ZerOS-PRO/Hardware/Nas/Root/*
-!ZerOS-PRO/Hardware/Nas/Root/boot/
-!ZerOS-PRO/Hardware/Nas/Root/boot/**
+# Guest tree of the reference NAS. None of it is source.
+# obrc writes /kernel and /os. provision.mjs copies Resource/Font into /font
+# and marks those copies read-only. It seeds /boot/display and /boot/debug
+# only when the file is missing. Those two stay writable.
+# Wiping this directory and compiling again recreates it.
+# Kernel sources stay under ZerOS-PRO/Kernel/.
+# Userspace sources stay under ZerOS-PRO/System/.
+# Font sources stay under ZerOS-PRO/Resource/.
+ZerOS-PRO/Hardware/Nas/Root/
 
 # Vite dependency cache
 **/.vite/
 
 # temp
 dev/
+@dev/

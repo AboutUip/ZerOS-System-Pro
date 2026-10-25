@@ -1,7 +1,10 @@
 #include "Generator.hpp"
 
+#include "../Utf8.hpp"
+
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace obr {
 
@@ -41,16 +44,18 @@ void Generator::emitString(const std::string& text) {
     emit("place r4, " + std::to_string(kHeap));
     emit(ready + ":");
     copy(0, 4);
-    emit("place r1, " + std::to_string(text.size()));
+    std::vector<std::uint32_t> scalars;
+    if (!utf8Scalars(text, scalars)) fail("字符串里有不合法的 UTF-8");
+    emit("place r1, " + std::to_string(scalars.size()));
     emit("sti.64 r1, r0");
-    emit("place r1, " + std::to_string(64 + static_cast<int>(text.size()) * 8));
+    emit("place r1, " + std::to_string(64 + static_cast<int>(scalars.size()) * 32));
     emit("add r4, r4, r1");
     emit("store.64 r4, " + std::to_string(kHeapPtr));
-    for (std::size_t index = 0; index < text.size(); index += 1) {
-      emit("place r1, " + std::to_string(static_cast<unsigned char>(text[index])));
-      emit("place r5, " + std::to_string(64 + static_cast<int>(index) * 8));
+    for (std::size_t index = 0; index < scalars.size(); index += 1) {
+      emit("place r1, " + std::to_string(scalars[index]));
+      emit("place r5, " + std::to_string(64 + static_cast<int>(index) * 32));
       emit("add r5, r0, r5");
-      emit("sti.octet r1, r5");
+      emit("sti.32 r1, r5");
     }
   }
 
@@ -58,7 +63,7 @@ void Generator::boxChar() {
     const int code = words_ + temp_;
     hold();
     storeSlot(code, TypeKind::Long);
-    emit("place r0, 72");
+    emit("place r0, 96");
     const int size = words_ + temp_;
     hold();
     storeSlot(size, TypeKind::Long);
@@ -74,7 +79,7 @@ void Generator::boxChar() {
     emit("sti.64 r2, r0");
     emit("place r5, 64");
     emit("add r5, r0, r5");
-    emit("sti.octet r1, r5");
+    emit("sti.32 r1, r5");
     loadSlot(dest, TypeKind::Long);
     release();
     release();
@@ -100,7 +105,7 @@ void Generator::emitConcatRoutine() {
     emit("store.64 r4, 4522176");
     emit("store.64 r5, 4522240");
     emit("add r0, r4, r5");
-    emit("place r1, 8");
+    emit("place r1, 32");
     emit("mul r0, r0, r1");
     emit("place r1, 64");
     emit("add r0, r0, r1");
@@ -122,6 +127,8 @@ void Generator::emitConcatRoutine() {
     emit("place r5, 64");
     emit("add r1, r4, r5");
     emit("load.64 r2, 4522176");
+    emit("place r0, 4");
+    emit("mul r2, r2, r0");
     emit("load.64 r4, 4522304");
     emit("add r3, r4, r5");
     emit("call scopy");
@@ -129,10 +136,12 @@ void Generator::emitConcatRoutine() {
     emit("place r5, 64");
     emit("add r1, r4, r5");
     emit("load.64 r2, 4522240");
+    emit("place r0, 4");
+    emit("mul r2, r2, r0");
     emit("load.64 r4, 4522304");
     emit("add r3, r4, r5");
     emit("load.64 r4, 4522176");
-    emit("place r5, 8");
+    emit("place r5, 32");
     emit("mul r4, r4, r5");
     emit("add r3, r3, r4");
     emit("call scopy");

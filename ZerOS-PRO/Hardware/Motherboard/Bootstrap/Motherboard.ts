@@ -39,7 +39,7 @@ export namespace ZerOS {
       const lastFault = DebugLogRoot.Hardware.Debug.lastFault;
       const faultFromWire = FaultRecordRoot.Hardware.Cpu.faultFromWire;
       const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
-      const DebugEnabled = FlagRoot.Hardware.Debug.DebugEnabled;
+      const debugEnabled = FlagRoot.Hardware.Debug.debugEnabled;
       const reportSevere = SevereRoot.Hardware.Debug.reportSevere;
       type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
 
@@ -65,6 +65,9 @@ export namespace ZerOS {
 
       /** 显卡换成新的帧尺寸时调用。页面再把同一组宽高交给显示器。 */
       let panelListener: ((width: number, height: number) => void) | null = null;
+
+      /** 固件写下调试开关时调用。页面挂上或摘掉入口，并把这一位写入 /boot/debug。 */
+      let debugSwitchListener: ((on: boolean) => void) | null = null;
 
       /** 一次扩展口交换的成功回调。同时只允许一路，避免两段结果对错号。 */
       let exchangeWait: ((word: bigint) => void) | null = null;
@@ -131,6 +134,13 @@ export namespace ZerOS {
           const height = record["height"];
           if (typeof width === "number" && typeof height === "number") {
             panelListener?.(width, height);
+          }
+          return;
+        }
+        if (kind === MailMessage.DebugSwitch) {
+          const on = record["on"];
+          if (typeof on === "boolean") {
+            debugSwitchListener?.(on);
           }
           return;
         }
@@ -301,6 +311,11 @@ export namespace ZerOS {
           panelListener = listener;
         },
 
+        /** 登记固件调试开关。必须在 Power 之前调用，免得启动时写下的那一档没人接。 */
+        WhenDebugSwitch(listener: (on: boolean) => void): void {
+          debugSwitchListener = listener;
+        },
+
         /**
          * 登记引导开始时的程序。必须在 Power 之前调用。
          * 字符串数组是 ZAP。Uint8Array 是无扩展名二进制，CPU 不再解析助记符。
@@ -354,7 +369,8 @@ export namespace ZerOS {
          * 开关关闭、文本不合法时立刻拒绝，不把消息送进机器。
          */
         DebugRun(lines: readonly string[]): Promise<string> {
-          const decision = debugRunDecision(DebugEnabled, lines, true);
+          const on = debugEnabled();
+          const decision = debugRunDecision(on, lines, true);
           if (decision !== "") {
             return Promise.resolve(decision);
           }
@@ -367,6 +383,7 @@ export namespace ZerOS {
             ensureBoard().postMessage({
               kind: MailMessage.DebugRun,
               lines,
+              enabled: on,
             });
           });
         },

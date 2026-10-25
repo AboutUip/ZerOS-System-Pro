@@ -3,7 +3,7 @@ import memory;
 
 deRfun obr::text::put(long address, string text): long {
   int raw = length(text);
-  if (raw < 0 || raw > 240) {
+  if (raw < 0 || raw > 8192) {
     return 7L;
   }
   long count = raw;

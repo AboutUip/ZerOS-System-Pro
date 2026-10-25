@@ -19,6 +19,7 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
+import { ZerOS as ConfigRoot } from "../Config/NasConfig";
 import { ZerOS as OpcodeRoot } from "../Enum/NasOpcode";
 import { ZerOS as StatusRoot } from "../Enum/NasStatus";
 import { ZerOS as VerbRoot } from "../Enum/NasVerb";
@@ -47,6 +48,7 @@ export namespace ZerOS {
       const NasVerbStat = VerbRoot.Hardware.Nas.NasVerbStat;
       const NasVerbOpen = VerbRoot.Hardware.Nas.NasVerbOpen;
       const NasVerbRead = VerbRoot.Hardware.Nas.NasVerbRead;
+      const PathMax = ConfigRoot.Hardware.Nas.NasConfig.PathMax;
       const createNasSession = RuntimeRoot.Hardware.Nas.createNasSession;
       const exchangePrepared = RuntimeRoot.Hardware.Nas.exchangePrepared;
       const planNasWord = RuntimeRoot.Hardware.Nas.planNasWord;
@@ -132,13 +134,24 @@ export namespace ZerOS {
           fail("结束后不能再开始");
         }
         const chunk = octets([NasOpcodePathAppend, 6, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61]);
-        for (let index = 0; index < 40; index += 1) {
+        const rounds = Math.floor(PathMax / 6);
+        for (let index = 0; index < rounds; index += 1) {
           if ((drive(session, chunk)[0] ?? 0) !== NasStatusOk) {
-            fail("240 个八位组以内的路径被拒绝");
+            fail("路径上界以内的片段被拒绝");
+          }
+        }
+        const remain = PathMax - rounds * 6;
+        if (remain > 0) {
+          const tail = [NasOpcodePathAppend, remain];
+          for (let index = 0; index < remain; index += 1) {
+            tail.push(0x61);
+          }
+          if ((drive(session, octets(tail))[0] ?? 0) !== NasStatusOk) {
+            fail("路径上界以内的片段被拒绝");
           }
         }
         if ((drive(session, octets([NasOpcodePathAppend, 1, 0x61]))[0] ?? 0) !== NasStatusTooLong) {
-          fail("超出 240 仍收下了片段");
+          fail("超出路径上界仍收下了片段");
         }
         const reset = drive(session, octets([NasOpcodeReset]), null);
         if ((reset[0] ?? 0) !== NasStatusNotReady) {

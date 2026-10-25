@@ -6,20 +6,26 @@
    +192 打开得到的描述符、读写偏移、目录容量、属组、退出码、spawn 得到的 pid、信号号、管道的写端、接入得到的入口、dup 的新描述符、dup2 要占用的描述符。
    +256 读写个数、目录读回的名字长度。
    +320 实际读写的个数。
-   +512 路径，排法见 obr.text。
-   +4096 读写和目录项的八位组，相邻隔 8 位，不是计数字符串。
+   +512 只给服务 26 回写字体路径。请求路径不放这里。
+   +12288 附近是调用帧。
+   +16384 请求路径，排法见 obr.text。最长 8192 个八位组。一个分量在内核里最长 512。
+   +131072 读写和目录项的八位组，相邻隔 8 位，不是计数字符串。一次最多 262144 个八位组。
    返回值就是内核状态，0 是成功。等待时子任务还在跑，这次调用不返回。 */
 namespace obr {
 namespace proc {
 /* 本核心的界限起点。 */
 deRfun home(): long;
+/* 请求路径的起点，home + 16384。 */
+deRfun path(long home): long;
+/* 读写字节的起点，home + 131072。一次最多 262144 个八位组。 */
+deRfun bytes(long home): long;
 /* 读窗口里的一个字。offset 是上面列出的位偏移。 */
 deRfun slot(long home, long offset): long;
-/* 服务 5。路径已在 +512。标志 0 只读，1 只写并截断，2 读写，3 追加。成功时描述符在 +192。 */
+/* 服务 5。路径已在 +16384。标志 0 只读，1 只写并截断，2 读写，3 追加。成功时描述符在 +192。 */
 deRfun open(long home, long flags): long;
-/* 服务 7。字节在 +4096。实际个数在 +320。 */
+/* 服务 7。字节在 +131072。实际个数在 +320。 */
 deRfun read(long home, long fd, long offset, long count): long;
-/* 服务 8。字节在 +4096。实际个数在 +320。 */
+/* 服务 8。字节在 +131072。实际个数在 +320。 */
 deRfun write(long home, long fd, long offset, long count): long;
 /* 服务 6。 */
 deRfun close(long home, long fd): long;
@@ -27,23 +33,23 @@ deRfun close(long home, long fd): long;
 deRfun dup(long home, long fd): long;
 /* 服务 25。to 不在 0 到 7，或旧描述符不存在，是 -1。两个号码相同则回复 0，不关闭。 */
 deRfun dup2(long home, long from, long to): long;
-/* 服务 4。路径在 +512。种类在 +128，大小在 +192，权限在 +256，属主在 +320，属组在 +384。 */
+/* 服务 4。路径在 +16384。种类在 +128，大小在 +192，权限在 +256，属主在 +320，属组在 +384。 */
 deRfun stat(long home): long;
-/* 服务 9。路径在 +512。名字八位组写到 +4096，个数在 +256。 */
+/* 服务 9。路径在 +16384。名字八位组写到 +131072，个数在 +256。 */
 deRfun readdir(long home, long index, long capacity): long;
-/* 服务 10。路径在 +512。 */
+/* 服务 10。路径在 +16384。 */
 deRfun mkdir(long home): long;
-/* 服务 11。路径在 +512。 */
+/* 服务 11。路径在 +16384。 */
 deRfun unlink(long home): long;
-/* 服务 14。路径在 +512。mode 只留低 9 位。 */
+/* 服务 14。路径在 +16384。mode 只留低 9 位。 */
 deRfun chmod(long home, long mode): long;
-/* 服务 15。路径在 +512。 */
+/* 服务 15。路径在 +16384。 */
 deRfun chown(long home, long uid, long gid): long;
-/* 服务 16。路径在 +512。 */
+/* 服务 16。路径在 +16384。 */
 deRfun chdir(long home): long;
 /* 服务 20。读端在 +128，写端在 +192。 */
 deRfun pipe(long home): long;
-/* 服务 17。路径在 +512。core 为 0 时由内核选一颗。pid 在 +192，实际核心在 +256。 */
+/* 服务 17。路径在 +16384。core 为 0 时由内核选一颗。pid 在 +192，实际核心在 +256。 */
 deRfun spawn(long home, long core): long;
 /* 服务 18。不能把 1 号作为目标。 */
 deRfun kill(long home, long pid, long sig): long;
@@ -59,9 +65,11 @@ deRfun free(long home, long block, long size): long;
 deRfun load(long home, long core): long;
 /* 服务 13。需要能力位 0。 */
 deRfun unload(long home, long core): long;
-/* 服务 22。路径在 +512。入口地址在 +192。 */
+/* 服务 22。路径在 +16384。入口地址在 +192。 */
 deRfun loadlib(long home): long;
-/* 服务 23。只有发布了设备的驱动调用。dir 0 从下行环取出，1 写入上行环。个数在 +256，字节在 +4096，实际个数在 +320。 */
+/* 服务 23。只有发布了设备的驱动调用。dir 0 从下行环取出，1 写入上行环。个数在 +256，字节在 +131072，实际个数在 +320。 */
 deRfun devio(long home, long dir): long;
+/* 服务 26。index 为 -1 时返回系统字体的份数。否则成功时 +128 是引导时在不在，+192 是八位组数，+512 是路径。下标越界是 -1。 */
+deRfun font(long home, long index): long;
 }
 }

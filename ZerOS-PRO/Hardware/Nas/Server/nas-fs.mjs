@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const PathMax = 240;
+const PathMax = 8192;
 const TransferCeil = 268435456;
 const HandleMax = 32;
 

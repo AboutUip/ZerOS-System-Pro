@@ -52,6 +52,12 @@ export namespace ZerOS {
           Present(): Promise<Uint32Array>;
           PresentView(): Promise<ImageBitmap | Uint32Array>;
           Accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number>;
+          /**
+           * 屏幕图元当场记下，返回和 Accel 相同的编号。
+           * 返回 null 表示这一条会提交或等待，调用方仍走 Accel。
+           * 这不是协议命令。一帧里的字形和进度条若每条都等待一次，设置画面就会停在上一幅。
+           */
+          AccelImmediate(op: number, a: bigint, b: bigint, c: bigint, d: bigint): number | null;
           SetHertz(hertz: number): Promise<void>;
           Metric(kind: number): Promise<number>;
           ReadByte(address: number): Promise<number>;

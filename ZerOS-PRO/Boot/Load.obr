@@ -19,7 +19,7 @@ deRfun main(): int {
     halt();
     return 0;
   }
-  if (kind != 1L || size < 1L || size > 393216L) {
+  if (kind != 1L || size < 1L || size > 2097152L) {
     *done = 1L;
     halt();
     return 0;
@@ -30,7 +30,7 @@ deRfun main(): int {
     halt();
     return 0;
   }
-  long stage = 31981568L;
+  long stage = 944259072L;
   long offset = 0L;
   long span = 256L * 1024L;
   while (offset < size) {

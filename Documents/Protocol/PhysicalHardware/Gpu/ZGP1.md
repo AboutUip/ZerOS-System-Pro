@@ -35,12 +35,14 @@
 - 节点树：`SpawnBox`、`SpawnText`、`Align`、`Paint`、`Glyph`、`Drop`、`Compose`；
 - `Accel`：一条命令完成固定功能绘制的一步。操作码见 [AccelRegistry.md](./AccelRegistry.md)；
 - 封闭字形 `0x20` 至 `0x7E`，见 [Glyph.md](./Glyph.md)。`ScreenGlyph` 的 5×7 位图见 [AccelGlyph.md](./AccelGlyph.md)。
+- 字体面读取内存里的 TrueType，并把 Unicode 标量光栅进颜色目标，见 [Font.md](./Font.md)。封闭点阵表不因此增加码点。
 - 坐座主机转交帧时不解释像素。
 
 ### 2.2 本协议明确不规定
 
 - 面板、面板刷新率、画布、扫描；
 - 可编程着色器、多重采样、窗口、光标。固定功能的矩阵、纹理和绘制在 [AccelRegistry.md](./AccelRegistry.md)；
+- TrueType 指令提示、抗锯齿、连字、双向和规范化。字体面只规定无提示的像素中心着墨，见 [Font.md](./Font.md)；
 - 把帧放进系统内存；
 - ZAP 的写法。坐座主机若转发，一次只对应本文的一条命令，指令见 ZCP1。`Image` 仍只作为本协议命令；
 - 一次发出多条绘图命令；
@@ -220,3 +222,5 @@
 | ZGP1 | `Accel` 固定功能绘制。颜色目标只在发生过绘制时，于 `Present` 写入帧存储 |
 | ZGP1 | `Fill` 与 `ScreenGlyph`。屏幕像素坐标，5×7 字形见 AccelGlyph |
 | ZGP1 | `Corner`、`Round`、`Ellipse`、`Frame`。圆角、内切椭圆，以及颜色目标的宽高 |
+| ZGP1 | `FontFace`、`FontSelect`、`FontDraw`。TrueType 子集与像素中心着墨见 Font.md。封闭点阵不增加码点 |
+| ZGP1 | Font.md 把字体文件长度上界改为 `33554432`。像素个数上限仍是 `16777216` |

@@ -1,4 +1,5 @@
-/* 执行层。引导时装驱动。spawn 在空闲核心上装第一份；核心已经因时间片停住且只有一份任务时，先把那份抄进槽，再装第二份。loadLib 把动态库接到调用者自己的序列后面。 */
+/* 执行层。引导时装驱动。spawn 在空闲核心上装第一份；核心已经因时间片停住时，先把当前这份抄进槽，再装下一份。一颗用户核能装多少，由任务表、上下文槽和堆池决定。
+   程序正文暂存在监督核窗口的槽尾，也就是编译器映像之后，最长是这一段空档的全部八位组。 */
 #LINK /start.obr
 import proc;
 import fs;
@@ -8,8 +9,13 @@ import memory;
 import obr.nas;
 import obr.os;
 
+/* 监督核槽尾。kSlot 减 kSpan 再除以 8，是这段空档的八位组数。 */
+deRfun imageCap(): long {
+  return (kSlot() - kSpan()) / 8L;
+}
+
 deRfun imageAt(): long {
-  return 2560L * 1024L + 2L * kSlot() + 4096L;
+  return kArena(2L) + kSpan();
 }
 
 deRfun drvPath(): long {
@@ -24,7 +30,7 @@ deRfun pullAt(long path, long* size): long {
   long kind = 0L;
   long bytes = 0L;
   long status = obr::nas::statAt(path, &kind, &bytes);
-  if (status != 0L || kind != 1L || bytes < 1L || bytes > 131072L) {
+  if (status != 0L || kind != 1L || bytes < 1L || bytes > imageCap()) {
     return 1L;
   }
   long handle = 0L;
@@ -62,7 +68,7 @@ deRfun pull(string path, long* size): long {
   long kind = 0L;
   long bytes = 0L;
   long status = obr::nas::stat(path, &kind, &bytes);
-  if (status != 0L || kind != 1L || bytes < 1L || bytes > 131072L) {
+  if (status != 0L || kind != 1L || bytes < 1L || bytes > imageCap()) {
     return 1L;
   }
   long handle = 0L;
@@ -99,7 +105,7 @@ deRfun pull(string path, long* size): long {
 /* 路径在 home+512。库从 NAS 读进暂存，再接到已经停住的调用者后面。成功时 +192 是第一个导出的指令编号。 */
 deRfun loadLib(long caller, long home): long {
   long size = 0L;
-  long status = pullAt(home + 512L, &size);
+  long status = pullAt(home + 16384L, &size);
   if (status != 0L) {
     return status;
   }
@@ -115,7 +121,7 @@ deRfun placeAt(long path, long core): long {
     return status;
   }
   obr::os::install(core, imageAt(), size);
-  obr::os::bound(core, kArena(core), kSpan());
+  obr::os::bound(core, kArena(core), kSlot());
   return 0L;
 }
 
@@ -183,10 +189,10 @@ deRfun freeCore(long core): long {
   return 1L;
 }
 
-/* 表里还有空位，第二份任务才装得下。 */
+/* 表里还有空位，下一份任务才装得下。 */
 deRfun taskRoom(): long {
   long index = 0L;
-  while (index < 8L) {
+  while (index < taskLimit()) {
     if (taskAt(index).pid == 0L) {
       return 1L;
     }
@@ -195,16 +201,17 @@ deRfun taskRoom(): long {
   return 0L;
 }
 
-/* 只有一份任务，并且已经因为时间片停住。这时才能在装入前把旧任务抄进槽。 */
+/* 这颗核上还有空位，并且当前任务已经因为时间片停住。这时才能在装入前把旧任务抄进槽。 */
 deRfun stoppedForSlice(long core): long {
   if (userCore(core) == 0L) {
     return 0L;
   }
-  /* 已经停住时，只有时间片或让出才能换上第二份。正在跑的可以，装入会先停在指令边界。 */
+  /* 已经停住时，只有时间片或让出才能再装一份。正在跑的可以，装入会先停在指令边界。 */
   if (query(1L, 5L, core) == 0L && query(1L, 11L, core) != 1L) {
     return 0L;
   }
-  if (taskCount(core) != 1L) {
+  long count = taskCount(core);
+  if (count < 1L) {
     return 0L;
   }
   long index = taskFind(core);
@@ -221,7 +228,33 @@ deRfun stoppedForSlice(long core): long {
    紧挨在 pid 字 12416 前面。驱动先调度起来，但放行字是 0，只按 30 Hz 空转，
    不发系统调用，免得和 1 号抢同一个保持位。放行字在该核心窗口 +960。 */
 deRfun holdAt(long index): long {
-  return 17837696L + index * 64L;
+  return 537931392L + index * 64L;
+}
+
+/* 驱动也是 1 号的子任务。它们的核心记在 holdAt(2) 起，最多四颗。shell 不在这张表里。 */
+deRfun termDriver(long core): long {
+  long count = memory::load64(holdAt(1L));
+  long index = 0L;
+  while (index < count && index < 4L) {
+    if (memory::load64(holdAt(2L + index)) == core) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 1 号直接派生的、又不是驱动的那份任务。还没有时是 0。空槽和僵尸不算。 */
+deRfun termShell(): long {
+  long index = 0L;
+  while (index < taskLimit()) {
+    Task* task = taskAt(index);
+    if (task.pid > 1L && task.ppid == 1L && task.state != TaskState::Empty && task.state != TaskState::Zombie && termDriver(task.core) == 0L) {
+      return task.pid;
+    }
+    index = index + 1L;
+  }
+  return 0L;
 }
 
 deRfun bootDriver(long core): long {
@@ -294,7 +327,7 @@ deRfun bootInit(): void {
     return;
   }
   obr::os::install(core, imageAt(), size);
-  obr::os::bound(core, kArena(core), kSpan());
+  obr::os::bound(core, kArena(core), kSlot());
   long pid = taskSpawn(core, 1L, 0L, 0L, 0L, TaskState::Ready);
   if (pid == 0L) {
     return;
@@ -355,7 +388,7 @@ deRfun seatIdle(long core, long size): void {
     return;
   }
   obr::os::install(core, imageAt(), size);
-  obr::os::bound(core, kArena(core), kSpan());
+  obr::os::bound(core, kArena(core), kSlot());
   obr::os::hertz(core, 30L);
   obr::os::schedule(core);
 }
@@ -387,26 +420,26 @@ deRfun bootArm(): void {
 }
 
 /* 1 号还没进入等待时先不放行驱动。它停在 wait 里，或根本没有 1 号，再逐个把放行字写成 1。
-   结果写在 17838080：1 表示刚调度了驱动，调用方这时不要让出。
-   任务表在 17891328，每份 1216 位，状态在 +128。Sleeping 是 3。 */
+   结果写在 537931776：1 表示刚调度了驱动，调用方这时不要让出。
+   任务表在 537985024，每份 1216 位，状态在 +128。Sleeping 是 3。 */
 deRfun bootPump(): void {
   __zap__ {
-    load.64 r0, 17837760
+    load.64 r0, 537931456
     place r2, 1
     lt r1, r0, r2
     jnz r1, pumpNo
-    load.64 r3, 17837696
+    load.64 r3, 537931392
     place r2, 0
     eq r1, r3, r2
     jnz r1, pumpGo
     place r4, 0
     pumpScan:
-    place r2, 8
+    place r2, 64
     lt r1, r4, r2
     jz r1, pumpGo
     place r2, 1216
     mul r0, r4, r2
-    place r2, 17891328
+    place r2, 537985024
     add r5, r0, r2
     ldi.64 r0, r5
     place r2, 1
@@ -425,18 +458,18 @@ deRfun bootPump(): void {
     jz r1, pumpNo
     pumpGo:
     place r0, 0
-    store.64 r0, 17838144
+    store.64 r0, 537931840
     pumpLoop:
-    load.64 r6, 17838144
-    load.64 r7, 17837760
+    load.64 r6, 537931840
+    load.64 r7, 537931456
     lt r0, r6, r7
     jz r0, pumpDone
     place r2, 64
     mul r0, r6, r2
-    place r2, 17837824
+    place r2, 537931520
     add r0, r0, r2
     ldi.64 r1, r0
-    place r2, 8388608
+    place r2, 268435456
     mul r3, r1, r2
     place r2, 1048576
     add r3, r3, r2
@@ -444,22 +477,22 @@ deRfun bootPump(): void {
     add r3, r3, r2
     place r0, 1
     sti.64 r0, r3
-    load.64 r6, 17838144
+    load.64 r6, 537931840
     place r2, 1
     add r6, r6, r2
-    store.64 r6, 17838144
+    store.64 r6, 537931840
     place r2, 1
     jnz r2, pumpLoop
     pumpDone:
     place r0, 0
-    store.64 r0, 17837760
+    store.64 r0, 537931456
     place r0, 1
     place r2, 1
     jnz r2, pumpEnd
     pumpNo:
     place r0, 0
     pumpEnd:
-    store.64 r0, 17838080
+    store.64 r0, 537931776
   }
 }
 
@@ -468,7 +501,7 @@ deRfun execSpawn(long caller, long home): long {
   if (taskIndex < 0L) {
     return -1L;
   }
-  long status = vfsPrepare(caller, home + 512L);
+  long status = vfsPrepare(caller, home + 16384L);
   if (status != 0L) {
     return status;
   }
@@ -510,15 +543,19 @@ deRfun execSpawn(long caller, long home): long {
     if (old < 0L) {
       return 11L;
     }
-    /* 先抄旧任务。placeAt 里的 install 会清掉这颗核心上的私有栈。 */
-    obr::os::capture(core, old);
+    /* 先抄旧任务。placeAt 里的 install 会清掉这颗核心上的私有栈。槽不够就先不装。 */
+    long slot = slotHold(old);
+    if (slot < 0L) {
+      return 7L;
+    }
+    obr::os::capture(core, slot);
   }
   /* 内存文件不向 NAS 要。NAS 上的文件仍走原来的拉取。 */
   long size = 0L;
-  long planted = vfsPlant(caller, home + 512L, imageAt(), &size);
+  long planted = vfsPlant(caller, home + 16384L, imageAt(), &size);
   if (planted == 0L) {
     obr::os::install(core, imageAt(), size);
-    obr::os::bound(core, kArena(core), kSpan());
+    obr::os::bound(core, kArena(core), kSlot());
   } else if (planted != 1L) {
     return planted;
   } else {
@@ -529,16 +566,18 @@ deRfun execSpawn(long caller, long home): long {
   }
   if (sharing == 1L) {
     Task* previous = taskAt(old);
-    previous.held = 1L;
     previous.state = TaskState::Ready;
   }
   Task* parent = taskAt(taskIndex);
   long pid = taskSpawn(core, nextPid(), parent.cred.uid, parent.cred.gid, parent.cap, TaskState::Running);
   if (pid == 0L) {
     if (sharing == 1L) {
-      obr::os::restore(core, old);
-      Task* back = taskAt(old);
-      back.state = TaskState::Running;
+      long back = taskAt(old).held - 1L;
+      if (back >= 0L) {
+        obr::os::restore(core, back);
+      }
+      Task* returned = taskAt(old);
+      returned.state = TaskState::Running;
       obr::os::schedule(core);
     }
     return 7L;
@@ -550,7 +589,7 @@ deRfun execSpawn(long caller, long home): long {
   child.cap = parent.cap;
   vfsHand(taskIndex, taskByPid(pid));
   /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。 */
-  if (isSession(home + 512L) == 1L) {
+  if (isSession(home + 16384L) == 1L) {
     obr::os::hertz(core, 30L);
   } else {
     obr::os::hertz(core, 1000000L);

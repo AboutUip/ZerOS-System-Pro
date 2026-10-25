@@ -6,12 +6,12 @@ import memory;
 import obr.os;
 
 deRfun putPath(long home, long index, long value): void {
-  memory::storeOctet(value, home + 512L + 64L + index * 8L);
+  memory::storeOctet(value, home + 16384L + 64L + index * 8L);
 }
 
 deRfun main(): int {
   long home = query(1L, 8L, obr::os::core());
-  memory::store64(19L, home + 512L);
+  memory::store64(19L, home + 16384L);
   /* /kernel/lib/add.lib */
   putPath(home, 0L, 47L);
   putPath(home, 1L, 107L);

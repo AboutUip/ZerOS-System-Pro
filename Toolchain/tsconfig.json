@@ -27,5 +27,7 @@
       "@ZerOS-PRO/*": ["../ZerOS-PRO/*"]
     }
   },
-  "include": ["../ZerOS-PRO/**/*.ts", "../ZerOS-PRO/**/*.d.ts", "./zap-raw.d.ts"]
+  // npm run typecheck 和 ESLint 用这份。编辑器还要看 ZerOS-PRO/Boot/tsconfig.json，否则引导里的 zeros-boot-firmware 没有声明。
+  "include": ["../ZerOS-PRO/**/*.ts", "../ZerOS-PRO/**/*.d.ts", "./zap-raw.d.ts"],
+  "exclude": ["../ZerOS-PRO/Hardware/Cpu/Test/NativeImageCheck.ts"]
 }

@@ -39,10 +39,10 @@ export namespace ZerOS {
       function requireWidth(width: number, address: bigint): ChannelWidth {
         const accepted: ChannelWidth | null = ChannelWidthRoot.Hardware.Motherboard.toChannelWidth(width);
         if (accepted === null) {
-          throw new Error(`${channelPrefix} 通道字宽不是 1、8、16、32、64`);
+          throw new Error(`${channelPrefix} the channel width was not 1, 8, 16, 32, or 64`);
         }
         if (accepted !== ChannelWidthRoot.Hardware.Motherboard.ChannelWidthBit && address % 8n !== 0n) {
-          throw new Error(`${channelPrefix} 宽度大于 1 时地址必须对齐到八位组`);
+          throw new Error(`${channelPrefix} an access wider than one bit was not aligned to an octet`);
         }
         return accepted;
       }

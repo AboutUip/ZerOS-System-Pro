@@ -65,8 +65,10 @@ export namespace ZerOS {
       export const FaultCodePrivilege = 22;
       /** dwell 的毫秒不是 0 至 1000。 */
       export const FaultCodeDwell = 23;
+      /** mmap 或 munmap 被拒绝，或卸下之后又读了那段。 */
+      export const FaultCodeMap = 24;
       /** 已登记错误码的最后一号。比它大的整数还没有含义。 */
-      export const FaultCodeLast = 23;
+      export const FaultCodeLast = 24;
     }
   }
 }

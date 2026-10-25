@@ -162,6 +162,10 @@ export namespace ZerOS {
       export const ProgramBinaryRestore = 79;
       /** 四个寄存器：结果、目标核心、位元地址、八位组长度。把动态库接到已有序列末尾。 */
       export const ProgramBinaryAttach = 80;
+      /** 四个寄存器：结果、扩展口、句柄、八位组长度。把句柄映射进线性位元。 */
+      export const ProgramBinaryMmap = 82;
+      /** 两个寄存器：起始位地址、八位组长度。卸下一次仍有效的映射。 */
+      export const ProgramBinaryMunmap = 83;
 
       /** 立即数标记。0 用有符号 64 位读回，1 用无符号 64 位读回。 */
       export const ProgramBinaryImmediateSigned = 0;

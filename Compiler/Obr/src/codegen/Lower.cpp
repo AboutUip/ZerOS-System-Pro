@@ -546,7 +546,7 @@ void Generator::gen(const Expr& expr) {
       hold();
       storeSlot(base, TypeKind::Long);
       gen(expr.kids[1]);
-      emit("place r1, 8");
+      emit("place r1, 32");
       emit("mul r0, r0, r1");
       emit("place r1, 64");
       emit("add r0, r0, r1");
@@ -554,7 +554,7 @@ void Generator::gen(const Expr& expr) {
       loadSlot(base, TypeKind::Long);
       release();
       emit("add r5, r0, r1");
-      emit("ldi.octet r0, r5");
+      emit("ldi.32 r0, r5");
       return;
     }
     const int saved = words_ + temp_;
@@ -668,6 +668,8 @@ void Generator::emitFunction(Function& function) {
     frameHeld_ = false;
     jumpPrefix_ = function.label + "z";
     emit(function.label + ":");
+    /* 硬件 call 之后 rsp 低 4 位是 8。先减 8，返回前加回来。这行不是 Obr 语法。 */
+    emit("rsp.bias");
     emit("load.64 r4, " + std::to_string(kSp));
     emit("place r5, " + std::to_string(frameBits()));
     emit("add r4, r4, r5");
@@ -714,6 +716,7 @@ void Generator::emitReturn() {
     frameBase();
     emit("ldi.64 r7, r4");
     emit("store.64 r4, " + std::to_string(kSp));
+    emit("rsp.restore");
     emit("ret");
   }
 

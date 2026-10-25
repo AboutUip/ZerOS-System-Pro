@@ -1,0 +1,14 @@
+{
+  // 语言服务从源文件所在目录向上找 tsconfig.json，找到第一份就停。
+  // Toolchain/tsconfig.json 不在这条路径上。没有本文件时，Bios.ts 和 Boot.ts
+  // 会落进推断项目，推断项目不包含 Toolchain/zap-raw.d.ts，于是 zeros-boot-firmware 报 ts(2307)。
+  // 编译选项仍以 Toolchain/tsconfig.json 为准。这里只把引导源码和那份声明收进同一工程。
+  // Vite 也会读到本文件，并把它交给 esbuild。类型导入必须写成 import type，
+  // 否则 verbatimModuleSyntax 会在页面里留下空的运行时导入。
+  "extends": "../../Toolchain/tsconfig.json",
+  "include": [
+    "./**/*.ts",
+    "./**/*.d.ts",
+    "../../Toolchain/zap-raw.d.ts"
+  ]
+}

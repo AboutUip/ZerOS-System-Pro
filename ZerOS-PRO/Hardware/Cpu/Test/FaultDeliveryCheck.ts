@@ -84,6 +84,7 @@ export namespace ZerOS {
         ["release target is not halted", 18, 1],
         ["slice is out of range", 19, 1],
         ["dwell is outside 0 to 1000", 23, 1],
+        ["map request was rejected", 24, 1],
         ["capture target is not halted", 20, 1],
         ["restore slot is empty", 20, 1],
         ["attach is not a dynamic library", 21, 1],

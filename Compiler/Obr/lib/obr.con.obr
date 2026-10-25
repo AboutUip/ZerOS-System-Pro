@@ -1,10 +1,10 @@
-/* 控制台。打开走路径，写入把字符铺在窗口 +4096，相邻隔 8 位。 */
+/* 控制台。打开走路径，写入把字符铺在窗口 +131072，相邻隔 8 位。一次最多 4096 个八位组。 */
 import memory;
 import obr.proc;
 import obr.text;
 
 deRfun obr::con::open(long home): long {
-  long placed = obr::text::put(home + 512L, "/dev/con");
+  long placed = obr::text::put(obr::proc::path(home), "/dev/con");
   if (placed != 0L) {
     return placed;
   }
@@ -13,13 +13,13 @@ deRfun obr::con::open(long home): long {
 
 deRfun obr::con::write(long home, long fd, string text): long {
   int raw = length(text);
-  if (raw < 0 || raw > 64) {
+  if (raw < 0 || raw > 4096) {
     return 7L;
   }
   long count = raw;
   long index = 0L;
   while (index < count) {
-    memory::storeOctet(text[index], home + 4096L + index * 8L);
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
     index = index + 1L;
   }
   return obr::proc::write(home, fd, 0L, count);

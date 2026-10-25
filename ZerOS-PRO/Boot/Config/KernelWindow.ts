@@ -55,8 +55,9 @@ export namespace ZerOS {
     /**
      * 与沙盒 CoreSlotBits 相同的槽距。
      * 核心 n 的数据地址 = 编译器地址 + n × 槽距。核心 0 不加。
+     * 一槽 268435456 位，是 32MiB。八颗核心之后还留着映射区。
      */
-    const SlotBits = 8388608;
+    const SlotBits = 268435456;
 
     /**
      * 小于这个地址的格子留给固件。
@@ -64,25 +65,34 @@ export namespace ZerOS {
      */
     const DataFloor = 1048576;
 
-    /** 编译器 Layout.hpp 的 kHeap。核心 0 的堆从这里开始。 */
-    const CompilerHeap = 5767168;
+    /** 编译器 Layout.hpp 的 kHeap。核心 0 的堆从这里开始，地址能被 8 整除。 */
+    const CompilerHeap = 71843840;
 
-    /** 编译器 Layout.hpp 的 kHeapStride。堆占这么多位，到 6815744 为止，不含终点。 */
-    const CompilerHeapBits = 1048576;
+    /** 编译器 Layout.hpp 的 kHeapStride。堆占这么多位，到 138952704 为止，不含终点。 */
+    const CompilerHeapBits = 67108864;
 
     /**
      * 装入程序把入口映像读进位元线时使用的长度，单位是八位组。
      * 这一段由核心 3 上的 Load.obr 执行，不在本文件里读盘。
-     * 393216 跨进核心 4 窗口的前缀，停在那颗核心的编译器栈之前。
+     * 2097152 停在核心 4 的编译器栈之前。
      * 装入时核心 4 还没有程序。栈、静态区和堆都不在这一段里。
      */
-    const ImageStageOctets = 393216;
+    const ImageStageOctets = 2097152;
 
     /** 核心 2 相对编译器地址的位移。 */
     const AddressSlot = ResidentCore * SlotBits;
 
     /** 核心 0 上编译器映像的终点，不含。堆的终点就是这一个数。 */
     const CompilerImageLimit = CompilerHeap + CompilerHeapBits;
+
+    /** install 要求地址能被 8 整除。映像终点若差几位，暂存起点向上补齐。 */
+    function alignInstall(address: number): number {
+      const remainder = address % 8;
+      if (remainder === 0) {
+        return address;
+      }
+      return address + (8 - remainder);
+    }
 
     export const KernelWindow: KernelWindowContract = {
       /** 客路径。NAS 上的文件没有扩展名，内容是程序映像。 */
@@ -95,13 +105,13 @@ export namespace ZerOS {
       /** 栈指针字。与 DataFloor 是同一个地址。 */
       CompilerSp: 1048576,
       /** 栈底。跨度与 Layout.hpp 的 kStackStride 一致。 */
-      CompilerStack: 2097152,
+      CompilerStack: 68173824,
       CompilerStackBits: 524288,
       /** 界面库暂存。内核这一阶段不绘制，地址仍算进窗口，避免以后叠到固件。 */
-      CompilerUi: 4603904,
-      CompilerFrame: 4653056,
-      CompilerHeapPtr: 4718592,
-      CompilerStatic: 5242880,
+      CompilerUi: 70680576,
+      CompilerFrame: 70729728,
+      CompilerHeapPtr: 70795264,
+      CompilerStatic: 71319552,
       CompilerStaticBits: 65536,
       CompilerHeap,
       CompilerHeapBits,
@@ -114,9 +124,9 @@ export namespace ZerOS {
       /**
        * 入口映像的暂存起点。
        * 放在核心 3 的编译器映像终点，给那颗核心留下和核心 2 一样宽的数据槽。
-       * 必须按 8 位对齐，install 才接受。
+       * 终点若不能被 8 整除，就向上补到下一处对齐，install 才接受。
        */
-      ImageStageOrigin: CompilerImageLimit + (ResidentCore + 1) * SlotBits,
+      ImageStageOrigin: alignInstall(CompilerImageLimit + (ResidentCore + 1) * SlotBits),
       ImageStageOctets,
       /** 暂存占的位数。八位组数乘 8。 */
       ImageStageBits: ImageStageOctets * 8,

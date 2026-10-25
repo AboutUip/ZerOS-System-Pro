@@ -1,13 +1,14 @@
 /* 从标准输入读一行，再派生。用 -pie -slot 0 编译，放到 /os/sh。
    一行里没有空格，就是要跑的路径。
    中间一个 >、< 或 |，后面是另一个路径：分别是写到文件、从文件读、接成管道。
-   读不到标准输入就结束。没有键盘时，调用者先把这一行放进 0 号描述符。 */
+   读不到标准输入就停在让出上，终端留着。没有内置命令。没有键盘时，调用者先把这一行放进 0 号描述符。 */
 import memory;
+import obr.os;
 import obr.proc;
 
 deRfun skip(long home, long got, long index): long {
   while (index < got) {
-    long value = memory::loadOctet(home + 4096L + index * 8L);
+    long value = memory::loadOctet(obr::proc::bytes(home) + index * 8L);
     if (value != 32L && value != 10L) {
       return index;
     }
@@ -19,7 +20,7 @@ deRfun skip(long home, long got, long index): long {
 deRfun token(long home, long got, long index, long* count): long {
   long start = index;
   while (index < got) {
-    long value = memory::loadOctet(home + 4096L + index * 8L);
+    long value = memory::loadOctet(obr::proc::bytes(home) + index * 8L);
     if (value == 32L || value == 10L) {
       *count = index - start;
       return start;
@@ -31,11 +32,11 @@ deRfun token(long home, long got, long index, long* count): long {
 }
 
 deRfun plant(long home, long from, long count): void {
-  memory::store64(count, home + 512L);
+  memory::store64(count, obr::proc::path(home));
   long index = 0L;
   while (index < count) {
-    long value = memory::loadOctet(home + 4096L + (from + index) * 8L);
-    memory::storeOctet(value, home + 512L + 64L + index * 8L);
+    long value = memory::loadOctet(obr::proc::bytes(home) + (from + index) * 8L);
+    memory::storeOctet(value, obr::proc::path(home) + 64L + index * 8L);
     index = index + 1L;
   }
 }
@@ -93,14 +94,23 @@ deRfun pipeTo(long home, long leftFrom, long leftCount, long rightFrom, long rig
   return launch(home, rightFrom, rightCount);
 }
 
+/* 没有一行可解析。不退出，监督核才能认出这份任务并铺上终端。 */
+deRfun linger(): void {
+  while (1) {
+    obr::os::yield();
+  }
+}
+
 deRfun main(): int {
   long home = obr::proc::home();
   long status = obr::proc::read(home, 0L, 0L, 64L);
   if (status != 0L) {
+    linger();
     return 0;
   }
   long got = obr::proc::slot(home, 320L);
   if (got < 1L) {
+    linger();
     return 0;
   }
   long index = skip(home, got, 0L);
@@ -125,7 +135,7 @@ deRfun main(): int {
   if (opCount != 1L || argCount < 1L) {
     return 0;
   }
-  long op = memory::loadOctet(home + 4096L + opFrom * 8L);
+  long op = memory::loadOctet(obr::proc::bytes(home) + opFrom * 8L);
   if (op == 62L) {
     steer(home, cmdFrom, cmdCount, argFrom, argCount, 1L, 1L);
     return 0;

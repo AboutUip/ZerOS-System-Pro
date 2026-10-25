@@ -1,6 +1,7 @@
 #include "Write.hpp"
 
 #include "../Diagnostic.hpp"
+#include "NativeImage.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -91,6 +92,8 @@ const NamedCode kNamed[] = {
     {"release", 73, 1},
     {"yield", 74, 0},
     {"dwell", 81, 1},
+    {"mmap", 82, 4},
+    {"munmap", 83, 2},
     {"core", 75, 1},
     {"fill", 76, 4},
     {"carry", 77, 6},
@@ -491,6 +494,26 @@ void writeName(std::vector<uint8_t>& out, const std::string& name) {
 
 }  // namespace
 
+bool stackAdjust(const std::string& line) {
+  return line == "rsp.bias" || line == "rsp.restore";
+}
+
+/* 硬件栈调整只在原生映像里有对应编码。ZAP 解释器没有这条内部行，写出版本 1 或 2 之前删掉，并把跳转、导出、导入和代码重定位改到后面那条真指令。 */
+int landed(const std::vector<int>& map, uint32_t target) {
+  while (target < map.size() && map[target] < 0) target += 1;
+  if (target >= map.size()) fail("跳转落在映像末尾");
+  return map[target];
+}
+
+void rewriteJump(std::string& line, const std::vector<int>& map) {
+  const std::vector<std::string> parts = tokensOf(line);
+  if (parts.size() != 3) return;
+  const std::string& head = parts[0];
+  if (head != "jz" && head != "jnz" && head != "call" && head != "link") return;
+  if (!isNumberToken(parts[2])) return;
+  line = head + " " + parts[1] + ", " + std::to_string(landed(map, targetOf(parts[2])));
+}
+
 void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit, const std::vector<DebugSite>* sites) {
   const Expanded image = expand(zapText, sites);
   if (sites != nullptr && image.sites.size() != image.lines.size()) fail("对照表和指令条数不一致");
@@ -524,9 +547,38 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
   }
   if (exports.size() > 256 || imports.size() > 256) fail("符号太多");
   if (relocs.size() > 4096) fail("重定位太多");
+  if (!unit.pie && !unit.shared && imports.empty() && relocs.empty() && nativeReady(image.lines)) {
+    std::vector<NativeSymbol> symbols;
+    for (const LinkSite& item : exports) symbols.push_back(NativeSymbol{item.name, item.index});
+    writeNativeProgram(path, image.lines, symbols);
+    if (sites != nullptr) writeDebug(path + ".debug", image.sites);
+    return;
+  }
   const bool linked = unit.shared || unit.pie || !exports.empty() || !imports.empty();
+  std::vector<std::string> lines = image.lines;
+  std::vector<DebugSite> debugSites = image.sites;
+  std::vector<int> stackMap(lines.size(), -1);
+  std::vector<std::string> kept;
+  std::vector<DebugSite> keptSites;
+  const bool noted = debugSites.size() == lines.size();
+  kept.reserve(lines.size());
+  for (std::size_t index = 0; index < lines.size(); index += 1) {
+    if (stackAdjust(lines[index])) continue;
+    stackMap[index] = static_cast<int>(kept.size());
+    kept.push_back(lines[index]);
+    if (noted) keptSites.push_back(debugSites[index]);
+  }
+  for (std::string& line : kept) rewriteJump(line, stackMap);
+  for (LinkSite& item : exports) item.index = static_cast<uint32_t>(landed(stackMap, item.index));
+  for (LinkSite& item : imports) item.index = static_cast<uint32_t>(landed(stackMap, item.index));
+  for (LinkReloc& item : relocs) {
+    item.index = static_cast<uint32_t>(landed(stackMap, item.index));
+    if (item.field == 1) item.addend = landed(stackMap, static_cast<uint32_t>(item.addend));
+  }
+  lines = std::move(kept);
+  if (noted) debugSites = std::move(keptSites);
   std::vector<uint8_t> payload;
-  for (const std::string& line : image.lines) encodeLine(payload, line);
+  for (const std::string& line : lines) encodeLine(payload, line);
   std::vector<uint8_t> bytes;
   bytes.push_back(kMagic0);
   bytes.push_back(kMagic1);
@@ -534,7 +586,7 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
   bytes.push_back(kMagic3);
   append16(bytes, linked ? 2 : 1);
   append16(bytes, 1);
-  append32(bytes, static_cast<uint32_t>(image.lines.size()));
+  append32(bytes, static_cast<uint32_t>(lines.size()));
   bytes.insert(bytes.end(), payload.begin(), payload.end());
   if (linked) {
     append16(bytes, unit.shared ? 2 : 1);
@@ -561,7 +613,7 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
   if (!output) fail("写不出 " + path);
   output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
   if (!output) fail("写不出 " + path);
-  if (sites != nullptr) writeDebug(path + ".debug", image.sites);
+  if (sites != nullptr) writeDebug(path + ".debug", debugSites);
 }
 
 }  // namespace obr

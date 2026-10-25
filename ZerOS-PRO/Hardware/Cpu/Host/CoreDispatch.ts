@@ -132,14 +132,12 @@ export namespace ZerOS {
       /** 一队显卡命令已经送出，还要等主板做完才回答这次本地执行。 */
       let pendingBurst: { readonly cursor: number; readonly executed: number; readonly fault: string } | null = null;
       /**
-       * 编译器反复从这里读当前帧的基址。
-       * 核心记下最近一次写进去的 64 位，同一地址的 load.64 就不必再去内存。
-       */
-      /**
-       * 帧指针所在的那个字。0 号核心是 4653056。
+       * 帧指针所在的那个字。0 号核心是 70729728。
        * 其它核心在挂载时加上 核心号 × 槽距，与 obrc -slot 一致。
+       * 每次调用都对这个字做 store.64，返回时再 load.64。
+       * 字只给这一颗核心用。读和写都留在 frameWord 里，否则设置画面一帧要为这一个字进出内存六百多次。
        */
-      let FrameAddress = 4653056n;
+      let FrameAddress = 70729728n;
       const Load64 = 9;
       const Store64 = 10;
       /**
@@ -147,8 +145,8 @@ export namespace ZerOS {
        * 每个字形都要来回读十几次。若每次都去内存，一页设置画面要等很久，按键就被堵住。
        * 这些 64 位字留在核心里。范围之外的访存仍走内存。
        */
-      let ScratchBase = 4603904n;
-      let ScratchLimit = 4653056n;
+      let ScratchBase = 70680576n;
+      let ScratchLimit = 70729728n;
       const scratchWords = new Array<bigint>(Number((ScratchLimit - ScratchBase) / 64n)).fill(0n);
       /**
        * 这一核心已经写过、别的核心读不到的八位组。键是位地址除以 8。
@@ -175,8 +173,17 @@ export namespace ZerOS {
        * 和结束标志一样落在固件格子里，必须进共享内存。固件不读它，加载画面不离开。
        */
       const SharedInstallWord = 6208n;
+      /** 监督核请固件停笔。核心 2 写，核心 0 读。必须进共享内存。 */
+      const SharedStopWord = 6272n;
+      /** 固件已经停笔。核心 0 写，核心 2 读。必须进共享内存。 */
+      const SharedStopAck = 6336n;
+      /**
+       * 固件调试开关。核心 0 写成 0 或 1。
+       * 落在固件格子里。若只留在 0 号核心的缓存，主板看不见这次写入，页面也就挂不上入口。
+       */
+      const SharedDebugWord = 8128n;
 
-      /** 这次访存是否盖住结束标志、模式字或准备完成标记。bitWidth 是这次访问的位数。 */
+      /** 这次访存是否盖住结束标志、模式字、准备完成标记、停笔握手或调试开关。bitWidth 是这次访问的位数。 */
       function touchesSharedFirmware(address: bigint, bitWidth: bigint): boolean {
         const end = address + bitWidth;
         if (address < SharedBootFlag + 64n && end > SharedBootFlag) {
@@ -188,31 +195,47 @@ export namespace ZerOS {
         if (address < SharedInstallWord + 64n && end > SharedInstallWord) {
           return true;
         }
+        if (address < SharedStopWord + 64n && end > SharedStopWord) {
+          return true;
+        }
+        if (address < SharedStopAck + 64n && end > SharedStopAck) {
+          return true;
+        }
+        if (address < SharedDebugWord + 64n && end > SharedDebugWord) {
+          return true;
+        }
         return false;
       }
 
       /**
-       * 0 号核心的调用栈。编译器从 2097152 往上长，一帧远小于这段。
+       * 0 号核心的调用栈。编译器从 68173824 往上长，一帧远小于这段。
        * 挂载后按核心号挪到 -slot 的窗口，局部变量才不必每个字都去问内存。
        */
-      let KeptStack = 2097152n;
-      let KeptStackEnd = 2621440n;
+      let KeptStack = 68173824n;
+      let KeptStackEnd = 68698112n;
       /** 栈指针那个字。它贴在数据下限上，不在固件格子里。 */
       let KeptSp = 1048576n;
       let KeptSpEnd = 1048640n;
       /** 堆指针那个字。造字符串时每次都要读它。 */
-      let KeptHeapPtr = 4718592n;
-      let KeptHeapPtrEnd = 4718656n;
+      let KeptHeapPtr = 70795264n;
+      let KeptHeapPtrEnd = 70795328n;
       /** 编译器静态区。一槽 65536 个位元。 */
-      let KeptStatic = 5242880n;
-      let KeptStaticEnd = 5308416n;
-      /** 字符串堆。只盖住从堆底起的一段，再往上的分配仍走内存。 */
-      let KeptHeap = 5767168n;
-      let KeptHeapEnd = 6815744n;
+      let KeptStatic = 71319552n;
+      let KeptStaticEnd = 71385088n;
+      /** 字符串堆。起点按八位组对齐，盖住整段编译器堆。 */
+      let KeptHeap = 71843840n;
+      let KeptHeapEnd = 138952704n;
       let frameWord: bigint | null = null;
-      /** 装入正在按八位组把一段映像读走。这不是下一条取指。 */
+      /** 装入正在按八位组把一段映像读走。这不是下一条取指。字体面读文件时也用这一段。 */
       let spanActive = false;
+      /** 原生写入正在等主板落下这一段。和上面的读取不能叠在一起。 */
+      let depositActive = false;
+      let depositBytes: Uint8Array | null = null;
+      let depositBit = 0n;
       let spanBytes: Uint8Array | null = null;
+      /** 这段读完要附在加速命令上，而不是交回装入。 */
+      let fontHold: { readonly payload: Record<string, unknown>; readonly register: number } | null = null;
+      const fontBits = new DataView(new ArrayBuffer(8));
       let spanAt = 0;
       let spanBit = 0n;
       const InstallOctetLimit = 16777216;
@@ -292,6 +315,11 @@ export namespace ZerOS {
         const d = registerIndex(step["D"]);
         if (operation === null || a === null || b === null || c === null || d === null) {
           quietFault = `${corePrefix} accel command register is outside 0 to 7`;
+          return null;
+        }
+        /* 字体面要回编号，并且要先把内存里的字节读走。不能和矩形一起丢掉结果。 */
+        const fontOp = readRegister(operation);
+        if (fontOp === 40n || fontOp === 41n || fontOp === 42n) {
           return null;
         }
         return {
@@ -427,7 +455,7 @@ export namespace ZerOS {
         if (address < 0n || address % 8n !== 0n || address === FrameAddress) {
           return { kind: "leave" };
         }
-        /* 结束标志和模式字要给另一颗核心看，不能留在本核心的缓存里。 */
+        /* 结束标志、模式字和调试开关要让主板看见，不能留在本核心的缓存里。 */
         if (touchesSharedFirmware(address, BigInt(width * 8))) {
           return { kind: "leave" };
         }
@@ -729,16 +757,32 @@ export namespace ZerOS {
       }
 
       /**
-       * 帧基址已经在手里时，这条 load.64 就在核心里完成。
-       * 返回 false 表示这不是一条可以就地完成的帧读取。
+       * 帧指针这一字的 load.64 / store.64。
+       * 读要等 frameWord 里已经有值。写只要数据是 64 位无符号，就直接记下，不再送内存。
+       * 负数或超过 2^64−1 的写仍交给内存，失败句子和原来的单条 Store 一样。
+       * 划在界外的也不碰，让原来的越界检查生效。
        */
       type FramePlan =
         | { readonly kind: "leave" }
         | { readonly kind: "fault" }
-        | { readonly kind: "load"; readonly register: number };
+        | { readonly kind: "load"; readonly register: number }
+        | { readonly kind: "store"; readonly value: bigint };
 
       function framePlan(step: Record<string, unknown>): FramePlan {
-        if (step["Op"] !== "load" || step["Opcode"] !== Load64 || step["Address"] !== FrameAddress || frameWord === null) {
+        const op = step["Op"];
+        const writing = op === "store";
+        if (op !== "load" && !writing) {
+          return { kind: "leave" };
+        }
+        if (step["Address"] !== FrameAddress) {
+          return { kind: "leave" };
+        }
+        const opcode = step["Opcode"];
+        if (writing) {
+          if (opcode !== Store64) {
+            return { kind: "leave" };
+          }
+        } else if (opcode !== Load64 || frameWord === null) {
           return { kind: "leave" };
         }
         if (outsideBound(FrameAddress, 64n)) {
@@ -748,7 +792,14 @@ export namespace ZerOS {
         if (register === null) {
           return { kind: "fault" };
         }
-        return { kind: "load", register };
+        if (!writing) {
+          return { kind: "load", register };
+        }
+        const value = readRegister(register);
+        if (value < 0n || value > 0xffffffffffffffffn) {
+          return { kind: "leave" };
+        }
+        return { kind: "store", value };
       }
 
       function absorbFrameLoad(step: Record<string, unknown>): boolean {
@@ -757,7 +808,12 @@ export namespace ZerOS {
           return false;
         }
         if (plan.kind === "fault") {
-          quietFault = `${corePrefix} load command is incomplete`;
+          const writing = step["Op"] === "store";
+          quietFault = `${corePrefix} ${writing ? "store" : "load"} command is incomplete`;
+          return true;
+        }
+        if (plan.kind === "store") {
+          frameWord = plan.value;
           return true;
         }
         const word = frameWord;
@@ -1679,10 +1735,96 @@ export namespace ZerOS {
         return value;
       }
 
+      /** 加速参数里的有限整数。小数和越界都不当成地址或长度。 */
+      function finiteInteger(bits: bigint): number | null {
+        fontBits.setBigInt64(0, BigInt.asIntN(64, bits), true);
+        const value = fontBits.getFloat64(0, true);
+        if (!Number.isSafeInteger(value)) {
+          return null;
+        }
+        return value;
+      }
+
+      /**
+       * FontFace 和 FontDraw 要先把线性位元读进这条命令。
+       * 参数不合法时不读，原样送去显卡，由显卡拒绝并且不分配编号。
+       * 返回 true 表示已经开始读，调用方不要再送这一条。
+       */
+      function beginFontRead(payload: Record<string, unknown>): boolean {
+        const op = payload["operation"];
+        const a = payload["a"];
+        const b = payload["b"];
+        const c = payload["c"];
+        if (op !== 40 && op !== 42) {
+          return false;
+        }
+        if (typeof a !== "bigint" || typeof b !== "bigint" || typeof c !== "bigint") {
+          return false;
+        }
+        const address = finiteInteger(a);
+        const second = finiteInteger(b);
+        if (address === null || second === null || address < 0 || address % 8 !== 0) {
+          return false;
+        }
+        let length = 0;
+        if (op === 40) {
+          const ppem = finiteInteger(c);
+          if (ppem === null || ppem < 1 || ppem > 256 || second < 1 || second > InstallOctetLimit) {
+            return false;
+          }
+          length = second;
+        } else if (second < 0 || second > 4096) {
+          return false;
+        } else {
+          length = second * 4;
+        }
+        if (length === 0) {
+          payload["bytes"] = new Uint8Array(0);
+          return false;
+        }
+        if (spanActive || fontHold !== null) {
+          fail("font memory access is still in flight");
+          return true;
+        }
+        const register = pendingRegister;
+        if (register === null) {
+          fail("font command register is outside 0 to 7");
+          return true;
+        }
+        fontHold = { payload, register };
+        spanBytes = new Uint8Array(length);
+        spanAt = 0;
+        spanBit = BigInt(address);
+        spanActive = true;
+        stepSpan();
+        return true;
+      }
+
       function finishSpan(ok: boolean, message: string): void {
         spanActive = false;
         const payload = spanBytes;
         spanBytes = null;
+        const hold = fontHold;
+        fontHold = null;
+        if (hold !== null) {
+          if (!ok || payload === null) {
+            pendingRegister = null;
+            waiting = false;
+            reply(false, false, 0n, message.length > 0 ? message : `${corePrefix} font memory access failed`);
+            return;
+          }
+          hold.payload["bytes"] = payload;
+          const boardPort = board;
+          if (boardPort === null) {
+            pendingRegister = null;
+            reply(false, false, 0n, `${corePrefix} font memory access has no board`);
+            return;
+          }
+          pendingRegister = hold.register;
+          waiting = true;
+          boardPort.postMessage(hold.payload);
+          return;
+        }
         const port = cpu;
         if (port === null) {
           return;
@@ -2376,6 +2518,39 @@ export namespace ZerOS {
           cpuPort.postMessage({ kind: "burst", ok: true, cursor: pending.cursor, executed: pending.executed });
           return;
         }
+        if (kind === "store-span-result" && depositActive) {
+          depositActive = false;
+          const payload = depositBytes;
+          const bit = depositBit;
+          depositBytes = null;
+          const storedOk = record?.["ok"] !== false;
+          const cpuPort = cpu;
+          if (!storedOk || payload === null) {
+            if (cpuPort !== null) {
+              const storedMessage = record?.["message"];
+              cpuPort.postMessage({
+                kind: "stored",
+                ok: false,
+                message: typeof storedMessage === "string" ? storedMessage : `${corePrefix} native store failed`,
+              });
+            }
+            return;
+          }
+          /* 主板已经落下。盖住同一段的私有字节必须丢掉，下一次按段读才不会用旧值盖住新值。 */
+          if (keptOctets.size > 0) {
+            const start = bit / 8n;
+            const end = start + BigInt(payload.length);
+            for (const key of keptOctets.keys()) {
+              if (key >= start && key < end) {
+                keptOctets.delete(key);
+              }
+            }
+          }
+          if (cpuPort !== null) {
+            cpuPort.postMessage({ kind: "stored", ok: true, message: "" });
+          }
+          return;
+        }
         if (kind === "load-span-result" && spanActive) {
           const spanOk = record?.["ok"] !== false;
           const chunk = record?.["bytes"];
@@ -2747,6 +2922,46 @@ export namespace ZerOS {
         port.postMessage({ kind: "xchg", port: portNumber, direction: directionNumber, data: word });
       }
 
+      function onMmap(record: Record<string, unknown>): void {
+        const port = board;
+        const destination = registerIndex(record["destination"]);
+        const index = registerIndex(record["port"]);
+        const handleRegister = registerIndex(record["handle"]);
+        const lengthRegister = registerIndex(record["length"]);
+        if (port === null || destination === null || index === null || handleRegister === null || lengthRegister === null) {
+          fail("map request was rejected");
+          return;
+        }
+        const portNumber = readNumber(index);
+        const handle = readNumber(handleRegister);
+        const length = readNumber(lengthRegister);
+        if (portNumber === null || handle === null || length === null) {
+          fail("map request was rejected");
+          return;
+        }
+        pendingRegister = destination;
+        waiting = true;
+        port.postMessage({ kind: "mmap", port: portNumber, handle, length });
+      }
+
+      function onMunmap(record: Record<string, unknown>): void {
+        const port = board;
+        const addressRegister = registerIndex(record["address"]);
+        const lengthRegister = registerIndex(record["length"]);
+        if (port === null || addressRegister === null || lengthRegister === null) {
+          fail("map request was rejected");
+          return;
+        }
+        const length = readNumber(lengthRegister);
+        if (length === null) {
+          fail("map request was rejected");
+          return;
+        }
+        pendingRegister = null;
+        waiting = true;
+        port.postMessage({ kind: "munmap", address: readRegister(addressRegister), length });
+      }
+
       function onFill(record: Record<string, unknown>): void {
         const port = board;
         const destination = registerIndex(record["destination"]);
@@ -2955,6 +3170,58 @@ export namespace ZerOS {
         return true;
       }
 
+      /**
+       * 原生指令的寄存器不在这 8 个 ZAP 寄存器里。
+       * 宿主已经取出整数或二进制 64 位型。这里只核对，再送出和 ZAP 相同的显卡消息。
+       */
+      function onResolvedGpu(record: Record<string, unknown>, payload: Record<string, unknown>, port: MessagePort): boolean {
+        const gpuOp = payload["gpuOp"];
+        if (gpuOp === "character") {
+          const names = ["x", "y", "code", "foreground", "background"];
+          for (const name of names) {
+            const value = record[name];
+            if (typeof value !== "number" || !Number.isInteger(value) || value < -16777216 || value > 0xffffffff) {
+              fail("GPU command integer is out of range");
+              return true;
+            }
+            payload[name] = value;
+          }
+        } else if (gpuOp === "accel") {
+          const register = registerIndex(record["register"]);
+          const operation = record["operation"];
+          const a = record["a"];
+          const b = record["b"];
+          const c = record["c"];
+          const d = record["d"];
+          if (
+            register === null
+            || typeof operation !== "bigint"
+            || typeof a !== "bigint"
+            || typeof b !== "bigint"
+            || typeof c !== "bigint"
+            || typeof d !== "bigint"
+          ) {
+            fail("GPU command register is outside 0 to 7");
+            return true;
+          }
+          pendingRegister = register;
+          payload["operation"] = Number(operation);
+          payload["a"] = a;
+          payload["b"] = b;
+          payload["c"] = c;
+          payload["d"] = d;
+          if (beginFontRead(payload)) {
+            return true;
+          }
+        } else if (gpuOp !== "present" && gpuOp !== "compose") {
+          fail("GPU command was not recognized");
+          return true;
+        }
+        waiting = true;
+        port.postMessage(payload);
+        return true;
+      }
+
       function onGpu(record: Record<string, unknown>): void {
         const port = board;
         const gpuOp = record["gpuOp"];
@@ -2963,6 +3230,10 @@ export namespace ZerOS {
           return;
         }
         const payload: Record<string, unknown> = { kind: "gpu", gpuOp };
+        if (record["resolved"] === true) {
+          onResolvedGpu(record, payload, port);
+          return;
+        }
         const writesResult = gpuOp === "box" || gpuOp === "text";
         if (writesResult) {
           const register = registerIndex(record["register"]);
@@ -3070,6 +3341,9 @@ export namespace ZerOS {
           payload["b"] = readRegister(b);
           payload["c"] = readRegister(c);
           payload["d"] = readRegister(d);
+          if (beginFontRead(payload)) {
+            return;
+          }
         } else if (gpuOp !== "present" && gpuOp !== "compose") {
           fail("GPU command was not recognized");
           return;
@@ -3301,6 +3575,28 @@ export namespace ZerOS {
           }
           return;
         }
+        if (kind === "store-span") {
+          const address = record["address"];
+          const bytes = record["bytes"];
+          const storePort = cpu;
+          if (storePort === null) {
+            return;
+          }
+          if (depositActive || spanActive || typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 262144 || address < 0n || address % 8n !== 0n) {
+            storePort.postMessage({ kind: "stored", ok: false, message: `${corePrefix} native store failed` });
+            return;
+          }
+          const boardPort = board;
+          if (boardPort === null) {
+            storePort.postMessage({ kind: "stored", ok: false, message: `${corePrefix} native store failed` });
+            return;
+          }
+          depositBytes = bytes;
+          depositBit = address;
+          depositActive = true;
+          boardPort.postMessage({ kind: "store-span", address, bytes });
+          return;
+        }
         if (kind === "span") {
           const address = record["address"];
           const length = record["length"];
@@ -3355,7 +3651,7 @@ export namespace ZerOS {
         if (kind === "pass" || kind === "take") {
           return;
         }
-        if (kind !== "place" && kind !== "add" && kind !== "eq" && kind !== "sub" && kind !== "udiv" && kind !== "umod" && kind !== "mul" && kind !== "div" && kind !== "mod" && kind !== "and" && kind !== "or" && kind !== "xor" && kind !== "shl" && kind !== "shr" && kind !== "lt" && kind !== "le" && kind !== "gt" && kind !== "ge" && kind !== "not" && kind !== "itof" && kind !== "fadd" && kind !== "fsub" && kind !== "fmul" && kind !== "fdiv" && kind !== "fpow" && kind !== "fmod" && kind !== "feq" && kind !== "load" && kind !== "store" && kind !== "gpu" && kind !== "inbox" && kind !== "xchg" && kind !== "fill" && kind !== "carry" && kind !== "port-state" && kind !== "port-char" && kind !== "port-byte" && kind !== "query" && kind !== "mem-hertz" && kind !== "mem-metric") {
+        if (kind !== "place" && kind !== "add" && kind !== "eq" && kind !== "sub" && kind !== "udiv" && kind !== "umod" && kind !== "mul" && kind !== "div" && kind !== "mod" && kind !== "and" && kind !== "or" && kind !== "xor" && kind !== "shl" && kind !== "shr" && kind !== "lt" && kind !== "le" && kind !== "gt" && kind !== "ge" && kind !== "not" && kind !== "itof" && kind !== "fadd" && kind !== "fsub" && kind !== "fmul" && kind !== "fdiv" && kind !== "fpow" && kind !== "fmod" && kind !== "feq" && kind !== "load" && kind !== "store" && kind !== "gpu" && kind !== "inbox" && kind !== "xchg" && kind !== "fill" && kind !== "carry" && kind !== "mmap" && kind !== "munmap" && kind !== "port-state" && kind !== "port-char" && kind !== "port-byte" && kind !== "query" && kind !== "mem-hertz" && kind !== "mem-metric") {
           return;
         }
         if (!running) {
@@ -3424,6 +3720,14 @@ export namespace ZerOS {
         }
         if (kind === "carry") {
           onCarry(record);
+          return;
+        }
+        if (kind === "mmap") {
+          onMmap(record);
+          return;
+        }
+        if (kind === "munmap") {
+          onMunmap(record);
           return;
         }
         if (kind === "mem-hertz") {

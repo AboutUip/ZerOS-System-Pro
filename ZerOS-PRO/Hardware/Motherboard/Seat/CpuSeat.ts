@@ -31,6 +31,7 @@ import { ZerOS as InstructionRoot } from "../Structure/MemoryInstruction";
 import { ZerOS as MailboxRoot } from "../Host/Mailbox";
 import { ZerOS as MemoryLinkRoot } from "../Host/MemoryLink";
 import { ZerOS as OpcodeRoot } from "../Enum/MemoryOpcode";
+import { ZerOS as MapRoot } from "../../Cpu/Map/LinearMap";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 import { ZerOS as QueryRoot } from "../Host/HardwareQuery";
 import { ZerOS as SandboxRuntimeRoot } from "../../Sandbox/Bootstrap/SandboxRuntime";
@@ -63,6 +64,41 @@ export namespace ZerOS {
       const sharedMemoryLink = MemoryLinkRoot.Hardware.Motherboard.sharedMemoryLink;
       const MailMessage = MailboxRoot.Hardware.Motherboard.MailMessage;
       const memoryOpcodeDirection = OpcodeRoot.Hardware.Motherboard.memoryOpcodeDirection;
+      const MemoryOpcodeStore64 = OpcodeRoot.Hardware.Motherboard.MemoryOpcodeStore64;
+      /** 固件调试开关。BIOS 用整字写成 0 或 1。不是协议字段。 */
+      const DebugSwitchAddress = 8128n;
+
+      /** 整字是 0 或 1 时告诉页面。其它值不改开关。 */
+      function noteDebugWord(value: bigint): void {
+        if (value !== 0n && value !== 1n) {
+          return;
+        }
+        globalThis.postMessage({ kind: MailMessage.DebugSwitch, on: value === 1n });
+      }
+
+      /**
+       * 原生核把这一字拆成八位组再整段写回。
+       * 段里盖住 8128 的那八个八位组仍是同一个小端整数。
+       */
+      function noteDebugSpan(address: bigint, bytes: Uint8Array): void {
+        const bits = BigInt(bytes.length) * 8n;
+        if (address > DebugSwitchAddress || address + bits < DebugSwitchAddress + 64n) {
+          return;
+        }
+        const offset = Number((DebugSwitchAddress - address) / 8n);
+        if (!Number.isInteger(offset) || offset < 0 || offset + 8 > bytes.length) {
+          return;
+        }
+        let value = 0n;
+        for (let index = 0; index < 8; index += 1) {
+          value |= BigInt(bytes[offset + index] ?? 0) << BigInt(index * 8);
+        }
+        noteDebugWord(value);
+      }
+      const toMemoryOpcode = OpcodeRoot.Hardware.Motherboard.toMemoryOpcode;
+      const memoryOpcodeWidth = OpcodeRoot.Hardware.Motherboard.memoryOpcodeWidth;
+      const machineMap = MapRoot.Hardware.Cpu.machineMap;
+      const bringIn = MapRoot.Hardware.Cpu.bringIn;
       const ChannelDirectionRead = 0;
 
       interface LiveCore {
@@ -210,7 +246,7 @@ export namespace ZerOS {
       function onCoreGpu(port: MessagePort, record: Record<string, unknown>): void {
         const gpuOp = record["gpuOp"];
         if (typeof gpuOp !== "string") {
-          replyCore(port, false, true, 0n, `${seatPrefix} 显卡命令不完整`);
+          replyCore(port, false, true, 0n, `${seatPrefix} the gpu command is incomplete`);
           return;
         }
         void (async (): Promise<void> => {
@@ -220,7 +256,7 @@ export namespace ZerOS {
                 splashReadback = false;
                 const frame = await presentFrame();
                 if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, null)) {
-                  replyCore(port, false, true, 0n, `${seatPrefix} 帧副本无法转交`);
+                  replyCore(port, false, true, 0n, `${seatPrefix} the frame copy could not be transferred`);
                   return;
                 }
                 replyCore(port, true, true, 0n, "");
@@ -228,7 +264,7 @@ export namespace ZerOS {
               }
               const frame = await presentSurface();
               if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, frame.bitmap)) {
-                replyCore(port, false, true, 0n, `${seatPrefix} 帧副本无法转交`);
+                replyCore(port, false, true, 0n, `${seatPrefix} the frame copy could not be transferred`);
                 return;
               }
               replyCore(port, true, true, 0n, "");
@@ -242,7 +278,7 @@ export namespace ZerOS {
             replyCore(port, true, false, BigInt(id), "");
             return;
           } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : `${seatPrefix} 显卡命令失败`;
+            const message = error instanceof Error ? error.message : `${seatPrefix} the gpu command failed`;
             replyCore(port, false, true, 0n, message);
           }
         })();
@@ -252,13 +288,13 @@ export namespace ZerOS {
         const commands = record["commands"];
         /* 核心已经按指令顺序抄好整数。这里只负责一次送进显卡，再一次把成败交回核心。 */
         if (!Array.isArray(commands)) {
-          port.postMessage({ kind: "gpu-batch-result", ok: false, message: `${seatPrefix} 显卡队列不完整` });
+          port.postMessage({ kind: "gpu-batch-result", ok: false, message: `${seatPrefix} the GPU batch is incomplete` });
           return;
         }
         const batch: Record<string, unknown>[] = [];
         for (const item of commands) {
           if (typeof item !== "object" || item === null || Array.isArray(item)) {
-            port.postMessage({ kind: "gpu-batch-result", ok: false, message: `${seatPrefix} 显卡队列里有一条不完整` });
+            port.postMessage({ kind: "gpu-batch-result", ok: false, message: `${seatPrefix} one GPU batch command is incomplete` });
             return;
           }
           batch.push(item as Record<string, unknown>);
@@ -268,14 +304,110 @@ export namespace ZerOS {
             await applyGpuBatch(batch);
             port.postMessage({ kind: "gpu-batch-result", ok: true, message: "" });
           } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : `${seatPrefix} 显卡队列失败`;
+            const message = error instanceof Error ? error.message : `${seatPrefix} the GPU batch failed`;
             port.postMessage({ kind: "gpu-batch-result", ok: false, message });
           }
         })();
       }
 
+      /**
+       * 映射区里还没调入的页，在这次读或写之前用一次搬运补齐。
+       * 搬运失败不写半页。普通内存地址直接返回。
+       */
+      async function demandBytes(address: bigint, byteCount: number): Promise<void> {
+        await bringIn(
+          machineMap(),
+          address,
+          byteCount,
+          async (page): Promise<Uint8Array | null> => {
+            try {
+              const carried = await Carry(page.port, page.handle, page.offset, page.count);
+              if (carried === null) {
+                return null;
+              }
+              if (carried.status !== 0 || carried.bytes.length !== page.count) {
+                return null;
+              }
+              return carried.bytes;
+            } catch {
+              return null;
+            }
+          },
+          (at, bytes): void => {
+            sharedMemoryLink().writeSpan(at, bytes);
+          },
+        );
+      }
+
+      /** 按访存字宽算出覆盖的八位组，再调页。负地址留给原来的内存拒绝。 */
+      async function demandAccess(address: bigint, opcode: number): Promise<void> {
+        if (address < 0n) {
+          return;
+        }
+        const memoryOpcode = toMemoryOpcode(opcode);
+        if (memoryOpcode === null) {
+          return;
+        }
+        const bits = memoryOpcodeWidth(memoryOpcode);
+        const aligned = address - (address % 8n);
+        const endBit = address + BigInt(bits);
+        const remainder = endBit % 8n;
+        const end = remainder === 0n ? endBit : endBit + (8n - remainder);
+        const count = Number((end - aligned) / 8n);
+        if (!Number.isSafeInteger(count) || count < 1) {
+          return;
+        }
+        await demandBytes(aligned, count);
+      }
+
+      function onCoreMap(port: MessagePort, record: Record<string, unknown>): void {
+        const kind = record["kind"];
+        if (kind === "mmap") {
+          const index = record["port"];
+          const handle = record["handle"];
+          const length = record["length"];
+          if (typeof index !== "number" || typeof handle !== "number" || typeof length !== "number") {
+            port.postMessage({ kind: "port-result", ok: false, value: 0n, message: "map request was rejected" });
+            return;
+          }
+          const address = machineMap().map(index, handle, length);
+          if (address === null) {
+            port.postMessage({ kind: "port-result", ok: false, value: 0n, message: "map request was rejected" });
+            return;
+          }
+          port.postMessage({ kind: "port-result", ok: true, value: address, message: "" });
+          return;
+        }
+        const address = record["address"];
+        const length = record["length"];
+        if (typeof address !== "bigint" || typeof length !== "number") {
+          port.postMessage({ kind: "port-result", ok: false, value: 0n, message: "map request was rejected" });
+          return;
+        }
+        const region = machineMap().region(address, length);
+        if (region === null) {
+          port.postMessage({ kind: "port-result", ok: false, value: 0n, message: "map request was rejected" });
+          return;
+        }
+        try {
+          sharedMemoryLink().writeSpan(region.address, new Uint8Array(region.octets));
+        } catch {
+          port.postMessage({ kind: "port-result", ok: false, value: 0n, message: "map request was rejected" });
+          return;
+        }
+        if (!machineMap().unmap(address, length)) {
+          port.postMessage({ kind: "port-result", ok: false, value: 0n, message: "map request was rejected" });
+          return;
+        }
+        port.postMessage({ kind: "port-result", ok: true, value: 0n, message: "" });
+      }
+
       function onCorePort(port: MessagePort, record: Record<string, unknown>): void {
         const kind = record["kind"];
+        if (kind === "mmap" || kind === "munmap") {
+          onCoreMap(port, record);
+          return;
+        }
         try {
           if (kind === "carry") {
             const index = record["port"];
@@ -299,11 +431,11 @@ export namespace ZerOS {
                 sharedMemoryLink().writeSpan(address, carried.bytes);
                 port.postMessage({ kind: "port-result", ok: true, value: BigInt(carried.bytes.length), message: "" });
               } catch (error: unknown) {
-                const message = error instanceof Error ? error.message : `${seatPrefix} 按句柄读取失败`;
+                const message = error instanceof Error ? error.message : `${seatPrefix} a handle read failed`;
                 port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
               }
             }).catch((error: unknown) => {
-              const message = error instanceof Error ? error.message : `${seatPrefix} 按句柄读取失败`;
+              const message = error instanceof Error ? error.message : `${seatPrefix} a handle read failed`;
               port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
             });
             return;
@@ -403,14 +535,14 @@ export namespace ZerOS {
             void result.then((value: Uint8Array) => {
               postExchangeResult(port, value);
             }).catch((error: unknown) => {
-              const message = error instanceof Error ? error.message : `${seatPrefix} 扩展口访问失败`;
+              const message = error instanceof Error ? error.message : `${seatPrefix} an expansion access failed`;
               port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
             });
             return;
           }
           postExchangeResult(port, result);
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 扩展口访问失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} an expansion access failed`;
           port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
         }
       }
@@ -421,7 +553,7 @@ export namespace ZerOS {
           if (record["kind"] === "mem-hertz") {
             const hertz = record["hertz"];
             if (typeof hertz !== "number") {
-              replyCore(port, false, true, 0n, `${seatPrefix} 内存频率不完整`);
+              replyCore(port, false, true, 0n, `${seatPrefix} the memory hertz message is incomplete`);
               return;
             }
             link.setHertz(BigInt(hertz));
@@ -430,13 +562,13 @@ export namespace ZerOS {
           }
           const metric = record["metric"];
           if (typeof metric !== "number") {
-            replyCore(port, false, false, 0n, `${seatPrefix} 内存指标不完整`);
+            replyCore(port, false, false, 0n, `${seatPrefix} the memory metric message is incomplete`);
             return;
           }
           const value = link.metric(BigInt(metric));
           replyCore(port, true, false, value, "");
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 内存频率失败`;
+          const message = error instanceof Error ? error.message : `${seatPrefix} memory hertz failed`;
           replyCore(port, false, true, 0n, message);
         }
       }
@@ -498,12 +630,17 @@ export namespace ZerOS {
         d: number,
       ): Promise<SettledAccess> {
         if (tag === 1) {
+          await demandAccess(address, opcode);
           const instruction = createMemoryInstruction(opcode, address, data);
           const direction = memoryOpcodeDirection(instruction.Opcode);
           if (direction === ChannelDirectionRead) {
             return { value: ExecuteLoad(instruction), found: 0, span: null };
           }
           ExecuteStore(instruction);
+          /* 只认整字。拆开的八位组由另一条路径拼回去，避免高位的 0 把开关盖掉。 */
+          if (opcode === MemoryOpcodeStore64 && address === DebugSwitchAddress) {
+            noteDebugWord(data);
+          }
           return { value: 0n, found: 0, span: null };
         }
         if (tag === 2) {
@@ -647,7 +784,7 @@ export namespace ZerOS {
               spanList.push(one.span);
             }
           } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : `${seatPrefix} 访存失败`;
+            const message = error instanceof Error ? error.message : `${seatPrefix} a memory access failed`;
             postAccessBatch(port, false, index, true, message, value, found.slice(0, index), spanAt, spanList);
             return;
           }
@@ -670,7 +807,7 @@ export namespace ZerOS {
           onCoreMemoryClock(port, record);
           return;
         }
-        if (record?.["kind"] === "xchg" || record?.["kind"] === "fill" || record?.["kind"] === "carry" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query" || record?.["kind"] === "query-span") {
+        if (record?.["kind"] === "xchg" || record?.["kind"] === "fill" || record?.["kind"] === "carry" || record?.["kind"] === "mmap" || record?.["kind"] === "munmap" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query" || record?.["kind"] === "query-span") {
           onCorePort(port, record);
           return;
         }
@@ -686,20 +823,43 @@ export namespace ZerOS {
           void runAccessBatch(port, record);
           return;
         }
+        if (record?.["kind"] === "store-span") {
+          const address = record["address"];
+          const bytes = record["bytes"];
+          if (typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 262144 || address < 0n || address % 8n !== 0n) {
+            port.postMessage({ kind: "store-span-result", ok: false, message: `${seatPrefix} native store failed` });
+            return;
+          }
+          void (async (): Promise<void> => {
+            try {
+              await demandBytes(address, bytes.length);
+              sharedMemoryLink().writeSpan(address, bytes);
+              noteDebugSpan(address, bytes);
+              port.postMessage({ kind: "store-span-result", ok: true, message: "" });
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : `${seatPrefix} native store failed`;
+              port.postMessage({ kind: "store-span-result", ok: false, message });
+            }
+          })();
+          return;
+        }
         if (record?.["kind"] === "load-span") {
           const address = record["address"];
           const length = record["length"];
           if (typeof address !== "bigint" || typeof length !== "number" || !Number.isInteger(length) || length < 1 || length > 262144 || address < 0n || address % 8n !== 0n) {
-            port.postMessage({ kind: "load-span-result", ok: false, bytes: null, message: `${seatPrefix} install 访存` });
+            port.postMessage({ kind: "load-span-result", ok: false, bytes: null, message: `${seatPrefix} install memory access` });
             return;
           }
-          try {
-            const bytes = sharedMemoryLink().readSpan(address, length);
-            port.postMessage({ kind: "load-span-result", ok: true, bytes, message: "" });
-          } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : `${seatPrefix} install 访存`;
-            port.postMessage({ kind: "load-span-result", ok: false, bytes: null, message });
-          }
+          void (async (): Promise<void> => {
+            try {
+              await demandBytes(address, length);
+              const bytes = sharedMemoryLink().readSpan(address, length);
+              port.postMessage({ kind: "load-span-result", ok: true, bytes, message: "" });
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : `${seatPrefix} install memory access`;
+              port.postMessage({ kind: "load-span-result", ok: false, bytes: null, message });
+            }
+          })();
           return;
         }
         if (record?.["kind"] !== "exec") {
@@ -718,20 +878,26 @@ export namespace ZerOS {
           });
           return;
         }
-        try {
-          const instruction = createMemoryInstruction(opcode, address, word);
-          const direction = memoryOpcodeDirection(instruction.Opcode);
-          if (direction === ChannelDirectionRead) {
-            const value = ExecuteLoad(instruction);
-            port.postMessage({ kind: "exec-result", ok: true, isStore: false, value, message: "" });
-            return;
+        void (async (): Promise<void> => {
+          try {
+            await demandAccess(address, opcode);
+            const instruction = createMemoryInstruction(opcode, address, word);
+            const direction = memoryOpcodeDirection(instruction.Opcode);
+            if (direction === ChannelDirectionRead) {
+              const value = ExecuteLoad(instruction);
+              port.postMessage({ kind: "exec-result", ok: true, isStore: false, value, message: "" });
+              return;
+            }
+            ExecuteStore(instruction);
+            if (opcode === MemoryOpcodeStore64 && address === DebugSwitchAddress) {
+              noteDebugWord(word);
+            }
+            port.postMessage({ kind: "exec-result", ok: true, isStore: true, value: 0n, message: "" });
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : `${seatPrefix} a memory access failed`;
+            port.postMessage({ kind: "exec-result", ok: false, isStore: false, value: 0n, message });
           }
-          ExecuteStore(instruction);
-          port.postMessage({ kind: "exec-result", ok: true, isStore: true, value: 0n, message: "" });
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : `${seatPrefix} 访存失败`;
-          port.postMessage({ kind: "exec-result", ok: false, isStore: false, value: 0n, message });
-        }
+        })();
       }
 
       function mountOne(ordinal: number): void {
@@ -775,7 +941,7 @@ export namespace ZerOS {
         const ready = waitMessage(
           worker,
           (record): boolean => record["kind"] === "ready",
-          `${seatPrefix} CPU 线程没有就绪`,
+          `${seatPrefix} the CPU thread is not ready`,
         );
         await ready;
         worker.postMessage({
@@ -787,7 +953,7 @@ export namespace ZerOS {
         const seated = await waitMessage(
           worker,
           (record): boolean => record["kind"] === "seated",
-          `${seatPrefix} CPU 没有坐上`,
+          `${seatPrefix} the CPU is not seated`,
         );
         const coreCount = seated["coreCount"];
         if (typeof coreCount !== "number" || !Number.isInteger(coreCount) || coreCount < 1) {
@@ -971,9 +1137,9 @@ export namespace ZerOS {
 
       /**
        * 把一段调试 ZAP 交给 CPU。不等待。
-       * 结果由上面的监听转到页面。开关和核心状态由 CPU 自己拒绝。
+       * 结果由上面的监听转到页面。enabled 是页面当时的固件开关，CPU 再看一次核心是否已停止。
        */
-      export function requestDebugRun(lines: readonly string[]): void {
+      export function requestDebugRun(lines: readonly string[], enabled: boolean): void {
         const worker = cpuWorker;
         if (worker === null) {
           globalThis.postMessage({
@@ -983,7 +1149,7 @@ export namespace ZerOS {
           });
           return;
         }
-        worker.postMessage({ kind: MailMessage.DebugRun, lines });
+        worker.postMessage({ kind: MailMessage.DebugRun, lines, enabled });
       }
 
       /**

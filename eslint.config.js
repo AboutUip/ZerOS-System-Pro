@@ -28,6 +28,7 @@ export default tseslint.config(
       "Toolchain/vite.config.ts",
       "eslint.config.js",
       "ZerOS-PRO/Hardware/Nas/Server/**",
+      "ZerOS-PRO/Hardware/Cpu/Test/NativeImageCheck.ts",
     ],
   },
   eslint.configs.recommended,
