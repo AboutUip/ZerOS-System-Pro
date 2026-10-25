@@ -17,13 +17,17 @@ deRfun putnum(long x, long y, long value, long color): long {
     value = 0L;
   }
   long step = obr::ui::advance(16L);
-  if (value < 10L) {
-    obr::ui::glyph(48L + value, x, y, 16L, color, 255L);
-    return x + step;
+  long divisor = 1L;
+  /* 先除再比较，最大有符号 long 也不会因 divisor * 10 溢出。 */
+  while (value / divisor >= 10L) {
+    divisor = divisor * 10L;
   }
-  long next = putnum(x, y, value / 10L, color);
-  obr::ui::glyph(48L + value % 10L, next, y, 16L, color, 255L);
-  return next + step;
+  while (divisor > 0L) {
+    obr::ui::glyph(48L + (value / divisor) % 10L, x, y, 16L, color, 255L);
+    x = x + step;
+    divisor = divisor / 10L;
+  }
+  return x;
 }
 
 /* 从查询字段连续读字符，遇到 0 停止。最多 32 个，避免没有结尾时一直画。 */
@@ -535,13 +539,18 @@ deRfun show(long x, long y, long wide, long kind, long a, long b, long c, long i
 }
 
 /* 顺着当前页的行往下画。10 到 11 按核心重复，12 到 13 按四个扩展口重复。 */
-deRfun rows(long x, long y, long wide, long page): long {
+deRfun rows(long x, long y, long wide, long page, long interruptible): long {
   long pc = at(12288L + page * 64L);
   long back = 0L;
   long index = 0L;
   long count = 0L;
   long step = 0L;
   while (step != 400L) {
+    /* 长页分段让输入先走。返回负值让调用方撤销未提交的旧页，
+       第二次绘制禁止打断，持续拖动时仍保证能交出完整的一帧。 */
+    if (interruptible == 1L && step % 4L == 0L && takePointer() != 0L) {
+      return -1L;
+    }
     long kind = at(pc);
     step = step + 1L;
     if (kind == 0L) {
@@ -579,6 +588,32 @@ deRfun rows(long x, long y, long wide, long page): long {
       pc = back;
       continue;
     }
+    /* CPU 页有八颗核心，绝大部分行在滚动区域外。GPU 的 clip 只挡像素，
+       挡不住之前的查询、数位运算和逐字形命令。先按固定行高走布局，
+       完全不可见的行直接跳过绘制；仍累计 y，因此滚动条范围不变。 */
+    long rowHeight = 0L;
+    if (page == 1L) {
+      if (kind == 1L) {
+        rowHeight = at(pc + 128L);
+      } else if (kind == 3L) {
+        rowHeight = at(pc + 64L);
+      } else if (kind == 20L) {
+        rowHeight = 40L;
+      } else if (kind == 8L) {
+        rowHeight = 44L;
+        if (at(pc + 64L) < 0L) {
+          rowHeight = 22L;
+        }
+      } else {
+        rowHeight = 24L;
+      }
+      long scroll = at(5312L);
+      if (y + rowHeight <= scroll + 44L || y >= scroll + obr::ui::height() - 4L) {
+        y = y + rowHeight;
+        pc = pc + 256L;
+        continue;
+      }
+    }
     y = show(x, y, wide, kind, at(pc + 64L), at(pc + 128L), at(pc + 192L), index);
     pc = pc + 256L;
   }
@@ -615,7 +650,7 @@ deRfun sideAt(long y, long wide, long on, long index): void {
 }
 
 /* 顶栏、左侧和右侧。滚动只平移右侧文字，栏本身不动。字和子页都从固定内存读。 */
-deRfun paint(): void {
+deRfun paintFrame(long interruptible): int {
   if (at(5760L) == 0L) {
     fill();
   }
@@ -750,9 +785,12 @@ deRfun paint(): void {
   obr::ui::clip(side + 4L, top + 4L, wide - side - 12L, high - top - 8L);
   obr::ui::save();
   obr::ui::translate(0L, 0L - *scroll);
-  long bottom = rows(side + 16L, top + 14L, body, pageOf());
+  long bottom = rows(side + 16L, top + 14L, body, pageOf(), interruptible);
   obr::ui::restore();
   obr::ui::unclip();
+  if (bottom < 0L) {
+    return 0;
+  }
   panelFace();
   long max = bottom - (high - 4L);
   if (max < 0L) {
@@ -771,6 +809,14 @@ deRfun paint(): void {
     obr::ui::rect(wide - 7L, thumbY, 3L, thumb, accent, 255L);
   }
   obr::ui::present();
+  return 1;
+}
+
+/* 旧页收到有效输入时最多重启一次，保证持续输入仍有完整帧。 */
+deRfun paint(): void {
+  if (paintFrame(1L) == 0) {
+    paintFrame(0L);
+  }
 }
 
 /* 从收件箱取出一次按键。0 没有事件，1 是按下（按住后的重复也算），2 是松开或其它。
@@ -1794,35 +1840,50 @@ deRfun panelKey(): int {
 
 /* 把还没看过的鼠标事件按顺序取完。左键点栏、滚动条、选择器和扩展口。
    移动时如果还按着滑块就跟着滚。滚轮在选择器上换项，别处滚动正文。看过才移出。 */
-deRfun takePointer(): void {
+deRfun takePointer(): long {
   long guard = 0L;
-  long used = 0L;
-  while (pointer::depth() > 0L && guard < 32L) {
-    long x = pointer::x();
-    long y = pointer::y();
-    *(long*)7680 = x;
-    *(long*)7744 = y;
-    *(long*)7808 = 1L;
+  long left = pointer::depth();
+  while (left > 0L && guard < 32L) {
     long kind = pointer::kind();
-    if (kind == 1L && pointer::button() == 1L) {
-      clickBios(x, y);
+    long button = 0L;
+    if (kind == 1L || kind == 2L) {
+      button = pointer::button();
     }
-    if (kind == 0L) {
-      dragScroll(y);
-    }
-    if (kind == 2L && pointer::button() == 1L) {
+    long dirty = 0L;
+    /* 箭头已独立呈现。没有拖动时，移动不改变 BIOS 界面，
+       无需为它读坐标、写状态或整页重画；事件仍严格按 FIFO 移出。 */
+    if ((kind == 1L && button == 1L) || kind == 3L || (kind == 0L && *(long*)7936 == 1L)) {
+      long x = pointer::x();
+      long y = pointer::y();
+      *(long*)7680 = x;
+      *(long*)7744 = y;
+      *(long*)7808 = 1L;
+      if (kind == 1L) {
+        clickBios(x, y);
+      } else if (kind == 0L) {
+        long before = *(long*)5312;
+        dragScroll(y);
+        if (before != *(long*)5312) {
+          dirty = 1L;
+        }
+      } else {
+        wheelBios(x, y, pointer::wheel());
+      }
+      if (kind != 0L) {
+        dirty = 1L;
+      }
+    } else if (kind == 2L && button == 1L) {
       set(7936L, 0L);
     }
-    if (kind == 3L) {
-      wheelBios(x, y, pointer::wheel());
-    }
-    pointer::pop();
-    used = 1L;
+    /* pop 本身返回剩余条数，不再为同一队列额外交换一次 depth。
+       有界面变化就先交给绘制，点击不等后续移动和松开被全部读完。 */
+    left = pointer::pop();
     guard = guard + 1L;
+    if (dirty == 1L) {
+      return 1L;
+    }
   }
-  if (used == 1L && *(long*)4096 == 2L) {
-    paint();
-  }
+  return 0L;
 }
 
 /* 找键盘口，然后一直轮询。红点不在这里换：这一循环的快慢会跟着读盘变。
@@ -1874,8 +1935,9 @@ deRfun main(): int {
   }
   while (1) {
     int event = poll();
+    long pointerChanged = 0L;
     if (*(long*)4096 == 2L) {
-      takePointer();
+      pointerChanged = takePointer();
     }
     if (event == 1) {
       onkey();
@@ -1889,7 +1951,8 @@ deRfun main(): int {
       }
     }
     if (*mode == 2L) {
-      if (event == 1) {
+      /* 有效鼠标输入和键盘一起提交一帧，不等待空闲刷新计数到期。 */
+      if (event == 1 || pointerChanged == 1L) {
         paint();
         *tick = 0L;
       } else {

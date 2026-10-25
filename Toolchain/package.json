@@ -8,7 +8,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "node ./run-lint.mjs",
     "check": "npm run typecheck && npm run lint",
-    "build": "npm run check && vite build"
+    "build": "npm run check && vite build",
+    "check:bios-input": "node Checks/check-bios-input.mjs",
+    "check:bios-layout": "node Checks/check-bios.mjs && node Checks/check-bios.mjs --numbers"
   },
   "devDependencies": {
     "@eslint/js": "^9.27.0",
