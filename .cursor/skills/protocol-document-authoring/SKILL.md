@@ -93,12 +93,17 @@ description: >-
 
 ## 标准文档结构（协议正文模板）
 
-按需裁剪章节，但下列块在「对外兼容契约」类协议中默认齐备：
+按需裁剪章节，但下列块在「对外兼容契约」类协议中默认齐备。
+
+协议正文页眉必须逐字包含下面三行。标识与文件名相同，大小写固定。规范状态必须写成 `规范性（Normative）`。禁止只写「协议标识」或只写「规范性」。`Toolchain` 的 `npm test` 按这三行核对。
 
 ```markdown
 # {协议名} · 第 N 版
 
-> 文档路径 / 规范状态：规范性 / 协议标识字符串：`{ID}` / 参考实现（非规范）：…
+> 文档路径：`Documents/Protocol/…/{ID}.md`  
+> 规范状态：**规范性（Normative）**  
+> 协议标识字符串（唯一）：`{ID}`  
+> 参考实现（非规范）：…
 
 ## 0. 文档定位与符合性
 ### 0.1 目的
@@ -168,10 +173,10 @@ description: >-
 
 ## 交付前强制自审
 
-完整勾选 [conformance-checklist.md](conformance-checklist.md)。任一未通过 → **禁止**声称协议已可对外约束第三方。
+完整勾选 [conformance-checklist.md](conformance-checklist.md)，并在 `Toolchain` 执行 `npm test`。页眉或目录索引没对上时，禁止声称协议已可对外约束第三方。
 
 ## 附加资源
 
 - 符合性审查清单：[conformance-checklist.md](conformance-checklist.md)
 - Registry/Index 拆分模板：[registry-index-split.md](registry-index-split.md)
-- 本仓库范例目录：[`../Protocol/PhysicalHardware/Memory/`](../Protocol/PhysicalHardware/Memory/)
+- 本仓库范例目录：`Documents/Protocol/PhysicalHardware/Memory/`

@@ -1,8 +1,9 @@
 # ZGP1 · ZerOS 显卡协议
 
-> 路径：`Documents/Protocol/PhysicalHardware/Gpu/ZGP1.md`  
-> 协议标识：`ZGP1`  
-> 规范状态：**规范性**  
+> 文档路径：`Documents/Protocol/PhysicalHardware/Gpu/ZGP1.md`  
+> 规范状态：**规范性（Normative）**  
+> 协议标识字符串（唯一）：`ZGP1`  
+> 参考实现（非规范）：`ZerOS-PRO/Hardware/Gpu/`  
 > 索引：[README.md](./README.md)
 
 读者只凭本文即可判断一份显卡实现是否符合 ZGP1。参考实现不是规范。冲突时以本文为准。

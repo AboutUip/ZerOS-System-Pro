@@ -1,8 +1,9 @@
 # ZXD1 · 扩展口数据交换协议
 
-> 路径：`Documents/Protocol/PhysicalHardware/Expansion/ZXD1.md`  
-> 协议标识：`ZXD1`  
-> 规范状态：**规范性**  
+> 文档路径：`Documents/Protocol/PhysicalHardware/Expansion/ZXD1.md`  
+> 规范状态：**规范性（Normative）**  
+> 协议标识字符串（唯一）：`ZXD1`  
+> 参考实现（非规范）：`ZerOS-PRO/Hardware/Motherboard/Slot/Expansion/`  
 > 索引：[README.md](./README.md)
 
 读者只凭本文即可判断一次扩展口数据交换是否符合 ZXD1。口的空满和引导见 [ZXP1.md](./ZXP1.md)。参考实现不是规范。

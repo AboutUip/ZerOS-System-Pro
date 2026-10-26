@@ -95,6 +95,9 @@ export namespace ZerOS {
       const nativeWriteSpan = RuntimeRoot.Hardware.Cpu.nativeWriteSpan;
       const nativePaceBudget = RuntimeRoot.Hardware.Cpu.nativePaceBudget;
       const nativeChargePace = RuntimeRoot.Hardware.Cpu.nativeChargePace;
+      const nativeCoast = RuntimeRoot.Hardware.Cpu.nativeCoast;
+      const nativeIdleTick = RuntimeRoot.Hardware.Cpu.nativeIdleTick;
+      const nativeGuestHot = RuntimeRoot.Hardware.Cpu.nativeGuestHot;
       const nativeAccount = RuntimeRoot.Hardware.Cpu.nativeAccount;
       const enterNativeImage = RuntimeRoot.Hardware.Cpu.enterNativeImage;
       const leaveNativeImage = RuntimeRoot.Hardware.Cpu.leaveNativeImage;
@@ -200,6 +203,9 @@ export namespace ZerOS {
           endNative(ordinal);
         }
       }
+
+      /** 刚把自己降到一拍一条。1 表示下一条普通指令要睡一个节拍，随后把起点拨回。下标是核心号。 */
+      const coastArm = [0, 0, 0, 0, 0, 0, 0, 0];
 
       /** 取出转义操作数。编号越界或寄存器帧里没有这一格时是空。 */
       function readReg(state: NativeState, regs: readonly number[], index: number): bigint | null {
@@ -868,7 +874,11 @@ export namespace ZerOS {
          */
         const sliceMs = 1;
         const sliceCheck = 8;
-        /* 消息进宏任务队列。固件的墙钟等待才能在这一拍的缝里跑到。 */
+        /*
+         * 平时用消息通道让出，监督核的空转不会每拍都吃掉 4 毫秒。
+         * 有至少 1000 Hz 的客程序正在跑时，最多每 4 毫秒改用一次定时器。
+         * 消息通道会插到定时器前面。壳程序的访存回复若只排在通道后面，按键就会等到下一次空转睡醒。
+         */
         let yieldResume: (() => void) | null = null;
         const yieldChannel = new MessageChannel();
         yieldChannel.port1.onmessage = (): void => {
@@ -878,7 +888,15 @@ export namespace ZerOS {
             resume();
           }
         };
+        let lastGuestYield = 0;
         const yieldTurn = (): Promise<void> => {
+          const now = performance.now();
+          if (nativeGuestHot(ordinal) && now - lastGuestYield >= 4) {
+            lastGuestYield = now;
+            return new Promise((resolve): void => {
+              setTimeout(resolve, 0);
+            });
+          }
           return new Promise((resolve): void => {
             yieldResume = resolve;
             yieldChannel.port2.postMessage(null);
@@ -917,6 +935,9 @@ export namespace ZerOS {
           },
         };
         try {
+          if (ordinal >= 0 && ordinal < coastArm.length) {
+            coastArm[ordinal] = 0;
+          }
           for (;;) {
             const budget = nativePaceBudget(ordinal);
             if (budget < 1) {
@@ -929,6 +950,8 @@ export namespace ZerOS {
               continue;
             }
             let ran = 0;
+            /* 本拍里已经按旧频率记过的条数。降频指令会先把它们记掉，不能再按新频率记一次。 */
+            let billed = 0;
             const sliceAt = performance.now();
             while (ran < budget) {
               let outcome: ReturnType<typeof stepNative>;
@@ -966,7 +989,24 @@ export namespace ZerOS {
                 waiting = true;
                 return;
               }
+              /*
+               * hertz 改的是下一条起的频率。这一拍里已经跑完的指令仍按改之前的 Hz 记账。
+               * 若先改成 30 再把整拍条数乘上 1000/30，监督核空转尾上那几十条会一次睡满大约一秒。
+               * 只在目标就是自己时提前记账：改别人的频率不会换掉自己的节拍。
+               */
+              const lowersSelf = outcome.opcode === NativeEscapeHertz && readReg(state, outcome.regs, 0) === BigInt(ordinal);
+              let previousBudget = 0;
+              if (lowersSelf) {
+                previousBudget = nativePaceBudget(ordinal);
+                await nativeChargePace(ordinal, ran);
+                billed += ran;
+                ran = 0;
+              }
               const applied = await applyEscape(ordinal, state, outcome);
+              if (lowersSelf && ordinal >= 0 && ordinal < coastArm.length) {
+                const nextBudget = nativePaceBudget(ordinal);
+                coastArm[ordinal] = previousBudget > 1 && nextBudget === 1 ? 1 : 0;
+              }
               if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill) {
                 pages.clear();
                 sparse.clear();
@@ -993,8 +1033,14 @@ export namespace ZerOS {
             }
             await flush();
             dropShared();
-            await nativeChargePace(ordinal, ran);
-            if (nativeAccount(ordinal, ran)) {
+            if (ordinal >= 0 && ordinal < coastArm.length && (coastArm[ordinal] ?? 0) === 1 && ran > 0) {
+              await nativeIdleTick(ordinal);
+              nativeCoast(ordinal);
+              coastArm[ordinal] = 0;
+            } else {
+              await nativeChargePace(ordinal, ran);
+            }
+            if (nativeAccount(ordinal, ran + billed)) {
               return;
             }
             await yieldTurn();

@@ -18,7 +18,7 @@ ZerOS-System-Pro/
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板、插座、上电入口
 │       ├── Cpu/  Gpu/  Memory/
-│       ├── Display/  Keyboard/  Sandbox/  Nas/
+│       ├── Display/  Keyboard/  Pointer/  Sandbox/  Nas/
 ├── Driver/                   # Display、Gpu、Pointer。默认宽高在 Display/panel
 ├── Compiler/Obr/             # 宿主编译器，.obr → ZAP
 ├── Toolchain/                # Vite、TypeScript、ESLint；不放产品源码
@@ -40,10 +40,16 @@ npm run dev
 
 页面只开 [http://localhost:5173/](http://localhost:5173/)。Vite 锁死这个端口；端口被占用时先结束占用进程，再启动，不要改到别的端口。
 
-开发服会调用本机的宿主编译器。Windows 上是 `Compiler/Obr/obrc.exe`，其它系统是 `Compiler/Obr/obrc`。先在当前系统用 C++20 编出这个文件，再启动预览。
+开发服会调用本机的宿主编译器。需要 C++20。Windows 上是 `Compiler/Obr/obrc.exe`，其它系统是 `Compiler/Obr/obrc`。CMake 把这个可执行文件直接写到 `Compiler/Obr/`，不写进 `build/` 子目录。先编出这个文件，再启动预览。
+
+```bash
+cmake -S Compiler/Obr -B Compiler/Obr/build
+cmake --build Compiler/Obr/build
+```
 
 | 命令 | 作用 |
 |------|------|
+| `npm test` | 协议页眉、目录索引、技能副本、本机路径、编译器输出路径 |
 | `npm run check` | 类型检查 + Lint |
 | `npm run build` | 校验后产出到 `Toolchain/Dist/` |
 
@@ -55,7 +61,7 @@ npm run dev
 
 ## 协议
 
-第三方只读 `Documents/Protocol/`。登记表优先于索引，索引优先于正文里的摘要。封闭数值留在正文里。
+第三方从 [Documents/Protocol](./Documents/Protocol/README.md) 进入，只读协议文本即可判定是否兼容。登记表优先于索引，索引优先于正文里的摘要。封闭数值留在正文里。
 
 | 协议 | 管什么 | 索引 |
 |------|--------|------|
@@ -65,6 +71,7 @@ npm run dev
 | **ZGP1** | 显卡 | [Gpu](./Documents/Protocol/PhysicalHardware/Gpu/README.md) |
 | **ZDP1** | 显示器 | [Display](./Documents/Protocol/PhysicalHardware/Display/README.md) |
 | **ZKP1** | 键盘 | [Keyboard](./Documents/Protocol/PhysicalHardware/Keyboard/README.md) |
+| **ZPP1** | 鼠标 | [Pointer](./Documents/Protocol/PhysicalHardware/Pointer/README.md) |
 | **ZXP1 / ZXD1** | 扩展口与交换 | [Expansion](./Documents/Protocol/PhysicalHardware/Expansion/README.md) |
 | **ZSP1** | 沙盒 | [Sandbox](./Documents/Protocol/PhysicalHardware/Sandbox/README.md) |
 | **ZNP1** | NAS | [Nas](./Documents/Protocol/PhysicalHardware/Nas/README.md) |
@@ -76,7 +83,7 @@ npm run dev
 | 引导 | `ZerOS-PRO/Boot/` | 固件源码。启动画面、设置和装入程序。页面从主板 `FirmwarePower.ts` 通电 |
 | 主板 | `Hardware/Motherboard/` | 插座、查询、扩展口 |
 | CPU / GPU / 内存 | 同名目录 | 官方插头在各自的 `ActiveProvider/` |
-| 显示器 / 键盘 / 沙盒 / NAS | 同名目录 | 显示器不经插座；键盘、沙盒和 NAS 坐在扩展口上。NAS 进程要单独启动 |
+| 显示器 / 键盘 / 鼠标 / 沙盒 / NAS | 同名目录 | 显示器不经插座；键盘、鼠标、沙盒和 NAS 坐在扩展口上。NAS 进程要单独启动 |
 | 驱动 | `Driver/` | 显示器默认宽高在 `Display/panel`。`Gpu/` 是固件调用的 OpenGL 切片 |
 | 语言 | `Compiler/Obr/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。语法见 [编译器说明](./Compiler/Obr/README.md) |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
@@ -88,7 +95,7 @@ npm run dev
 
 内存的步骤写在 [ActiveProvider/README](./ZerOS-PRO/Hardware/Memory/ActiveProvider/README.md)：整体替换该目录，保留 `Provider.ts` 和导出名。主板从固定路径导入，不要改上电入口 `Hardware/Motherboard/Bootstrap/FirmwarePower.ts`。
 
-CPU、GPU、键盘、沙盒、NAS 同样各有一个 `ActiveProvider/`。换哪一块就换哪一个目录。
+CPU、GPU、键盘、鼠标、沙盒、NAS 同样各有一个 `ActiveProvider/`。换哪一块就换哪一个目录。
 
 NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO/Hardware/Nas/Server/serve.mjs`。客路径 `/` 是 `ZerOS-PRO/Hardware/Nas/Root`，这棵树不进版本库。进程没起来时，引导仍然成功，交换返回未就绪。
 
@@ -100,7 +107,7 @@ NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO
 | 编码规范 | 同上 | 写 `ZerOS-PRO/` |
 | Obr 语法 | [`.cursor/skills/obr-language`](./.cursor/skills/obr-language/SKILL.md) | 改编译器表面，或写 `.obr` / `.mr` |
 
-Cursor 从 `.cursor/skills/` 加载。协议与编码规范以 `Documents/SKILLS/` 为准；Obr 语法以仓库里的那份技能为准。
+Cursor 从 `.cursor/skills/` 加载。协议与编码规范的权威源是 `Documents/SKILLS/`，Cursor 目录里是一份必须与权威源逐字节相同的副本。`npm test` 会比对；改了权威源之后在 `Toolchain` 执行 `npm run skills:sync`。Obr 语法以 `.cursor/skills/obr-language/` 为准，不在 `Documents/SKILLS/`。
 
 ## 相关链接
 

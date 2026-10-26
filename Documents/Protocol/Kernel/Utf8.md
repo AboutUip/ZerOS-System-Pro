@@ -1,7 +1,7 @@
 # UTF-8 · Unicode 标量
 
-> 路径：`Documents/Protocol/Kernel/Utf8.md`  
-> 规范状态：**规范性**  
+> 文档路径：`Documents/Protocol/Kernel/Utf8.md`  
+> 规范状态：**规范性（Normative）**  
 > 索引：[README.md](./README.md)
 
 内核交给显卡的是 Unicode 标量，不是字体文件，也不是固件点阵码点。符合本节的解码只产出标量，或在第一个非法字节序列处失败。

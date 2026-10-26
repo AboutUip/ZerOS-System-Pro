@@ -8,7 +8,7 @@ description: >-
 
 本技能是这份仓库里 Obr 的语法规则。实现在 `Compiler/Obr`。`Compiler/Obr/README.md` 给人读，必须和本技能同一版。
 
-Objective-R 原仓库（`D:\Project\Algorithm\Objective-R`）太远，不作为本方言的权威。那里的草案和本技能冲突时，改这里的编译器与本技能，不要把草案抄进来。
+Objective-R 原仓库太远，不作为本方言的权威。那里的草案和本技能冲突时，改这里的编译器与本技能，不要把草案抄进来。
 
 ## 改语法时
 

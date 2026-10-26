@@ -7,6 +7,8 @@
     "dev": "vite",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "node ./run-lint.mjs",
+    "test": "node ./check-consistency.mjs",
+    "skills:sync": "node ./check-consistency.mjs --sync",
     "check": "npm run typecheck && npm run lint",
     "build": "npm run check && vite build"
   },

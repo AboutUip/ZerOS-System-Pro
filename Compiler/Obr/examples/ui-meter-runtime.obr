@@ -1,0 +1,6 @@
+/* 最大值是 0。编译可以通过，运行时必须失败。meter 是运行时函数。 */
+import obr.ui;
+
+deRfun main(): long {
+  return obr::ui::meter(10L, 1L, 0L);
+}

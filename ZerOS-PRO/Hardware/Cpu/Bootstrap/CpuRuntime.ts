@@ -139,6 +139,11 @@ export namespace ZerOS {
         paceOrigin: number;
         /** 从起点起已经排过的拍数。 */
         paceIndex: number;
+        /**
+         * 这一拍不要按 Hz 睡。
+         * 空转核心在快客程序运行时只让出一次宏任务，避免十几毫秒的睡眠把按键排成长队。
+         */
+        paceYield: boolean;
         /** 装入后等着执行的指令序列。没有装入时是空。 */
         installed: CpuInstruction[] | null;
         /** 已经接到这颗核心上的导出。编号是当前序列里的指令下标。 */
@@ -235,6 +240,9 @@ export namespace ZerOS {
 
       /** 正在跑一段指令的核心。固件和客程序共用，避免两段同时写同一组寄存器。 */
       const sequenceBusy = new Set<number>();
+
+      /** 连续执行 core 的次数。空转循环会一直涨，普通程序问一次编号就清零。 */
+      const idleSpins = new Map<number, number>();
 
       /**
        * 这颗核心正在执行的指令序列。
@@ -494,6 +502,7 @@ export namespace ZerOS {
           Executed: 0,
           paceOrigin: clockOrigin(),
           paceIndex: 0,
+          paceYield: false,
           installed: null,
           exports: [],
           imports: [],
@@ -1085,7 +1094,8 @@ export namespace ZerOS {
 
       async function blockedPace(core: MountedCore, token: object): Promise<void> {
         while (core.blockToken === token) {
-          await waitSpan(1000 / 30);
+          /* 和正在跑的 30 Hz 核心合睡，不要每个停在系统调用里的核心再各排一次 33 毫秒。 */
+          await sharePace(1000 / 30);
         }
       }
 
@@ -1297,6 +1307,43 @@ export namespace ZerOS {
       }
 
       /**
+       * 频率不变，把节拍起点拨回一分钟。
+       * 监督核降到 30 Hz 后，第一条普通指令睡一个节拍；同一段里其余取数不再逐条挂起。
+       */
+      export function nativeCoast(ordinal: number): void {
+        const core = requireOrdinal(ordinal);
+        core.paceOrigin = performance.now() - 60000;
+        core.paceIndex = 0;
+      }
+
+      /**
+       * 降到 30 Hz 后的第一拍。
+       * 和其它核心已经排上的长等待合在一起，不额外再睡满 33 毫秒。
+       */
+      export function nativeIdleTick(ordinal: number): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        return sharePace(1000 / core.Hertz);
+      }
+
+      /**
+       * 有没有别的核心正在跑、并且频率至少 1000 Hz。
+       * 空转和停在系统调用里的核心是 30 Hz，不算。
+       * 壳程序在跑时监督核要让出定时器，它的访存回复才能插进来。
+       */
+      export function nativeGuestHot(self: number): boolean {
+        for (const ordinal of sequenceBusy) {
+          if (ordinal === self) {
+            continue;
+          }
+          const core = cores.get(ordinal);
+          if (core !== undefined && core.Hertz >= 1000) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      /**
        * 主板把上电记下的起点送过来。
        * 此后新挂上的核心从这一点开始记账。
        */
@@ -1313,13 +1360,52 @@ export namespace ZerOS {
         return chargePace(core, 1);
       }
 
+      /*
+       * 30 Hz 的一拍大约 33 毫秒。空转、系统调用空等和监督核降频后的取数若各睡各的，
+       * 一次按键里能排到一百多次 4 到 17 毫秒的定时器，壳程序的访存就夹在这些缝里。
+       * 12 毫秒内只允许一次 8 毫秒的真睡眠。同一窗口里后来的核心只让出宏任务，并把节拍起点拨到现在，
+       * 避免欠下的拍立刻再睡一轮。不能用已完成的 Promise，空转循环会把微任务队列占满。
+       */
+      let sharedPace: Promise<void> | null = null;
+      let sharedPaceAt = 0;
+
+      function sharePace(delay: number): Promise<void> {
+        const now = performance.now();
+        if (now < sharedPaceAt) {
+          if (sharedPace !== null) {
+            return sharedPace;
+          }
+          return new Promise((resolve): void => {
+            setTimeout(resolve, 0);
+          });
+        }
+        const capped = delay > 8 ? 8 : delay;
+        sharedPaceAt = now + 12;
+        const promise = waitSpan(capped).then((): void => {
+          if (sharedPace === promise) {
+            sharedPace = null;
+          }
+        });
+        sharedPace = promise;
+        return promise;
+      }
+
       /**
        * 连续完成的指令仍逐条占拍。
        * 合并进一次突发时不能少记账。累计等待短于宿主节拍才不挂起。
+       * 长于 4 毫秒的等待走合睡，短等待仍是这一颗核心自己的定时器。
        */
       function chargePace(core: MountedCore, count: number): Promise<void> {
         if (count <= 0) {
           return Promise.resolve();
+        }
+        if (core.paceYield) {
+          core.paceYield = false;
+          core.paceOrigin = performance.now();
+          core.paceIndex = 0;
+          return new Promise((resolve): void => {
+            setTimeout(resolve, 0);
+          });
         }
         core.paceIndex += count;
         const deadline = core.paceOrigin + (core.paceIndex * 1000) / core.Hertz;
@@ -1329,7 +1415,20 @@ export namespace ZerOS {
           core.paceIndex = 0;
         }
         const delay = deadline - performance.now();
-        return waitSpan(delay);
+        if (delay < HostTickMs) {
+          return Promise.resolve();
+        }
+        if (delay < 4) {
+          return waitSpan(delay);
+        }
+        return sharePace(delay).then((): void => {
+          const now = performance.now();
+          const due = core.paceOrigin + (core.paceIndex * 1000) / core.Hertz;
+          if (due > now + 4) {
+            core.paceOrigin = now;
+            core.paceIndex = 0;
+          }
+        });
       }
 
       /**
@@ -3384,6 +3483,9 @@ export namespace ZerOS {
             }
           }
           refuseGuest(ordinal, step.Op);
+          if (step.Op !== "core") {
+            idleSpins.set(ordinal, 0);
+          }
           if (step.Op === "halt") {
             const stopping = requireOrdinal(ordinal);
             stopping.resumeCursor = null;
@@ -3407,6 +3509,14 @@ export namespace ZerOS {
             gateOrdinal = ordinal;
             requireOrdinal(ordinal).Executed += 1;
           } else if (step.Op === "core") {
+            /* 空转程序是 while core()。连续几次才算空转，驱动里偶尔问一次编号不停。
+               壳程序在跑时，这一拍只让出宏任务，不再睡满十几毫秒。核心仍回到循环，抢占照常生效。 */
+            const spins = (idleSpins.get(ordinal) ?? 0) + 1;
+            idleSpins.set(ordinal, spins);
+            const spinning = requireOrdinal(ordinal);
+            if (spins >= 3 && spinning.Hertz <= 100 && nativeGuestHot(ordinal)) {
+              spinning.paceYield = true;
+            }
             await place(ordinal, step.Register, BigInt(ordinal));
           } else if (step.Op === "slice") {
             const count = await peekRegister(ordinal, step.Count);

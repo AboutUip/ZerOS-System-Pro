@@ -1,8 +1,9 @@
 # ZXP1 · 扩展口协议
 
-> 路径：`Documents/Protocol/PhysicalHardware/Expansion/ZXP1.md`  
-> 协议标识：`ZXP1`  
-> 规范状态：**规范性**  
+> 文档路径：`Documents/Protocol/PhysicalHardware/Expansion/ZXP1.md`  
+> 规范状态：**规范性（Normative）**  
+> 协议标识字符串（唯一）：`ZXP1`  
+> 参考实现（非规范）：`ZerOS-PRO/Hardware/Motherboard/Slot/Expansion/`  
 > 索引：[README.md](./README.md)
 
 读者只凭本文即可判断一份扩展口宿主是否符合 ZXP1。参考实现不是规范。冲突时以本文为准。数据交换见 [ZXD1.md](./ZXD1.md)。

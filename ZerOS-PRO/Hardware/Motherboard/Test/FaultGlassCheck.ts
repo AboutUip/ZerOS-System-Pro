@@ -224,7 +224,7 @@ export namespace ZerOS {
           index: 4,
           op: "div",
           site: "-",
-          stack: ["at fail (http://localhost:5173/@fs/D:/Project/Algorithm/ZerOS-System-Pro/ZerOS-PRO/Hardware/Cpu/Bootstrap/CpuRuntime.ts?t=1:20:3)"],
+          stack: ["at fail (http://localhost:5173/@fs/workspace/ZerOS-PRO/Hardware/Cpu/Bootstrap/CpuRuntime.ts?t=1:20:3)"],
           window: true,
         });
         const crowdedBlocks = painted(errorPicture(crowded, 640, 480));
@@ -257,9 +257,9 @@ export namespace ZerOS {
         }
         const mapText = [
           "obr-debug 1",
-          "0\tD:\\Project\\Bios.obr\t15\tputnum",
-          "1\tD:\\Project\\Bios.obr\t15\tputnum",
-          "2\tD:\\Project\\Load.obr\t9\tmain",
+          "0\tboot/Bios.obr\t15\tputnum",
+          "1\tboot\\Bios.obr\t15\tputnum",
+          "2\tboot/Load.obr\t9\tmain",
           "",
         ].join("\n");
         const runs = parseDebugText(mapText);
@@ -272,7 +272,7 @@ export namespace ZerOS {
         if (parseDebugText("obr-debug 2\n").length !== 0 || parseDebugText("obr-debug 1\n0\tonly-three\n").length !== 0) {
           fail("a bad debug map was accepted");
         }
-        const compact = readDebugSites([[0, 2, "D:\\Project\\Bios.obr", 15, "putnum"]]);
+        const compact = readDebugSites([[0, 2, "boot/Bios.obr", 15, "putnum"]]);
         const placed = applySite(faultFromText("register is outside 0 to 7", 0, 1, "load", ""), new Map([[0, compact]]));
         if (placed.Site !== "Bios.obr:15 putnum" || placed.Code !== 2) {
           fail("the site map did not fill a missing site");

@@ -79,7 +79,8 @@ const firmwareResolved = "\0zeros-boot-firmware";
 
 /**
  * 当前系统上的宿主编译器。
- * CMake 的目标名是 obrc：Windows 产出 obrc.exe，其它系统产出不带扩展名的 obrc。
+ * CMake 的目标名是 obrc，并把可执行文件写到本目录：Windows 是 obrc.exe，其它系统是 obrc。
+ * 不读取 build/ 里的副本。
  */
 function hostCompilerPath(): string {
   const fileName = process.platform === "win32" ? "obrc.exe" : "obrc";

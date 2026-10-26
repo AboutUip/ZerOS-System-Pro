@@ -27,3 +27,11 @@ add_executable(native-encode-check
   src/image/Native.cpp
   src/image/NativeCheck.cpp
 )
+# Vite 在本目录找 obrc / obrc.exe，不看 build/。多配置生成器默认再套一层 Debug/Release，所以每一档都指回这里。
+set_target_properties(obrc PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_CURRENT_SOURCE_DIR}"
+  RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_CURRENT_SOURCE_DIR}"
+)

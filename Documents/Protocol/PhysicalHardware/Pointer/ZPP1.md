@@ -1,8 +1,9 @@
 # ZPP1 · 鼠标协议
 
-> 路径：`Documents/Protocol/PhysicalHardware/Pointer/ZPP1.md`  
-> 协议标识：`ZPP1`  
-> 规范状态：**规范性**  
+> 文档路径：`Documents/Protocol/PhysicalHardware/Pointer/ZPP1.md`  
+> 规范状态：**规范性（Normative）**  
+> 协议标识字符串（唯一）：`ZPP1`  
+> 参考实现（非规范）：`ZerOS-PRO/Hardware/Pointer/`  
 > 索引：[README.md](./README.md)
 
 读者只凭本文即可实现一份鼠标设备，或判断一次交换是否符合 ZPP1。参考实现不是规范。冲突时以本文为准。
