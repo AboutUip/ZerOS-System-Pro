@@ -1,0 +1,24 @@
+/* 行编辑、拆词和路径整理。shell 和自检共用，不发系统调用。 */
+deRfun editInit(long state): void;
+deRfun editFeed(long state, long unit): long;
+deRfun editLen(long state): long;
+deRfun editCursor(long state): long;
+deRfun editAt(long state, long index): long;
+deRfun editClear(long state): void;
+deRfun editHistCount(long state): long;
+deRfun editHist(long state, long index, long dest, long* count): long;
+deRfun parseLine(long src, long count, long out, long status): long;
+deRfun listCount(long out): long;
+deRfun listJoiner(long out, long index): long;
+deRfun listCmdCount(long out, long index): long;
+deRfun listCmd(long out, long index): long;
+deRfun cmdOf(long out, long index): long;
+deRfun cmdArgc(long cmd): long;
+deRfun cmdRedir(long cmd): long;
+deRfun cmdRedirLen(long cmd): long;
+deRfun cmdRedirAt(long cmd): long;
+deRfun cmdArgLen(long cmd, long index): long;
+deRfun cmdArgAt(long cmd, long index): long;
+deRfun pathNorm(long cwd, long cwdLen, long rel, long relLen, long dest, long scratch, long* outLen): long;
+deRfun bytesEq(long addr, long count, string text): long;
+deRfun builtinId(long addr, long count): long;

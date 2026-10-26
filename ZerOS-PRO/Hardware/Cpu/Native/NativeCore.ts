@@ -24,6 +24,8 @@
 import { ZerOS as ConfigRoot } from "../Config/CpuConfig";
 import { ZerOS as MailboxRoot } from "../../Motherboard/Host/Mailbox";
 import { ZerOS as EscapeRoot } from "../Enum/NativeEscape";
+import { ZerOS as RegisterRoot } from "../Enum/NativeRegister";
+import { ZerOS as CompatRoot } from "../Structure/CompatFrame";
 import { ZerOS as NativeRoot } from "../Native/NativeRun";
 import { ZerOS as OpcodeRoot } from "../../Motherboard/Enum/MemoryOpcode";
 import { ZerOS as RuntimeRoot } from "../Bootstrap/CpuRuntime";
@@ -33,6 +35,11 @@ export namespace ZerOS {
   export namespace Hardware {
     export namespace Cpu {
       const RelocateDataFloor = ConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
+      const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
+      const MapEndBits = ConfigRoot.Hardware.Cpu.Config.MapEndBits;
+      const NativeRax = RegisterRoot.Hardware.Cpu.NativeRax;
+      const encodeCompatFrame = CompatRoot.Hardware.Cpu.encodeCompatFrame;
+      const applyCompatFrame = CompatRoot.Hardware.Cpu.applyCompatFrame;
       const MailboxSpanBytes = MailboxRoot.Hardware.Motherboard.MailboxSpanBytes;
       const stepNative = NativeRoot.Hardware.Cpu.stepNative;
       const isNativeMiss = NativeRoot.Hardware.Cpu.isNativeMiss;
@@ -65,6 +72,7 @@ export namespace ZerOS {
       const nativeYield = RuntimeRoot.Hardware.Cpu.nativeYield;
       const nativeQuery = RuntimeRoot.Hardware.Cpu.nativeQuery;
       const nativeInstall = RuntimeRoot.Hardware.Cpu.nativeInstall;
+      const nativeAdmit = RuntimeRoot.Hardware.Cpu.nativeAdmit;
       const nativeCapture = RuntimeRoot.Hardware.Cpu.nativeCapture;
       const nativeRestore = RuntimeRoot.Hardware.Cpu.nativeRestore;
       const nativeHertz = RuntimeRoot.Hardware.Cpu.nativeHertz;
@@ -102,6 +110,7 @@ export namespace ZerOS {
       const NativeEscapeYield = EscapeRoot.Hardware.Cpu.NativeEscapeYield;
       const NativeEscapeQuery = EscapeRoot.Hardware.Cpu.NativeEscapeQuery;
       const NativeEscapeInstall = EscapeRoot.Hardware.Cpu.NativeEscapeInstall;
+      const NativeEscapeAdmit = EscapeRoot.Hardware.Cpu.NativeEscapeAdmit;
       const NativeEscapeCapture = EscapeRoot.Hardware.Cpu.NativeEscapeCapture;
       const NativeEscapeRestore = EscapeRoot.Hardware.Cpu.NativeEscapeRestore;
       const NativeEscapeHertz = EscapeRoot.Hardware.Cpu.NativeEscapeHertz;
@@ -199,6 +208,15 @@ export namespace ZerOS {
           return null;
         }
         return state.reg[slot] ?? null;
+      }
+
+      /**
+       * 兼容任务的 0F 05。
+       * 帧写到尾区页 0，再以服务号 27 通知监督核。回复寄存器只是把保持位交回去，续跑时改读这帧。
+       */
+      async function trapCompat(ordinal: number, state: NativeState): Promise<void> {
+        await nativeWriteSpan(ordinal, BigInt(MapEndBits), encodeCompatFrame(state));
+        nativeSvc(ordinal, 27n, NativeRax);
       }
 
       /**
@@ -324,6 +342,17 @@ export namespace ZerOS {
             return "fault";
           }
           await nativeInstall(ordinal, target, address, length);
+          state.rip = escape.next;
+          return "cont";
+        }
+        if (escape.opcode === NativeEscapeAdmit) {
+          const target = readReg(state, regs, 0);
+          const address = readReg(state, regs, 1);
+          const length = readReg(state, regs, 2);
+          if (target === null || address === null || length === null) {
+            return "fault";
+          }
+          await nativeAdmit(ordinal, target, address, length);
           state.rip = escape.next;
           return "cont";
         }
@@ -593,6 +622,12 @@ export namespace ZerOS {
               stopped = { kind: "fault", state };
               break;
             }
+            if (outcome === "syscall") {
+              waiting = true;
+              stopped = { kind: "wait", state };
+              await trapCompat(ordinal, state);
+              break;
+            }
             const applied = await applyEscape(ordinal, state, outcome);
             if (applied === "fault") {
               stopped = { kind: "fault", state };
@@ -659,12 +694,20 @@ export namespace ZerOS {
         const base = program.base;
         if (nativeReplyPending(ordinal)) {
           const reply = acceptNativeReply(ordinal);
-          const slot = state.reg[reply.reg];
-          if (slot === undefined) {
-            leaveNativeImage(ordinal);
-            throw new Error("native syscall cannot resume");
+          if (state.compat) {
+            const frameBytes = await nativeReadSpan(ordinal, BigInt(MapEndBits), 152);
+            if (!applyCompatFrame(state, frameBytes)) {
+              leaveNativeImage(ordinal);
+              throw new Error("native syscall cannot resume");
+            }
+          } else {
+            const slot = state.reg[reply.reg];
+            if (slot === undefined) {
+              leaveNativeImage(ordinal);
+              throw new Error("native syscall cannot resume");
+            }
+            state.reg[reply.reg] = reply.value;
           }
-          state.reg[reply.reg] = reply.value;
         }
         /*
          * 一页六万多个八位组如果各占一条表项，表会留在老生代。
@@ -797,6 +840,27 @@ export namespace ZerOS {
           }
         };
         /*
+         * 监督核的数据缓冲只可信自己窗口里的字。
+         * 客程序的参数写在别的核心的窗口里。上一次系统调用读过的那一页会留在缓冲中，
+         * 客程序随后改掉的标志和描述符，下一次取出时仍是旧值。
+         * 取出到一条调用后先丢掉窗外的页，分发再读到的就是客程序刚写上的字。
+         * 自己窗口里的任务表不丢，那些字已经在取出前写回。
+         */
+        const ownOctet = (BigInt(RelocateDataFloor) + BigInt(ordinal) * BigInt(RelocateSlotBits)) / 8n;
+        const ownEnd = ownOctet + BigInt(RelocateSlotBits) / 8n;
+        const dropForeign = (): void => {
+          for (const key of sparse.keys()) {
+            if (key < ownOctet || key >= ownEnd) {
+              sparse.delete(key);
+            }
+          }
+          for (const key of pages.keys()) {
+            if (key < ownOctet || key >= ownEnd) {
+              pages.delete(key);
+            }
+          }
+        };
+        /*
          * 节拍不足 1 毫秒时不会挂起，所以每拍结束仍要让出一次宏任务。
          * 频率高时一拍的预算能到 10 万条。stepNative 在 CPU 线程上同步做完，墙钟往往是一两百毫秒。
          * 固件的 dwell 和别的核心的定时都排在这条线程上。
@@ -896,10 +960,23 @@ export namespace ZerOS {
               if (outcome === "fault") {
                 throw new Error("native instruction failed");
               }
+              if (outcome === "syscall") {
+                await flush();
+                await trapCompat(ordinal, state);
+                waiting = true;
+                return;
+              }
               const applied = await applyEscape(ordinal, state, outcome);
               if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill) {
                 pages.clear();
                 sparse.clear();
+              }
+              if (outcome.opcode === NativeEscapeTake) {
+                const foundSlot = outcome.regs[0];
+                const found = foundSlot === undefined ? 0n : state.reg[foundSlot] ?? 0n;
+                if (found === 1n) {
+                  dropForeign();
+                }
               }
               if (applied === "fault") {
                 throw new Error("native instruction failed");

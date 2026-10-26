@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,7 @@ const EscapeForm kEscape[] = {
     {"munmap", 0x1A, 2},
     {"bound", 0x08, 3},
     {"install", 0x0C, 3},
+    {"admit", 0x1E, 3},
     {"xchg", 0x14, 3},
     {"port.char", 0x17, 3},
     {"query", 0x0B, 4},
@@ -147,8 +149,23 @@ int zapReg(const std::string& token) {
   if (token.size() != 2 || token[0] != 'r' || token[1] < '0' || token[1] > '7') {
     fail("寄存器无法识别 " + token);
   }
-  static const int map[8] = {0, 1, 2, 6, 7, 8, 9, 10};
+  /* rax、rdi、rsi、rdx、rcx、r8、r9、r10。六个整数参数是 rdi 到 r9，返回值在 rax。 */
+  static const int map[8] = {0, 7, 6, 2, 1, 8, 9, 10};
   return map[token[1] - '0'];
+}
+
+int scaleImmediate(const std::string& token) {
+  uint64_t value = 0;
+  if (!parseUnsigned(token, value) || (value != 1 && value != 2 && value != 4 && value != 8)) {
+    fail("比例只能是 1、2、4、8");
+  }
+  return static_cast<int>(value);
+}
+
+int dispImmediate(const std::string& token) {
+  const int64_t value = static_cast<int64_t>(bitsOf(token));
+  if (value < -128 || value > 127) fail("位移放不进 8 位 " + token);
+  return static_cast<int>(value);
 }
 
 uint32_t jumpIndex(const std::string& token) {
@@ -188,7 +205,7 @@ const WideForm* absoluteAsIndirect(const std::string& name) {
   return nullptr;
 }
 
-enum class Kind { Bias, Restore, Halt, Return, Place, Jump, Call, Absolute, Indirect, Wide, Escape };
+enum class Kind { Bias, Restore, Halt, Return, Place, Jump, Call, Absolute, Indirect, Wide, Escape, Scale };
 
 struct Plan {
   Kind kind = Kind::Halt;
@@ -203,6 +220,7 @@ bool supported(const std::vector<std::string>& parts) {
   if (head == "rsp.bias" || head == "rsp.restore" || head == "halt" || head == "place") return parts.size() == (head == "place" ? 3 : 1);
   if (head == "jmp") return parts.size() == 2;
   if (head == "jz" || head == "jnz" || head == "link" || head == "call") return parts.size() == 3;
+  if (head == "lea" || head == "load.scale" || head == "store.scale") return parts.size() == 6;
   if (absoluteMemory(head)) return parts.size() == 3 && absoluteAsIndirect(head) != nullptr;
   const WideForm* indirect = findIndirect(head);
   if (indirect != nullptr) return parts.size() == 3;
@@ -249,6 +267,12 @@ Plan planOf(const std::vector<std::string>& parts) {
   if (head == "link" || head == "call") {
     if (parts.size() != 3) fail("无法编码 " + head);
     plan.kind = Kind::Call;
+    plan.size = 5;
+    return plan;
+  }
+  if (head == "lea" || head == "load.scale" || head == "store.scale") {
+    if (parts.size() != 6) fail("无法编码 " + head);
+    plan.kind = Kind::Scale;
     plan.size = 5;
     return plan;
   }
@@ -347,6 +371,15 @@ void emitOne(std::vector<uint8_t>& out, const std::vector<std::string>& parts, c
     appendRel(out, at + plan.size, starts[index]);
     return;
   }
+  if (plan.kind == Kind::Scale) {
+    const int scale = scaleImmediate(parts[4]);
+    const int disp = dispImmediate(parts[5]);
+    const int opcode = parts[0] == "store.scale" ? 0x89 : parts[0] == "load.scale" ? 0x8B : 0x8D;
+    const std::vector<uint8_t> bytes = nativeScaled(opcode, zapReg(parts[1]), zapReg(parts[2]), zapReg(parts[3]), scale, disp);
+    if (bytes.size() != static_cast<std::size_t>(plan.size)) fail("无法编码 " + parts[0]);
+    out.insert(out.end(), bytes.begin(), bytes.end());
+    return;
+  }
   if (plan.kind == Kind::Absolute) {
     const WideForm* form = absoluteAsIndirect(parts[0]);
     if (form == nullptr) fail("无法编码 " + parts[0]);
@@ -401,7 +434,31 @@ bool nativeReady(const std::vector<std::string>& lines) {
   return true;
 }
 
-void writeNativeProgram(const std::string& path, const std::vector<std::string>& lines, const std::vector<NativeSymbol>& symbols) {
+bool plainField(const std::string& text) {
+  for (const char item : text) {
+    if (item == '\t' || item == '\n' || item == '\r') return false;
+  }
+  return true;
+}
+
+void writeNativeDebug(const std::string& path, const std::vector<DebugSite>& sites, const std::vector<int>& starts) {
+  if (sites.size() != starts.size()) fail("对照表和指令条数不一致");
+  std::ostringstream text;
+  text << "obr-debug 2\n";
+  for (std::size_t index = 0; index < sites.size(); index += 1) {
+    const DebugSite& site = sites[index];
+    if (!plainField(site.file) || !plainField(site.function)) fail("对照表字段含有制表符或换行");
+    const int64_t bit = (static_cast<int64_t>(12) + starts[index]) * 8;
+    text << bit << '\t' << site.file << '\t' << site.line << '\t' << site.function << '\n';
+  }
+  std::ofstream output(path, std::ios::binary);
+  if (!output) fail("写不出 " + path);
+  const std::string bytes = text.str();
+  output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  if (!output) fail("写不出 " + path);
+}
+
+void writeNativeProgram(const std::string& path, const std::vector<std::string>& lines, const std::vector<NativeSymbol>& symbols, const std::vector<DebugSite>* sites) {
   if (kUi % 8 != 0 || (kUi / 8) % 16 != 0) fail("硬件栈没有按 16 个八位组对齐");
   std::vector<std::vector<std::string>> tokens;
   std::vector<Plan> plans;
@@ -454,6 +511,7 @@ void writeNativeProgram(const std::string& path, const std::vector<std::string>&
   if (!output) fail("写不出 " + path);
   output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
   if (!output) fail("写不出 " + path);
+  if (sites != nullptr) writeNativeDebug(path + ".debug", *sites, starts);
 }
 
 }  // namespace obr

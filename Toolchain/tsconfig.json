@@ -29,5 +29,9 @@
   },
   // npm run typecheck 和 ESLint 用这份。zeros-boot-firmware 的声明在 zap-raw.d.ts，已包含在下面。
   "include": ["../ZerOS-PRO/**/*.ts", "../ZerOS-PRO/**/*.d.ts", "./zap-raw.d.ts"],
-  "exclude": ["../ZerOS-PRO/Hardware/Cpu/Test/NativeImageCheck.ts"]
+  "exclude": [
+    "../ZerOS-PRO/Hardware/Cpu/Test/NativeImageCheck.ts",
+    "../ZerOS-PRO/Hardware/Cpu/Test/NativeBinaryCheck.ts",
+    "../ZerOS-PRO/Hardware/Cpu/Test/ShellEditCheck.ts"
+  ]
 }

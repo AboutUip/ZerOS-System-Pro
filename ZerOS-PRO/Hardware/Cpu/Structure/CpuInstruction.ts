@@ -116,6 +116,7 @@ export namespace ZerOS {
         | { readonly Op: "ldi"; readonly Opcode: number; readonly Register: number; readonly Address: number }
         | { readonly Op: "sti"; readonly Opcode: number; readonly Register: number; readonly Address: number }
         | { readonly Op: "install"; readonly Core: number; readonly Address: number; readonly Length: number }
+        | { readonly Op: "admit"; readonly Core: number; readonly Address: number; readonly Length: number }
         | { readonly Op: "attach"; readonly Destination: number; readonly Core: number; readonly Address: number; readonly Length: number }
         | { readonly Op: "schedule"; readonly Core: number }
         | { readonly Op: "slice"; readonly Count: number }
@@ -630,6 +631,15 @@ export namespace ZerOS {
           }
           return { Op: "install", Core: core, Address: address, Length: length };
         }
+        if (head === "admit" && parts.length === 4) {
+          const core = registerOf(parts[1] ?? "");
+          const address = registerOf(parts[2] ?? "");
+          const length = registerOf(parts[3] ?? "");
+          if (core === null || address === null || length === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "admit", Core: core, Address: address, Length: length };
+        }
         if (head === "attach" && parts.length === 5) {
           const destination = registerOf(parts[1] ?? "");
           const core = registerOf(parts[2] ?? "");
@@ -833,6 +843,9 @@ export namespace ZerOS {
         }
         if (instruction.Op === "install") {
           return `install r${String(instruction.Core)}, r${String(instruction.Address)}, r${String(instruction.Length)}`;
+        }
+        if (instruction.Op === "admit") {
+          return `admit r${String(instruction.Core)}, r${String(instruction.Address)}, r${String(instruction.Length)}`;
         }
         if (instruction.Op === "attach") {
           return `attach r${String(instruction.Destination)}, r${String(instruction.Core)}, r${String(instruction.Address)}, r${String(instruction.Length)}`;

@@ -82,6 +82,7 @@ const NamedCode kNamed[] = {
     {"gpu.accel", 54, 6},
     {"gpu.box", 55, 7},
     {"install", 65, 3},
+    {"admit", 84, 3},
     {"schedule", 66, 1},
     {"slice", 67, 1},
     {"pass", 68, 2},
@@ -550,9 +551,14 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
   if (!unit.pie && !unit.shared && imports.empty() && relocs.empty() && nativeReady(image.lines)) {
     std::vector<NativeSymbol> symbols;
     for (const LinkSite& item : exports) symbols.push_back(NativeSymbol{item.name, item.index});
-    writeNativeProgram(path, image.lines, symbols);
-    if (sites != nullptr) writeDebug(path + ".debug", image.sites);
+    writeNativeProgram(path, image.lines, symbols, sites == nullptr ? nullptr : &image.sites);
     return;
+  }
+  for (const std::string& line : image.lines) {
+    const std::vector<std::string> parts = tokensOf(line);
+    if (!parts.empty() && (parts[0] == "lea" || parts[0] == "load.scale" || parts[0] == "store.scale")) {
+      fail("按比例访存写不进原来的映像");
+    }
   }
   const bool linked = unit.shared || unit.pie || !exports.empty() || !imports.empty();
   std::vector<std::string> lines = image.lines;

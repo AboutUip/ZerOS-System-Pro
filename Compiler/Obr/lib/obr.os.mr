@@ -29,6 +29,8 @@ deRfun munmap(long address, long length): void;
 deRfun core(): long;
 /* 把一段程序映像装到另一颗已停止的核心。 */
 deRfun install(long core, long address, long length): void;
+/* 让一颗已停止的核心进入兼容任务。描述符 32 个八位组。全机同时一份。 */
+deRfun admit(long core, long address, long length): void;
 /* 设置另一颗核心的 Hz。 */
 deRfun hertz(long core, long hz): void;
 /* 把已停止核心抄进 0 至 7 号槽。槽里还有别人读不到的已写入八位组。 */

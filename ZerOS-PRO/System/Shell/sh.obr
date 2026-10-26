@@ -1,151 +1,765 @@
-/* 从标准输入读一行，再派生。用 -pie -slot 0 编译，放到 /os/sh。
-   一行里没有空格，就是要跑的路径。
-   中间一个 >、< 或 |，后面是另一个路径：分别是写到文件、从文件读、接成管道。
-   读不到标准输入就停在让出上，终端留着。没有内置命令。没有键盘时，调用者先把这一行放进 0 号描述符。 */
+/* 交互式 shell。用 -pie -slot 0 编译，和 edit.obr 一起放到 /os/sh。
+   提示符是 root@zeros:、当前目录、再加 # 。行编辑在用户态，内核只交原始按键。
+   内置 echo、cd、pwd、exit、history、clear。$? 只在整词、且这个词没有单引号字节时换成上一条状态。
+   管道和重定向由这里改描述符。外部程序仍只按路径派生，参数留在拆词里，不另造调用栈。
+   名字里没有 / 时先找 /os，再找 /kernel。打不开控制台就停在让出上，监督核才认得出这份任务。 */
 import memory;
 import obr.os;
 import obr.proc;
+import edit;
 
-deRfun skip(long home, long got, long index): long {
-  while (index < got) {
-    long value = memory::loadOctet(obr::proc::bytes(home) + index * 8L);
-    if (value != 32L && value != 10L) {
-      return index;
-    }
-    index = index + 1L;
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
   }
-  return index;
+  return value;
 }
 
-deRfun token(long home, long got, long index, long* count): long {
-  long start = index;
-  while (index < got) {
-    long value = memory::loadOctet(obr::proc::bytes(home) + index * 8L);
-    if (value == 32L || value == 10L) {
-      *count = index - start;
-      return start;
-    }
-    index = index + 1L;
-  }
-  *count = index - start;
-  return start;
+deRfun lineBytes(long state): long {
+  return state + 4096L;
 }
 
-deRfun plant(long home, long from, long count): void {
-  memory::store64(count, obr::proc::path(home));
-  long index = 0L;
-  while (index < count) {
-    long value = memory::loadOctet(obr::proc::bytes(home) + (from + index) * 8L);
-    memory::storeOctet(value, obr::proc::path(home) + 64L + index * 8L);
-    index = index + 1L;
-  }
-}
-
-deRfun launch(long home, long from, long count): long {
-  plant(home, from, count);
-  return obr::proc::spawn(home, 0L);
-}
-
-/* 先占住 0 或 1，再派生。壳自己马上结束，不必把原来的描述符救回来。 */
-deRfun steer(long home, long cmdFrom, long cmdCount, long argFrom, long argCount, long flags, long target): long {
-  plant(home, argFrom, argCount);
-  long opened = obr::proc::open(home, flags);
-  if (opened != 0L) {
-    return opened;
-  }
-  long fd = obr::proc::slot(home, 192L);
-  long status = obr::proc::dup2(home, fd, target);
-  if (status != 0L) {
-    return status;
-  }
-  if (fd != target) {
-    obr::proc::close(home, fd);
-  }
-  return launch(home, cmdFrom, cmdCount);
-}
-
-/* 左边的标准输出接右边的标准输入。父任务关掉自己那份写端，右边才能在左边结束时读到 0。 */
-deRfun pipeTo(long home, long leftFrom, long leftCount, long rightFrom, long rightCount): long {
-  long status = obr::proc::pipe(home);
-  if (status != 0L) {
-    return status;
-  }
-  long reading = obr::proc::slot(home, 128L);
-  long writing = obr::proc::slot(home, 192L);
-  if (writing != 1L) {
-    status = obr::proc::dup2(home, writing, 1L);
-    if (status != 0L) {
-      return status;
-    }
-    obr::proc::close(home, writing);
-  }
-  status = launch(home, leftFrom, leftCount);
-  if (status != 0L) {
-    return status;
-  }
-  obr::proc::close(home, 1L);
-  if (reading != 0L) {
-    status = obr::proc::dup2(home, reading, 0L);
-    if (status != 0L) {
-      return status;
-    }
-    obr::proc::close(home, reading);
-  }
-  return launch(home, rightFrom, rightCount);
-}
-
-/* 没有一行可解析。不退出，监督核才能认出这份任务并铺上终端。 */
 deRfun linger(): void {
   while (1) {
     obr::os::yield();
   }
 }
 
+/* 工作区：目录、整理用的两段、重画缓冲、上一行的列数、子任务和管道两端。 */
+deRfun cwdLenAt(long work): long {
+  return work;
+}
+
+deRfun cwdAt(long work): long {
+  return work + 64L;
+}
+
+deRfun destAt(long work): long {
+  return work + 4160L;
+}
+
+deRfun scratchAt(long work): long {
+  return work + 8256L;
+}
+
+deRfun paintAt(long work): long {
+  return work + 12352L;
+}
+
+deRfun prevAt(long work): long {
+  return work + 28736L;
+}
+
+deRfun pidAt(long work, long index): long {
+  return work + 28800L + index * 64L;
+}
+
+deRfun pipeReadAt(long work, long index): long {
+  return work + 29824L + index * 64L;
+}
+
+deRfun pipeWriteAt(long work, long index): long {
+  return work + 30848L + index * 64L;
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun columns(long addr, long count): long {
+  long index = 0L;
+  long total = 0L;
+  while (index < count) {
+    long value = u8(addr + index * 8L);
+    if (value < 128L || value >= 192L) {
+      total = total + 1L;
+    }
+    index = index + 1L;
+  }
+  return total;
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 1L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeText(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun writeByte(long home, long value): void {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  obr::proc::write(home, 1L, 0L, 1L);
+}
+
+/* 退格是退、空格、再退。一次写完，避免三次系统调用。 */
+deRfun writeBackspace(long home): void {
+  long bytes = obr::proc::bytes(home);
+  memory::storeOctet(8L, bytes);
+  memory::storeOctet(32L, bytes + 8L);
+  memory::storeOctet(8L, bytes + 16L);
+  obr::proc::write(home, 1L, 0L, 3L);
+}
+
+deRfun plantRaw(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun hasSlash(long addr, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) == 47L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun fileKind(long home): long {
+  if (obr::proc::stat(home) != 0L) {
+    return -1L;
+  }
+  return obr::proc::slot(home, 128L);
+}
+
+/* 把相对路径收成绝对路径，写进 dest。成功返回长度，失败返回 -1。 */
+deRfun normalize(long work, long rel, long relLen): long {
+  long got = 0L;
+  long cwdLen = memory::load64(cwdLenAt(work));
+  if (pathNorm(cwdAt(work), cwdLen, rel, relLen, destAt(work), scratchAt(work), &got) != 0L) {
+    return -1L;
+  }
+  return got;
+}
+
+deRfun setCwd(long work, long addr, long count): void {
+  if (count < 1L || count > 512L) {
+    return;
+  }
+  copySpan(addr, cwdAt(work), count);
+  memory::store64(count, cwdLenAt(work));
+}
+
+/* 提示符加当前行，再抹掉变短的尾巴，光标退回到插入点。一次写完。 */
+deRfun paintEdit(long home, long state, long work): void {
+  long paint = paintAt(work);
+  long at = 0L;
+  memory::storeOctet(13L, paint);
+  at = 1L;
+  at = putText(paint, at, "root@zeros:");
+  long cwdLen = memory::load64(cwdLenAt(work));
+  copySpan(cwdAt(work), paint + at * 8L, cwdLen);
+  at = at + cwdLen;
+  at = putText(paint, at, "# ");
+  long promptCols = columns(paint + 8L, at - 1L);
+  long lineLen = editLen(state);
+  copySpan(lineBytes(state), paint + at * 8L, lineLen);
+  long lineCols = columns(lineBytes(state), lineLen);
+  long cursorCols = columns(lineBytes(state), editCursor(state));
+  at = at + lineLen;
+  long shown = promptCols + lineCols;
+  long prev = memory::load64(prevAt(work));
+  long pad = 0L;
+  if (prev > shown) {
+    pad = prev - shown;
+  }
+  long spaces = 0L;
+  while (spaces < pad && at < 2000L) {
+    memory::storeOctet(32L, paint + at * 8L);
+    at = at + 1L;
+    spaces = spaces + 1L;
+  }
+  long backs = pad + (lineCols - cursorCols);
+  long step = 0L;
+  while (step < backs && at < 2000L) {
+    memory::storeOctet(8L, paint + at * 8L);
+    at = at + 1L;
+    step = step + 1L;
+  }
+  writeSpan(home, paint, at);
+  memory::store64(shown, prevAt(work));
+}
+
+/* 普通按键只追加或删掉行尾一个字节。整行重画会把提示符再送一遍，每个八位组都是一次访存。
+   光标不在行尾、或一次删掉不止一个字节时，仍走整行。长度和光标都没变就不画。 */
+deRfun paintStep(long home, long state, long work, long beforeLen, long beforeCur): void {
+  long afterLen = editLen(state);
+  long afterCur = editCursor(state);
+  if (afterLen == beforeLen && afterCur == beforeCur) {
+    return;
+  }
+  if (afterCur == afterLen && beforeCur == beforeLen && afterLen == beforeLen + 1L) {
+    long added = editAt(state, afterLen - 1L);
+    writeByte(home, added);
+    long cols = 1L;
+    if (added >= 128L && added < 192L) {
+      cols = 0L;
+    }
+    memory::store64(memory::load64(prevAt(work)) + cols, prevAt(work));
+    return;
+  }
+  if (afterCur == afterLen && beforeCur == beforeLen && beforeLen > 0L && afterLen == beforeLen - 1L) {
+    writeBackspace(home);
+    long shown = memory::load64(prevAt(work));
+    if (shown > 0L) {
+      memory::store64(shown - 1L, prevAt(work));
+    }
+    return;
+  }
+  paintEdit(home, state, work);
+}
+
+deRfun paintPrompt(long home, long work): void {
+  long paint = paintAt(work);
+  long at = putText(paint, 0L, "root@zeros:");
+  long cwdLen = memory::load64(cwdLenAt(work));
+  copySpan(cwdAt(work), paint + at * 8L, cwdLen);
+  at = at + cwdLen;
+  at = putText(paint, at, "# ");
+  writeSpan(home, paint, at);
+  memory::store64(columns(paint, at), prevAt(work));
+}
+
+deRfun writeMissing(long home, string lead, long addr, long count, string tail): void {
+  writeText(home, lead);
+  writeSpan(home, addr, count);
+  writeText(home, tail);
+}
+
+deRfun doEcho(long home, long work, long cmd): long {
+  long argc = cmdArgc(cmd);
+  long index = 1L;
+  long newline = 1L;
+  while (index < argc && bytesEq(cmdArgAt(cmd, index), cmdArgLen(cmd, index), "-n") == 1L) {
+    newline = 0L;
+    index = index + 1L;
+  }
+  long paint = paintAt(work);
+  long at = 0L;
+  long first = 1L;
+  while (index < argc) {
+    if (first == 0L) {
+      memory::storeOctet(32L, paint + at * 8L);
+      at = at + 1L;
+    }
+    first = 0L;
+    long count = cmdArgLen(cmd, index);
+    copySpan(cmdArgAt(cmd, index), paint + at * 8L, count);
+    at = at + count;
+    index = index + 1L;
+  }
+  if (newline == 1L) {
+    memory::storeOctet(10L, paint + at * 8L);
+    at = at + 1L;
+  }
+  if (at > 0L) {
+    writeSpan(home, paint, at);
+  }
+  return 0L;
+}
+
+deRfun doCd(long home, long work, long cmd): long {
+  long argc = cmdArgc(cmd);
+  if (argc > 2L) {
+    writeText(home, "sh: cd: too many arguments\n");
+    return 1L;
+  }
+  long rel = paintAt(work);
+  long relLen = 1L;
+  memory::storeOctet(47L, rel);
+  if (argc == 2L) {
+    rel = cmdArgAt(cmd, 1L);
+    relLen = cmdArgLen(cmd, 1L);
+  }
+  long got = normalize(work, rel, relLen);
+  if (got < 1L) {
+    writeText(home, "sh: cd: ");
+    writeSpan(home, rel, relLen);
+    writeText(home, ": No such file or directory\n");
+    return 1L;
+  }
+  plantRaw(home, destAt(work), got);
+  long kind = fileKind(home);
+  if (kind != 2L && kind != 4L && kind != 6L) {
+    writeMissing(home, "sh: cd: ", destAt(work), got, ": No such file or directory\n");
+    return 1L;
+  }
+  plantRaw(home, destAt(work), got);
+  if (obr::proc::chdir(home) != 0L) {
+    writeMissing(home, "sh: cd: ", destAt(work), got, ": No such file or directory\n");
+    return 1L;
+  }
+  setCwd(work, destAt(work), got);
+  return 0L;
+}
+
+deRfun doPwd(long home, long work): long {
+  writeSpan(home, cwdAt(work), memory::load64(cwdLenAt(work)));
+  writeByte(home, 10L);
+  return 0L;
+}
+
+deRfun readNum(long addr, long count, long* value): long {
+  if (count < 1L) {
+    return 1L;
+  }
+  long index = 0L;
+  long total = 0L;
+  while (index < count) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 1L;
+    }
+    total = total * 10L + digit - 48L;
+    if (total > 255L) {
+      total = 255L;
+    }
+    index = index + 1L;
+  }
+  *value = total;
+  return 0L;
+}
+
+deRfun doHistory(long home, long state, long work): long {
+  long count = editHistCount(state);
+  long index = 0L;
+  while (index < count) {
+    long got = 0L;
+    if (editHist(state, index, paintAt(work), &got) == 0L) {
+      long number = index + 1L;
+      if (number >= 10L) {
+        writeByte(home, 48L + number / 10L);
+      }
+      writeByte(home, 48L + number % 10L);
+      writeText(home, "  ");
+      writeSpan(home, paintAt(work), got);
+      writeByte(home, 10L);
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun doBuiltin(long home, long state, long work, long cmd, long* leaving): long {
+  long id = builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L));
+  if (id == 1L) {
+    return doEcho(home, work, cmd);
+  }
+  if (id == 2L) {
+    return doCd(home, work, cmd);
+  }
+  if (id == 3L) {
+    return doPwd(home, work);
+  }
+  if (id == 4L) {
+    long code = 0L;
+    if (cmdArgc(cmd) > 1L) {
+      if (readNum(cmdArgAt(cmd, 1L), cmdArgLen(cmd, 1L), &code) != 0L) {
+        writeText(home, "sh: exit: numeric argument required\n");
+      }
+    }
+    *leaving = 1L;
+    return code;
+  }
+  if (id == 5L) {
+    return doHistory(home, state, work);
+  }
+  if (id == 6L) {
+    writeByte(home, 12L);
+    return 0L;
+  }
+  return 127L;
+}
+
+/* 没有斜杠时先 /os 再 /kernel。找到就写进 dest，返回长度。没有返回 -1。 */
+deRfun resolve(long home, long work, long name, long nameLen): long {
+  if (hasSlash(name, nameLen) == 1L) {
+    long got = normalize(work, name, nameLen);
+    if (got < 1L) {
+      return -1L;
+    }
+    plantRaw(home, destAt(work), got);
+    long kind = fileKind(home);
+    if (kind != 1L && kind != 5L) {
+      return -1L;
+    }
+    return got;
+  }
+  long prefix = 0L;
+  while (prefix < 2L) {
+    long at = destAt(work);
+    long filled = 0L;
+    if (prefix == 0L) {
+      filled = putText(at, 0L, "/os/");
+    } else {
+      filled = putText(at, 0L, "/kernel/");
+    }
+    if (filled + nameLen <= 512L) {
+      copySpan(name, at + filled * 8L, nameLen);
+      filled = filled + nameLen;
+      plantRaw(home, at, filled);
+      long kind = fileKind(home);
+      if (kind == 1L || kind == 5L) {
+        return filled;
+      }
+    }
+    prefix = prefix + 1L;
+  }
+  return -1L;
+}
+
+deRfun closeFd(long home, long fd): void {
+  if (fd >= 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+/* 先复制旧的一端，再把新的盖上去。跑完用 restore 放回去。失败返回 -1。 */
+deRfun steer(long home, long fd, long target): long {
+  if (fd < 0L || fd == target) {
+    return -1L;
+  }
+  long saved = obr::proc::dup(home, target);
+  if (saved != 0L) {
+    return -1L;
+  }
+  saved = obr::proc::slot(home, 192L);
+  if (obr::proc::dup2(home, fd, target) != 0L) {
+    closeFd(home, saved);
+    return -1L;
+  }
+  return saved;
+}
+
+deRfun restore(long home, long saved, long target): void {
+  if (saved < 0L) {
+    return;
+  }
+  obr::proc::dup2(home, saved, target);
+  closeFd(home, saved);
+}
+
+deRfun openOnto(long home, long addr, long count, long flags): long {
+  plantRaw(home, addr, count);
+  if (obr::proc::open(home, flags) != 0L) {
+    return -1L;
+  }
+  return obr::proc::slot(home, 192L);
+}
+
+deRfun waitCode(long home, long pid): long {
+  long waited = obr::proc::wait(home, pid);
+  if (waited < 1L) {
+    return 0L;
+  }
+  long code = obr::proc::slot(home, 192L);
+  if (code < 0L) {
+    code = 0L;
+  }
+  if (code > 255L) {
+    code = code % 256L;
+  }
+  return code;
+}
+
+/* 一条列表。外部程序先全部派生，内置命令再在本进程里跑，最后才关掉管道。 */
+deRfun runList(long home, long state, long work, long out, long list, long* leaving): long {
+  long first = listCmd(out, list);
+  long count = listCmdCount(out, list);
+  if (count < 1L || count > 3L) {
+    writeText(home, "sh: too many pipeline stages\n");
+    return 1L;
+  }
+  long pipes = count - 1L;
+  long index = 0L;
+  while (index < pipes) {
+    if (obr::proc::pipe(home) != 0L) {
+      long back = 0L;
+      while (back < index) {
+        closeFd(home, memory::load64(pipeReadAt(work, back)));
+        closeFd(home, memory::load64(pipeWriteAt(work, back)));
+        back = back + 1L;
+      }
+      writeText(home, "sh: pipe failed\n");
+      return 1L;
+    }
+    memory::store64(obr::proc::slot(home, 128L), pipeReadAt(work, index));
+    memory::store64(obr::proc::slot(home, 192L), pipeWriteAt(work, index));
+    index = index + 1L;
+  }
+  long lastStatus = 0L;
+  long lastPid = 0L;
+  long lastExternal = 0L;
+  long pids = 0L;
+  index = 0L;
+  while (index < count) {
+    long cmd = cmdOf(out, first + index);
+    long argc = cmdArgc(cmd);
+    long redir = cmdRedir(cmd);
+    long inFd = -1L;
+    long outFd = -1L;
+    long extra = -1L;
+    if (index > 0L) {
+      inFd = memory::load64(pipeReadAt(work, index - 1L));
+    }
+    if (index + 1L < count) {
+      outFd = memory::load64(pipeWriteAt(work, index));
+    }
+    if (redir == 3L || redir == 1L || redir == 2L) {
+      long flags = 0L;
+      if (redir == 1L) {
+        flags = 1L;
+      }
+      if (redir == 2L) {
+        flags = 3L;
+      }
+      long opened = openOnto(home, cmdRedirAt(cmd), cmdRedirLen(cmd), flags);
+      if (opened < 0L) {
+        writeMissing(home, "sh: ", cmdRedirAt(cmd), cmdRedirLen(cmd), ": No such file or directory\n");
+        lastStatus = 1L;
+        lastExternal = 0L;
+        index = count;
+        continue;
+      }
+      extra = opened;
+      if (redir == 3L) {
+        inFd = opened;
+      } else {
+        outFd = opened;
+      }
+    }
+    if (argc == 0L) {
+      closeFd(home, extra);
+      lastStatus = 0L;
+      lastExternal = 0L;
+      index = index + 1L;
+      continue;
+    }
+    long saveIn = -1L;
+    long saveOut = -1L;
+    long steered = 1L;
+    if (inFd >= 0L && inFd != 0L) {
+      saveIn = steer(home, inFd, 0L);
+      if (saveIn < 0L) {
+        steered = 0L;
+      }
+    }
+    if (steered == 1L && outFd >= 0L && outFd != 1L) {
+      saveOut = steer(home, outFd, 1L);
+      if (saveOut < 0L) {
+        steered = 0L;
+      }
+    }
+    if (extra >= 0L && extra != 0L && extra != 1L) {
+      closeFd(home, extra);
+    }
+    if (steered == 0L) {
+      restore(home, saveIn, 0L);
+      restore(home, saveOut, 1L);
+      writeText(home, "sh: cannot redirect\n");
+      lastStatus = 1L;
+      lastExternal = 0L;
+      index = count;
+      continue;
+    }
+    long id = builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L));
+    if (id != 0L) {
+      lastStatus = doBuiltin(home, state, work, cmd, leaving);
+      lastExternal = 0L;
+    } else {
+      long got = resolve(home, work, cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L));
+      if (got < 1L) {
+        writeMissing(home, "sh: ", cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L), ": command not found\n");
+        lastStatus = 127L;
+        lastExternal = 0L;
+      } else {
+        plantRaw(home, destAt(work), got);
+        if (obr::proc::spawn(home, 0L) != 0L) {
+          writeMissing(home, "sh: ", cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L), ": command not found\n");
+          lastStatus = 127L;
+          lastExternal = 0L;
+        } else {
+          long pid = obr::proc::slot(home, 192L);
+          memory::store64(pid, pidAt(work, pids));
+          pids = pids + 1L;
+          lastPid = pid;
+          lastExternal = 1L;
+          lastStatus = 0L;
+        }
+      }
+    }
+    restore(home, saveIn, 0L);
+    restore(home, saveOut, 1L);
+    if (*leaving == 1L) {
+      index = count;
+    } else {
+      index = index + 1L;
+    }
+  }
+  index = 0L;
+  while (index < pipes) {
+    closeFd(home, memory::load64(pipeReadAt(work, index)));
+    closeFd(home, memory::load64(pipeWriteAt(work, index)));
+    index = index + 1L;
+  }
+  index = 0L;
+  while (index < pids) {
+    long pid = memory::load64(pidAt(work, index));
+    long code = waitCode(home, pid);
+    if (lastExternal == 1L && pid == lastPid) {
+      lastStatus = code;
+    }
+    index = index + 1L;
+  }
+  return lastStatus;
+}
+
+deRfun execute(long home, long state, long work, long out, long previous, long* leaving): long {
+  long status = previous;
+  if (parseLine(lineBytes(state), editLen(state), out, previous) != 0L) {
+    writeText(home, "sh: syntax error\n");
+    return 2L;
+  }
+  long lists = listCount(out);
+  long index = 0L;
+  while (index < lists) {
+    long join = listJoiner(out, index);
+    long run = 1L;
+    if (join == 1L && status != 0L) {
+      run = 0L;
+    }
+    if (join == 2L && status == 0L) {
+      run = 0L;
+    }
+    if (run == 1L) {
+      status = runList(home, state, work, out, index, leaving);
+      if (*leaving == 1L) {
+        return status;
+      }
+    }
+    index = index + 1L;
+  }
+  if (status < 0L) {
+    status = 0L;
+  }
+  if (status > 255L) {
+    status = 255L;
+  }
+  return status;
+}
+
+deRfun attach(long home): long {
+  if (putText(obr::proc::path(home) + 64L, 0L, "/dev/con") < 1L) {
+    return 1L;
+  }
+  memory::store64(8L, obr::proc::path(home));
+  long opened = obr::proc::open(home, 2L);
+  if (opened != 0L) {
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  if (obr::proc::dup2(home, fd, 0L) != 0L || obr::proc::dup2(home, fd, 1L) != 0L || obr::proc::dup2(home, fd, 2L) != 0L) {
+    return 1L;
+  }
+  if (fd > 2L) {
+    obr::proc::close(home, fd);
+  }
+  return 0L;
+}
+
 deRfun main(): int {
   long home = obr::proc::home();
-  long status = obr::proc::read(home, 0L, 0L, 64L);
-  if (status != 0L) {
+  if (attach(home) != 0L) {
     linger();
     return 0;
   }
-  long got = obr::proc::slot(home, 320L);
-  if (got < 1L) {
+  long state = obr::proc::alloc(home, 131072L);
+  long out = obr::proc::alloc(home, 131072L);
+  long work = obr::proc::alloc(home, 65536L);
+  if (state == 0L || out == 0L || work == 0L) {
     linger();
     return 0;
   }
-  long index = skip(home, got, 0L);
-  if (index >= got) {
-    return 0;
-  }
-  long cmdCount = 0L;
-  long cmdFrom = token(home, got, index, &cmdCount);
-  if (cmdCount < 1L) {
-    return 0;
-  }
-  index = skip(home, got, cmdFrom + cmdCount);
-  if (index >= got) {
-    launch(home, cmdFrom, cmdCount);
-    return 0;
-  }
-  long opCount = 0L;
-  long opFrom = token(home, got, index, &opCount);
-  index = skip(home, got, opFrom + opCount);
-  long argCount = 0L;
-  long argFrom = token(home, got, index, &argCount);
-  if (opCount != 1L || argCount < 1L) {
-    return 0;
-  }
-  long op = memory::loadOctet(obr::proc::bytes(home) + opFrom * 8L);
-  if (op == 62L) {
-    steer(home, cmdFrom, cmdCount, argFrom, argCount, 1L, 1L);
-    return 0;
-  }
-  if (op == 60L) {
-    steer(home, cmdFrom, cmdCount, argFrom, argCount, 0L, 0L);
-    return 0;
-  }
-  if (op == 124L) {
-    pipeTo(home, cmdFrom, cmdCount, argFrom, argCount);
+  editInit(state);
+  memory::storeOctet(47L, cwdAt(work));
+  memory::store64(1L, cwdLenAt(work));
+  memory::store64(0L, prevAt(work));
+  paintPrompt(home, work);
+  long code = 0L;
+  while (1) {
+    long status = obr::proc::read(home, 0L, 0L, 1L);
+    if (status != 0L) {
+      linger();
+      return 0;
+    }
+    if (obr::proc::slot(home, 320L) < 1L) {
+      return 0;
+    }
+    long unit = u8(obr::proc::bytes(home));
+    long beforeLen = editLen(state);
+    long beforeCur = editCursor(state);
+    long action = editFeed(state, unit);
+    if (action == 1L) {
+      writeByte(home, 10L);
+      long leaving = 0L;
+      code = execute(home, state, work, out, code, &leaving);
+      editClear(state);
+      if (leaving == 1L) {
+        return 0;
+      }
+      paintPrompt(home, work);
+    } else if (action == 2L) {
+      return 0;
+    } else if (action == 3L) {
+      writeText(home, "^C\n");
+      paintPrompt(home, work);
+    } else if (action == 4L) {
+      writeByte(home, 12L);
+      memory::store64(0L, prevAt(work));
+      paintEdit(home, state, work);
+    } else {
+      paintStep(home, state, work, beforeLen, beforeCur);
+    }
   }
   return 0;
 }

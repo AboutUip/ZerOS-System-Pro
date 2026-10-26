@@ -37,6 +37,8 @@ export namespace ZerOS {
       const RelocateDataFloor = CpuConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
       const SandboxConfig = SandboxConfigRoot.Hardware.Sandbox.SandboxConfig;
       const LineBits = CpuConfigRoot.Hardware.Cpu.Config.LineBits;
+      const MapEndBits = CpuConfigRoot.Hardware.Cpu.Config.MapEndBits;
+      const CompatTailBits = CpuConfigRoot.Hardware.Cpu.Config.CompatTailBits;
       const UnitCount = MemoryConfigRoot.Hardware.Memory.Config.UnitCount;
       const UnitSizeBytes = MemoryConfigRoot.Hardware.Memory.Config.UnitSizeBytes;
       const BitsPerByte = MemoryConfigRoot.Hardware.Memory.Config.BitsPerByte;
@@ -149,12 +151,17 @@ export namespace ZerOS {
           fail("映像暂存越出位元线");
         }
         /*
-         * 映射区从最后一颗核心的窗口终点开始，到整条位元线为止。
-         * 入口划给客核心的跨度必须小于一槽，最后一颗客核心才碰不到这一段。
+         * 映射区从最后一颗核心的窗口终点开始，到 MapEndBits 为止。
+         * 后面 CompatTailBits 是兼容尾区，字体和 mmap 都不进那里。
+         * 入口划给客核心的跨度必须小于一槽，最后一颗客核心才碰不到映射区。
          */
         const arenaOrigin = dataFloor + widen(OfficialCoreCount) * slotBits;
+        const mapEnd = widen(MapEndBits);
         const fontBits = widen(FontFileOctets) * widen(BitsPerByte);
         const granted = windowLimit - windowOrigin;
+        if (lineBits !== mapEnd + widen(CompatTailBits) || mapEnd <= arenaOrigin) {
+          fail("兼容尾区没有接在映射区后面");
+        }
         if (arenaOrigin <= windowLimit || stageOrigin + widen(KernelWindow.ImageStageBits) > arenaOrigin) {
           fail("映射区压到内核窗口或映像暂存");
         }
@@ -162,7 +169,7 @@ export namespace ZerOS {
           fail("入口划定的跨度盖过了下一颗核心");
         }
         const lastGuest = dataFloor + (widen(OfficialCoreCount) - 1) * slotBits + granted;
-        if (lastGuest > arenaOrigin || lineBits < arenaOrigin + fontBits) {
+        if (lastGuest > arenaOrigin || mapEnd < arenaOrigin + fontBits) {
           fail("映射区放不下一份最大的字体文件，或最后一颗核心写了进去");
         }
         const core4Stack = widen(KernelWindow.CompilerStack) + (resident + 2) * slotBits;
@@ -195,10 +202,11 @@ export namespace ZerOS {
           widen(64 * 4096 * 8) +
           widen(16 * 768 + 16 * 2 * 4096 * 8);
         const memEndOffset = vfsEndOffset + widen(128 * 64) + widen(6) * widen(1048576) * widen(8);
+        const gridBits = widen(253952);
         const memEnd = windowOrigin + memEndOffset;
         const stack2 = widen(KernelWindow.CompilerStack) + resident * slotBits;
-        if (memEnd >= stack2 || memEnd >= windowLimit) {
-          fail("内存文件正文写进了编译器栈");
+        if (memEnd + gridBits >= stack2 || memEnd + gridBits >= windowLimit) {
+          fail("终端格子写进了编译器栈");
         }
         const span = windowLimit - windowOrigin;
         const imageBits = slotBits - span;

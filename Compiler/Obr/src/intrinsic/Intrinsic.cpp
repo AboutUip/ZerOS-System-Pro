@@ -55,6 +55,7 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"obr::os::munmap", "munmap", TypeKind::Void, 2, 0, false, false},
       {"obr::os::core", "core", TypeKind::Long, 0, 1, false, false},
       {"obr::os::install", "install", TypeKind::Void, 3, 0, false, false},
+      {"obr::os::admit", "admit", TypeKind::Void, 3, 0, false, false},
       {"obr::os::hertz", "hertz", TypeKind::Void, 2, 0, false, false},
       {"obr::os::capture", "capture", TypeKind::Void, 2, 0, false, false},
       {"obr::os::restore", "restore", TypeKind::Void, 2, 0, false, false},

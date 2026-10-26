@@ -1,0 +1,329 @@
+/* 行编辑、拆词和路径的自检。编成原生映像后由宿主核对三格：用例数、失败数、第一处失败。
+   不进引导，也不打开终端。 */
+import memory;
+import edit;
+
+deRfun stateAt(): long {
+  return 4194304L;
+}
+
+deRfun outAt(): long {
+  return 4718592L;
+}
+
+deRfun blobAt(): long {
+  return 5242880L;
+}
+
+deRfun expect(boolean ok, long id): void {
+  static long cases = 0L;
+  static long fails = 0L;
+  static long first = 0L;
+  cases = cases + 1L;
+  if (!ok) {
+    if (first == 0L) {
+      first = id;
+    }
+    fails = fails + 1L;
+  }
+  memory::store64(cases, 2097152L);
+  memory::store64(fails, 2097216L);
+  memory::store64(first, 2097280L);
+}
+
+deRfun plant(long addr, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + index * 8L);
+    index = index + 1;
+  }
+  long count = raw;
+  return count;
+}
+
+deRfun lineIs(long state, string text): long {
+  return bytesEq(state + 4096L, editLen(state), text);
+}
+
+deRfun feedText(long state, string text): long {
+  int raw = length(text);
+  int index = 0;
+  long action = 0L;
+  while (index < raw) {
+    long value = text[index];
+    action = editFeed(state, value);
+    index = index + 1;
+  }
+  return action;
+}
+
+deRfun editCases(): void {
+  long state = stateAt();
+  editInit(state);
+  expect(editFeed(state, 97L) == 0L && lineIs(state, "a") == 1L && editCursor(state) == 1L, 1L);
+  expect(editFeed(state, 98L) == 0L && lineIs(state, "ab") == 1L && editCursor(state) == 2L, 2L);
+  expect(editFeed(state, 1L) == 0L && editCursor(state) == 0L, 3L);
+  expect(editFeed(state, 88L) == 0L && lineIs(state, "Xab") == 1L && editCursor(state) == 1L, 4L);
+  expect(editFeed(state, 127L) == 0L && lineIs(state, "ab") == 1L && editCursor(state) == 0L, 5L);
+  expect(editFeed(state, 5L) == 0L && editCursor(state) == 2L, 6L);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 68L) == 0L && editCursor(state) == 1L, 7L);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 67L) == 0L && editCursor(state) == 2L, 8L);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 67L) == 0L && editCursor(state) == 2L, 9L);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 68L) == 0L, 10L);
+  expect(editFeed(state, 1L) == 0L && editCursor(state) == 0L, 11L);
+  expect(editFeed(state, 127L) == 0L && lineIs(state, "ab") == 1L, 12L);
+  editClear(state);
+  expect(feedText(state, "hello") == 0L && editFeed(state, 23L) == 0L && editLen(state) == 0L, 13L);
+  editClear(state);
+  expect(feedText(state, "ab cd") == 0L && editFeed(state, 23L) == 0L && lineIs(state, "ab ") == 1L, 14L);
+  editClear(state);
+  expect(feedText(state, "abcd") == 0L, 15L);
+  editFeed(state, 1L);
+  editFeed(state, 27L);
+  editFeed(state, 91L);
+  editFeed(state, 67L);
+  editFeed(state, 27L);
+  editFeed(state, 91L);
+  editFeed(state, 67L);
+  expect(editCursor(state) == 2L && editFeed(state, 11L) == 0L && lineIs(state, "ab") == 1L, 16L);
+  editClear(state);
+  expect(feedText(state, "abcd") == 0L && editFeed(state, 21L) == 0L && editLen(state) == 0L, 17L);
+  editClear(state);
+  expect(feedText(state, "ab") == 0L && editFeed(state, 1L) == 0L && editFeed(state, 4L) == 0L && lineIs(state, "b") == 1L && editCursor(state) == 0L, 18L);
+  editClear(state);
+  expect(editFeed(state, 4L) == 2L, 19L);
+  editClear(state);
+  expect(feedText(state, "z") == 0L && editFeed(state, 3L) == 3L && editLen(state) == 0L, 20L);
+  editClear(state);
+  expect(feedText(state, "keep") == 0L && editFeed(state, 12L) == 4L && lineIs(state, "keep") == 1L, 21L);
+  editClear(state);
+  expect(editFeed(state, 9L) == 0L && editLen(state) == 0L, 22L);
+  editClear(state);
+  expect(editFeed(state, 10L) == 1L && editHistCount(state) == 0L, 23L);
+  editClear(state);
+  expect(feedText(state, "ls") == 0L && editFeed(state, 10L) == 1L && editHistCount(state) == 1L, 24L);
+  expect(editFeed(state, 10L) == 1L && editHistCount(state) == 1L, 25L);
+  editClear(state);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 65L) == 0L && lineIs(state, "ls") == 1L, 26L);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 66L) == 0L && editLen(state) == 0L, 27L);
+  editClear(state);
+  feedText(state, "one");
+  editFeed(state, 10L);
+  editClear(state);
+  feedText(state, "two");
+  editFeed(state, 10L);
+  editClear(state);
+  editFeed(state, 27L);
+  editFeed(state, 91L);
+  editFeed(state, 65L);
+  expect(lineIs(state, "two") == 1L, 28L);
+  editFeed(state, 27L);
+  editFeed(state, 91L);
+  editFeed(state, 65L);
+  expect(lineIs(state, "one") == 1L, 29L);
+  editFeed(state, 120L);
+  expect(lineIs(state, "onex") == 1L, 30L);
+  editClear(state);
+  editFeed(state, 97L);
+  editFeed(state, 1L);
+  editFeed(state, 27L);
+  editFeed(state, 91L);
+  editFeed(state, 51L);
+  editFeed(state, 126L);
+  expect(editLen(state) == 0L, 31L);
+  editClear(state);
+  editFeed(state, 228L);
+  editFeed(state, 184L);
+  editFeed(state, 173L);
+  expect(editLen(state) == 3L && editCursor(state) == 3L, 32L);
+  expect(editFeed(state, 127L) == 0L && editLen(state) == 0L, 33L);
+  editFeed(state, 228L);
+  editFeed(state, 184L);
+  editFeed(state, 173L);
+  editFeed(state, 1L);
+  expect(editCursor(state) == 0L, 34L);
+  editFeed(state, 27L);
+  editFeed(state, 91L);
+  editFeed(state, 67L);
+  expect(editCursor(state) == 3L, 35L);
+  editClear(state);
+  long fill = 0L;
+  while (fill < 240L) {
+    editFeed(state, 97L);
+    fill = fill + 1L;
+  }
+  expect(editLen(state) == 240L && editFeed(state, 98L) == 0L && editLen(state) == 240L, 36L);
+  editInit(state);
+  long round = 0L;
+  while (round < 33L) {
+    editFeed(state, 65L + round % 26L);
+    editFeed(state, 10L);
+    editClear(state);
+    round = round + 1L;
+  }
+  expect(editHistCount(state) == 32L, 37L);
+  long got = 0L;
+  long dest = blobAt();
+  expect(editHist(state, 0L, dest, &got) == 0L && got == 1L && memory::loadOctet(dest) == 66L, 38L);
+  expect(editHist(state, 31L, dest, &got) == 0L && memory::loadOctet(dest) == 71L, 39L);
+  expect(editHist(state, 32L, dest, &got) == 1L, 40L);
+  editInit(state);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 65L) == 0L && editLen(state) == 0L, 41L);
+  long echoLen = plant(dest, "echo");
+  expect(builtinId(dest, echoLen) == 1L, 42L);
+  editInit(state);
+  expect(feedText(state, "mid") == 0L, 43L);
+  editFeed(state, 1L);
+  editFeed(state, 27L);
+  editFeed(state, 91L);
+  editFeed(state, 67L);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 70L) == 0L && editCursor(state) == 3L, 44L);
+  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 72L) == 0L && editCursor(state) == 0L, 45L);
+  editInit(state);
+  expect(feedText(state, "cr") == 0L && editFeed(state, 13L) == 1L && editHistCount(state) == 1L, 46L);
+  editInit(state);
+  expect(feedText(state, "ab") == 0L && editFeed(state, 8L) == 0L && lineIs(state, "a") == 1L && editCursor(state) == 1L, 47L);
+  editInit(state);
+  expect(feedText(state, "ab") == 0L && editFeed(state, 1L) == 0L && editFeed(state, 4L) == 0L && lineIs(state, "b") == 1L, 48L);
+}
+
+deRfun feedCmd(string text, long status): long {
+  long addr = blobAt();
+  long count = plant(addr, text);
+  return parseLine(addr, count, outAt(), status);
+}
+
+deRfun argIs(long cmd, long index, string text): long {
+  return bytesEq(cmdArgAt(cmd, index), cmdArgLen(cmd, index), text);
+}
+
+deRfun parseCases(): void {
+  long out = outAt();
+  expect(feedCmd("", 0L) == 0L && listCount(out) == 0L, 50L);
+  expect(feedCmd("   ", 0L) == 0L && listCount(out) == 0L, 51L);
+  expect(feedCmd("echo hi", 0L) == 0L && listCount(out) == 1L, 52L);
+  long cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && argIs(cmd, 0L, "echo") == 1L && argIs(cmd, 1L, "hi") == 1L, 53L);
+  expect(builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L)) == 1L, 54L);
+  expect(feedCmd("echo \"hi there\"", 0L) == 0L, 55L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, "hi there") == 1L, 56L);
+  expect(feedCmd("echo 'a b'", 0L) == 0L, 57L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(argIs(cmd, 1L, "a b") == 1L, 58L);
+  expect(feedCmd("echo a\\ b", 0L) == 0L, 59L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, "a b") == 1L, 60L);
+  expect(feedCmd("echo \">\"", 0L) == 0L, 61L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, ">") == 1L && cmdRedir(cmd) == 0L, 62L);
+  expect(feedCmd("echo \"", 0L) == 1L, 63L);
+  expect(feedCmd("echo '", 0L) == 1L, 64L);
+  expect(feedCmd("echo \"\"", 0L) == 0L, 65L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && cmdArgLen(cmd, 1L) == 0L, 66L);
+  expect(feedCmd("cmd > file", 0L) == 0L, 67L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdRedir(cmd) == 1L && cmdRedirLen(cmd) == 4L && bytesEq(cmdRedirAt(cmd), 4L, "file") == 1L, 68L);
+  expect(feedCmd("cmd >> file", 0L) == 0L, 69L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdRedir(cmd) == 2L, 70L);
+  expect(feedCmd("cmd < file", 0L) == 0L, 71L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdRedir(cmd) == 3L, 72L);
+  expect(feedCmd("cmd >", 0L) == 1L, 73L);
+  expect(feedCmd("a | b", 0L) == 0L && listCmdCount(out, 0L) == 2L, 74L);
+  expect(cmdArgc(cmdOf(out, 0L)) == 1L && argIs(cmdOf(out, 1L), 0L, "b") == 1L, 75L);
+  expect(feedCmd("a|b", 0L) == 0L && listCmdCount(out, 0L) == 2L, 76L);
+  expect(feedCmd("a && b", 0L) == 0L && listCount(out) == 2L && listJoiner(out, 1L) == 1L, 77L);
+  expect(feedCmd("a || b", 0L) == 0L && listJoiner(out, 1L) == 2L, 78L);
+  expect(feedCmd("a ; b", 0L) == 0L && listJoiner(out, 1L) == 3L, 79L);
+  expect(feedCmd("a && b | c", 0L) == 0L && listCount(out) == 2L && listCmdCount(out, 1L) == 2L, 80L);
+  expect(feedCmd("echo hi # gone", 0L) == 0L, 81L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, "hi") == 1L, 82L);
+  expect(feedCmd("echo $?", 127L) == 0L, 83L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(argIs(cmd, 1L, "127") == 1L, 84L);
+  expect(feedCmd("echo $?", 0L) == 0L, 85L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(argIs(cmd, 1L, "0") == 1L, 86L);
+  expect(feedCmd("a |", 0L) == 1L, 87L);
+  expect(feedCmd("a & b", 0L) == 1L, 88L);
+  expect(feedCmd("a ; ; b", 0L) == 1L, 89L);
+  expect(feedCmd("a | b > f", 0L) == 0L, 90L);
+  cmd = cmdOf(out, 1L);
+  expect(cmdRedir(cmd) == 1L && bytesEq(cmdRedirAt(cmd), 1L, "f") == 1L, 91L);
+  expect(feedCmd("> f", 0L) == 0L && cmdArgc(cmdOf(out, 0L)) == 0L && cmdRedir(cmdOf(out, 0L)) == 1L, 92L);
+  expect(feedCmd("echo -n hi", 0L) == 0L, 93L);
+  cmd = cmdOf(out, 0L);
+  expect(cmdArgc(cmd) == 3L && argIs(cmd, 1L, "-n") == 1L && argIs(cmd, 2L, "hi") == 1L, 94L);
+  expect(feedCmd("cd /os", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 2L) == 2L, 95L);
+  expect(feedCmd("pwd", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 3L) == 3L, 96L);
+  expect(feedCmd("exit 2", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 4L) == 4L, 97L);
+  expect(feedCmd("history", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 7L) == 5L, 98L);
+  expect(feedCmd("clear", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 5L) == 6L, 99L);
+  expect(feedCmd("echo \"a\\\"b\"", 0L) == 0L && argIs(cmdOf(out, 0L), 1L, "a\"b") == 1L, 100L);
+  expect(feedCmd("echo 'a\\b'", 0L) == 0L && argIs(cmdOf(out, 0L), 1L, "a\\b") == 1L, 101L);
+  expect(feedCmd("echo \"a\\\\b\"", 0L) == 0L && argIs(cmdOf(out, 0L), 1L, "a\\b") == 1L, 102L);
+  expect(feedCmd("echo \"\\$\"", 0L) == 0L && argIs(cmdOf(out, 0L), 1L, "$") == 1L, 103L);
+  expect(feedCmd("echo x$?", 9L) == 0L && argIs(cmdOf(out, 0L), 1L, "x$?") == 1L, 104L);
+  expect(feedCmd("echo \"hi\" # x", 0L) == 0L && cmdArgc(cmdOf(out, 0L)) == 2L, 105L);
+  expect(feedCmd("a &&", 0L) == 1L, 106L);
+  expect(feedCmd("echo \"a\"b", 0L) == 0L && argIs(cmdOf(out, 0L), 1L, "ab") == 1L, 107L);
+  expect(feedCmd("echo \"$?\"", 7L) == 0L && argIs(cmdOf(out, 0L), 1L, "7") == 1L, 108L);
+  expect(feedCmd("# only", 0L) == 0L && listCount(out) == 0L, 109L);
+  expect(feedCmd("a | b | c", 0L) == 0L && listCount(out) == 1L && listCmdCount(out, 0L) == 3L, 126L);
+  expect(argIs(cmdOf(out, 2L), 0L, "c") == 1L, 127L);
+  expect(feedCmd("a | b | c | d | e", 0L) == 0L && listCmdCount(out, 0L) == 5L, 128L);
+  expect(feedCmd("a|a|a|a|a|a|a|a|a|a|a|a|a|a|a|a|a", 0L) == 1L, 139L);
+  expect(feedCmd("echo '$?'", 4L) == 0L && argIs(cmdOf(out, 0L), 1L, "$?") == 1L, 129L);
+  expect(feedCmd("  # c", 0L) == 0L && listCount(out) == 0L, 130L);
+  expect(builtinId(blobAt(), 0L) == 0L, 131L);
+}
+
+deRfun pathIs(string cwd, string rel, string want): long {
+  long base = blobAt();
+  long cwdLen = plant(base, cwd);
+  long relLen = plant(base + 4096L, rel);
+  long got = 0L;
+  long status = pathNorm(base, cwdLen, base + 4096L, relLen, base + 8192L, base + 16384L, &got);
+  if (status != 0L) {
+    return 0L;
+  }
+  return bytesEq(base + 8192L, got, want);
+}
+
+deRfun pathCases(): void {
+  expect(pathIs("/", "", "/") == 1L, 110L);
+  expect(pathIs("/a/b", "c", "/a/b/c") == 1L, 111L);
+  expect(pathIs("/a/b", "../c", "/a/c") == 1L, 112L);
+  expect(pathIs("/a/b", "./c", "/a/b/c") == 1L, 113L);
+  expect(pathIs("/a", "..", "/") == 1L, 114L);
+  expect(pathIs("/a/b", "/c", "/c") == 1L, 115L);
+  expect(pathIs("/a//b", ".", "/a/b") == 1L, 116L);
+  expect(pathIs("/", "..", "/") == 1L, 117L);
+  expect(pathIs("/a/b/c", "../../d", "/a/d") == 1L, 118L);
+  expect(pathIs("/os", "sh", "/os/sh") == 1L, 119L);
+  expect(pathIs("/", "././a", "/a") == 1L, 120L);
+  expect(bytesEq(blobAt(), 0L, "") == 1L, 121L);
+  expect(pathIs("/a/b", "../..", "/") == 1L, 122L);
+  expect(pathIs("/a", "b/../../c", "/c") == 1L, 123L);
+  expect(pathIs("/a/b", "c/./d", "/a/b/c/d") == 1L, 124L);
+  expect(pathIs("/os/sh", ".", "/os/sh") == 1L, 125L);
+  expect(pathIs("/a/", "b", "/a/b") == 1L, 132L);
+  expect(pathIs("", "a", "/a") == 1L, 133L);
+  expect(pathIs("/a/b/", "../c", "/a/c") == 1L, 134L);
+  expect(pathIs("/a/b", "", "/a/b") == 1L, 135L);
+  expect(pathIs("/", "/", "/") == 1L, 136L);
+  expect(pathIs("/a", "././../b", "/b") == 1L, 137L);
+  expect(pathIs("/a/b", "c/../d", "/a/b/d") == 1L, 138L);
+}
+
+deRfun main(): int {
+  editCases();
+  parseCases();
+  pathCases();
+  return 0;
+}

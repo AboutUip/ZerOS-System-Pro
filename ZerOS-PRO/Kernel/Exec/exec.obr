@@ -114,11 +114,158 @@ deRfun loadLib(long caller, long home): long {
   return 0L;
 }
 
+/* 兼容尾区的起点。映射区到这里为止。前 4096 个八位组是陷入帧，任务从 4096 起。 */
+deRfun compatTail(): long {
+  return 2432696320L;
+}
+
+deRfun elfByte(long base, long offset): long {
+  long value = memory::loadOctet(base + offset * 8L);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun elfHalf(long base, long offset): long {
+  return elfByte(base, offset) + elfByte(base, offset + 1L) * 256L;
+}
+
+deRfun elfWord(long base, long offset): long {
+  return memory::load64(base + offset * 8L);
+}
+
+/* 魔数 7F 45 4C 46。不是 ELF 就返回 0，调用方仍走原来的装入。 */
+deRfun elfImage(long base): long {
+  if (memory::loadOctet(base) != 127L) {
+    return 0L;
+  }
+  if (memory::loadOctet(base + 8L) != 69L) {
+    return 0L;
+  }
+  if (memory::loadOctet(base + 16L) != 76L) {
+    return 0L;
+  }
+  if (memory::loadOctet(base + 24L) != 70L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 描述符放在监督核窗口，驱动名字之后。四个字：入口、栈、空间长度、标志。 */
+deRfun compatDesc(): long {
+  return kArena(2L) + 36864L;
+}
+
+/*
+ * 把 ELF64 小端、机器 62、没有解释器的可执行映像抄进尾区，再 admit。
+ * 只接受 PT_LOAD。虚地址要落在 4096 到栈页之前。入口必须在一段可执行的装入里。
+ * 栈页从 16773120 起，里面保持 0，当作空的 argc。失败时还没有 admit。
+ */
+deRfun compatPlace(long core, long base, long bytes): long {
+  if (bytes < 64L) {
+    return 4L;
+  }
+  if (memory::loadOctet(base + 32L) != 2L || memory::loadOctet(base + 40L) != 1L) {
+    return 4L;
+  }
+  long kind = elfHalf(base, 16L);
+  long machine = elfHalf(base, 18L);
+  if ((kind != 2L && kind != 3L) || machine != 62L) {
+    return 4L;
+  }
+  long entry = elfWord(base, 24L);
+  long phoff = elfWord(base, 32L);
+  long phentsize = elfHalf(base, 54L);
+  long phnum = elfHalf(base, 56L);
+  if (phoff < 64L || phentsize < 56L || phnum < 1L || phnum > 32L) {
+    return 4L;
+  }
+  if (phoff + phentsize * phnum > bytes) {
+    return 4L;
+  }
+  long index = 0L;
+  long executable = 0L;
+  while (index < phnum) {
+    long header = base + (phoff + index * phentsize) * 8L;
+    long packed = memory::load64(header);
+    if (packed < 0L) {
+      return 4L;
+    }
+    long type = packed % 4294967296L;
+    long flags = packed / 4294967296L;
+    if (type == 3L) {
+      return 4L;
+    }
+    if (type == 1L) {
+      long offset = memory::load64(header + 64L);
+      long vaddr = memory::load64(header + 128L);
+      long filesz = memory::load64(header + 256L);
+      long memsz = memory::load64(header + 320L);
+      if (offset < 0L || vaddr < 4096L || filesz < 0L || memsz < filesz) {
+        return 4L;
+      }
+      if (vaddr + memsz > 16773120L || offset + filesz > bytes) {
+        return 4L;
+      }
+      if (flags % 2L == 1L && entry >= vaddr && entry < vaddr + memsz) {
+        executable = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (executable == 0L) {
+    return 4L;
+  }
+  index = 0L;
+  while (index < phnum) {
+    long header = base + (phoff + index * phentsize) * 8L;
+    long packed = memory::load64(header);
+    if (packed < 0L) {
+      return 4L;
+    }
+    long type = packed % 4294967296L;
+    if (type == 1L) {
+      long offset = memory::load64(header + 64L);
+      long vaddr = memory::load64(header + 128L);
+      long filesz = memory::load64(header + 256L);
+      long memsz = memory::load64(header + 320L);
+      long cursor = 0L;
+      long dest = compatTail() + vaddr * 8L;
+      long src = base + offset * 8L;
+      while (cursor < filesz) {
+        long value = memory::loadOctet(src + cursor * 8L);
+        if (value < 0L) {
+          value = value + 256L;
+        }
+        memory::storeOctet(value, dest + cursor * 8L);
+        cursor = cursor + 1L;
+      }
+      while (cursor < memsz) {
+        memory::storeOctet(0L, dest + cursor * 8L);
+        cursor = cursor + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  long desc = compatDesc();
+  memory::store64(entry, desc);
+  memory::store64(16773120L, desc + 64L);
+  memory::store64(16777216L, desc + 128L);
+  memory::store64(0L, desc + 192L);
+  obr::os::admit(core, desc, 32L);
+  obr::os::bound(core, kArena(core), kSlot());
+  return 0L;
+}
+
 deRfun placeAt(long path, long core): long {
   long size = 0L;
   long status = pullAt(path, &size);
   if (status != 0L) {
     return status;
+  }
+  if (elfImage(imageAt()) == 1L) {
+    return compatPlace(core, imageAt(), size);
   }
   obr::os::install(core, imageAt(), size);
   obr::os::bound(core, kArena(core), kSlot());
@@ -421,7 +568,7 @@ deRfun bootArm(): void {
 
 /* 1 号还没进入等待时先不放行驱动。它停在 wait 里，或根本没有 1 号，再逐个把放行字写成 1。
    结果写在 537931776：1 表示刚调度了驱动，调用方这时不要让出。
-   任务表在 537985024，每份 1216 位，状态在 +128。Sleeping 是 3。 */
+   任务表在 537985024，每份 1216 位，共 512 份，与 taskLimit 相同。状态在 +128。Sleeping 是 3。 */
 deRfun bootPump(): void {
   __zap__ {
     load.64 r0, 537931456
@@ -434,7 +581,7 @@ deRfun bootPump(): void {
     jnz r1, pumpGo
     place r4, 0
     pumpScan:
-    place r2, 64
+    place r2, 512
     lt r1, r4, r2
     jz r1, pumpGo
     place r2, 1216
@@ -554,8 +701,15 @@ deRfun execSpawn(long caller, long home): long {
   long size = 0L;
   long planted = vfsPlant(caller, home + 16384L, imageAt(), &size);
   if (planted == 0L) {
-    obr::os::install(core, imageAt(), size);
-    obr::os::bound(core, kArena(core), kSlot());
+    if (elfImage(imageAt()) == 1L) {
+      long placed = compatPlace(core, imageAt(), size);
+      if (placed != 0L) {
+        return placed;
+      }
+    } else {
+      obr::os::install(core, imageAt(), size);
+      obr::os::bound(core, kArena(core), kSlot());
+    }
   } else if (planted != 1L) {
     return planted;
   } else {
@@ -588,7 +742,8 @@ deRfun execSpawn(long caller, long home): long {
   child.cred.egid = parent.cred.egid;
   child.cap = parent.cap;
   vfsHand(taskIndex, taskByPid(pid));
-  /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。 */
+  /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。
+     再拉到 100000000 测过，按键仍是大约一秒，时间不在客程序的节拍上。 */
   if (isSession(home + 16384L) == 1L) {
     obr::os::hertz(core, 30L);
   } else {

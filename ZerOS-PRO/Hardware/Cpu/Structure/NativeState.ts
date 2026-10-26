@@ -29,6 +29,7 @@ export namespace ZerOS {
       /**
        * 16 个整数寄存器、线性位地址上的指令指针，以及五个条件码。
        * 寄存器里当作指针使用的值是八位组地址，不是位地址。
+       * compat 为真时，寄存器里的地址是兼容任务的用户八位组地址。
        */
       export interface NativeState {
         reg: bigint[];
@@ -38,6 +39,10 @@ export namespace ZerOS {
         sf: boolean;
         of: boolean;
         pf: boolean;
+        /** 这份帧属于兼容任务。原生程序保持假。 */
+        compat: boolean;
+        /** 兼容任务的 fs 基址。原生程序保持 0。 */
+        fsbase: bigint;
       }
 
       /** 调用方按位地址提供存储。越界由执行循环判失败，不在这里抛错。 */
@@ -64,7 +69,7 @@ export namespace ZerOS {
         readonly next: bigint;
       }
 
-      export type NativeStep = "cont" | "halt" | "fault" | NativeEscape;
+      export type NativeStep = "cont" | "halt" | "fault" | "syscall" | NativeEscape;
 
       /** 寄存器和条件码清零。指令指针由调用方给定。 */
       export function freshNativeState(rip: bigint): NativeState {
@@ -72,7 +77,7 @@ export namespace ZerOS {
         for (let index = 0; index < NativeRegisterCount; index += 1) {
           reg.push(0n);
         }
-        return { reg, rip, cf: false, zf: false, sf: false, of: false, pf: false };
+        return { reg, rip, cf: false, zf: false, sf: false, of: false, pf: false, compat: false, fsbase: 0n };
       }
     }
   }

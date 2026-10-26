@@ -1,0 +1,919 @@
+/* 一行编辑和 bash 这一档的拆词。状态由调用方提供，测试和 shell 各放一份。
+   不读键盘，也不写屏幕。feed 的 unit 是一个八位组：可打印、控制、或方向键的 ESC 序列。
+   一行最多 240 个八位组。历史 32 条，空行和与上一条相同的不记。
+   字 0 长度，1 光标，2 历史条数，3 历史游标（-1 是正在打的新行），4 暂存长度，5 转义状态。
+   正文从 +4096 起。暂存从 +6144 起。历史从 +8192 起，每条 64 位长度加 256 个八位组。 */
+#LINK /sh.obr, /edit-check.obr
+import memory;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun editLen(long state): long {
+  return memory::load64(state);
+}
+
+deRfun editCursor(long state): long {
+  return memory::load64(state + 64L);
+}
+
+deRfun lineAt(long state): long {
+  return state + 4096L;
+}
+
+deRfun editAt(long state, long index): long {
+  if (index < 0L || index >= editLen(state)) {
+    return 0L;
+  }
+  return u8(lineAt(state) + index * 8L);
+}
+
+deRfun stashAt(long state): long {
+  return state + 6144L;
+}
+
+deRfun histAt(long state, long index): long {
+  return state + 8192L + index * 2112L;
+}
+
+deRfun editHistCount(long state): long {
+  return memory::load64(state + 128L);
+}
+
+deRfun editInit(long state): void {
+  memory::store64(0L, state);
+  memory::store64(0L, state + 64L);
+  memory::store64(0L, state + 128L);
+  memory::store64(-1L, state + 192L);
+  memory::store64(0L, state + 256L);
+  memory::store64(0L, state + 320L);
+}
+
+deRfun editClear(long state): void {
+  memory::store64(0L, state);
+  memory::store64(0L, state + 64L);
+  memory::store64(-1L, state + 192L);
+  memory::store64(0L, state + 320L);
+}
+
+deRfun putByte(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+deRfun copyBytes(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putByte(to, index, u8(from + index * 8L));
+    index = index + 1L;
+  }
+}
+
+/* 光标左边一个码点的起点。续字节是 128 到 191。 */
+deRfun seqBack(long state, long index): long {
+  while (index > 0L) {
+    long value = editAt(state, index - 1L);
+    if (value < 128L || value >= 192L) {
+      return index - 1L;
+    }
+    index = index - 1L;
+  }
+  return 0L;
+}
+
+deRfun seqForward(long state, long index): long {
+  long len = editLen(state);
+  if (index >= len) {
+    return len;
+  }
+  long value = editAt(state, index);
+  long step = 1L;
+  if (value >= 192L && value < 224L) {
+    step = 2L;
+  } else if (value >= 224L && value < 240L) {
+    step = 3L;
+  } else if (value >= 240L) {
+    step = 4L;
+  }
+  if (index + step > len) {
+    return len;
+  }
+  return index + step;
+}
+
+deRfun editInsert(long state, long value): void {
+  long len = editLen(state);
+  long cur = editCursor(state);
+  if (len >= 240L || value < 0L || value > 255L) {
+    return;
+  }
+  long at = len;
+  while (at > cur) {
+    putByte(lineAt(state), at, editAt(state, at - 1L));
+    at = at - 1L;
+  }
+  putByte(lineAt(state), cur, value);
+  memory::store64(len + 1L, state);
+  memory::store64(cur + 1L, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+deRfun editDrop(long state, long from, long to): void {
+  long len = editLen(state);
+  if (from < 0L || to < from || to > len) {
+    return;
+  }
+  long gap = to - from;
+  long index = from;
+  while (index + gap < len) {
+    putByte(lineAt(state), index, editAt(state, index + gap));
+    index = index + 1L;
+  }
+  memory::store64(len - gap, state);
+  memory::store64(from, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun histRemember(long state): void {
+  long len = editLen(state);
+  if (len < 1L) {
+    return;
+  }
+  long count = editHistCount(state);
+  if (count > 0L) {
+    long last = histAt(state, count - 1L);
+    if (sameSpan(lineAt(state), len, last + 64L, memory::load64(last)) == 1L) {
+      return;
+    }
+  }
+  if (count >= 32L) {
+    long index = 0L;
+    while (index < 31L) {
+      long from = histAt(state, index + 1L);
+      long into = histAt(state, index);
+      long got = memory::load64(from);
+      memory::store64(got, into);
+      copyBytes(from + 64L, into + 64L, got);
+      index = index + 1L;
+    }
+    count = 31L;
+  }
+  long slot = histAt(state, count);
+  memory::store64(len, slot);
+  copyBytes(lineAt(state), slot + 64L, len);
+  memory::store64(count + 1L, state + 128L);
+}
+
+deRfun histLoad(long state, long index): void {
+  long slot = histAt(state, index);
+  long got = memory::load64(slot);
+  if (got < 0L || got > 240L) {
+    got = 0L;
+  }
+  copyBytes(slot + 64L, lineAt(state), got);
+  memory::store64(got, state);
+  memory::store64(got, state + 64L);
+}
+
+deRfun stashSave(long state): void {
+  long len = editLen(state);
+  memory::store64(len, state + 256L);
+  copyBytes(lineAt(state), stashAt(state), len);
+}
+
+deRfun stashLoad(long state): void {
+  long got = memory::load64(state + 256L);
+  if (got < 0L || got > 240L) {
+    got = 0L;
+  }
+  copyBytes(stashAt(state), lineAt(state), got);
+  memory::store64(got, state);
+  memory::store64(got, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+deRfun editHist(long state, long index, long dest, long* count): long {
+  if (index < 0L || index >= editHistCount(state)) {
+    *count = 0L;
+    return 1L;
+  }
+  long slot = histAt(state, index);
+  long got = memory::load64(slot);
+  *count = got;
+  copyBytes(slot + 64L, dest, got);
+  return 0L;
+}
+
+deRfun moveLeft(long state): void {
+  long cur = editCursor(state);
+  if (cur < 1L) {
+    return;
+  }
+  memory::store64(seqBack(state, cur), state + 64L);
+}
+
+deRfun moveRight(long state): void {
+  memory::store64(seqForward(state, editCursor(state)), state + 64L);
+}
+
+deRfun moveHome(long state): void {
+  memory::store64(0L, state + 64L);
+}
+
+deRfun moveEnd(long state): void {
+  memory::store64(editLen(state), state + 64L);
+}
+
+deRfun rubWord(long state): void {
+  long cur = editCursor(state);
+  long at = cur;
+  while (at > 0L && editAt(state, at - 1L) == 32L) {
+    at = at - 1L;
+  }
+  while (at > 0L && editAt(state, at - 1L) != 32L) {
+    at = seqBack(state, at);
+  }
+  if (at < cur) {
+    editDrop(state, at, cur);
+  }
+}
+
+deRfun killEnd(long state): void {
+  memory::store64(editCursor(state), state);
+  memory::store64(-1L, state + 192L);
+}
+
+deRfun killStart(long state): void {
+  long cur = editCursor(state);
+  if (cur > 0L) {
+    editDrop(state, 0L, cur);
+  }
+}
+
+deRfun histUp(long state): void {
+  long count = editHistCount(state);
+  if (count < 1L) {
+    return;
+  }
+  long pos = memory::load64(state + 192L);
+  if (pos < 0L) {
+    stashSave(state);
+    memory::store64(count - 1L, state + 192L);
+    histLoad(state, count - 1L);
+    memory::store64(count - 1L, state + 192L);
+    return;
+  }
+  if (pos > 0L) {
+    memory::store64(pos - 1L, state + 192L);
+    histLoad(state, pos - 1L);
+    memory::store64(pos - 1L, state + 192L);
+  }
+}
+
+deRfun histDown(long state): void {
+  long count = editHistCount(state);
+  long pos = memory::load64(state + 192L);
+  if (pos < 0L || count < 1L) {
+    return;
+  }
+  if (pos + 1L >= count) {
+    stashLoad(state);
+    return;
+  }
+  memory::store64(pos + 1L, state + 192L);
+  histLoad(state, pos + 1L);
+  memory::store64(pos + 1L, state + 192L);
+}
+
+deRfun delForward(long state): void {
+  long cur = editCursor(state);
+  long next = seqForward(state, cur);
+  if (next > cur) {
+    editDrop(state, cur, next);
+  }
+}
+
+/* 0 继续。1 提交。2 空行上的 Ctrl-D。3 Ctrl-C。4 Ctrl-L。 */
+deRfun editFeed(long state, long unit): long {
+  if (unit < 0L) {
+    unit = unit + 256L;
+  }
+  long csi = memory::load64(state + 320L);
+  if (csi == 1L) {
+    memory::store64(0L, state + 320L);
+    if (unit == 91L) {
+      memory::store64(2L, state + 320L);
+    }
+    return 0L;
+  }
+  if (csi == 2L) {
+    memory::store64(0L, state + 320L);
+    if (unit == 65L) {
+      histUp(state);
+    } else if (unit == 66L) {
+      histDown(state);
+    } else if (unit == 67L) {
+      moveRight(state);
+    } else if (unit == 68L) {
+      moveLeft(state);
+    } else if (unit == 72L) {
+      moveHome(state);
+    } else if (unit == 70L) {
+      moveEnd(state);
+    } else if (unit == 51L) {
+      memory::store64(3L, state + 320L);
+    }
+    return 0L;
+  }
+  if (csi == 3L) {
+    memory::store64(0L, state + 320L);
+    if (unit == 126L) {
+      delForward(state);
+    }
+    return 0L;
+  }
+  if (unit == 27L) {
+    memory::store64(1L, state + 320L);
+    return 0L;
+  }
+  if (unit == 10L || unit == 13L) {
+    histRemember(state);
+    memory::store64(-1L, state + 192L);
+    return 1L;
+  }
+  if (unit == 127L || unit == 8L) {
+    long cur = editCursor(state);
+    if (cur > 0L) {
+      editDrop(state, seqBack(state, cur), cur);
+    }
+    return 0L;
+  }
+  if (unit == 1L) {
+    moveHome(state);
+    return 0L;
+  }
+  if (unit == 5L) {
+    moveEnd(state);
+    return 0L;
+  }
+  if (unit == 21L) {
+    killStart(state);
+    return 0L;
+  }
+  if (unit == 11L) {
+    killEnd(state);
+    return 0L;
+  }
+  if (unit == 23L) {
+    rubWord(state);
+    return 0L;
+  }
+  if (unit == 3L) {
+    editClear(state);
+    return 3L;
+  }
+  if (unit == 12L) {
+    return 4L;
+  }
+  if (unit == 4L) {
+    if (editLen(state) == 0L) {
+      return 2L;
+    }
+    delForward(state);
+    return 0L;
+  }
+  if (unit == 9L) {
+    return 0L;
+  }
+  if (unit >= 32L && unit < 127L) {
+    editInsert(state, unit);
+  } else if (unit >= 128L) {
+    editInsert(state, unit);
+  }
+  return 0L;
+}
+
+deRfun bytesEq(long addr, long count, string text): long {
+  int raw = length(text);
+  long need = raw;
+  if (need != count) {
+    return 0L;
+  }
+  int index = 0;
+  while (index < raw) {
+    long value = text[index];
+    if (u8(addr + index * 8L) != value) {
+      return 0L;
+    }
+    index = index + 1;
+  }
+  return 1L;
+}
+
+deRfun builtinId(long addr, long count): long {
+  if (bytesEq(addr, count, "echo") == 1L) {
+    return 1L;
+  }
+  if (bytesEq(addr, count, "cd") == 1L) {
+    return 2L;
+  }
+  if (bytesEq(addr, count, "pwd") == 1L) {
+    return 3L;
+  }
+  if (bytesEq(addr, count, "exit") == 1L) {
+    return 4L;
+  }
+  if (bytesEq(addr, count, "history") == 1L) {
+    return 5L;
+  }
+  if (bytesEq(addr, count, "clear") == 1L) {
+    return 6L;
+  }
+  return 0L;
+}
+
+deRfun cmdStride(): long {
+  return 6144L;
+}
+
+deRfun listCount(long out): long {
+  return memory::load64(out);
+}
+
+deRfun listJoiner(long out, long index): long {
+  return memory::load64(out + (1L + index * 3L) * 64L);
+}
+
+deRfun listCmdCount(long out, long index): long {
+  return memory::load64(out + (2L + index * 3L) * 64L);
+}
+
+deRfun listCmd(long out, long index): long {
+  return memory::load64(out + (3L + index * 3L) * 64L);
+}
+
+deRfun cmdOf(long out, long index): long {
+  return out + 4096L + index * cmdStride();
+}
+
+deRfun cmdArgc(long cmd): long {
+  return memory::load64(cmd);
+}
+
+deRfun cmdRedir(long cmd): long {
+  return memory::load64(cmd + 64L);
+}
+
+deRfun cmdRedirLen(long cmd): long {
+  return memory::load64(cmd + 128L);
+}
+
+deRfun cmdRedirAt(long cmd): long {
+  return cmd + 704L;
+}
+
+deRfun cmdArgLen(long cmd, long index): long {
+  return memory::load64(cmd + 192L + index * 64L);
+}
+
+deRfun cmdArgAt(long cmd, long index): long {
+  return cmd + 1728L + index * 512L;
+}
+
+deRfun scratchAt(long out): long {
+  return out + 110592L;
+}
+
+deRfun parseClear(long out): void {
+  memory::store64(0L, out);
+  long index = 0L;
+  while (index < 16L) {
+    memory::store64(0L, cmdOf(out, index));
+    memory::store64(0L, cmdOf(out, index) + 64L);
+    memory::store64(0L, cmdOf(out, index) + 128L);
+    index = index + 1L;
+  }
+}
+
+deRfun putDigits(long addr, long value): long {
+  if (value < 0L) {
+    value = 0L;
+  }
+  if (value > 255L) {
+    value = 255L;
+  }
+  if (value < 10L) {
+    putByte(addr, 0L, 48L + value);
+    return 1L;
+  }
+  if (value < 100L) {
+    putByte(addr, 0L, 48L + value / 10L);
+    putByte(addr, 1L, 48L + value % 10L);
+    return 2L;
+  }
+  putByte(addr, 0L, 48L + value / 100L);
+  putByte(addr, 1L, 48L + (value / 10L) % 10L);
+  putByte(addr, 2L, 48L + value % 10L);
+  return 3L;
+}
+
+/* 把暂存里的词放进当前命令。整词且没有单引号字节时，$? 换成状态的十进制。返回 0，放不下返回 1。 */
+deRfun takeWord(long out, long cmdIndex, long wordLen, long status, long redir, long plain): long {
+  if (cmdIndex < 0L || cmdIndex >= 16L) {
+    return 1L;
+  }
+  long cmd = cmdOf(out, cmdIndex);
+  long from = scratchAt(out);
+  if (redir != 0L) {
+    if (wordLen < 1L || wordLen > 128L) {
+      return 1L;
+    }
+    memory::store64(redir, cmd + 64L);
+    memory::store64(wordLen, cmd + 128L);
+    copyBytes(from, cmdRedirAt(cmd), wordLen);
+    return 0L;
+  }
+  if (plain == 1L && wordLen == 2L && u8(from) == 36L && u8(from + 8L) == 63L) {
+    wordLen = putDigits(from, status);
+  }
+  long argc = memory::load64(cmd);
+  if (argc >= 8L || wordLen > 64L) {
+    return 1L;
+  }
+  memory::store64(wordLen, cmd + 192L + argc * 64L);
+  copyBytes(from, cmdArgAt(cmd, argc), wordLen);
+  memory::store64(argc + 1L, cmd);
+  return 0L;
+}
+
+/* 0 成功，1 语法错误。out 至少要有 131072 位。
+   列表之间是 &&、|| 或 ;。列表里面是管道。重定向是 >、>>、<。 */
+deRfun parseLine(long src, long count, long out, long status): long {
+  parseClear(out);
+  long index = 0L;
+  long lists = 0L;
+  long cmds = 0L;
+  long cur = -1L;
+  long joiner = 0L;
+  long wordLen = 0L;
+  long held = 0L;
+  long redir = 0L;
+  long quoting = 0L;
+  long plain = 1L;
+  long any = 0L;
+  while (index < count) {
+    long value = u8(src + index * 8L);
+    if (quoting == 0L && (value == 32L || value == 9L)) {
+      if (wordLen > 0L || held == 1L) {
+        if (cur < 0L) {
+          return 1L;
+        }
+        if (takeWord(out, cur, wordLen, status, redir, plain) != 0L) {
+          return 1L;
+        }
+        wordLen = 0L;
+        held = 0L;
+        redir = 0L;
+        plain = 1L;
+        any = 1L;
+      }
+      index = index + 1L;
+      continue;
+    }
+    if (quoting == 0L && value == 35L && wordLen == 0L && held == 0L) {
+      break;
+    }
+    if (quoting == 0L && value == 39L) {
+      quoting = 1L;
+      index = index + 1L;
+      if (cur < 0L) {
+        if (lists >= 4L || cmds >= 16L) {
+          return 1L;
+        }
+        memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+        memory::store64(1L, out + (2L + lists * 3L) * 64L);
+        memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        lists = lists + 1L;
+        joiner = 0L;
+      }
+      continue;
+    }
+    if (quoting == 1L) {
+      if (value == 39L) {
+        quoting = 0L;
+        held = 1L;
+      } else {
+        if (wordLen >= 64L && redir == 0L) {
+          return 1L;
+        }
+        putByte(scratchAt(out), wordLen, value);
+        wordLen = wordLen + 1L;
+        plain = 0L;
+      }
+      index = index + 1L;
+      continue;
+    }
+    if (quoting == 0L && value == 34L) {
+      quoting = 2L;
+      index = index + 1L;
+      if (cur < 0L) {
+        if (lists >= 4L || cmds >= 16L) {
+          return 1L;
+        }
+        memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+        memory::store64(1L, out + (2L + lists * 3L) * 64L);
+        memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        lists = lists + 1L;
+        joiner = 0L;
+      }
+      continue;
+    }
+    if (quoting == 2L) {
+      long escaped = 0L;
+      if (value == 92L && index + 1L < count) {
+        long next = u8(src + (index + 1L) * 8L);
+        if (next == 92L || next == 34L || next == 36L) {
+          value = next;
+          index = index + 1L;
+          escaped = 1L;
+        }
+      }
+      if (escaped == 0L && value == 34L) {
+        quoting = 0L;
+        held = 1L;
+        index = index + 1L;
+        continue;
+      }
+      if (wordLen >= 64L && redir == 0L) {
+        return 1L;
+      }
+      putByte(scratchAt(out), wordLen, value);
+      wordLen = wordLen + 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (value == 92L && index + 1L < count) {
+      index = index + 1L;
+      value = u8(src + index * 8L);
+      if (cur < 0L) {
+        if (lists >= 4L || cmds >= 16L) {
+          return 1L;
+        }
+        memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+        memory::store64(1L, out + (2L + lists * 3L) * 64L);
+        memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        lists = lists + 1L;
+        joiner = 0L;
+      }
+      putByte(scratchAt(out), wordLen, value);
+      wordLen = wordLen + 1L;
+      index = index + 1L;
+      continue;
+    }
+    long op = 0L;
+    long opRedir = 0L;
+    long opJoin = 0L;
+    if (value == 124L) {
+      if (index + 1L < count && u8(src + (index + 1L) * 8L) == 124L) {
+        op = 4L;
+        index = index + 1L;
+      } else {
+        op = 2L;
+      }
+    } else if (value == 38L) {
+      if (index + 1L < count && u8(src + (index + 1L) * 8L) == 38L) {
+        op = 3L;
+        index = index + 1L;
+      } else {
+        return 1L;
+      }
+    } else if (value == 59L) {
+      op = 5L;
+    } else if (value == 62L) {
+      op = 6L;
+      opRedir = 1L;
+      if (index + 1L < count && u8(src + (index + 1L) * 8L) == 62L) {
+        opRedir = 2L;
+        index = index + 1L;
+      }
+    } else if (value == 60L) {
+      op = 6L;
+      opRedir = 3L;
+    }
+    if (op != 0L) {
+      if (wordLen > 0L || held == 1L) {
+        if (cur < 0L) {
+          return 1L;
+        }
+        if (takeWord(out, cur, wordLen, status, redir, plain) != 0L) {
+          return 1L;
+        }
+        wordLen = 0L;
+        held = 0L;
+        redir = 0L;
+        plain = 1L;
+        any = 1L;
+      }
+      if (op == 6L) {
+        if (cur < 0L) {
+          if (lists >= 4L || cmds >= 16L) {
+            return 1L;
+          }
+          memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+          memory::store64(1L, out + (2L + lists * 3L) * 64L);
+          memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+          cur = cmds;
+          cmds = cmds + 1L;
+          lists = lists + 1L;
+          joiner = 0L;
+        }
+        if (redir != 0L || cmdRedir(cmdOf(out, cur)) != 0L) {
+          return 1L;
+        }
+        redir = opRedir;
+      } else if (op == 2L) {
+        if (cur < 0L || redir != 0L) {
+          return 1L;
+        }
+        if (lists < 1L || cmds >= 16L) {
+          return 1L;
+        }
+        long slot = lists - 1L;
+        memory::store64(memory::load64(out + (2L + slot * 3L) * 64L) + 1L, out + (2L + slot * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        any = 0L;
+      } else {
+        if (cur < 0L || redir != 0L) {
+          return 1L;
+        }
+        cur = -1L;
+        any = 0L;
+        if (op == 3L) {
+          joiner = 1L;
+        } else if (op == 4L) {
+          joiner = 2L;
+        } else {
+          joiner = 3L;
+        }
+      }
+      index = index + 1L;
+      continue;
+    }
+    if (cur < 0L) {
+      if (lists >= 4L || cmds >= 16L) {
+        return 1L;
+      }
+      memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+      memory::store64(1L, out + (2L + lists * 3L) * 64L);
+      memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+      cur = cmds;
+      cmds = cmds + 1L;
+      lists = lists + 1L;
+      joiner = 0L;
+    }
+    if (wordLen >= 160L) {
+      return 1L;
+    }
+    putByte(scratchAt(out), wordLen, value);
+    wordLen = wordLen + 1L;
+    held = 1L;
+    index = index + 1L;
+  }
+  if (quoting != 0L || (redir != 0L && wordLen == 0L && held == 0L)) {
+    return 1L;
+  }
+  if (wordLen > 0L || held == 1L) {
+    if (cur < 0L) {
+      return 1L;
+    }
+    if (takeWord(out, cur, wordLen, status, redir, plain) != 0L) {
+      return 1L;
+    }
+    any = 1L;
+    redir = 0L;
+    held = 0L;
+  }
+  if (redir != 0L) {
+    return 1L;
+  }
+  if (joiner != 0L && cur < 0L) {
+    return 1L;
+  }
+  if (any == 0L && lists > 0L && cur >= 0L && cmdArgc(cmdOf(out, cur)) == 0L && cmdRedir(cmdOf(out, cur)) == 0L) {
+    return 1L;
+  }
+  memory::store64(lists, out);
+  return 0L;
+}
+
+deRfun pathNorm(long cwd, long cwdLen, long rel, long relLen, long dest, long scratch, long* outLen): long {
+  long filled = 0L;
+  long relAbs = 0L;
+  if (relLen > 0L && u8(rel) == 47L) {
+    relAbs = 1L;
+  }
+  if (relAbs == 1L) {
+    if (relLen > 512L) {
+      return 7L;
+    }
+    copyBytes(rel, scratch, relLen);
+    filled = relLen;
+  } else {
+    if (cwdLen < 1L) {
+      putByte(scratch, 0L, 47L);
+      filled = 1L;
+    } else {
+      if (cwdLen > 512L) {
+        return 7L;
+      }
+      copyBytes(cwd, scratch, cwdLen);
+      filled = cwdLen;
+    }
+    if (relLen > 0L) {
+      if (filled < 1L || u8(scratch + (filled - 1L) * 8L) != 47L) {
+        if (filled >= 512L) {
+          return 7L;
+        }
+        putByte(scratch, filled, 47L);
+        filled = filled + 1L;
+      }
+      if (filled + relLen > 512L) {
+        return 7L;
+      }
+      copyBytes(rel, scratch + filled * 8L, relLen);
+      filled = filled + relLen;
+    }
+  }
+  long out = 0L;
+  long index = 0L;
+  while (index < filled) {
+    while (index < filled && u8(scratch + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index >= filled) {
+      break;
+    }
+    long start = index;
+    while (index < filled && u8(scratch + index * 8L) != 47L) {
+      index = index + 1L;
+    }
+    long size = index - start;
+    if (size == 1L && u8(scratch + start * 8L) == 46L) {
+      continue;
+    }
+    if (size == 2L && u8(scratch + start * 8L) == 46L && u8(scratch + (start + 1L) * 8L) == 46L) {
+      while (out > 1L && u8(dest + (out - 1L) * 8L) != 47L) {
+        out = out - 1L;
+      }
+      if (out > 1L) {
+        out = out - 1L;
+      }
+      continue;
+    }
+    if (out == 1L && u8(dest) == 47L) {
+      out = 0L;
+    }
+    if (out + 1L + size > 512L) {
+      return 7L;
+    }
+    putByte(dest, out, 47L);
+    out = out + 1L;
+    long step = 0L;
+    while (step < size) {
+      putByte(dest, out, u8(scratch + (start + step) * 8L));
+      out = out + 1L;
+      step = step + 1L;
+    }
+  }
+  if (out == 0L) {
+    putByte(dest, 0L, 47L);
+    out = 1L;
+  }
+  *outLen = out;
+  return 0L;
+}

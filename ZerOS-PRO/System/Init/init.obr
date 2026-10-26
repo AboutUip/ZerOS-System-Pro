@@ -1,6 +1,6 @@
 /* 用户态 1 号任务。用 -pie -slot 0 编译，放到 /kernel/init。
    操作系统起来之后只调度 /os/sh。没有这一份就直接去等。
-   shell 自己停在让出上，这里等不到它退出，驱动才能在这次等待之后放行。 */
+   shell 打开控制台后停在读键盘上，这里等不到它退出，驱动才能在这次等待之后放行。 */
 import board;
 import memory;
 import obr.os;

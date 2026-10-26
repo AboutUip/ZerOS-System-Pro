@@ -15,3 +15,8 @@ deRfun devPublish(long core, long pid, long name, long nameLen): long;
 deRfun devDrop(long pid): void;
 deRfun conPublish(): void;
 deRfun conShow(): void;
+deRfun conPump(): void;
+deRfun conPaint(): void;
+/* 临时：shell 还在任务表里时记下进度，退出后画终端仍能看见。 */
+/* 兼容任务的 write。src 是用户字节的位地址。成功返回写入个数，失败返回负数。 */
+deRfun compatWrite(long caller, long home, long fd, long src, long count): long;

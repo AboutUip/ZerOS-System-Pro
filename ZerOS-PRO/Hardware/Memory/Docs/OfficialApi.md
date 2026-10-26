@@ -61,7 +61,7 @@
 
 类型名 `BitsPerByte`、`UnitSizeBytes`、`ShallowDimension`、`DeepDimension`、`UnitCount`、`TotalSizeBytes`、`MemoryId`、`MemoryVendor`，以及 `DimensionConfig`、`UnitConfig`、`IdentityConfig`，是这份实现的 TypeScript 类型。数值规则以 ZMP1 为准。
 
-当前标定下，145 颗都成功时 `TotalSizeBytes` 为 `304087040n`。
+当前标定下，153 颗都成功时 `TotalSizeBytes` 为 `320864256n`。
 
 ## 3. 颗粒与总控
 
@@ -107,7 +107,7 @@
 
 `UnitIndexId` 只是颗粒表的键。它不是 ZMP1 的 `MemoryId`，也不是 `UnitOrdinal`。
 
-当前标定下，145 颗各 `16777216` 位元，合计 `2432696320`。浅切块数也是 145，所以每一块同样是 `16777216` 位元。前 `2148532224` 个位元是固件和八颗核心的窗口，剩下的一段由监督核按页映射文件。
+当前标定下，153 颗各 `16777216` 位元，合计 `2566914048`。浅切块数也是 153，所以每一块同样是 `16777216` 位元。前 `2148532224` 个位元是固件和八颗核心的窗口。接着到 `2432696320` 由监督核按页映射文件。最后 `134217728` 位是兼容尾区，映射表不包含这一段。颗粒数不是 ZMP1 要第三方照抄的常量。
 
 ### `MemoryBlock`
 

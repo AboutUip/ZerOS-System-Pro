@@ -144,10 +144,13 @@ export function startServer(root, port) {
   });
   server.on("upgrade", (request, socket) => {
     sockets.add(socket);
+    /* 每条连接自己的句柄表。页面重载会关掉旧套接字，不带走上一回没关的文件。 */
+    const connection = createStore(root);
     socket.on("close", () => {
       sockets.delete(socket);
+      connection.closeAll();
     });
-    attach(store, request, socket);
+    attach(connection, request, socket);
   });
   server.on("close", () => {
     for (const socket of sockets) {

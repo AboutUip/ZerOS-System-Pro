@@ -120,6 +120,12 @@ export namespace ZerOS {
       export const NativeEscapeFill = 29;
 
       /**
+       * 让一颗已停止的核心进入兼容任务。三个寄存器：核心、描述符位地址、描述符八位组数。
+       * 描述符必须是 32 个八位组。客核心不能执行。全机同时只能有一份。
+       */
+      export const NativeEscapeAdmit = 30;
+
+      /**
        * 这条转义后面固定有几个寄存器编号。
        * 没有计数字节。未登记的编号返回空，调用方必须失败且不改指令指针。
        */
@@ -154,6 +160,7 @@ export namespace ZerOS {
           || opcode === NativeEscapeInstall
           || opcode === NativeEscapeExchange
           || opcode === NativeEscapePortChar
+          || opcode === NativeEscapeAdmit
         ) {
           return 3;
         }

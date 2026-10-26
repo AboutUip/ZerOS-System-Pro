@@ -6,6 +6,114 @@
 
 namespace obr {
 
+bool scaleOf(long long bits, int& scale) {
+  if (bits == 8) scale = 1;
+  else if (bits == 16) scale = 2;
+  else if (bits == 32) scale = 4;
+  else if (bits == 64) scale = 8;
+  else return false;
+  return true;
+}
+
+bool matchScaled(const Expr& address, const Expr*& base, const Expr*& index, int& scale, int& disp) {
+  if (address.kind == Expr::Kind::Cast) {
+    if (address.kids.empty()) return false;
+    return matchScaled(address.kids[0], base, index, scale, disp);
+  }
+  const Expr* node = &address;
+  disp = 0;
+  if (node->kind == Expr::Kind::Binary && node->op == Tok::Plus && node->kids.size() == 2) {
+    const Expr* lit = nullptr;
+    const Expr* rest = nullptr;
+    if (node->kids[1].kind == Expr::Kind::LitInt && node->kids[0].kind == Expr::Kind::Binary) {
+      lit = &node->kids[1];
+      rest = &node->kids[0];
+    } else if (node->kids[0].kind == Expr::Kind::LitInt && node->kids[1].kind == Expr::Kind::Binary) {
+      lit = &node->kids[0];
+      rest = &node->kids[1];
+    }
+    if (lit != nullptr) {
+      const long long bits = lit->integer;
+      if (bits % 8 != 0) return false;
+      const long long octets = bits / 8;
+      if (octets < -128 || octets > 127) return false;
+      disp = static_cast<int>(octets);
+      node = rest;
+    }
+  }
+  if (node->kind != Expr::Kind::Binary || node->op != Tok::Plus || node->kids.size() != 2) return false;
+  const Expr* mul = nullptr;
+  const Expr* baseExpr = nullptr;
+  if (node->kids[1].kind == Expr::Kind::Binary && node->kids[1].op == Tok::Star && node->kids[1].kids.size() == 2) {
+    baseExpr = &node->kids[0];
+    mul = &node->kids[1];
+  } else if (node->kids[0].kind == Expr::Kind::Binary && node->kids[0].op == Tok::Star && node->kids[0].kids.size() == 2) {
+    baseExpr = &node->kids[1];
+    mul = &node->kids[0];
+  } else {
+    return false;
+  }
+  const Expr* indexExpr = nullptr;
+  long long stride = 0;
+  if (mul->kids[1].kind == Expr::Kind::LitInt) {
+    indexExpr = &mul->kids[0];
+    stride = mul->kids[1].integer;
+  } else if (mul->kids[0].kind == Expr::Kind::LitInt) {
+    indexExpr = &mul->kids[1];
+    stride = mul->kids[0].integer;
+  } else {
+    return false;
+  }
+  int found = 0;
+  if (!scaleOf(stride, found)) return false;
+  base = baseExpr;
+  index = indexExpr;
+  scale = found;
+  return true;
+}
+
+bool Generator::tryScaled(const Expr& address, const Expr* value, TypeKind type) {
+  if (type != TypeKind::Long && type != TypeKind::Ptr) return false;
+  const Expr* base = nullptr;
+  const Expr* index = nullptr;
+  int scale = 0;
+  int disp = 0;
+  if (!matchScaled(address, base, index, scale, disp)) return false;
+  int valueSlot = -1;
+  if (value != nullptr) {
+    gen(*value);
+    if ((type == TypeKind::Float || type == TypeKind::Double) && value->type != TypeKind::Float && value->type != TypeKind::Double) {
+      emit("itof r0, r0");
+    }
+    valueSlot = words_ + temp_;
+    hold();
+    storeSlot(valueSlot, TypeKind::Long);
+  }
+  gen(*base);
+  emit("place r1, 7");
+  emit("and r1, r0, r1");
+  const std::string aligned = fresh("a");
+  emit("jz r1, " + aligned);
+  emit("halt");
+  emit(aligned + ":");
+  emit("place r1, 3");
+  emit("shr r0, r0, r1");
+  const int baseSlot = words_ + temp_;
+  hold();
+  storeSlot(baseSlot, TypeKind::Long);
+  gen(*index);
+  copy(2, 0);
+  loadSlot(baseSlot, TypeKind::Long);
+  copy(1, 0);
+  const std::string line = std::string(value == nullptr ? "load.scale" : "store.scale") + " r0, r1, r2, " + std::to_string(scale) + ", " + std::to_string(disp);
+  if (value != nullptr) loadSlot(valueSlot, TypeKind::Long);
+  emit(line);
+  release();
+  if (value != nullptr) release();
+  frameHeld_ = false;
+  return true;
+}
+
 void Generator::emitAddress(const Expr& expr) {
   if (expr.kind == Expr::Kind::Member) {
     if (expr.prefix) emitAddress(expr.kids[0]);
@@ -107,38 +215,15 @@ void Generator::gen(const Expr& expr) {
           storeSlot(saved, TypeKind::Long);
           argSlots.push_back(saved);
         }
-        loadSlot(base, TypeKind::Long);
-        copy(1, 0);
-        if (!argSlots.empty()) {
-          loadSlot(argSlots[0], TypeKind::Long);
-          copy(2, 0);
+        std::vector<int> params;
+        std::vector<TypeKind> paramKinds;
+        params.push_back(base);
+        paramKinds.push_back(TypeKind::Long);
+        for (const int slot : argSlots) {
+          params.push_back(slot);
+          paramKinds.push_back(TypeKind::Long);
         }
-        if (argSlots.size() > 1) {
-          loadSlot(argSlots[1], TypeKind::Long);
-          copy(3, 0);
-        }
-        int extra = 0;
-        for (std::size_t index = 2; index < argSlots.size(); index += 1) {
-          loadSlot(argSlots[index], TypeKind::Long);
-          emit("load.64 r4, " + std::to_string(kSp));
-          emit("sti.64 r0, r4");
-          emit("place r5, 64");
-          emit("add r4, r4, r5");
-          emit("store.64 r4, " + std::to_string(kSp));
-          extra += 1;
-        }
-        emit("call " + target.label);
-        if (extra > 0) {
-          emit("load.64 r4, " + std::to_string(kSp));
-          emit("place r5, " + std::to_string(extra * 64));
-          emit("sub r4, r4, r5");
-          emit("store.64 r4, " + std::to_string(kSp));
-        }
-        emit("load.64 r4, " + std::to_string(kSp));
-        emit("place r5, " + std::to_string(frameBits()));
-        emit("sub r4, r4, r5");
-        emit("store.64 r4, " + std::to_string(kFrame));
-        frameHeld_ = true;
+        emitIntegerCall(target.label, params, paramKinds);
         temp_ -= static_cast<int>(argSlots.size());
       }
       loadSlot(base, TypeKind::Long);
@@ -182,6 +267,7 @@ void Generator::gen(const Expr& expr) {
       }
       if (expr.op == Tok::Star) {
         if (expr.type == TypeKind::Struct) fail("结构体要按字段读写");
+        if (tryScaled(expr.kids[0], nullptr, expr.type)) return;
         long long addr = 0;
         if (constantPtr(expr.kids[0], addr)) {
           emit(std::string(loadAbs(expr.type)) + " r0, " + std::to_string(addr));
@@ -292,6 +378,7 @@ void Generator::gen(const Expr& expr) {
         return;
       }
       if (expr.kids[0].kind == Expr::Kind::Unary && expr.kids[0].op == Tok::Star) {
+        if (tryScaled(expr.kids[0].kids[0], &expr.kids[1], expr.kids[0].type)) return;
         long long addr = 0;
         if (constantPtr(expr.kids[0].kids[0], addr)) {
           gen(expr.kids[1]);
@@ -489,31 +576,7 @@ void Generator::gen(const Expr& expr) {
         frameHeld_ = false;
         return;
       }
-      if (slots.size() > 0) materialize(0, 1);
-      if (slots.size() > 1) materialize(1, 2);
-      if (slots.size() > 2) materialize(2, 3);
-      int extra = 0;
-      for (std::size_t index = 3; index < slots.size(); index += 1) {
-        loadSlot(slots[index], kinds[index]);
-        emit("load.64 r4, " + std::to_string(kSp));
-        emit("sti.64 r0, r4");
-        emit("place r5, 64");
-        emit("add r4, r4, r5");
-        emit("store.64 r4, " + std::to_string(kSp));
-        extra += 1;
-      }
-      emit("call " + (*functions_)[static_cast<std::size_t>(expr.integer)].label);
-      if (extra > 0) {
-        emit("load.64 r4, " + std::to_string(kSp));
-        emit("place r5, " + std::to_string(extra * 64));
-        emit("sub r4, r4, r5");
-        emit("store.64 r4, " + std::to_string(kSp));
-      }
-      emit("load.64 r4, " + std::to_string(kSp));
-      emit("place r5, " + std::to_string(frameBits()));
-      emit("sub r4, r4, r5");
-      emit("store.64 r4, " + std::to_string(kFrame));
-      frameHeld_ = true;
+      emitIntegerCall((*functions_)[static_cast<std::size_t>(expr.integer)].label, slots, kinds);
       temp_ -= static_cast<int>(slots.size());
       return;
     }
@@ -652,6 +715,63 @@ void Generator::arith(Tok op, TypeKind left, TypeKind right, TypeKind result) {
     }
   }
 
+void Generator::emitIntegerCall(const std::string& label, const std::vector<int>& slots, const std::vector<TypeKind>& kinds) {
+  if (slots.size() != kinds.size()) fail("调用参数和类型对不上");
+  const int count = static_cast<int>(slots.size());
+  auto into = [&](int index, int dest) {
+    const std::size_t at = static_cast<std::size_t>(index);
+    loadSlot(slots[at], kinds[at]);
+    copy(dest, 0);
+  };
+  /* r1 到 r3 是前三个参数，r6 是第六个。压栈会改 r4、r5，所以第六个要先放好。 */
+  if (count > 0) into(0, 1);
+  if (count > 1) into(1, 2);
+  if (count > 2) into(2, 3);
+  if (count > 5) into(5, 6);
+  int extra = 0;
+  for (int index = 6; index < count; index += 1) {
+    const std::size_t at = static_cast<std::size_t>(index);
+    loadSlot(slots[at], kinds[at]);
+    emit("load.64 r4, " + std::to_string(kSp));
+    emit("sti.64 r0, r4");
+    emit("place r5, 64");
+    emit("add r4, r4, r5");
+    emit("store.64 r4, " + std::to_string(kSp));
+    extra += 1;
+  }
+  /* 第四个参数先停在栈上，腾出 r4、r5 去装第五个。 */
+  if (count > 3) {
+    const std::size_t at = 3;
+    loadSlot(slots[at], kinds[at]);
+    emit("load.64 r4, " + std::to_string(kSp));
+    emit("sti.64 r0, r4");
+    emit("place r5, 64");
+    emit("add r4, r4, r5");
+    emit("store.64 r4, " + std::to_string(kSp));
+  }
+  if (count > 4) into(4, 5);
+  if (count > 3) {
+    emit("load.64 r4, " + std::to_string(kSp));
+    emit("place r0, 64");
+    emit("sub r4, r4, r0");
+    emit("store.64 r4, " + std::to_string(kSp));
+    emit("ldi.64 r0, r4");
+    copy(4, 0);
+  }
+  emit("call " + label);
+  if (extra > 0) {
+    emit("load.64 r4, " + std::to_string(kSp));
+    emit("place r5, " + std::to_string(extra * 64));
+    emit("sub r4, r4, r5");
+    emit("store.64 r4, " + std::to_string(kSp));
+  }
+  emit("load.64 r4, " + std::to_string(kSp));
+  emit("place r5, " + std::to_string(frameBits()));
+  emit("sub r4, r4, r5");
+  emit("store.64 r4, " + std::to_string(kFrame));
+  frameHeld_ = true;
+}
+
 void Generator::emitFunction(Function& function) {
     DebugSite next;
     next.file = function.origin;
@@ -668,6 +788,14 @@ void Generator::emitFunction(Function& function) {
     frameHeld_ = false;
     jumpPrefix_ = function.label + "z";
     emit(function.label + ":");
+    /* 第 4、第 5 个参数在 r4、r5。建帧会改这两个寄存器，先各放 64 位。没有这两个参数也照放，返回时统一退回。 */
+    emit("load.64 r0, " + std::to_string(kSp));
+    emit("sti.64 r4, r0");
+    emit("place r4, 64");
+    emit("add r0, r0, r4");
+    emit("sti.64 r5, r0");
+    emit("add r0, r0, r4");
+    emit("store.64 r0, " + std::to_string(kSp));
     /* 硬件 call 之后 rsp 低 4 位是 8。先减 8，返回前加回来。这行不是 Obr 语法。 */
     emit("rsp.bias");
     emit("load.64 r4, " + std::to_string(kSp));
@@ -684,9 +812,27 @@ void Generator::emitFunction(Function& function) {
       storeSlot(function.params[index].slot, function.params[index].type);
     }
     const int count = static_cast<int>(function.params.size());
-    for (int index = 3; index < count; index += 1) {
+    if (count > 3) {
       frameBase();
-      emit("place r5, " + std::to_string((count - index) * 64));
+      emit("place r5, 128");
+      emit("sub r5, r4, r5");
+      emit("ldi.64 r0, r5");
+      storeSlot(function.params[3].slot, function.params[3].type);
+    }
+    if (count > 4) {
+      frameBase();
+      emit("place r5, 64");
+      emit("sub r5, r4, r5");
+      emit("ldi.64 r0, r5");
+      storeSlot(function.params[4].slot, function.params[4].type);
+    }
+    if (count > 5) {
+      copy(0, 6);
+      storeSlot(function.params[5].slot, function.params[5].type);
+    }
+    for (int index = 6; index < count; index += 1) {
+      frameBase();
+      emit("place r5, " + std::to_string(128 + (count - index) * 64));
       emit("sub r5, r4, r5");
       emit("ldi.64 r0, r5");
       storeSlot(function.params[static_cast<std::size_t>(index)].slot, function.params[static_cast<std::size_t>(index)].type);
@@ -715,6 +861,8 @@ void Generator::emitReturn() {
     }
     frameBase();
     emit("ldi.64 r7, r4");
+    emit("place r5, 128");
+    emit("sub r4, r4, r5");
     emit("store.64 r4, " + std::to_string(kSp));
     emit("rsp.restore");
     emit("ret");

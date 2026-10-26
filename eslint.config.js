@@ -29,6 +29,8 @@ export default tseslint.config(
       "eslint.config.js",
       "ZerOS-PRO/Hardware/Nas/Server/**",
       "ZerOS-PRO/Hardware/Cpu/Test/NativeImageCheck.ts",
+      "ZerOS-PRO/Hardware/Cpu/Test/NativeBinaryCheck.ts",
+      "ZerOS-PRO/Hardware/Cpu/Test/ShellEditCheck.ts",
     ],
   },
   eslint.configs.recommended,

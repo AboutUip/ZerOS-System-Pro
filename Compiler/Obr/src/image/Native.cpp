@@ -52,18 +52,27 @@ std::vector<std::uint8_t> nativeMovLoad(int dest, int base) {
   return out;
 }
 
-std::vector<std::uint8_t> nativeLea(int dest, int base, int index, int scale, int disp) {
-  int scaleCode = 0;
+std::vector<std::uint8_t> nativeScaled(int opcode, int reg, int base, int index, int scale, int disp) {
+  int scaleCode = -1;
+  if (scale == 1) scaleCode = 0;
   if (scale == 2) scaleCode = 1;
   if (scale == 4) scaleCode = 2;
   if (scale == 8) scaleCode = 3;
+  if (scaleCode < 0 || disp < -128 || disp > 127 || index == 4 || reg > 15 || base > 15 || index > 15) {
+    return {};
+  }
+  if (opcode != 0x8D && opcode != 0x8B && opcode != 0x89) return {};
   std::vector<std::uint8_t> out;
-  appendRex(out, true, dest >= 8, index >= 8, base >= 8);
-  out.push_back(0x8D);
-  out.push_back(static_cast<std::uint8_t>(0x40 | ((dest & 7) << 3) | 0x04));
+  appendRex(out, true, reg >= 8, index >= 8, base >= 8);
+  out.push_back(static_cast<std::uint8_t>(opcode));
+  out.push_back(static_cast<std::uint8_t>(0x40 | ((reg & 7) << 3) | 0x04));
   out.push_back(static_cast<std::uint8_t>((scaleCode << 6) | ((index & 7) << 3) | (base & 7)));
   out.push_back(static_cast<std::uint8_t>(disp & 0xFF));
   return out;
+}
+
+std::vector<std::uint8_t> nativeLea(int dest, int base, int index, int scale, int disp) {
+  return nativeScaled(0x8D, dest, base, index, scale, disp);
 }
 
 std::vector<std::uint8_t> nativeCore(int reg) {
@@ -86,6 +95,8 @@ bool nativeEncodeSelfCheck() {
   if (!same(nativeMovStore(1, 0), {0x48, 0x89, 0x01})) return false;
   if (!same(nativeMovLoad(0, 1), {0x48, 0x8B, 0x01})) return false;
   if (!same(nativeLea(0, 1, 2, 4, 16), {0x48, 0x8D, 0x44, 0x91, 0x10})) return false;
+  if (!same(nativeScaled(0x89, 0, 1, 2, 8, 0), {0x48, 0x89, 0x44, 0xD1, 0x00})) return false;
+  if (!nativeScaled(0x89, 0, 1, 4, 8, 0).empty()) return false;
   if (!same(nativeMovImm(8, 1), {0x49, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})) return false;
   if (!same(nativeCore(0), {0x0F, 0x3F, 0x01, 0x00})) return false;
   if (!same(nativeEscape(2, {}), {0x0F, 0x3F, 0x02})) return false;

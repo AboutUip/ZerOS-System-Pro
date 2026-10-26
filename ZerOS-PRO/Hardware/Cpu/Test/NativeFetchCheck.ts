@@ -7,7 +7,7 @@
  * ---------------------------------------------------------------------------
  * 用 §4.12 的真实编码跑 16 个寄存器、五种标志、SIB 与相对指令指针、
  * call/ret、压栈，以及未登记前缀和窗口边缘的失败。
- * 0F 3E、REX.W 0x83、0F 3F 0x14 到 0x1D 的长度，以及 ZNB1 文件头也在这里核对。
+ * 0F 3E、REX.W 0x83、32 位异或与传送、movsxd、0F 3F 0x14 到 0x1D 的长度，以及 ZNB1 文件头也在这里核对。
  * 不经过 ZAP 指令数组。16 字节对齐和被调用方保存是约定，CPU 不检查。
  *
  * ---------------------------------------------------------------------------
@@ -24,6 +24,7 @@
 import { ZerOS as NativeHeaderRoot } from "../Native/NativeHeader";
 import { ZerOS as NativeRoot } from "../Native/NativeRun";
 import { ZerOS as StateRoot } from "../Structure/NativeState";
+import { ZerOS as CompatRoot } from "../Structure/CompatFrame";
 import { ZerOS as RegisterRoot } from "../Enum/NativeRegister";
 
 export namespace ZerOS {
@@ -32,12 +33,18 @@ export namespace ZerOS {
       const runNative = NativeRoot.Hardware.Cpu.runNative;
       const nativeCodeBytes = NativeHeaderRoot.Hardware.Cpu.nativeCodeBytes;
       const freshNativeState = StateRoot.Hardware.Cpu.freshNativeState;
+      const CompatTailOrigin = CompatRoot.Hardware.Cpu.CompatTailOrigin;
       const NativeRax = RegisterRoot.Hardware.Cpu.NativeRax;
       const NativeRcx = RegisterRoot.Hardware.Cpu.NativeRcx;
       const NativeRdx = RegisterRoot.Hardware.Cpu.NativeRdx;
       const NativeRbx = RegisterRoot.Hardware.Cpu.NativeRbx;
       const NativeRsp = RegisterRoot.Hardware.Cpu.NativeRsp;
+      const NativeRbp = RegisterRoot.Hardware.Cpu.NativeRbp;
+      const NativeRsi = RegisterRoot.Hardware.Cpu.NativeRsi;
+      const NativeRdi = RegisterRoot.Hardware.Cpu.NativeRdi;
       const NativeR8 = RegisterRoot.Hardware.Cpu.NativeR8;
+      const NativeR9 = RegisterRoot.Hardware.Cpu.NativeR9;
+      const NativeR14 = RegisterRoot.Hardware.Cpu.NativeR14;
       const NativeR15 = RegisterRoot.Hardware.Cpu.NativeR15;
       const checkPrefix = "[ZerOS.Hardware.Cpu.NativeFetchCheck]";
 
@@ -100,6 +107,11 @@ export namespace ZerOS {
         checkCallEdges();
         checkWide();
         checkImm8();
+        checkWord32();
+        checkCompatLea();
+        checkStos();
+        checkStep();
+        checkByte();
         checkHeader();
       }
 
@@ -281,7 +293,7 @@ export namespace ZerOS {
         }
       }
 
-      /** REX.W 0x83 只接受寄存器形式的加、减和比较。立即数按八位符号扩展。 */
+      /** REX.W 0x83 的寄存器形式：加、或、与、减、异或、比较。立即数按八位符号扩展。 */
       function checkImm8(): void {
         const adjusted = execute([
           ...movImm(0, 20n),
@@ -294,10 +306,16 @@ export namespace ZerOS {
           fail("opcode 83 did not add, subtract, and compare an imm8");
         }
         const bare = freshNativeState(0n);
-        bare.reg[NativeRax] = 5n;
-        const withoutRex = runNative(bare, portOf(new Uint8Array([0x83, 0xc0, 0x01])), 4);
-        if (withoutRex.kind !== "fault" || withoutRex.state.rip !== 0n || reg(withoutRex.state, NativeRax) !== 5n) {
-          fail("opcode 83 without REX.W still wrote rax");
+        bare.reg[NativeRax] = (1n << 40n) | 5n;
+        const withoutRex = execute([0x83, 0xc0, 0x01, 0xf4], bare, 4);
+        if (withoutRex.kind !== "halt" || reg(withoutRex.state, NativeRax) !== 6n) {
+          fail("32-bit add eax, 1 kept the high half");
+        }
+        const compared = freshNativeState(0n);
+        compared.reg[NativeRsi] = (1n << 40n) | 1n;
+        const cmpEsi = execute([0x83, 0xfe, 0x06, 0xf4], compared, 4);
+        if (cmpEsi.kind !== "halt" || reg(cmpEsi.state, NativeRsi) !== ((1n << 40n) | 1n) || !cmpEsi.state.cf || cmpEsi.state.zf) {
+          fail("cmp esi, 6 wrote rsi or missed CF");
         }
         const other = freshNativeState(0n);
         other.reg[NativeRax] = 5n;
@@ -309,7 +327,701 @@ export namespace ZerOS {
         memory.reg[NativeRax] = 5n;
         const indirect = runNative(memory, portOf(new Uint8Array([0x48, 0x83, 0x00, 0x01])), 4);
         if (indirect.kind !== "fault" || indirect.state.rip !== 0n || reg(indirect.state, NativeRax) !== 5n) {
-          fail("opcode 83 with a memory operand still wrote rax");
+          fail("opcode 83 wrote past the end of memory");
+        }
+        const slot = new Uint8Array(32);
+        slot[0] = 0x48;
+        slot[1] = 0x83;
+        slot[2] = 0x00;
+        slot[3] = 0x01;
+        slot[4] = 0xf4;
+        const added = freshNativeState(0n);
+        added.reg[NativeRax] = 16n;
+        const memoryAdd = runNative(added, portOf(slot), 4);
+        if (memoryAdd.kind !== "halt" || slot[16] !== 1 || slot[17] !== 0 || reg(memoryAdd.state, NativeRax) !== 16n || memoryAdd.state.zf) {
+          fail("add qword [rax], 1 did not store one byte");
+        }
+        const comparedMem = freshNativeState(0n);
+        comparedMem.reg[NativeRsp] = 16n;
+        const stackCmp = execute([0x48, 0x83, 0x7c, 0x24, 0x08, 0x00, 0xf4], comparedMem, 4);
+        if (stackCmp.kind !== "halt" || !stackCmp.state.zf || stackCmp.state.cf || reg(stackCmp.state, NativeRsp) !== 16n) {
+          fail("cmp qword [rsp+8], 0 missed ZF");
+        }
+        const aligned = freshNativeState(0n);
+        aligned.reg[NativeRsp] = 16772097n;
+        const masked = execute([0x48, 0x83, 0xe4, 0xf0, 0xf4], aligned, 4);
+        if (masked.kind !== "halt" || reg(masked.state, NativeRsp) !== 16772096n || masked.state.zf || masked.state.cf || masked.state.of) {
+          fail("and rsp, -16 did not clear the low bits");
+        }
+        const logic = execute([
+          ...movImm(0, 0xf0n),
+          0x48, 0x83, 0xc8, 0x0f,
+          0x48, 0x83, 0xf0, 0x01,
+          0xf4,
+        ], freshNativeState(0n), 8);
+        if (logic.kind !== "halt" || reg(logic.state, NativeRax) !== 0xfen || logic.state.zf || logic.state.cf || logic.state.of) {
+          fail("opcode 83 did not or and xor an imm8");
+        }
+      }
+
+      /**
+       * 没有 REX.W 的异或和传送按 32 位做，结果零扩展。
+       * movsxd 把低 32 位按符号扩到 64 位，不改标志。
+       */
+      function checkWord32(): void {
+        const high = freshNativeState(0n);
+        high.reg[NativeRax] = 0x100000001n;
+        high.reg[NativeRbx] = 1n;
+        const wideXor = execute([0x48, 0x31, 0xd8, 0xf4], high, 4);
+        if (wideXor.kind !== "halt" || reg(wideXor.state, NativeRax) !== 0x100000000n || wideXor.state.zf || wideXor.state.sf) {
+          fail("64-bit xor dropped the high half");
+        }
+        const low = freshNativeState(0n);
+        low.reg[NativeRax] = 0x100000001n;
+        low.reg[NativeRbx] = 1n;
+        const narrowXor = execute([0x31, 0xd8, 0xf4], low, 4);
+        if (narrowXor.kind !== "halt" || reg(narrowXor.state, NativeRax) !== 0n || !narrowXor.state.zf || narrowXor.state.sf || narrowXor.state.cf) {
+          fail("32-bit xor left the high half or the wrong flags");
+        }
+        const sign = freshNativeState(0n);
+        sign.reg[NativeRax] = (1n << 40n) | 0xffffffffn;
+        sign.reg[NativeRbx] = 0x7fffffffn;
+        const signed = execute([0x31, 0xd8, 0xf4], sign, 4);
+        if (signed.kind !== "halt" || reg(signed.state, NativeRax) !== 0x80000000n || !signed.state.sf || signed.state.zf) {
+          fail("32-bit xor did not take SF from bit 31");
+        }
+        const ninth = freshNativeState(0n);
+        ninth.reg[NativeR9] = (1n << 40n) | 1n;
+        const cleared = execute([0x45, 0x31, 0xc9, 0xf4], ninth, 4);
+        if (cleared.kind !== "halt" || reg(cleared.state, NativeR9) !== 0n || !cleared.state.zf) {
+          fail("xor r9d, r9d did not clear r9");
+        }
+        const moved = freshNativeState(0n);
+        moved.reg[NativeR8] = (1n << 40n) | 9n;
+        moved.zf = true;
+        moved.sf = true;
+        const imm = execute([0x41, 0xb8, 0x56, 0x98, 0x4d, 0x00, 0xf4], moved, 4);
+        if (imm.kind !== "halt" || reg(imm.state, NativeR8) !== 0x4d9856n || !imm.state.zf || !imm.state.sf) {
+          fail("mov r8d, imm32 changed the high half or the flags");
+        }
+        const ecx = freshNativeState(0n);
+        ecx.reg[NativeRcx] = 1n << 40n;
+        const loaded = execute([0xb9, 0x20, 0x01, 0x40, 0x00, 0xf4], ecx, 4);
+        if (loaded.kind !== "halt" || reg(loaded.state, NativeRcx) !== 0x400120n || loaded.state.zf) {
+          fail("mov ecx, imm32 did not zero-extend");
+        }
+        const copy = freshNativeState(0n);
+        const frame = (1n << 40n) | 0xffffffffn;
+        copy.reg[NativeRbp] = frame;
+        copy.reg[NativeRsi] = 7n;
+        copy.zf = true;
+        const copied = execute([0x89, 0xee, 0xf4], copy, 4);
+        if (copied.kind !== "halt" || reg(copied.state, NativeRsi) !== 0xffffffffn || reg(copied.state, NativeRbp) !== frame || !copied.state.zf) {
+          fail("mov esi, ebp did not zero-extend");
+        }
+        const back = freshNativeState(0n);
+        back.reg[NativeRbx] = (1n << 33n) | 0x11n;
+        back.reg[NativeRax] = (1n << 64n) - 1n;
+        const backed = execute([0x8b, 0xc3, 0xf4], back, 4);
+        if (backed.kind !== "halt" || reg(backed.state, NativeRax) !== 0x11n) {
+          fail("mov eax, ebx did not zero-extend");
+        }
+        const extend = freshNativeState(0n);
+        const source = (1n << 40n) | 0xffffffffn;
+        extend.reg[NativeRsi] = source;
+        extend.zf = true;
+        const extended = execute([0x48, 0x63, 0xc6, 0xf4], extend, 4);
+        if (extended.kind !== "halt" || reg(extended.state, NativeRax) !== (1n << 64n) - 1n || !extended.state.zf || reg(extended.state, NativeRsi) !== source) {
+          fail("movsxd did not sign-extend or it changed flags");
+        }
+        const positive = freshNativeState(0n);
+        positive.reg[NativeRsi] = 0x7fffffffn;
+        const plain = execute([0x48, 0x63, 0xc6, 0xf4], positive, 4);
+        if (plain.kind !== "halt" || reg(plain.state, NativeRax) !== 0x7fffffffn || plain.state.sf) {
+          fail("movsxd sign-extended a positive value");
+        }
+        const bare = freshNativeState(0n);
+        bare.reg[NativeRax] = 9n;
+        const without = runNative(bare, portOf(new Uint8Array([0x63, 0xc6])), 4);
+        if (without.kind !== "fault" || without.state.rip !== 0n || reg(without.state, NativeRax) !== 9n) {
+          fail("movsxd without REX.W still wrote rax");
+        }
+        const memory = freshNativeState(0n);
+        memory.reg[NativeRax] = 9n;
+        const indirect = runNative(memory, portOf(new Uint8Array([0x48, 0x63, 0x00])), 4);
+        if (indirect.kind !== "fault" || indirect.state.rip !== 0n || reg(indirect.state, NativeRax) !== 9n) {
+          fail("movsxd from memory still wrote rax");
+        }
+        const image = new Uint8Array(16);
+        image[0] = 0x31;
+        image[1] = 0x00;
+        image[9] = 0x5a;
+        const stored = freshNativeState(0n);
+        stored.reg[NativeRax] = 9n;
+        const memoryXor = runNative(stored, portOf(image), 4);
+        if (memoryXor.kind !== "fault" || memoryXor.state.rip !== 0n || reg(memoryXor.state, NativeRax) !== 9n || image[9] !== 0x5a) {
+          fail("32-bit xor to memory still ran");
+        }
+        const moveImage = new Uint8Array(16);
+        moveImage[0] = 0x89;
+        moveImage[1] = 0x00;
+        moveImage[14] = 0x5a;
+        moveImage[15] = 0x5a;
+        const moveStored = freshNativeState(0n);
+        moveStored.reg[NativeRax] = 14n;
+        const memoryMove = runNative(moveStored, portOf(moveImage), 4);
+        if (memoryMove.kind !== "fault" || memoryMove.state.rip !== 0n || reg(memoryMove.state, NativeRax) !== 14n || moveImage[14] !== 0x5a || moveImage[15] !== 0x5a) {
+          fail("a short 32-bit store wrote a partial dword");
+        }
+        const prefix = freshNativeState(0n);
+        prefix.reg[NativeRax] = (1n << 32n) | 1n;
+        const operand = runNative(prefix, portOf(new Uint8Array([0x66, 0x31, 0xc0])), 4);
+        if (operand.kind !== "fault" || operand.state.rip !== 0n || reg(operand.state, NativeRax) !== ((1n << 32n) | 1n)) {
+          fail("a 0x66 prefix still ran as 32-bit xor");
+        }
+        const slot = new Uint8Array(32);
+        slot[0] = 0x8b;
+        slot[1] = 0x08;
+        slot[2] = 0xf4;
+        slot[16] = 0x78;
+        slot[17] = 0x56;
+        slot[18] = 0x34;
+        slot[19] = 0x12;
+        slot[20] = 0xff;
+        const read = freshNativeState(0n);
+        read.reg[NativeRax] = 16n;
+        read.reg[NativeRcx] = (1n << 40n) | 1n;
+        const narrowLoad = runNative(read, portOf(slot), 4);
+        if (narrowLoad.kind !== "halt" || reg(narrowLoad.state, NativeRcx) !== 0x12345678n || reg(narrowLoad.state, NativeRax) !== 16n) {
+          fail("mov ecx, [rax] did not zero-extend the dword");
+        }
+        const out = new Uint8Array(32);
+        out[0] = 0x89;
+        out[1] = 0x08;
+        out[2] = 0xf4;
+        out[20] = 0xaa;
+        const write = freshNativeState(0n);
+        write.reg[NativeRax] = 16n;
+        write.reg[NativeRcx] = 0x1122334455667788n;
+        const narrowStore = runNative(write, portOf(out), 4);
+        if (narrowStore.kind !== "halt" || out[16] !== 0x88 || out[19] !== 0x55 || out[20] !== 0xaa || reg(narrowStore.state, NativeRcx) !== 0x1122334455667788n) {
+          fail("mov [rax], ecx wrote more than four bytes");
+        }
+      }
+
+      /**
+       * 相对指令指针的 lea 可以算出 0。那是静态程序里的空动态段，不是访存。
+       * 真正从 0 读取仍然失败。
+       */
+      function checkCompatLea(): void {
+        const origin = CompatTailOrigin;
+        const at = 0x2000;
+        const program = [
+          0x48, 0x8d, 0x35, 0xf9, 0xdf, 0xff, 0xff,
+          0x48, 0x8d, 0x43, 0x64,
+          0xf4,
+        ];
+        const port = {
+          limitBit: origin + 0x3000n * 8n,
+          load(bit: bigint): number {
+            const index = Number((bit - origin) / 8n) - at;
+            return program[index] ?? 0;
+          },
+          store(_bit: bigint, _value: number): void {
+            fail("lea wrote memory");
+          },
+        };
+        const state = freshNativeState(origin + BigInt(at) * 8n);
+        state.compat = true;
+        const stopped = runNative(state, port, 4);
+        if (stopped.kind !== "halt" || reg(stopped.state, NativeRsi) !== 0n || reg(stopped.state, NativeRax) !== 100n) {
+          fail("compat lea rejected an address below 4096");
+        }
+        const wide = freshNativeState(0n);
+        wide.reg[NativeRsp] = 16772096n;
+        const frame = execute([
+          0x48, 0x81, 0xec, 0x50, 0x01, 0x00, 0x00,
+          0x48, 0x81, 0xe8, 0xff, 0xff, 0xff, 0xff,
+          0xf4,
+        ], wide, 4);
+        if (frame.kind !== "halt" || reg(frame.state, NativeRsp) !== 16771760n || reg(frame.state, NativeRax) !== 1n || !frame.state.cf || frame.state.of) {
+          fail("opcode 81 did not subtract a sign-extended imm32");
+        }
+        const bareImm = freshNativeState(0n);
+        bareImm.reg[NativeRax] = (1n << 40n) | 5n;
+        const withoutWide = execute([0x81, 0xe8, 0x01, 0x00, 0x00, 0x00, 0xf4], bareImm, 4);
+        if (withoutWide.kind !== "halt" || reg(withoutWide.state, NativeRax) !== 4n) {
+          fail("32-bit sub eax, 1 kept the high half");
+        }
+        const header = freshNativeState(0n);
+        header.reg[NativeRsi] = (1n << 40n) | 1n;
+        const kind = execute([0x81, 0xfe, 0x51, 0xe5, 0x74, 0x64, 0xf4], header, 4);
+        if (kind.kind !== "halt" || reg(kind.state, NativeRsi) !== ((1n << 40n) | 1n) || !kind.state.cf || kind.state.zf) {
+          fail("cmp esi, imm32 wrote rsi or missed CF");
+        }
+        const memoryImm = new Uint8Array(16);
+        memoryImm[0] = 0x48;
+        memoryImm[1] = 0x81;
+        memoryImm[2] = 0x00;
+        memoryImm[9] = 0x5a;
+        const held = freshNativeState(0n);
+        held.reg[NativeRax] = 5n;
+        const indirectImm = runNative(held, portOf(memoryImm), 4);
+        if (indirectImm.kind !== "fault" || indirectImm.state.rip !== 0n || reg(indirectImm.state, NativeRax) !== 5n || memoryImm[9] !== 0x5a) {
+          fail("opcode 81 with a memory operand still wrote rax");
+        }
+        const load = [0x48, 0x8b, 0x06];
+        const reading = freshNativeState(origin + BigInt(at) * 8n);
+        reading.compat = true;
+        reading.reg[NativeRsi] = 0n;
+        reading.reg[NativeRax] = 9n;
+        const start = reading.rip;
+        const denied = runNative(reading, {
+          limitBit: origin + 0x3000n * 8n,
+          load(bit: bigint): number {
+            const index = Number((bit - origin) / 8n) - at;
+            return load[index] ?? 0;
+          },
+          store(_bit: bigint, _value: number): void {
+            fail("a faulting load wrote memory");
+          },
+        }, 4);
+        if (denied.kind !== "fault" || denied.state.rip !== start || reg(denied.state, NativeRax) !== 9n) {
+          fail("a load from address 0 still ran");
+        }
+      }
+
+      /** F3 AB 按 dword 向前重复写。rcx 为 0 时不写。第一次失败不改 rdi。 */
+      function checkStos(): void {
+        const state = freshNativeState(0n);
+        state.reg[NativeRax] = 0x1122334455667788n;
+        state.reg[NativeRcx] = 2n;
+        state.reg[NativeRdi] = 32n;
+        state.zf = true;
+        const filled = execute([0xf3, 0xab, 0xf4], state, 4);
+        const image = filled.image;
+        if (filled.kind !== "halt" || reg(filled.state, NativeRdi) !== 40n || reg(filled.state, NativeRcx) !== 0n || !filled.state.zf) {
+          fail("rep stosd did not finish");
+        }
+        if (image[32] !== 0x88 || image[33] !== 0x77 || image[34] !== 0x66 || image[35] !== 0x55 || image[36] !== 0x88 || image[39] !== 0x55) {
+          fail("rep stosd did not store the low 32 bits");
+        }
+        const idle = freshNativeState(0n);
+        idle.reg[NativeRax] = 0xffn;
+        idle.reg[NativeRcx] = 0n;
+        idle.reg[NativeRdi] = 32n;
+        const skipped = execute([0xf3, 0xab, 0xf4], idle, 4);
+        if (skipped.kind !== "halt" || reg(skipped.state, NativeRdi) !== 32n || skipped.image[32] !== 0) {
+          fail("rep stosd wrote when rcx was zero");
+        }
+        const once = freshNativeState(0n);
+        once.reg[NativeRax] = 0x55667788n;
+        once.reg[NativeRcx] = 4n;
+        once.reg[NativeRdi] = 32n;
+        const single = execute([0xab, 0xf4], once, 4);
+        if (single.kind !== "halt" || reg(single.state, NativeRdi) !== 36n || reg(single.state, NativeRcx) !== 4n || single.image[32] !== 0x88 || single.image[36] !== 0) {
+          fail("stosd repeated or skipped the one store");
+        }
+        const paused = freshNativeState(0n);
+        paused.reg[NativeRax] = 9n;
+        const other = runNative(paused, portOf(new Uint8Array([0xf3, 0x90])), 4);
+        if (other.kind !== "fault" || other.state.rip !== 0n || reg(other.state, NativeRax) !== 9n) {
+          fail("F3 before an unregistered opcode still ran");
+        }
+        const tight = new Uint8Array(38);
+        tight[0] = 0xf3;
+        tight[1] = 0xab;
+        const partial = freshNativeState(0n);
+        partial.reg[NativeRax] = 0x55667788n;
+        partial.reg[NativeRcx] = 2n;
+        partial.reg[NativeRdi] = 32n;
+        const torn = runNative(partial, portOf(tight), 4);
+        if (torn.kind !== "fault" || torn.state.rip !== 0n || reg(torn.state, NativeRdi) !== 36n || reg(torn.state, NativeRcx) !== 1n || tight[32] !== 0x88 || tight[36] !== 0) {
+          fail("rep stosd did not keep the completed iteration");
+        }
+      }
+
+      /** 加一不改 CF。测试不写寄存器。8 位条件跳转不成立时停在下一条。 */
+      function checkStep(): void {
+        const wrapped = freshNativeState(0n);
+        wrapped.reg[NativeRax] = (1n << 64n) - 1n;
+        wrapped.cf = true;
+        const inc = execute([0x48, 0xff, 0xc0, 0xf4], wrapped, 4);
+        if (inc.kind !== "halt" || reg(inc.state, NativeRax) !== 0n || !inc.state.zf || !inc.state.cf || inc.state.of) {
+          fail("inc did not wrap or it cleared CF");
+        }
+        const edge = freshNativeState(0n);
+        edge.reg[NativeRax] = (1n << 63n) - 1n;
+        const overflowed = execute([0x48, 0xff, 0xc0, 0xf4], edge, 4);
+        if (overflowed.kind !== "halt" || reg(overflowed.state, NativeRax) !== (1n << 63n) || !overflowed.state.of || !overflowed.state.sf) {
+          fail("inc did not set OF at the sign edge");
+        }
+        const narrow = freshNativeState(0n);
+        narrow.reg[NativeRax] = (1n << 40n) | 0xffffffffn;
+        narrow.cf = true;
+        const eax = execute([0xff, 0xc0, 0xf4], narrow, 4);
+        if (eax.kind !== "halt" || reg(eax.state, NativeRax) !== 0n || !eax.state.zf || !eax.state.cf) {
+          fail("32-bit inc left the high half");
+        }
+        const kept = freshNativeState(0n);
+        kept.reg[NativeRax] = 1n << 40n;
+        const tested = execute([0x85, 0xc0, 0xf4], kept, 4);
+        if (tested.kind !== "halt" || reg(tested.state, NativeRax) !== (1n << 40n) || !tested.state.zf || tested.state.cf) {
+          fail("32-bit test wrote rax or used the high half");
+        }
+        const landed = freshNativeState(0n);
+        landed.reg[NativeRax] = 24n;
+        const via = execute([0xff, 0xe0, 0x90, 0xf4], landed, 4);
+        if (via.kind !== "halt" || via.state.rip !== 32n || reg(via.state, NativeRax) !== 24n) {
+          fail("jmp rax did not land on halt");
+        }
+        const shifted = freshNativeState(0n);
+        shifted.reg[NativeRsi] = 1n << 63n;
+        const shr = execute([0x48, 0xd1, 0xee, 0xf4], shifted, 4);
+        if (shr.kind !== "halt" || reg(shr.state, NativeRsi) !== (1n << 62n) || shr.state.cf || !shr.state.of) {
+          fail("shr rsi, 1 dropped the sign into OF");
+        }
+        const arithmetic = freshNativeState(0n);
+        arithmetic.reg[NativeRax] = (1n << 64n) - 1n;
+        const sar = execute([0x48, 0xc1, 0xf8, 0x03, 0xf4], arithmetic, 4);
+        if (sar.kind !== "halt" || reg(sar.state, NativeRax) !== ((1n << 64n) - 1n) || !sar.state.cf || !sar.state.sf) {
+          fail("sar rax, 3 did not keep the sign");
+        }
+        const idle = freshNativeState(0n);
+        idle.reg[NativeRax] = 1n;
+        idle.zf = false;
+        const zeroCount = execute([0x48, 0xc1, 0xe8, 0x40, 0xf4], idle, 4);
+        if (zeroCount.kind !== "halt" || reg(zeroCount.state, NativeRax) !== 1n || zeroCount.state.zf) {
+          fail("shl by a masked count of 0 changed rax");
+        }
+        const rotate = freshNativeState(0n);
+        rotate.reg[NativeRax] = 3n;
+        const rol = runNative(rotate, portOf(new Uint8Array([0x48, 0xc1, 0xc0, 0x01])), 4);
+        if (rol.kind !== "fault" || reg(rol.state, NativeRax) !== 3n) {
+          fail("rol still wrote rax");
+        }
+        const call = freshNativeState(0n);
+        call.reg[NativeRax] = 5n;
+        const indirect = runNative(call, portOf(new Uint8Array([0x48, 0xff, 0xd0])), 4);
+        if (indirect.kind !== "fault" || indirect.state.rip !== 0n || reg(indirect.state, NativeRax) !== 5n) {
+          fail("call rax with an empty stack still ran");
+        }
+        const body = new Uint8Array(0x200);
+        body[0] = 0xff;
+        body[1] = 0xd0;
+        body[2] = 0xf4;
+        body[3] = 0xc3;
+        const caller = freshNativeState(0n);
+        caller.reg[NativeRax] = 24n;
+        caller.reg[NativeRsp] = 0x200n;
+        const called = runNative(caller, portOf(body), 8);
+        if (called.kind !== "halt" || called.state.reg[NativeRsp] !== 0x200n || body[0x1f8] !== 16) {
+          fail("call rax did not return to halt");
+        }
+        const dilState = freshNativeState(0n);
+        dilState.reg[NativeRdi] = 0xffe3d0n;
+        const dil = execute([0x40, 0xf6, 0xc7, 0x07, 0xf4], dilState, 4);
+        if (dil.kind !== "halt" || reg(dil.state, NativeRdi) !== 0xffe3d0n || !dil.state.zf || dil.state.cf || dil.state.of) {
+          fail("test dil, 7 wrote rdi or missed ZF");
+        }
+        const high = freshNativeState(0n);
+        high.reg[NativeRbx] = 0x8000n;
+        const bh = execute([0xf6, 0xc7, 0x80, 0xf4], high, 4);
+        if (bh.kind !== "halt" || reg(bh.state, NativeRbx) !== 0x8000n || bh.state.zf || !bh.state.sf) {
+          fail("test bh, 0x80 used DIL or cleared SF");
+        }
+        const notByte = freshNativeState(0n);
+        notByte.reg[NativeRax] = 1n;
+        const rejectedNot = runNative(notByte, portOf(new Uint8Array([0xf6, 0xd0])), 4);
+        if (rejectedNot.kind !== "fault" || reg(rejectedNot.state, NativeRax) !== 1n) {
+          fail("F6 /2 still wrote al");
+        }
+        const widened = freshNativeState(0n);
+        widened.reg[NativeRsi] = 0x1122332fn;
+        widened.zf = true;
+        const movzx = execute([0x40, 0x0f, 0xb6, 0xf6, 0xf4], widened, 4);
+        if (movzx.kind !== "halt" || reg(movzx.state, NativeRsi) !== 0x2fn || !movzx.state.zf) {
+          fail("movzx esi, sil kept the high half or changed ZF");
+        }
+        const fromAh = freshNativeState(0n);
+        fromAh.reg[NativeRax] = (1n << 40n) | 0x8000n;
+        const ah = execute([0x0f, 0xb6, 0xc4, 0xf4], fromAh, 4);
+        if (ah.kind !== "halt" || reg(ah.state, NativeRax) !== 0x80n) {
+          fail("movzx eax, ah did not read AH");
+        }
+        const compared32 = freshNativeState(0n);
+        compared32.reg[NativeRdx] = 1n << 40n;
+        compared32.reg[NativeRsi] = 0x2fn;
+        const cmpEdx = execute([0x39, 0xf2, 0xf4], compared32, 4);
+        if (cmpEdx.kind !== "halt" || reg(cmpEdx.state, NativeRdx) !== (1n << 40n) || reg(cmpEdx.state, NativeRsi) !== 0x2fn || !cmpEdx.state.cf || cmpEdx.state.zf) {
+          fail("cmp edx, esi wrote a register or missed CF");
+        }
+        const bytes = new Uint8Array(16);
+        bytes[0] = 0x38;
+        bytes[1] = 0x10;
+        bytes[2] = 0xf4;
+        bytes[8] = 0x2f;
+        const byteCmp = freshNativeState(0n);
+        byteCmp.reg[NativeRax] = 8n;
+        byteCmp.reg[NativeRdx] = 0x2fn;
+        const matched = runNative(byteCmp, portOf(bytes), 4);
+        if (matched.kind !== "halt" || !matched.state.zf || bytes[8] !== 0x2f || reg(matched.state, NativeRdx) !== 0x2fn) {
+          fail("cmp byte [rax], dl wrote the byte or missed ZF");
+        }
+        const wordImage = new Uint8Array(32);
+        wordImage[0] = 0x66;
+        wordImage[1] = 0x83;
+        wordImage[2] = 0x7c;
+        wordImage[3] = 0x24;
+        wordImage[4] = 0x08;
+        wordImage[5] = 0x00;
+        wordImage[6] = 0xf4;
+        const wordCmp = freshNativeState(0n);
+        wordCmp.reg[NativeRsp] = 16n;
+        const wordZero = runNative(wordCmp, portOf(wordImage), 4);
+        if (wordZero.kind !== "halt" || !wordZero.state.zf || wordZero.state.cf || reg(wordZero.state, NativeRsp) !== 16n) {
+          fail("cmp word [rsp+8], 0 missed ZF");
+        }
+        const setByte = freshNativeState(0n);
+        setByte.zf = true;
+        setByte.reg[NativeR14] = 0xff00n;
+        const sete = execute([0x41, 0x0f, 0x94, 0xc6, 0xf4], setByte, 4);
+        if (sete.kind !== "halt" || reg(sete.state, NativeR14) !== 0xff01n || !sete.state.zf) {
+          fail("sete r14b did not write 1 into the low byte");
+        }
+        const half = new Uint8Array(16);
+        half[0] = 0x66;
+        half[1] = 0x8b;
+        half[2] = 0x08;
+        half[3] = 0xf4;
+        half[8] = 0x34;
+        half[9] = 0x12;
+        const moved = freshNativeState(0n);
+        moved.reg[NativeRax] = 8n;
+        moved.reg[NativeRcx] = 0x10000n;
+        const wordMov = runNative(moved, portOf(half), 4);
+        if (wordMov.kind !== "halt" || reg(wordMov.state, NativeRcx) !== 0x11234n || half[8] !== 0x34) {
+          fail("mov cx, [rax] did not keep the high half");
+        }
+        const product = freshNativeState(0n);
+        product.reg[NativeRax] = 6n;
+        product.reg[NativeRsi] = 7n;
+        const imul = execute([0x48, 0x0f, 0xaf, 0xc6, 0xf4], product, 4);
+        if (imul.kind !== "halt" || reg(imul.state, NativeRax) !== 42n || imul.state.cf || imul.state.of) {
+          fail("imul rax, rsi did not produce 42");
+        }
+        const wideProduct = freshNativeState(0n);
+        wideProduct.reg[NativeRax] = 1n << 62n;
+        wideProduct.reg[NativeRsi] = 4n;
+        const imulOverflow = execute([0x48, 0x0f, 0xaf, 0xc6, 0xf4], wideProduct, 4);
+        if (imulOverflow.kind !== "halt" || reg(imulOverflow.state, NativeRax) !== 0n || !imulOverflow.state.cf || !imulOverflow.state.of) {
+          fail("imul of 2^62 by 4 did not set CF");
+        }
+        const zx = freshNativeState(0n);
+        zx.reg[NativeRbp] = (1n << 40n) | 0x50n;
+        zx.zf = true;
+        const movzxWord = execute([0x0f, 0xb7, 0xc5, 0xf4], zx, 4);
+        if (movzxWord.kind !== "halt" || reg(movzxWord.state, NativeRax) !== 0x50n || reg(movzxWord.state, NativeRbp) !== ((1n << 40n) | 0x50n) || !movzxWord.state.zf) {
+          fail("movzx eax, bp kept the high half or changed ZF");
+        }
+        const lea32 = freshNativeState(0n);
+        lea32.reg[NativeRax] = 0x50n;
+        lea32.reg[NativeRdx] = 1n << 40n;
+        lea32.zf = true;
+        const effective = execute([0x8d, 0x50, 0xfe, 0xf4], lea32, 4);
+        if (effective.kind !== "halt" || reg(effective.state, NativeRdx) !== 0x4en || !effective.state.zf) {
+          fail("lea edx, [rax-2] kept the high half");
+        }
+        const skipped = freshNativeState(0n);
+        skipped.zf = true;
+        skipped.reg[NativeRax] = 5n;
+        const stay = execute([0x75, 0x01, 0x90, 0xf4], skipped, 4);
+        if (stay.kind !== "fault" || reg(stay.state, NativeRax) !== 5n) {
+          fail("jnz was taken while ZF was set");
+        }
+        const jumped = freshNativeState(0n);
+        jumped.reg[NativeRax] = 5n;
+        const gone = execute([0x75, 0x01, 0x90, 0xf4], jumped, 4);
+        if (gone.kind !== "halt" || reg(gone.state, NativeRax) !== 5n) {
+          fail("jnz was not taken");
+        }
+        const negated = freshNativeState(0n);
+        negated.reg[NativeRax] = 5n;
+        const minus = execute([0x48, 0xf7, 0xd8, 0xf4], negated, 4);
+        if (minus.kind !== "halt" || reg(minus.state, NativeRax) !== ((1n << 64n) - 5n) || !minus.state.cf || minus.state.of) {
+          fail("neg rax did not subtract from zero");
+        }
+        const zeroed = freshNativeState(0n);
+        const still = execute([0x48, 0xf7, 0xd8, 0xf4], zeroed, 4);
+        if (still.kind !== "halt" || reg(still.state, NativeRax) !== 0n || still.state.cf || !still.state.zf) {
+          fail("neg of zero set CF");
+        }
+        const flipped = freshNativeState(0n);
+        flipped.reg[NativeRax] = 0n;
+        flipped.zf = true;
+        const not = execute([0x48, 0xf7, 0xd0, 0xf4], flipped, 4);
+        if (not.kind !== "halt" || reg(not.state, NativeRax) !== ((1n << 64n) - 1n) || !not.state.zf) {
+          fail("not changed flags or left a zero bit");
+        }
+        const divided = freshNativeState(0n);
+        divided.reg[NativeRax] = 8n;
+        const div = runNative(divided, portOf(new Uint8Array([0x48, 0xf7, 0xf1])), 4);
+        if (div.kind !== "fault" || div.state.rip !== 0n || reg(div.state, NativeRax) !== 8n) {
+          fail("div still ran");
+        }
+        const masked = freshNativeState(0n);
+        masked.reg[NativeRax] = 0xfn;
+        masked.reg[NativeRsi] = 0xf0n;
+        const both = execute([0x48, 0x21, 0xf0, 0xf4], masked, 4);
+        if (both.kind !== "halt" || reg(both.state, NativeRax) !== 0n || !both.state.zf || both.state.cf || both.state.of) {
+          fail("and rax, rsi kept a bit or set CF");
+        }
+        const joined = freshNativeState(0n);
+        joined.reg[NativeRax] = 0xf0n;
+        joined.reg[NativeRcx] = 0x0fn;
+        const either = execute([0x48, 0x09, 0xc8, 0xf4], joined, 4);
+        if (either.kind !== "halt" || reg(either.state, NativeRax) !== 0xffn || either.state.zf) {
+          fail("or rax, rcx dropped a bit");
+        }
+        const above = freshNativeState(0n);
+        const taken = execute([0x77, 0x01, 0x90, 0xf4], above, 4);
+        if (taken.kind !== "halt") {
+          fail("ja was not taken when CF and ZF were clear");
+        }
+        const blocked = freshNativeState(0n);
+        blocked.zf = true;
+        const stayed = execute([0x77, 0x01, 0x90, 0xf4], blocked, 4);
+        if (stayed.kind !== "fault") {
+          fail("ja was taken while ZF was set");
+        }
+        const signed = freshNativeState(0n);
+        signed.reg[NativeRax] = 3n;
+        const wide = execute([0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff, 0xf4], signed, 4);
+        if (wide.kind !== "halt" || reg(wide.state, NativeRax) !== ((1n << 64n) - 1n) || wide.state.zf) {
+          fail("mov rax, imm32 did not sign-extend");
+        }
+        const narrowImm = freshNativeState(0n);
+        narrowImm.reg[NativeRax] = 3n;
+        const low = execute([0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff, 0xf4], narrowImm, 4);
+        if (low.kind !== "halt" || reg(low.state, NativeRax) !== 0xffffffffn) {
+          fail("mov eax, imm32 sign-extended into the high half");
+        }
+        const placed = execute([
+          0x48, 0xc7, 0x05, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0xf4,
+          0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ], freshNativeState(0n), 4);
+        if (placed.kind !== "halt" || placed.image[12] !== 8 || placed.image[8] !== 0 || placed.image[11] !== 0xf4) {
+          fail("rip-relative mov stored the immediate on top of itself");
+        }
+        const bytePlaced = execute([
+          0xc6, 0x05, 0x01, 0x00, 0x00, 0x00, 0x2f, 0xf4,
+          0, 0, 0, 0, 0, 0, 0, 0,
+        ], freshNativeState(0n), 4);
+        if (bytePlaced.kind !== "halt" || bytePlaced.image[8] !== 0x2f || bytePlaced.image[7] !== 0xf4) {
+          fail("rip-relative byte store included the immediate in the address");
+        }
+        const fsImage = new Uint8Array(32);
+        fsImage[0] = 0x64;
+        fsImage[1] = 0x8b;
+        fsImage[2] = 0x00;
+        fsImage[3] = 0xf4;
+        fsImage[16] = 0x78;
+        fsImage[17] = 0x56;
+        fsImage[18] = 0x34;
+        fsImage[19] = 0x12;
+        const fsState = freshNativeState(0n);
+        fsState.fsbase = 16n;
+        const fsRead = runNative(fsState, portOf(fsImage), 4);
+        if (fsRead.kind !== "halt" || reg(fsRead.state, NativeRax) !== 0x12345678n) {
+          fail("fs override did not add fsbase");
+        }
+        const compared = freshNativeState(0n);
+        compared.reg[NativeRax] = 0xd8n;
+        const cmp = execute([0x48, 0x3d, 0x50, 0x01, 0x00, 0x00, 0xf4], compared, 4);
+        if (cmp.kind !== "halt" || reg(cmp.state, NativeRax) !== 0xd8n || !cmp.state.cf || cmp.state.zf) {
+          fail("cmp rax, 0x150 did not leave rax or the flags");
+        }
+        const word = freshNativeState(0n);
+        word.reg[NativeRax] = (1n << 40n) | 0xffffffffn;
+        const equal = execute([0x3d, 0xff, 0xff, 0xff, 0xff, 0xf4], word, 4);
+        if (equal.kind !== "halt" || reg(equal.state, NativeRax) !== ((1n << 40n) | 0xffffffffn) || !equal.state.zf) {
+          fail("cmp eax, -1 used the high half");
+        }
+      }
+
+      /** 8 位写入只改一个字节。没有 REX 时目的可以是 AH。短跳转跳过下一条。 */
+      function checkByte(): void {
+        const image = new Uint8Array(64);
+        image[0] = 0x8a;
+        image[1] = 0x06;
+        image[2] = 0xf4;
+        image[40] = 0x2f;
+        const loaded = freshNativeState(0n);
+        loaded.reg[NativeRax] = 0x1122334455667788n;
+        loaded.reg[NativeRsi] = 40n;
+        const moved = runNative(loaded, portOf(image), 4);
+        if (moved.kind !== "halt" || reg(moved.state, NativeRax) !== 0x112233445566772fn) {
+          fail("mov al, [rsi] cleared the rest of rax");
+        }
+        const high = new Uint8Array(64);
+        high[0] = 0x8a;
+        high[1] = 0x26;
+        high[2] = 0xf4;
+        high[40] = 0xab;
+        const ah = freshNativeState(0n);
+        ah.reg[NativeRax] = 0x1100n;
+        ah.reg[NativeRsi] = 40n;
+        const merged = runNative(ah, portOf(high), 4);
+        if (merged.kind !== "halt" || reg(merged.state, NativeRax) !== 0xab00n) {
+          fail("mov ah, [rsi] did not write bits 8 to 15");
+        }
+        const stack = new Uint8Array(64);
+        stack[0] = 0x40;
+        stack[1] = 0x8a;
+        stack[2] = 0x26;
+        stack[3] = 0xf4;
+        stack[40] = 0xab;
+        const spl = freshNativeState(0n);
+        spl.reg[NativeRax] = 0x1100n;
+        spl.reg[NativeRsp] = 0x1000n;
+        spl.reg[NativeRsi] = 40n;
+        const lowStack = runNative(spl, portOf(stack), 4);
+        if (lowStack.kind !== "halt" || reg(lowStack.state, NativeRsp) !== 0x10abn || reg(lowStack.state, NativeRax) !== 0x1100n) {
+          fail("REX changed AH instead of SPL");
+        }
+        const compared = freshNativeState(0n);
+        compared.reg[NativeRax] = 0x1100n;
+        const same = execute([0x3c, 0x00, 0xf4], compared, 4);
+        if (same.kind !== "halt" || reg(same.state, NativeRax) !== 0x1100n || !same.state.zf || same.state.cf) {
+          fail("cmp al, imm8 wrote rax or the wrong flags");
+        }
+        const added = freshNativeState(0n);
+        added.reg[NativeRax] = 0x11ffn;
+        const wrapped = execute([0x80, 0xc0, 0x01, 0xf4], added, 4);
+        if (wrapped.kind !== "halt" || reg(wrapped.state, NativeRax) !== 0x1100n || !wrapped.state.zf || !wrapped.state.cf) {
+          fail("add al, 1 did not wrap inside the low byte");
+        }
+        const bumped = freshNativeState(0n);
+        bumped.reg[NativeRax] = 0x117fn;
+        bumped.cf = true;
+        const edged = execute([0xfe, 0xc0, 0xf4], bumped, 4);
+        if (edged.kind !== "halt" || reg(edged.state, NativeRax) !== 0x1180n || !edged.state.cf || !edged.state.of || !edged.state.sf) {
+          fail("inc al cleared CF or missed the sign edge");
+        }
+        const skipped = execute([0xeb, 0x01, 0x90, 0xf4], freshNativeState(0n), 4);
+        if (skipped.kind !== "halt") {
+          fail("jmp rel8 did not skip the unimplemented byte");
+        }
+        const stored = new Uint8Array(64);
+        stored[0] = 0x88;
+        stored[1] = 0x06;
+        stored[2] = 0xf4;
+        const writer = freshNativeState(0n);
+        writer.reg[NativeRax] = 0x112fn;
+        writer.reg[NativeRsi] = 40n;
+        const wrote = runNative(writer, portOf(stored), 4);
+        if (wrote.kind !== "halt" || stored[40] !== 0x2f || reg(wrote.state, NativeRax) !== 0x112fn) {
+          fail("mov [rsi], al did not store only the low byte");
         }
       }
 

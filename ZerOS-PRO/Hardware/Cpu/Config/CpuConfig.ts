@@ -74,8 +74,23 @@ export namespace ZerOS {
         /** 小于这个地址的立即数属于固件格子，-slot 不加。 */
         export const RelocateDataFloor = 1048576;
 
-        /** 位元线长度。145 颗 2MiB。bound 未设置时查询返回这个长度。 */
-        export const LineBits = 2432696320;
+        /**
+         * 映射区的终点。八颗窗口之后、兼容尾区之前。
+         * mmap 和字体文件停在这里，不进入后面的 16 MiB。
+         */
+        export const MapEndBits = 2432696320;
+
+        /** 兼容尾区的位数。8 颗 2MiB，共 16 MiB。前 4096 个八位组只给陷入帧。 */
+        export const CompatTailBits = 134217728;
+
+        /** 兼容任务的用户空间，单位是八位组。包含页 0。 */
+        export const CompatSpaceBytes = 16777216;
+
+        /** 任务自己能用的最低用户八位组地址。更低的一页是陷入帧。 */
+        export const CompatUserFloor = 4096;
+
+        /** 位元线长度。153 颗 2MiB。末尾 8 颗是兼容尾区。bound 未设置时查询返回这个长度。 */
+        export const LineBits = 2566914048;
       }
     }
   }

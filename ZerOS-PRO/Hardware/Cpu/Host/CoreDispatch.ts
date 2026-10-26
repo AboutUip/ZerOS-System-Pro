@@ -178,12 +178,18 @@ export namespace ZerOS {
       /** 固件已经停笔。核心 0 写，核心 2 读。必须进共享内存。 */
       const SharedStopAck = 6336n;
       /**
+       * 键盘环。固件在停笔之后把按下写到 6528 起，五个槽到 7296 为止。
+       * 监督核用普通读看见这些字。若只留在 0 号核心的缓存里，终端永远等不到键。
+       */
+      const SharedKeyRing = 6528n;
+      const SharedKeyRingEnd = 7360n;
+      /**
        * 固件调试开关。核心 0 写成 0 或 1。
        * 落在固件格子里。若只留在 0 号核心的缓存，主板看不见这次写入，页面也就挂不上入口。
        */
       const SharedDebugWord = 8128n;
 
-      /** 这次访存是否盖住结束标志、模式字、准备完成标记、停笔握手或调试开关。bitWidth 是这次访问的位数。 */
+      /** 这次访存是否盖住结束标志、模式字、准备完成标记、停笔握手、键盘环或调试开关。bitWidth 是这次访问的位数。 */
       function touchesSharedFirmware(address: bigint, bitWidth: bigint): boolean {
         const end = address + bitWidth;
         if (address < SharedBootFlag + 64n && end > SharedBootFlag) {
@@ -199,6 +205,9 @@ export namespace ZerOS {
           return true;
         }
         if (address < SharedStopAck + 64n && end > SharedStopAck) {
+          return true;
+        }
+        if (address < SharedKeyRingEnd && end > SharedKeyRing) {
           return true;
         }
         if (address < SharedDebugWord + 64n && end > SharedDebugWord) {
@@ -225,11 +234,31 @@ export namespace ZerOS {
       /** 字符串堆。起点按八位组对齐，盖住整段编译器堆。 */
       let KeptHeap = 71843840n;
       let KeptHeapEnd = 138952704n;
+      /**
+       * 监督核的任务表。只在 2 号核心上启用。
+       * 每圈都要把 512 份任务扫一遍，表又在堆缓存外面，逐字问内存时按一个键要等好几秒。
+       * 表只由监督核读写。起点是 kArena(2)+65536，长度是 512×19 个字，接到 vfs 为止。
+       */
+      let KeptTable = 0n;
+      let KeptTableEnd = 0n;
+      /**
+       * 监督核的终端格子。只在 2 号核心上启用。
+       * 客程序碰不到这块，字体绘制又只读本核心刚写下的格子。
+       * 留在核心里之后，打一个字不必再为光标和格子各走一趟内存。
+       * 起点是 kArena(2) 上 vfs 内存文件之后的格子，长度到 253952 位。布局变了就退回内存，不会写错别的核。
+       */
+      let KeptGrid = 0n;
+      let KeptGridEnd = 0n;
       let frameWord: bigint | null = null;
       /** 装入正在按八位组把一段映像读走。这不是下一条取指。字体面读文件时也用这一段。 */
       let spanActive = false;
       /** 原生写入正在等主板落下这一段。和上面的读取不能叠在一起。 */
       let depositActive = false;
+      /**
+       * 下一次落盘不要丢掉私有字节。
+       * 系统调用前要把栈指针那个字交上主板，客程序返回后还要用核心里的同一份。
+       */
+      let keepOnStore = false;
       let depositBytes: Uint8Array | null = null;
       let depositBit = 0n;
       let spanBytes: Uint8Array | null = null;
@@ -294,7 +323,7 @@ export namespace ZerOS {
         if (op === "ldi" && step["Address"] === 6) {
           return true;
         }
-        if (op === "install" && (step["Core"] === 6 || step["Address"] === 6 || step["Length"] === 6)) {
+        if ((op === "install" || op === "admit") && (step["Core"] === 6 || step["Address"] === 6 || step["Length"] === 6)) {
           return true;
         }
         if ((op === "capture" || op === "restore") && (step["Core"] === 6 || step["Slot"] === 6)) {
@@ -468,6 +497,8 @@ export namespace ZerOS {
         const inSp = address >= KeptSp && address < KeptSpEnd;
         const inHeapPtr = address >= KeptHeapPtr && address < KeptHeapPtrEnd;
         const inStatic = address >= KeptStatic && address < KeptStaticEnd;
+        const inTable = address >= KeptTable && address < KeptTableEnd;
+        const inGrid = address >= KeptGrid && address < KeptGridEnd;
         const last = address + BigInt((width - 1) * 8);
         if (inLow && last >= KeptLowEnd) {
           return { kind: "leave" };
@@ -487,7 +518,13 @@ export namespace ZerOS {
         if (inStatic && last >= KeptStaticEnd) {
           return { kind: "leave" };
         }
-        if (!inLow && !inStack && !inHeap && !inSp && !inHeapPtr && !inStatic) {
+        if (inTable && last >= KeptTableEnd) {
+          return { kind: "leave" };
+        }
+        if (inGrid && last >= KeptGridEnd) {
+          return { kind: "leave" };
+        }
+        if (!inLow && !inStack && !inHeap && !inSp && !inHeapPtr && !inStatic && !inTable && !inGrid) {
           return { kind: "leave" };
         }
         if (address < ScratchLimit && last >= ScratchBase) {
@@ -2526,6 +2563,7 @@ export namespace ZerOS {
           const storedOk = record?.["ok"] !== false;
           const cpuPort = cpu;
           if (!storedOk || payload === null) {
+            keepOnStore = false;
             if (cpuPort !== null) {
               const storedMessage = record?.["message"];
               cpuPort.postMessage({
@@ -2536,8 +2574,10 @@ export namespace ZerOS {
             }
             return;
           }
-          /* 主板已经落下。盖住同一段的私有字节必须丢掉，下一次按段读才不会用旧值盖住新值。 */
-          if (keptOctets.size > 0) {
+          /* 栈指针那个字刚交给监督核。核心里还留着，返回后的栈恢复仍读这一份。 */
+          if (keepOnStore) {
+            keepOnStore = false;
+          } else if (keptOctets.size > 0) {
             const start = bit / 8n;
             const end = start + BigInt(payload.length);
             for (const key of keptOctets.keys()) {
@@ -3575,6 +3615,35 @@ export namespace ZerOS {
           }
           return;
         }
+        if (kind === "publish-sp") {
+          const publishPort = cpu;
+          if (publishPort === null) {
+            return;
+          }
+          const bytes = new Uint8Array(8);
+          const base = KeptSp / 8n;
+          let present = true;
+          for (let index = 0; index < 8; index += 1) {
+            const stored = keptOctets.get(base + BigInt(index));
+            if (stored === undefined) {
+              present = false;
+              break;
+            }
+            bytes[index] = stored;
+          }
+          /* 先把字节交回宿主，再由宿主走原来的落盘。这里不占 depositActive，避免和正在进行的写入缠在一起。 */
+          if (present) {
+            keepOnStore = true;
+          }
+          publishPort.postMessage({
+            kind: "published",
+            ok: true,
+            present,
+            address: KeptSp,
+            bytes: present ? bytes : new Uint8Array(0),
+          });
+          return;
+        }
         if (kind === "store-span") {
           const address = record["address"];
           const bytes = record["bytes"];
@@ -3583,11 +3652,13 @@ export namespace ZerOS {
             return;
           }
           if (depositActive || spanActive || typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 262144 || address < 0n || address % 8n !== 0n) {
+            keepOnStore = false;
             storePort.postMessage({ kind: "stored", ok: false, message: `${corePrefix} native store failed` });
             return;
           }
           const boardPort = board;
           if (boardPort === null) {
+            keepOnStore = false;
             storePort.postMessage({ kind: "stored", ok: false, message: `${corePrefix} native store failed` });
             return;
           }
@@ -3784,6 +3855,12 @@ export namespace ZerOS {
         KeptHeapPtrEnd += delta;
         KeptStatic += delta;
         KeptStaticEnd += delta;
+        if (ordinal === 2) {
+          KeptTable = 537985024n;
+          KeptTableEnd = 538607616n;
+          KeptGrid = 594698304n;
+          KeptGridEnd = 594952256n;
+        }
       }
 
       /**

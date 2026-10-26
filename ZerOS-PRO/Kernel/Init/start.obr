@@ -13,7 +13,7 @@ import memory;
 import obr.nas;
 import obr.os;
 
-/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font */
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat */
 
 deRfun pack(): long {
   return 4294967296L;
@@ -30,6 +30,54 @@ deRfun reply(long caller, long value): void {
   if (index >= 0L) {
     taskAt(index).state = TaskState::Running;
   }
+}
+
+/* 兼容任务的陷入。只做 write 和 exit。别的号把 -38 写回 rax。引导不走这里。 */
+deRfun compatLow(long code): long {
+  while (code < 0L) {
+    code = code + 256L;
+  }
+  while (code >= 256L) {
+    code = code - 256L;
+  }
+  return code;
+}
+
+deRfun compatSvc(long caller): void {
+  long frame = compatTail();
+  long rax = memory::load64(frame);
+  long rdi = memory::load64(frame + 448L);
+  long rsi = memory::load64(frame + 384L);
+  long rdx = memory::load64(frame + 128L);
+  long next = memory::load64(frame + 1024L);
+  if (rax == 60L || rax == 231L) {
+    procExit(caller, compatLow(rdi));
+    obr::os::release(caller);
+    return;
+  }
+  if (rax != 1L) {
+    memory::store64(-38L, frame);
+    memory::store64(next, frame + 1024L);
+    reply(caller, -38L);
+    return;
+  }
+  if (rdx < 0L) {
+    memory::store64(-22L, frame);
+    memory::store64(next, frame + 1024L);
+    reply(caller, -22L);
+    return;
+  }
+  if (rsi < 4096L || rsi >= 16777216L || rsi + rdx > 16777216L) {
+    memory::store64(-14L, frame);
+    memory::store64(next, frame + 1024L);
+    reply(caller, -14L);
+    return;
+  }
+  long home = query(1L, 8L, caller);
+  long result = compatWrite(caller, home, rdi, frame + rsi * 8L, rdx);
+  memory::store64(result, frame);
+  memory::store64(next, frame + 1024L);
+  reply(caller, result);
 }
 
 deRfun noteDone(): void {
@@ -151,6 +199,10 @@ deRfun dispatch(long caller, long service): void {
     reply(caller, fontQuery(home));
     return;
   }
+  if (service == 27L) {
+    compatSvc(caller);
+    return;
+  }
   if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L) {
     long filed = vfsCall(caller, service);
     if (filed != -2L) {
@@ -205,6 +257,7 @@ deRfun termBring(): void {
 deRfun main(): int {
   boot();
   while (1) {
+    conPump();
     schedSweep();
     long value = 0L;
     long found = obr::os::take(&value);

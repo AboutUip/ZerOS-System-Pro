@@ -1,15 +1,24 @@
 /* 默认 obrc 的调用和按比例访存。
    不导入任何库。paint 被调用两次，所以不会被展开进 main。
-   地址是位地址。一个 long 占 64 位，所以第二格在第一格之后 64 位。 */
+   地址是位地址。步长 64 位收成比例 8 的一条存储。第二格在第一格之后 64 位。
+   mix 自己调用自己，六个整数参数走寄存器，第七个走软件栈。 */
 deRfun paint(long base, long index, long value): void {
-  long scaled = base + index * 64L;
-  long* slot = (long*)scaled;
-  *slot = value;
+  *(long*)(base + index * 64L) = value;
+}
+
+deRfun mix(long a, long b, long c, long d, long e, long f, long n): long {
+  long part = a + b * 10L + c * 100L + d * 1000L + e * 10000L + f * 100000L;
+  if (n <= 0L) {
+    return part;
+  }
+  return mix(a, b, c, d, e, f, n - 1L) + 1L;
 }
 
 deRfun main(): int {
   long step = 1L;
   paint(2097152L, 0L, 42L);
   paint(2097152L, step, 43L);
+  paint(2097152L, 2L, mix(1L, 2L, 3L, 4L, 5L, 6L, 1L));
+  paint(2097152L, 3L, mix(1L, 2L, 3L, 4L, 5L, 6L, 0L));
   return 0;
 }

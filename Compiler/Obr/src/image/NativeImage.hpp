@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Debug.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,6 +22,10 @@ struct NativeSymbol {
 /** 每一行都能收成已登记的原生编码时才是真。做不到的程序仍走原来的 ZPB1。 */
 bool nativeReady(const std::vector<std::string>& lines);
 
-void writeNativeProgram(const std::string& path, const std::vector<std::string>& lines, const std::vector<NativeSymbol>& symbols);
+/**
+ * 写出 ZNB1。sites 与 lines 等长时，旁边写 obr-debug 2。
+ * 第一列是这条原生指令的起始位地址，按映像放在位地址 0 计算，含 12 个八位组的文件头。
+ */
+void writeNativeProgram(const std::string& path, const std::vector<std::string>& lines, const std::vector<NativeSymbol>& symbols, const std::vector<DebugSite>* sites);
 
 }  // namespace obr

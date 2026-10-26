@@ -18,9 +18,9 @@ export namespace ZerOS {
     export namespace Cpu {
       /** rax。调用结果写在这里。 */
       export const NativeRax = 0;
-      /** rcx。 */
+      /** rcx。第四个整数参数。 */
       export const NativeRcx = 1;
-      /** rdx。 */
+      /** rdx。第三个整数参数。 */
       export const NativeRdx = 2;
       /** rbx。被调用方保存。 */
       export const NativeRbx = 3;
@@ -28,13 +28,13 @@ export namespace ZerOS {
       export const NativeRsp = 4;
       /** rbp。被调用方保存。 */
       export const NativeRbp = 5;
-      /** rsi。 */
+      /** rsi。第二个整数参数。 */
       export const NativeRsi = 6;
       /** rdi。第一个整数参数。 */
       export const NativeRdi = 7;
-      /** r8。 */
+      /** r8。第五个整数参数。 */
       export const NativeR8 = 8;
-      /** r9。 */
+      /** r9。第六个整数参数。 */
       export const NativeR9 = 9;
       /** r10。 */
       export const NativeR10 = 10;

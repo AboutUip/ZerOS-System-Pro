@@ -44,6 +44,7 @@ import { type ZerOS as CommandResultRoot } from "../Structure/CpuCommandResult";
 import { type ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
 import { ZerOS as NativeHeaderRoot } from "../Native/NativeHeader";
 import { ZerOS as NativeStateRoot } from "../Structure/NativeState";
+import { ZerOS as CompatRoot } from "../Structure/CompatFrame";
 import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
 import { ZerOS as MailboxRoot } from "../../Motherboard/Host/Mailbox";
 import { ZerOS as MetricPageRoot } from "../../Motherboard/Host/MetricPage";
@@ -94,6 +95,10 @@ export namespace ZerOS {
       type ProgramSymbol = BinaryRoot.Hardware.Cpu.ProgramSymbol;
       const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const RelocateDataFloor = ConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
+      const MapEndBits = ConfigRoot.Hardware.Cpu.Config.MapEndBits;
+      const CompatSpaceBytes = ConfigRoot.Hardware.Cpu.Config.CompatSpaceBytes;
+      const CompatUserFloor = ConfigRoot.Hardware.Cpu.Config.CompatUserFloor;
+      const compatDescriptor = CompatRoot.Hardware.Cpu.compatDescriptor;
       const runtimePrefix = "[ZerOS.Hardware.Cpu.CpuRuntime]";
       /** 一次装入最多读这么多个八位组。再长就拒绝，避免一条指令扫完整条地址线。 */
       const InstallOctetLimit = 16777216;
@@ -214,6 +219,8 @@ export namespace ZerOS {
 
       /** 监督核。空表示还没有人调用 gate，这时装入和调度不设限。 */
       let gateOrdinal: number | null = null;
+      /** 正在跑兼容任务的核心。全机同时一份。没有时是空。 */
+      let compatOwner: number | null = null;
 
       /**
        * 原生系统调用的续跑。
@@ -701,6 +708,14 @@ export namespace ZerOS {
             return;
           }
           resolve(bytes);
+          return;
+        }
+        if (record["kind"] === "published") {
+          const resolve = publishWait.get(core);
+          publishWait.delete(core);
+          if (resolve !== undefined) {
+            resolve(record);
+          }
           return;
         }
         if (record["kind"] === "peek") {
@@ -1191,6 +1206,42 @@ export namespace ZerOS {
         return Number(value);
       }
 
+      const publishWait = new Map<MountedCore, (record: Record<string, unknown>) => void>();
+
+      /**
+       * 客核心把栈指针那个字交上主板。
+       * 窗口起点就是这个字。分配的位数写在这里，监督核才能看见。
+       * 核心先把私有的 8 个字节交回来，再走原来的落盘。落盘不丢掉核心里的那一份。
+       * 没有这 8 个字节时直接继续，调用仍然送出。
+       */
+      function publishSp(ordinal: number): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (publishWait.has(core)) {
+          fail("stack word publish is already waiting");
+        }
+        const delivered = new Promise<Record<string, unknown>>((resolve): void => {
+          publishWait.set(core, (record): void => {
+            resolve(record);
+          });
+          core.port.postMessage({ kind: "publish-sp" });
+        });
+        return delivered.then(async (record): Promise<void> => {
+          if (record["ok"] !== true || record["present"] !== true) {
+            return;
+          }
+          const address = record["address"];
+          const bytes = record["bytes"];
+          if (typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length !== 8) {
+            return;
+          }
+          try {
+            await writeSpan(ordinal, address, bytes);
+          } catch {
+            /* 交不出去时调用仍然继续。监督核读到 0，分配会失败，客程序自己处理。 */
+          }
+        });
+      }
+
       /** 读执行中核心的一个寄存器。不计入命令条数，也不占一拍。 */
       function peekRegister(ordinal: number, register: number): Promise<bigint> {
         const core = requireOrdinal(ordinal);
@@ -1470,8 +1521,21 @@ export namespace ZerOS {
       }
 
       /** 与 withinBound 相同，但不抛出。越界的那一条留在批外面。 */
+      /** 兼容任务可以访问尾区里页 0 之后的用户页。页 0 的陷入帧不在这道例外里。 */
+      function compatTailOk(ordinal: number, address: bigint, bits: number): boolean {
+        if (compatOwner !== ordinal || bits < 1) {
+          return false;
+        }
+        const low = BigInt(MapEndBits) + BigInt(CompatUserFloor) * 8n;
+        const high = BigInt(MapEndBits) + BigInt(CompatSpaceBytes) * 8n;
+        return address >= low && address + BigInt(bits) <= high;
+      }
+
       function boundOk(ordinal: number, address: bigint, bits: number): boolean {
         if (gateOrdinal === ordinal) {
+          return true;
+        }
+        if (compatTailOk(ordinal, address, bits)) {
           return true;
         }
         const core = requireOrdinal(ordinal);
@@ -2303,6 +2367,8 @@ export namespace ZerOS {
           sf: frame.sf,
           of: frame.of,
           pf: frame.pf,
+          compat: frame.compat,
+          fsbase: frame.fsbase,
         };
       }
 
@@ -2508,6 +2574,18 @@ export namespace ZerOS {
         requireOrdinal(ordinal).Executed += 1;
       }
 
+      /** 卸下兼容任务时清掉这 16 MiB。按主板一次能收下的长度分段写 0。 */
+      async function zeroCompatTail(caller: number): Promise<void> {
+        const chunk = 262144;
+        const zeros = new Uint8Array(chunk);
+        const origin = BigInt(MapEndBits);
+        let offset = 0;
+        while (offset < CompatSpaceBytes) {
+          await writeSpan(caller, origin + BigInt(offset) * 8n, zeros);
+          offset += chunk;
+        }
+      }
+
       /** 卸下另一颗已经停止的核心。可访问长度变成 0，调用方随后再交还挂载状态。 */
       export async function nativeRelease(ordinal: number, target: bigint): Promise<void> {
         const to = coreOrdinal(target);
@@ -2518,6 +2596,10 @@ export namespace ZerOS {
         await preempt(to);
         if (chosen.state !== CoreStateHalted || sequenceBusy.has(to)) {
           fail("release target is not halted");
+        }
+        if (compatOwner === to) {
+          await zeroCompatTail(ordinal);
+          compatOwner = null;
         }
         chosen.installed = null;
         clearNativeHold(chosen);
@@ -2624,6 +2706,70 @@ export namespace ZerOS {
         requireOrdinal(ordinal).Executed += 1;
       }
 
+      function admitFail(text: string): never {
+        fail(`admit ${text}`);
+      }
+
+      /** 把已停止的目标放成兼容任务。代码在尾区里，不抄进原生映像缓冲。 */
+      function placeCompat(core: MountedCore, entry: bigint, userRsp: bigint): void {
+        const rip = BigInt(MapEndBits) + entry * 8n;
+        const state = NativeStateRoot.Hardware.Cpu.freshNativeState(rip);
+        state.compat = true;
+        state.fsbase = 0n;
+        state.reg[NativeRsp] = userRsp;
+        core.nativeCode = new Uint8Array(0);
+        core.nativeBase = rip;
+        core.native = state;
+        core.nativeArmed = true;
+      }
+
+      /**
+       * 监督核让一颗已停止的核心进入兼容任务。
+       * 描述符是 32 个八位组。已经有一份兼容任务，或描述符不合格时，目标保持原样。
+       */
+      export async function nativeAdmit(ordinal: number, target: bigint, address: bigint, length: bigint): Promise<void> {
+        if (!supervisor(ordinal)) {
+          admitFail("requires the supervisor");
+        }
+        if (length !== 32n || address < 0n || address % 8n !== 0n) {
+          admitFail("descriptor");
+        }
+        if (compatOwner !== null) {
+          admitFail("compat task");
+        }
+        const to = coreOrdinal(target);
+        if (to === null || to === ordinal) {
+          admitFail("target core is not halted");
+        }
+        const targetCore = cores.get(to);
+        if (targetCore === undefined) {
+          admitFail("target core is not halted");
+        }
+        const bytes = await readSpan(ordinal, address, 32);
+        const descriptor = compatDescriptor(bytes);
+        if (descriptor === null) {
+          admitFail("descriptor");
+        }
+        await preempt(to);
+        if (targetCore.state !== CoreStateHalted || sequenceBusy.has(to)) {
+          admitFail("target core is not halted");
+        }
+        await wipeRegisters(to);
+        targetCore.installed = null;
+        clearNativeHold(targetCore);
+        placeCompat(targetCore, descriptor.entry, descriptor.rsp);
+        targetCore.exports = [];
+        targetCore.imports = [];
+        targetCore.resumeCursor = null;
+        targetCore.stopKind = 0;
+        targetCore.svcDest = null;
+        targetCore.sliceQuota = 0;
+        targetCore.sliceLeft = 0;
+        markGuest(to);
+        compatOwner = to;
+        requireOrdinal(ordinal).Executed += 1;
+      }
+
       /** 把已停止核心抄进槽。目标和槽号是寄存器里的值。不改这颗核心。 */
       export async function nativeCapture(ordinal: number, target: bigint, slot: bigint): Promise<void> {
         await captureContext(ordinal, target, slot);
@@ -2715,6 +2861,9 @@ export namespace ZerOS {
         if (targetCore.installed === null && targetCore.native === null) {
           contextFail("capture", "target has no program");
         }
+        if (compatOwner === target) {
+          contextFail("capture", "compat task");
+        }
         const registers = await readImage(target);
         const cache = await readPrivate(target);
         const held = contextSlots[slot];
@@ -2765,6 +2914,9 @@ export namespace ZerOS {
         const held = contextSlots[slot];
         if (held?.filled !== true) {
           contextFail("restore", "slot is empty");
+        }
+        if (compatOwner === target || held.native?.compat === true) {
+          contextFail("restore", "compat task");
         }
         await plantRegisters(target, held.registers);
         await plantPrivate(target, held.cache);
@@ -3388,6 +3540,20 @@ export namespace ZerOS {
             if (service < 0n || service > 0xffffffffn) {
               fail("syscall service is out of range");
             }
+            /* 监督核的保持位一次只有一条。别的核心刚交过调用时，这里再交会直接失败，
+               客程序就被收成正常停机。让出这一拍，等监督核取走后再交。 */
+            const gate = requireOrdinal(gateOrdinal);
+            let waits = 0;
+            while (gate.latch !== null) {
+              waits += 1;
+              if (waits > 3000) {
+                fail("syscall latch stayed full");
+              }
+              await waitSpan(1);
+            }
+            if (requireOrdinal(ordinal).guest) {
+              await publishSp(ordinal);
+            }
             pass(ordinal, gateOrdinal, (BigInt(ordinal) << 32n) | service);
             requireOrdinal(ordinal).svcDest = step.Destination;
             requireOrdinal(ordinal).Executed += 1;
@@ -3648,6 +3814,12 @@ export namespace ZerOS {
             const length = await peekRegister(ordinal, step.Length);
             await installImage(ordinal, target, address, length);
             requireOrdinal(ordinal).Executed += 1;
+          } else if (step.Op === "admit") {
+            await waitPace(requireOrdinal(ordinal));
+            const target = await peekRegister(ordinal, step.Core);
+            const address = await peekRegister(ordinal, step.Address);
+            const length = await peekRegister(ordinal, step.Length);
+            await nativeAdmit(ordinal, target, address, length);
           } else if (step.Op === "attach") {
             await waitPace(requireOrdinal(ordinal));
             const target = await peekRegister(ordinal, step.Core);

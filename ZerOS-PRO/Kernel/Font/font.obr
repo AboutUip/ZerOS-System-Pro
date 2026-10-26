@@ -1,13 +1,13 @@
 /* 系统字体目录。文件在 NAS 的 /font，监督核引导时记下在不在和八位组数。
    表在本窗口 +20480。+12416 起是 pid 和光标，+12800 是控制台暂存的调用者窗口，+32768 起是驱动路径。
    两份，每份两个字：在不在，八位组数。0 号是更纱黑体 SC，1 号是枫 Mono CN。
-   引导只登记路径。shell 起来之后再把 0 号映进映射区并建立字体面，终端由监督核绘制。 */
+   引导只登记路径。shell 起来之后再把 0 号映进映射区并建立 16 像素的字体面，终端格子由监督核绘制。 */
 #LINK /start.obr
 import memory;
+import fs;
 import obr.font;
 import obr.nas;
 import obr.os;
-import obr.ui;
 
 deRfun fontBase(): long {
   return 1048576L + 2L * 268435456L + 20480L;
@@ -106,7 +106,7 @@ deRfun termOpen(): long {
     obr::nas::close(handle);
     return 0L;
   }
-  long face = obr::font::face(address, octets, 20L);
+  long face = obr::font::face(address, octets, 16L);
   if (face < 1L) {
     obr::os::munmap(address, octets);
     obr::nas::close(handle);
@@ -118,38 +118,7 @@ deRfun termOpen(): long {
   return 1L;
 }
 
-/* 把字符串的标量抄到连续的 32 位上。下标已经是码点，不再按 UTF-8 字节拆开。 */
-deRfun termPut(string text, long at): long {
-  int raw = length(text);
-  int index = 0;
-  while (index < raw) {
-    memory::store32(text[index], at + index * 32L);
-    index = index + 1;
-  }
-  long count = raw;
-  return count;
-}
-
-/* 深色底，再用一颗浅色像素把墨色换成字形的颜色。
-   第一行是提示符，不是内置命令。第二行用系统字体画两个汉字，证明标量能进字体面。 */
+/* 格子已经由写入放好。这里只把脏行画出来。字号 16，一格 8 像素宽、18 像素高。 */
 deRfun termShow(): void {
-  long face = memory::load64(termSlot(1L));
-  if (face < 1L) {
-    return;
-  }
-  long wide = obr::ui::width();
-  long high = obr::ui::height();
-  long paper = obr::ui::rgb(30L, 30L, 30L);
-  long ink = obr::ui::rgb(230L, 230L, 230L);
-  obr::ui::clear(paper, 255L);
-  obr::ui::rect(0L, 0L, wide, high, paper, 255L);
-  obr::ui::rect(24L, 40L, 1L, 1L, ink, 255L);
-  long scalar = termSlot(4L);
-  long prompt = termPut(">_ ", scalar);
-  obr::font::select(face, 24L, 40L);
-  obr::font::draw(scalar, prompt);
-  long mark = termPut("就绪", scalar);
-  obr::font::select(face, 24L, 68L);
-  obr::font::draw(scalar, mark);
-  obr::ui::present();
+  conPaint();
 }

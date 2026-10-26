@@ -117,6 +117,7 @@ export namespace ZerOS {
       const ProgramBinaryAttach = CodeRoot.Hardware.Cpu.ProgramBinaryAttach;
       const ProgramBinaryMmap = CodeRoot.Hardware.Cpu.ProgramBinaryMmap;
       const ProgramBinaryMunmap = CodeRoot.Hardware.Cpu.ProgramBinaryMunmap;
+      const ProgramBinaryAdmit = CodeRoot.Hardware.Cpu.ProgramBinaryAdmit;
       const ProgramBinaryVersionLink = CodeRoot.Hardware.Cpu.ProgramBinaryVersionLink;
       const ProgramBinaryImmediateSigned = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateSigned;
       const ProgramBinaryImmediateWide = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateWide;
@@ -306,6 +307,10 @@ export namespace ZerOS {
             return;
           case "install":
             writeCode(writer, ProgramBinaryInstall);
+            writeRegisters(writer, [step.Core, step.Address, step.Length]);
+            return;
+          case "admit":
+            writeCode(writer, ProgramBinaryAdmit);
             writeRegisters(writer, [step.Core, step.Address, step.Length]);
             return;
           case "schedule":
@@ -730,6 +735,14 @@ export namespace ZerOS {
         if (code === ProgramBinaryInstall) {
           return {
             Op: "install",
+            Core: readRegister(reader),
+            Address: readRegister(reader),
+            Length: readRegister(reader),
+          };
+        }
+        if (code === ProgramBinaryAdmit) {
+          return {
+            Op: "admit",
             Core: readRegister(reader),
             Address: readRegister(reader),
             Length: readRegister(reader),

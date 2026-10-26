@@ -22,13 +22,22 @@
 
 import { ZerOS as EscapeRoot } from "../Enum/NativeEscape";
 import { ZerOS as RegisterRoot } from "../Enum/NativeRegister";
+import { ZerOS as CompatRoot } from "../Structure/CompatFrame";
 import type { ZerOS as StateRoot } from "../Structure/NativeState";
 
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Cpu {
       const NativeRsp = RegisterRoot.Hardware.Cpu.NativeRsp;
+      const NativeRax = RegisterRoot.Hardware.Cpu.NativeRax;
+      const NativeRcx = RegisterRoot.Hardware.Cpu.NativeRcx;
+      const NativeRdi = RegisterRoot.Hardware.Cpu.NativeRdi;
+      const NativeR11 = RegisterRoot.Hardware.Cpu.NativeR11;
       const nativeEscapeArity = EscapeRoot.Hardware.Cpu.nativeEscapeArity;
+      const compatUserBit = CompatRoot.Hardware.Cpu.compatUserBit;
+      const compatUserOfBit = CompatRoot.Hardware.Cpu.compatUserOfBit;
+      const compatFlags = CompatRoot.Hardware.Cpu.compatFlags;
+      const compatOrigin = CompatRoot.Hardware.Cpu.CompatTailOrigin;
       type NativeStep = StateRoot.Hardware.Cpu.NativeStep;
       const wordMask = (1n << 64n) - 1n;
       const signBit = 1n << 63n;
@@ -70,6 +79,9 @@ export namespace ZerOS {
           if (outcome === "halt") {
             return { kind: "halt", state };
           }
+          if (outcome === "syscall") {
+            return { kind: "wait", state };
+          }
           if (outcome !== "cont") {
             return { kind: "fault", state };
           }
@@ -101,12 +113,30 @@ export namespace ZerOS {
       }
 
       function markLogic(state: NativeState, result: bigint): void {
-        const bits = wrap(result);
+        markLogicWidth(state, result, 64);
+      }
+
+      /** 逻辑运算的标志。width 是 32 或 64，SF 取这一宽的最高位，不是总看第 63 位。 */
+      function markLogicWidth(state: NativeState, result: bigint, width: 8 | 16 | 32 | 64): void {
+        const mask = width === 64 ? wordMask : (1n << BigInt(width)) - 1n;
+        const bits = wrap(result) & mask;
         state.cf = false;
         state.of = false;
         state.zf = bits === 0n;
-        state.sf = bits >= signBit;
+        state.sf = (bits & (1n << BigInt(width - 1))) !== 0n;
         state.pf = parity(bits);
+      }
+
+      /** inc 与 dec 不改 CF。OF 只在跨过该宽度的符号边界时置位。 */
+      function markInc(state: NativeState, before: bigint, after: bigint, width: 8 | 32 | 64, increment: boolean): void {
+        const mask = width === 32 ? 0xffffffffn : wordMask;
+        const bits = after & mask;
+        const sign = 1n << BigInt(width - 1);
+        state.zf = bits === 0n;
+        state.sf = (bits & sign) !== 0n;
+        state.pf = parity(bits);
+        const edge = increment ? sign - 1n : sign;
+        state.of = (before & mask) === edge;
       }
 
       function markAdd(state: NativeState, left: bigint, right: bigint, result: bigint): void {
@@ -131,6 +161,40 @@ export namespace ZerOS {
         const leftSign = left >= signBit;
         const rightSign = right >= signBit;
         const resultSign = bits >= signBit;
+        state.of = leftSign !== rightSign && resultSign !== leftSign;
+      }
+
+      /** 8 位或 32 位加减的标志。操作数先按宽度截断，SF 取这一宽的最高位。 */
+      function markAddWidth(state: NativeState, left: bigint, right: bigint, width: 8 | 16 | 32 | 64): void {
+        const mask = (1n << BigInt(width)) - 1n;
+        const low = left & mask;
+        const high = right & mask;
+        const sum = low + high;
+        const bits = sum & mask;
+        const sign = 1n << BigInt(width - 1);
+        state.cf = sum > mask;
+        state.zf = bits === 0n;
+        state.sf = (bits & sign) !== 0n;
+        state.pf = parity(bits);
+        const leftSign = (low & sign) !== 0n;
+        const rightSign = (high & sign) !== 0n;
+        const resultSign = (bits & sign) !== 0n;
+        state.of = leftSign === rightSign && resultSign !== leftSign;
+      }
+
+      function markSubWidth(state: NativeState, left: bigint, right: bigint, width: 8 | 16 | 32 | 64): void {
+        const mask = (1n << BigInt(width)) - 1n;
+        const low = left & mask;
+        const high = right & mask;
+        const bits = (low - high) & mask;
+        const sign = 1n << BigInt(width - 1);
+        state.cf = low < high;
+        state.zf = bits === 0n;
+        state.sf = (bits & sign) !== 0n;
+        state.pf = parity(bits);
+        const leftSign = (low & sign) !== 0n;
+        const rightSign = (high & sign) !== 0n;
+        const resultSign = (bits & sign) !== 0n;
         state.of = leftSign !== rightSign && resultSign !== leftSign;
       }
 
@@ -171,6 +235,70 @@ export namespace ZerOS {
         return true;
       }
 
+      /**
+       * rep stos。方向固定向前，因为 0xFC 与 0xFD 还没登记。
+       * 第一次就写不进时，rdi 和 rcx 保持原值。写进几轮之后失败，则留下已经完成的轮。
+       */
+      function applyStos(
+        state: NativeState,
+        port: NativeOctetPort,
+        source: Reader,
+        repeated: boolean,
+        rexWide: boolean,
+        rexBeforePrefix: boolean,
+      ): NativeStep {
+        let wide = rexWide;
+        let op = 0xab;
+        if (repeated) {
+          if (rexBeforePrefix) {
+            return "fault";
+          }
+          const next = source.take();
+          if (next === null) {
+            return "fault";
+          }
+          op = next;
+          if (op >= 0x40 && op <= 0x4f) {
+            wide = (op & 0x08) !== 0;
+            const after = source.take();
+            if (after === null) {
+              return "fault";
+            }
+            op = after;
+          }
+        }
+        if (op !== 0xab) {
+          return "fault";
+        }
+        const width = wide ? 8 : 4;
+        const step = BigInt(width);
+        let ptr = state.reg[NativeRdi] ?? 0n;
+        let count = repeated ? (state.reg[NativeRcx] ?? 0n) : 1n;
+        const data = (state.reg[NativeRax] ?? 0n) & (wide ? wordMask : 0xffffffffn);
+        let progressed = false;
+        while (count !== 0n) {
+          const bit = state.compat ? compatUserBit(ptr) : ptr < 0n ? null : ptr * 8n;
+          if (bit === null || !writeCount(port, bit, data, width)) {
+            if (progressed) {
+              state.reg[NativeRdi] = ptr;
+              if (repeated) {
+                state.reg[NativeRcx] = count;
+              }
+            }
+            return "fault";
+          }
+          ptr += step;
+          count -= 1n;
+          progressed = true;
+        }
+        state.reg[NativeRdi] = ptr;
+        if (repeated) {
+          state.reg[NativeRcx] = 0n;
+        }
+        state.rip = source.at;
+        return "cont";
+      }
+
       interface Mem {
         base: number | null;
         index: number | null;
@@ -209,6 +337,57 @@ export namespace ZerOS {
         readerPort = port;
         reusedReader.at = rip;
         return reusedReader;
+      }
+
+      /** 条件码低 4 位。0 是 OF，2 是 CF，4 是 ZF，6 是 CF 或 ZF，7 是两者都没有，12 是 SF 与 OF 不同。 */
+      function condition(state: NativeState, code: number): boolean {
+        const less = state.sf !== state.of;
+        if (code === 0) {
+          return state.of;
+        }
+        if (code === 1) {
+          return !state.of;
+        }
+        if (code === 2) {
+          return state.cf;
+        }
+        if (code === 3) {
+          return !state.cf;
+        }
+        if (code === 4) {
+          return state.zf;
+        }
+        if (code === 5) {
+          return !state.zf;
+        }
+        if (code === 6) {
+          return state.cf || state.zf;
+        }
+        if (code === 7) {
+          return !state.cf && !state.zf;
+        }
+        if (code === 8) {
+          return state.sf;
+        }
+        if (code === 9) {
+          return !state.sf;
+        }
+        if (code === 10) {
+          return state.pf;
+        }
+        if (code === 11) {
+          return !state.pf;
+        }
+        if (code === 12) {
+          return less;
+        }
+        if (code === 13) {
+          return !less;
+        }
+        if (code === 14) {
+          return state.zf || less;
+        }
+        return !state.zf && !less;
       }
 
       function disp8(source: Reader): bigint | null {
@@ -296,6 +475,9 @@ export namespace ZerOS {
         return { base: rmLow + (rexB ? 8 : 0), index: null, scale: 1, disp, ripRelative: false };
       }
 
+      /** 本条的 FS 基址。0x64 把它加到非相对内存地址上，相对指令指针不加。 */
+      let segmentBase = 0n;
+
       function octetAddress(state: NativeState, mem: Mem, nextBit: bigint): bigint | null {
         if (mem.ripRelative) {
           if (nextBit % 8n !== 0n) {
@@ -313,13 +495,25 @@ export namespace ZerOS {
         return address;
       }
 
+      /** 栈槽的线性位地址。兼容任务用用户八位组地址，原生任务用 rsp 乘 8。 */
+      function stackBit(state: NativeState, rsp: bigint): bigint | null {
+        if (state.compat) {
+          return compatUserBit(rsp);
+        }
+        if (rsp < 0n) {
+          return null;
+        }
+        return rsp * 8n;
+      }
+
       function pushValue(state: NativeState, port: NativeOctetPort, value: bigint): boolean {
         const rsp = state.reg[NativeRsp] ?? 0n;
         if (rsp < 8n) {
           return false;
         }
         const next = rsp - 8n;
-        if (!writeImm(port, next * 8n, value)) {
+        const bit = stackBit(state, next);
+        if (bit === null || !writeImm(port, bit, value)) {
           return false;
         }
         state.reg[NativeRsp] = next;
@@ -328,12 +522,32 @@ export namespace ZerOS {
 
       function popValue(state: NativeState, port: NativeOctetPort): bigint | null {
         const rsp = state.reg[NativeRsp] ?? 0n;
-        const value = readImm(port, rsp * 8n, 8);
+        const bit = stackBit(state, rsp);
+        if (bit === null) {
+          return null;
+        }
+        const value = readImm(port, bit, 8);
         if (value === null) {
           return null;
         }
         state.reg[NativeRsp] = rsp + 8n;
         return value;
+      }
+
+      /** 内存操作数的线性位地址。兼容任务的寄存器地址先加上尾区起点。 */
+      function operandBit(state: NativeState, mem: Mem, address: bigint): bigint | null {
+        const adjusted = mem.ripRelative ? address : address + segmentBase;
+        if (!state.compat) {
+          return adjusted * 8n;
+        }
+        if (mem.ripRelative) {
+          const bit = address * 8n;
+          if (compatUserOfBit(bit) === null) {
+            return null;
+          }
+          return bit;
+        }
+        return compatUserBit(adjusted);
       }
 
       function regAt(state: NativeState, index: number): bigint | null {
@@ -606,16 +820,267 @@ export namespace ZerOS {
       }
 
       /**
+       * 8 位读写只动那一个字节。没有 REX 时 4 至 7 是 AH/CH/DH/BH，有 REX 时是低 8 位。
+       * 写完不把寄存器其余位清掉。
+       */
+      function byteSlot(low3: number, extended: boolean, rexOn: boolean): { index: number; shift: number } {
+        if (rexOn) {
+          return { index: low3 + (extended ? 8 : 0), shift: 0 };
+        }
+        if (low3 >= 4) {
+          return { index: low3 - 4, shift: 8 };
+        }
+        return { index: low3, shift: 0 };
+      }
+
+      function readByte(state: NativeState, index: number, shift: number): number {
+        return Number(((state.reg[index] ?? 0n) >> BigInt(shift)) & 0xffn);
+      }
+
+      function writeByte(state: NativeState, index: number, shift: number, value: number): void {
+        const placed = BigInt(value & 255) << BigInt(shift);
+        const mask = 0xffn << BigInt(shift);
+        state.reg[index] = ((state.reg[index] ?? 0n) & (wordMask ^ mask)) | placed;
+      }
+
+      function applyByte(
+        state: NativeState,
+        port: NativeOctetPort,
+        source: Reader,
+        opcode: number,
+        rex: number,
+        rexR: boolean,
+        rexX: boolean,
+        rexB: boolean,
+      ): NativeStep {
+        if (opcode === 0xeb) {
+          const rel = disp8(source);
+          if (rel === null) {
+            return "fault";
+          }
+          const target = source.at + rel * 8n;
+          if (state.compat && compatUserOfBit(target) === null) {
+            return "fault";
+          }
+          state.rip = target;
+          return "cont";
+        }
+        if (opcode === 0x3c) {
+          const imm = source.take();
+          if (imm === null) {
+            return "fault";
+          }
+          markSubWidth(state, (state.reg[NativeRax] ?? 0n) & 0xffn, BigInt(imm), 8);
+          state.rip = source.at;
+          return "cont";
+        }
+        const modrm = source.take();
+        if (modrm === null) {
+          return "fault";
+        }
+        const mod = modrm >> 6;
+        const reg3 = (modrm >> 3) & 7;
+        const rm3 = modrm & 7;
+        const rexOn = rex !== 0;
+        const regSlot = byteSlot(reg3, rexR, rexOn);
+        const rmSlot = byteSlot(rm3, rexB, rexOn);
+        let mem: Mem | null = null;
+        let address: bigint | null = null;
+        if (mod !== 3) {
+          mem = parseMem(source, mod, rm3, rexB, rexX);
+          if (mem === null) {
+            return "fault";
+          }
+          address = octetAddress(state, mem, source.at + ((opcode === 0x80 || opcode === 0xc6 || opcode === 0xf6) && mem.ripRelative ? 8n : 0n));
+          if (address === null) {
+            return "fault";
+          }
+        }
+        let imm: number | null = null;
+        if (opcode === 0x80 || opcode === 0xc6 || opcode === 0xf6) {
+          imm = source.take();
+          if (imm === null) {
+            return "fault";
+          }
+        }
+        const rmBit = (): bigint | null => {
+          if (mem === null || address === null) {
+            return null;
+          }
+          return operandBit(state, mem, address);
+        };
+        const readRm = (): number | null => {
+          if (mod === 3) {
+            return readByte(state, rmSlot.index, rmSlot.shift);
+          }
+          const bit = rmBit();
+          if (bit === null) {
+            return null;
+          }
+          return readOctet(port, bit);
+        };
+        const writeRm = (value: number): boolean => {
+          if (mod === 3) {
+            writeByte(state, rmSlot.index, rmSlot.shift, value);
+            return true;
+          }
+          const bit = rmBit();
+          if (bit === null || readOctet(port, bit) === null) {
+            return false;
+          }
+          port.store(bit, value & 255);
+          return true;
+        };
+        if (opcode === 0x8a || opcode === 0x88) {
+          const fromReg = opcode === 0x88;
+          const loaded = fromReg ? readByte(state, regSlot.index, regSlot.shift) : readRm();
+          if (loaded === null) {
+            return "fault";
+          }
+          if (fromReg) {
+            if (!writeRm(loaded)) {
+              return "fault";
+            }
+          } else {
+            writeByte(state, regSlot.index, regSlot.shift, loaded);
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode === 0xf6) {
+          if (reg3 !== 0 || rexR || imm === null) {
+            return "fault";
+          }
+          const left = readRm();
+          if (left === null) {
+            return "fault";
+          }
+          markLogicWidth(state, BigInt(left & imm), 8);
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode === 0x38 || opcode === 0x3a) {
+          const memoryByte = readRm();
+          if (memoryByte === null) {
+            return "fault";
+          }
+          const registerByte = readByte(state, regSlot.index, regSlot.shift);
+          if (opcode === 0x38) {
+            markSubWidth(state, BigInt(memoryByte), BigInt(registerByte), 8);
+          } else {
+            markSubWidth(state, BigInt(registerByte), BigInt(memoryByte), 8);
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode === 0x84) {
+          const left = readRm();
+          if (left === null) {
+            return "fault";
+          }
+          const right = readByte(state, regSlot.index, regSlot.shift);
+          markLogicWidth(state, BigInt(left & right), 8);
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode === 0xc6) {
+          if (reg3 !== 0 || rexR || imm === null) {
+            return "fault";
+          }
+          if (!writeRm(imm)) {
+            return "fault";
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode === 0xfe) {
+          if (reg3 > 1 || rexR) {
+            return "fault";
+          }
+          const left = readRm();
+          if (left === null) {
+            return "fault";
+          }
+          const increment = reg3 === 0;
+          const changed = (increment ? left + 1 : left - 1) & 255;
+          if (!writeRm(changed)) {
+            return "fault";
+          }
+          markInc(state, BigInt(left), BigInt(changed), 8, increment);
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode !== 0x80 || rexR || imm === null || reg3 === 2 || reg3 === 3) {
+          return "fault";
+        }
+        const left = readRm();
+        if (left === null) {
+          return "fault";
+        }
+        const right = imm;
+        if (reg3 === 7) {
+          markSubWidth(state, BigInt(left), BigInt(right), 8);
+          state.rip = source.at;
+          return "cont";
+        }
+        let changed = left;
+        if (reg3 === 0) {
+          changed = (left + right) & 255;
+        } else if (reg3 === 5) {
+          changed = (left - right) & 255;
+        } else if (reg3 === 1) {
+          changed = left | right;
+        } else if (reg3 === 4) {
+          changed = left & right;
+        } else {
+          changed = left ^ right;
+        }
+        if (!writeRm(changed)) {
+          return "fault";
+        }
+        if (reg3 === 0) {
+          markAddWidth(state, BigInt(left), BigInt(right), 8);
+        } else if (reg3 === 5) {
+          markSubWidth(state, BigInt(left), BigInt(right), 8);
+        } else {
+          markLogicWidth(state, BigInt(changed), 8);
+        }
+        state.rip = source.at;
+        return "cont";
+      }
+
+      /**
        * 做一条。0F 3F 不在这里产生副作用，调用方拿到 escape 后再做。
        * 失败和 escape 都不改指令指针。
        */
       export function stepNative(state: NativeState, port: NativeOctetPort): NativeStep {
+        if (state.compat && compatUserOfBit(state.rip) === null) {
+          return "fault";
+        }
         const source = reader(port, state.rip);
         const first = source.take();
         if (first === null) {
           return "fault";
         }
+        segmentBase = 0n;
+        let operand16 = false;
         let opcode = first;
+        if (opcode === 0x66) {
+          operand16 = true;
+          const prefixed = source.take();
+          if (prefixed === null) {
+            return "fault";
+          }
+          opcode = prefixed;
+        }
+        if (opcode === 0x64) {
+          segmentBase = state.fsbase;
+          const prefixed = source.take();
+          if (prefixed === null) {
+            return "fault";
+          }
+          opcode = prefixed;
+        }
         let rex = 0;
         if (opcode >= 0x40 && opcode <= 0x4f) {
           rex = opcode;
@@ -626,9 +1091,18 @@ export namespace ZerOS {
           opcode = next;
         }
         const rexW = (rex & 0x08) !== 0;
+        if (rexW) {
+          operand16 = false;
+        }
         const rexR = (rex & 0x04) !== 0;
         const rexX = (rex & 0x02) !== 0;
         const rexB = (rex & 0x01) !== 0;
+        if (operand16 && opcode !== 0x83 && opcode !== 0x89 && opcode !== 0x8b) {
+          return "fault";
+        }
+        if (opcode === 0xf3 || opcode === 0xab) {
+          return applyStos(state, port, source, opcode === 0xf3, rexW, rex !== 0);
+        }
         if (opcode === 0xf4) {
           state.rip = source.at;
           return "halt";
@@ -637,6 +1111,15 @@ export namespace ZerOS {
           const back = popValue(state, port);
           if (back === null) {
             return "fault";
+          }
+          if (state.compat) {
+            const bit = compatUserBit(back);
+            if (bit === null) {
+              state.reg[NativeRsp] = (state.reg[NativeRsp] ?? 0n) - 8n;
+              return "fault";
+            }
+            state.rip = bit;
+            return "cont";
           }
           state.rip = back;
           return "cont";
@@ -647,11 +1130,35 @@ export namespace ZerOS {
             return "fault";
           }
           const next = source.at;
-          if (opcode === 0xe8 && !pushValue(state, port, next)) {
+          const target = next + rel * 8n;
+          if (state.compat && compatUserOfBit(target) === null) {
             return "fault";
           }
-          state.rip = next + rel * 8n;
+          if (opcode === 0xe8) {
+            const pushed = state.compat ? compatUserOfBit(next) : next;
+            if (pushed === null || !pushValue(state, port, pushed)) {
+              return "fault";
+            }
+          }
+          state.rip = target;
           return "cont";
+        }
+        if (opcode >= 0x70 && opcode <= 0x7f) {
+          const rel = disp8(source);
+          if (rel === null) {
+            return "fault";
+          }
+          const take = condition(state, opcode & 15);
+          const target = source.at + rel * 8n;
+          if (take && state.compat && compatUserOfBit(target) === null) {
+            return "fault";
+          }
+          state.rip = take ? target : source.at;
+          return "cont";
+        }
+        if (opcode === 0xeb || opcode === 0x3c || opcode === 0x38 || opcode === 0x3a || opcode === 0x88 || opcode === 0x8a
+          || opcode === 0x84 || opcode === 0x80 || opcode === 0xc6 || opcode === 0xfe || opcode === 0xf6) {
+          return applyByte(state, port, source, opcode, rex, rexR, rexX, rexB);
         }
         if (opcode >= 0x50 && opcode <= 0x57) {
           const index = (opcode & 7) + (rexB ? 8 : 0);
@@ -675,6 +1182,20 @@ export namespace ZerOS {
           const second = source.take();
           if (second === null) {
             return "fault";
+          }
+          if (second === 0x05) {
+            if (!state.compat) {
+              return "fault";
+            }
+            const next = source.at;
+            const virtual = compatUserOfBit(next);
+            if (virtual === null) {
+              return "fault";
+            }
+            state.reg[NativeRcx] = virtual;
+            state.reg[NativeR11] = compatFlags(state);
+            state.rip = next;
+            return "syscall";
           }
           if (second === 0x3e) {
             if (!applyWide(state, port, source)) {
@@ -702,63 +1223,554 @@ export namespace ZerOS {
             /* 先不改指令指针。核心做完效果之后才走到 next。 */
             return { kind: "escape", opcode: esc, regs, next: source.at };
           }
+          if (second === 0xb6) {
+            const modrm = source.take();
+            if (modrm === null) {
+              return "fault";
+            }
+            const mod = modrm >> 6;
+            const dest = ((modrm >> 3) & 7) + (rexR ? 8 : 0);
+            const rm3 = modrm & 7;
+            let value: number | null;
+            if (mod === 3) {
+              const slot = byteSlot(rm3, rexB, rex !== 0);
+              value = readByte(state, slot.index, slot.shift);
+            } else {
+              const mem = parseMem(source, mod, rm3, rexB, rexX);
+              if (mem === null) {
+                return "fault";
+              }
+              const address = octetAddress(state, mem, source.at);
+              if (address === null) {
+                return "fault";
+              }
+              const bit = operandBit(state, mem, address);
+              if (bit === null) {
+                return "fault";
+              }
+              value = readOctet(port, bit);
+            }
+            if (value === null) {
+              return "fault";
+            }
+            state.reg[dest] = BigInt(value & 255);
+            state.rip = source.at;
+            return "cont";
+          }
+          if (second === 0xb7) {
+            const modrm = source.take();
+            if (modrm === null) {
+              return "fault";
+            }
+            const mod = modrm >> 6;
+            const dest = ((modrm >> 3) & 7) + (rexR ? 8 : 0);
+            let value: bigint | null;
+            if (mod === 3) {
+              const src = (modrm & 7) + (rexB ? 8 : 0);
+              value = (state.reg[src] ?? 0n) & 0xffffn;
+            } else {
+              const mem = parseMem(source, mod, modrm & 7, rexB, rexX);
+              if (mem === null) {
+                return "fault";
+              }
+              const address = octetAddress(state, mem, source.at);
+              if (address === null) {
+                return "fault";
+              }
+              const bit = operandBit(state, mem, address);
+              if (bit === null) {
+                return "fault";
+              }
+              value = readImm(port, bit, 2);
+            }
+            if (value === null) {
+              return "fault";
+            }
+            state.reg[dest] = value & 0xffffn;
+            state.rip = source.at;
+            return "cont";
+          }
+          if (second === 0xaf) {
+            const modrm = source.take();
+            if (modrm === null || (modrm >> 6) !== 3) {
+              return "fault";
+            }
+            const dest = ((modrm >> 3) & 7) + (rexR ? 8 : 0);
+            const src = (modrm & 7) + (rexB ? 8 : 0);
+            const mask = rexW ? wordMask : 0xffffffffn;
+            const sign = rexW ? signBit : 0x80000000n;
+            const toSigned = (value: bigint): bigint => {
+              const bits = value & mask;
+              return bits >= sign ? bits - (mask + 1n) : bits;
+            };
+            const product = toSigned(state.reg[dest] ?? 0n) * toSigned(state.reg[src] ?? 0n);
+            const low = product & mask;
+            const overflow = product !== toSigned(low);
+            state.reg[dest] = low;
+            if (rexW) {
+              markLogic(state, low);
+            } else {
+              markLogicWidth(state, low, 32);
+            }
+            state.cf = overflow;
+            state.of = overflow;
+            state.rip = source.at;
+            return "cont";
+          }
+          if (second >= 0x90 && second <= 0x9f) {
+            const modrm = source.take();
+            if (modrm === null || (modrm >> 6) !== 3 || ((modrm >> 3) & 7) !== 0 || rexR) {
+              return "fault";
+            }
+            const slot = byteSlot(modrm & 7, rexB, rex !== 0);
+            writeByte(state, slot.index, slot.shift, condition(state, second & 15) ? 1 : 0);
+            state.rip = source.at;
+            return "cont";
+          }
           const rel = disp32(source);
-          if (rel === null || (second !== 0x84 && second !== 0x85)) {
+          if (rel === null || second < 0x80 || second > 0x8f) {
             return "fault";
           }
-          const take = second === 0x84 ? state.zf : !state.zf;
-          state.rip = take ? source.at + rel * 8n : source.at;
+          const take = condition(state, second & 15);
+          const target = source.at + rel * 8n;
+          if (take && state.compat && compatUserOfBit(target) === null) {
+            return "fault";
+          }
+          state.rip = take ? target : source.at;
           return "cont";
         }
         if (opcode >= 0xb8 && opcode <= 0xbf) {
-          if (!rexW) {
-            return "fault";
-          }
           const dest = (opcode & 7) + (rexB ? 8 : 0);
-          const imm = readImm(port, source.at, 8);
+          /* 没有 W 时立即数只有 4 个八位组，写入后高 32 位是 0。有 W 时仍是 8 个。两种都不改标志。 */
+          const count = rexW ? 8 : 4;
+          const imm = readImm(port, source.at, count);
           if (imm === null) {
             return "fault";
           }
-          state.reg[dest] = imm;
-          state.rip = source.at + 64n;
+          state.reg[dest] = rexW ? imm : imm & 0xffffffffn;
+          state.rip = source.at + BigInt(count) * 8n;
           return "cont";
         }
         if (opcode === 0x83) {
-          if (!rexW) {
-            return "fault";
-          }
           const modrm = source.take();
-          const immRaw = source.take();
-          if (modrm === null || immRaw === null || (modrm >> 6) !== 3) {
+          if (modrm === null) {
             return "fault";
           }
+          const mod = modrm >> 6;
           const operation = (modrm >> 3) & 7;
-          const rm = (modrm & 7) + (rexB ? 8 : 0);
-          const left = state.reg[rm] ?? 0n;
-          const imm = wrap(BigInt(immRaw < 128 ? immRaw : immRaw - 256));
-          if (operation === 0) {
-            const result = wrap(left + imm);
-            markAdd(state, left, imm, result);
-            state.reg[rm] = result;
-          } else if (operation === 5) {
-            const result = wrap(left - imm);
-            markSub(state, left, imm, result);
-            state.reg[rm] = result;
-          } else if (operation === 7) {
-            markSub(state, left, imm, wrap(left - imm));
+          if (operation === 2 || operation === 3) {
+            return "fault";
+          }
+          const rmLow = modrm & 7;
+          let regIndex = -1;
+          let bit: bigint | null = null;
+          let left: bigint;
+          if (mod === 3) {
+            regIndex = rmLow + (rexB ? 8 : 0);
+            const full = state.reg[regIndex] ?? 0n;
+            left = rexW ? full : full & (operand16 ? 0xffffn : 0xffffffffn);
+          } else {
+            const mem = parseMem(source, mod, rmLow, rexB, rexX);
+            if (mem === null) {
+              return "fault";
+            }
+            const address = octetAddress(state, mem, mem.ripRelative ? source.at + 8n : source.at);
+            if (address === null) {
+              return "fault";
+            }
+            bit = operandBit(state, mem, address);
+            if (bit === null) {
+              return "fault";
+            }
+            const loaded = readImm(port, bit, operand16 ? 2 : rexW ? 8 : 4);
+            if (loaded === null) {
+              return "fault";
+            }
+            left = loaded;
+          }
+          const immRaw = source.take();
+          if (immRaw === null) {
+            return "fault";
+          }
+          const imm = BigInt(immRaw < 128 ? immRaw : immRaw - 256);
+          const narrow = operand16 ? 16 : 32;
+          const narrowMask = operand16 ? 0xffffn : 0xffffffffn;
+          const writeBack = (result: bigint): boolean => {
+            if (regIndex >= 0) {
+              if (operand16) {
+                const full = state.reg[regIndex] ?? 0n;
+                state.reg[regIndex] = (full & ~0xffffn) | (result & 0xffffn);
+              } else {
+                state.reg[regIndex] = result;
+              }
+              return true;
+            }
+            if (bit === null) {
+              return false;
+            }
+            if (operand16) {
+              return writeCount(port, bit, result, 2);
+            }
+            return rexW ? writeImm(port, bit, result) : writeCount(port, bit, result, 4);
+          };
+          if (operation === 7) {
+            if (rexW) {
+              markSub(state, left, wrap(imm), wrap(left - imm));
+            } else {
+              markSubWidth(state, left, imm, narrow);
+            }
+          } else if (operation === 0 || operation === 5) {
+            const adding = operation === 0;
+            const result = rexW
+              ? wrap(adding ? left + imm : left - imm)
+              : ((adding ? left + imm : left - imm) & narrowMask);
+            if (!writeBack(result)) {
+              return "fault";
+            }
+            if (rexW) {
+              if (adding) {
+                markAdd(state, left, wrap(imm), result);
+              } else {
+                markSub(state, left, wrap(imm), result);
+              }
+            } else if (adding) {
+              markAddWidth(state, left, imm, narrow);
+            } else {
+              markSubWidth(state, left, imm, narrow);
+            }
+          } else if (operation === 1 || operation === 4 || operation === 6) {
+            const wide = rexW ? wrap(imm) : imm & narrowMask;
+            const result = operation === 1 ? left | wide : operation === 4 ? left & wide : left ^ wide;
+            const stored = rexW ? wrap(result) : result & narrowMask;
+            if (!writeBack(stored)) {
+              return "fault";
+            }
+            if (rexW) {
+              markLogic(state, stored);
+            } else {
+              markLogicWidth(state, stored, narrow);
+            }
           } else {
             return "fault";
           }
           state.rip = source.at;
           return "cont";
         }
-        const alu = opcode === 0x01 || opcode === 0x03 || opcode === 0x29 || opcode === 0x2b
-          || opcode === 0x31 || opcode === 0x33 || opcode === 0x39 || opcode === 0x3b
-          || opcode === 0x89 || opcode === 0x8b || opcode === 0x8d;
-        if (!alu) {
+        /* 81 与 83 是同一组运算。立即数是 4 个八位组。有 W 时按符号扩成 64 位。没有 W 时按 32 位并零扩展。 */
+        if (opcode === 0x81) {
+          const modrm = source.take();
+          if (modrm === null || (modrm >> 6) !== 3) {
+            return "fault";
+          }
+          const raw = readImm(port, source.at, 4);
+          if (raw === null) {
+            return "fault";
+          }
+          const operation = (modrm >> 3) & 7;
+          const rm = (modrm & 7) + (rexB ? 8 : 0);
+          const full = state.reg[rm] ?? 0n;
+          const left = rexW ? full : full & 0xffffffffn;
+          const imm = rexW ? wrap(raw >= 0x80000000n ? raw - 0x100000000n : raw) : raw;
+          if (operation === 7) {
+            if (rexW) {
+              markSub(state, left, imm, wrap(left - imm));
+            } else {
+              markSubWidth(state, left, imm, 32);
+            }
+          } else if (operation === 0 || operation === 5) {
+            const adding = operation === 0;
+            const result = rexW
+              ? wrap(adding ? left + imm : left - imm)
+              : ((adding ? left + imm : left - imm) & 0xffffffffn);
+            if (rexW) {
+              if (adding) {
+                markAdd(state, left, imm, result);
+              } else {
+                markSub(state, left, imm, result);
+              }
+            } else if (adding) {
+              markAddWidth(state, left, imm, 32);
+            } else {
+              markSubWidth(state, left, imm, 32);
+            }
+            state.reg[rm] = result;
+          } else if (operation === 1 || operation === 4 || operation === 6) {
+            const result = operation === 1 ? left | imm : operation === 4 ? left & imm : left ^ imm;
+            const stored = rexW ? wrap(result) : result & 0xffffffffn;
+            if (rexW) {
+              markLogic(state, stored);
+            } else {
+              markLogicWidth(state, stored, 32);
+            }
+            state.reg[rm] = stored;
+          } else {
+            return "fault";
+          }
+          state.rip = source.at + 32n;
+          return "cont";
+        }
+        /* C1 按立即数移位，D1 移 1 位。只登记 /4 左移、/5 逻辑右移、/7 算术右移。 */
+        if (opcode === 0xc1 || opcode === 0xd1) {
+          const modrm = source.take();
+          if (modrm === null || (modrm >> 6) !== 3) {
+            return "fault";
+          }
+          const operation = (modrm >> 3) & 7;
+          if (operation !== 4 && operation !== 5 && operation !== 7) {
+            return "fault";
+          }
+          const rm = (modrm & 7) + (rexB ? 8 : 0);
+          const width = rexW ? 64 : 32;
+          const countMask = width === 64 ? 63 : 31;
+          let count = 1;
+          if (opcode === 0xc1) {
+            const raw = source.take();
+            if (raw === null) {
+              return "fault";
+            }
+            count = raw & countMask;
+          }
+          const full = state.reg[rm] ?? 0n;
+          const value = width === 64 ? full : full & 0xffffffffn;
+          if (count !== 0) {
+            const bitAt = (sourceValue: bigint, index: number): boolean => ((sourceValue >> BigInt(index)) & 1n) === 1n;
+            const span = (1n << BigInt(width)) - 1n;
+            const sign = width - 1;
+            let result: bigint;
+            let carry: boolean;
+            let overflow = false;
+            if (operation === 4) {
+              carry = bitAt(value, width - count);
+              result = (value << BigInt(count)) & span;
+              if (count === 1) {
+                overflow = bitAt(result, sign) !== carry;
+              }
+            } else if (operation === 5) {
+              carry = bitAt(value, count - 1);
+              result = value >> BigInt(count);
+              if (count === 1) {
+                overflow = bitAt(value, sign);
+              }
+            } else {
+              carry = bitAt(value, count - 1);
+              result = value >> BigInt(count);
+              if (bitAt(value, sign)) {
+                const fill = ((1n << BigInt(count)) - 1n) << BigInt(width - count);
+                result = (result | fill) & span;
+              }
+            }
+            state.reg[rm] = width === 64 ? wrap(result) : result;
+            const bits = result & span;
+            state.cf = carry;
+            state.of = overflow;
+            state.zf = bits === 0n;
+            state.sf = bitAt(bits, sign);
+            state.pf = parity(bits);
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode === 0xff) {
+          const modrm = source.take();
+          if (modrm === null || (modrm >> 6) !== 3) {
+            return "fault";
+          }
+          const operation = (modrm >> 3) & 7;
+          const rm = (modrm & 7) + (rexB ? 8 : 0);
+          /* /2 是 call r/m，/4 是 jmp r/m。64 位模式里目标是整个寄存器，不要求 REX.W。 */
+          if (operation === 2 || operation === 4) {
+            const target = state.reg[rm] ?? 0n;
+            const next = source.at;
+            let bit: bigint;
+            if (state.compat) {
+              const landed = compatUserBit(target);
+              if (landed === null) {
+                return "fault";
+              }
+              bit = landed;
+            } else {
+              bit = target;
+            }
+            if (operation === 2) {
+              const pushed = state.compat ? compatUserOfBit(next) : next;
+              if (pushed === null || !pushValue(state, port, pushed)) {
+                return "fault";
+              }
+            }
+            state.rip = bit;
+            return "cont";
+          }
+          if (operation !== 0 && operation !== 1) {
+            return "fault";
+          }
+          const left = state.reg[rm] ?? 0n;
+          const increment = operation === 0;
+          if (rexW) {
+            const changed = wrap(increment ? left + 1n : left - 1n);
+            state.reg[rm] = changed;
+            markInc(state, left, changed, 64, increment);
+          } else {
+            const low = left & 0xffffffffn;
+            const changed = (increment ? low + 1n : low - 1n) & 0xffffffffn;
+            state.reg[rm] = changed;
+            markInc(state, low, changed, 32, increment);
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        if (opcode === 0x85) {
+          const modrm = source.take();
+          if (modrm === null || (modrm >> 6) !== 3) {
+            return "fault";
+          }
+          const reg = ((modrm >> 3) & 7) + (rexR ? 8 : 0);
+          const rm = (modrm & 7) + (rexB ? 8 : 0);
+          const left = state.reg[rm] ?? 0n;
+          const right = state.reg[reg] ?? 0n;
+          if (rexW) {
+            markLogic(state, left & right);
+          } else {
+            markLogicWidth(state, left & right, 32);
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        /* F7 /2 是按位取反，不改标志。/3 是取负，标志按从 0 减去原值。其它 reg 和内存形式失败。 */
+        if (opcode === 0xf7) {
+          const modrm = source.take();
+          if (modrm === null || (modrm >> 6) !== 3 || rexR) {
+            return "fault";
+          }
+          const operation = (modrm >> 3) & 7;
+          const rm = (modrm & 7) + (rexB ? 8 : 0);
+          const left = state.reg[rm] ?? 0n;
+          if (operation === 2) {
+            state.reg[rm] = rexW ? wrap(~left) : (~(left & 0xffffffffn)) & 0xffffffffn;
+            state.rip = source.at;
+            return "cont";
+          }
+          if (operation === 3) {
+            if (rexW) {
+              const result = wrap(0n - left);
+              markSub(state, 0n, left, result);
+              state.reg[rm] = result;
+            } else {
+              const low = left & 0xffffffffn;
+              const result = (0n - low) & 0xffffffffn;
+              markSubWidth(state, 0n, low, 32);
+              state.reg[rm] = result;
+            }
+            state.rip = source.at;
+            return "cont";
+          }
           return "fault";
         }
-        if (!rexW) {
+        /* C7 /0 把 32 位立即数写入 r/m。有 W 时按符号扩成 64 位。没有 W 时只写 32 位并零扩展。不改标志。 */
+        if (opcode === 0xc7) {
+          const modrm = source.take();
+          if (modrm === null || rexR || ((modrm >> 3) & 7) !== 0) {
+            return "fault";
+          }
+          const mod = modrm >> 6;
+          const rmLow = modrm & 7;
+          let bit: bigint | null = null;
+          let regIndex = -1;
+          if (mod === 3) {
+            regIndex = rmLow + (rexB ? 8 : 0);
+          } else {
+            const mem = parseMem(source, mod, rmLow, rexB, rexX);
+            if (mem === null) {
+              return "fault";
+            }
+            const address = octetAddress(state, mem, mem.ripRelative ? source.at + 32n : source.at);
+            if (address === null) {
+              return "fault";
+            }
+            bit = operandBit(state, mem, address);
+            if (bit === null) {
+              return "fault";
+            }
+          }
+          const raw = readImm(port, source.at, 4);
+          if (raw === null) {
+            return "fault";
+          }
+          const extended = raw >= 0x80000000n ? raw - 0x100000000n : raw;
+          const value = rexW ? wrap(extended) : raw;
+          if (regIndex >= 0) {
+            state.reg[regIndex] = value;
+          } else if (bit === null || !(rexW ? writeImm(port, bit, value) : writeCount(port, bit, value, 4))) {
+            return "fault";
+          }
+          state.rip = source.at + 32n;
+          return "cont";
+        }
+        /* 63 是 movsxd。只登记带 W 的寄存器形式：源的低 32 位按符号扩到目的寄存器。 */
+        if (opcode === 0x63) {
+          if (!rexW) {
+            return "fault";
+          }
+          const modrm = source.take();
+          if (modrm === null || (modrm >> 6) !== 3) {
+            return "fault";
+          }
+          const dest = ((modrm >> 3) & 7) + (rexR ? 8 : 0);
+          const src = (modrm & 7) + (rexB ? 8 : 0);
+          const low = (state.reg[src] ?? 0n) & 0xffffffffn;
+          const extended = low >= 0x80000000n ? low - 0x100000000n : low;
+          state.reg[dest] = wrap(extended);
+          state.rip = source.at;
+          return "cont";
+        }
+        const alu = opcode === 0x01 || opcode === 0x03 || opcode === 0x29 || opcode === 0x2b
+          || opcode === 0x09 || opcode === 0x0b || opcode === 0x21 || opcode === 0x23
+          || opcode === 0x31 || opcode === 0x33 || opcode === 0x39 || opcode === 0x3b
+          || opcode === 0x89 || opcode === 0x8b || opcode === 0x8d;
+        if (opcode === 0x05 || opcode === 0x0d || opcode === 0x25 || opcode === 0x2d || opcode === 0x35 || opcode === 0x3d) {
+          const raw = readImm(port, source.at, 4);
+          if (raw === null) {
+            return "fault";
+          }
+          const imm = rexW ? wrap(raw >= 0x80000000n ? raw - 0x100000000n : raw) : raw;
+          const full = state.reg[NativeRax] ?? 0n;
+          const left = rexW ? full : full & 0xffffffffn;
+          if (opcode === 0x3d) {
+            if (rexW) {
+              markSub(state, left, imm, wrap(left - imm));
+            } else {
+              markSubWidth(state, left, imm, 32);
+            }
+          } else if (opcode === 0x05 || opcode === 0x2d) {
+            const adding = opcode === 0x05;
+            const result = rexW
+              ? wrap(adding ? left + imm : left - imm)
+              : ((adding ? left + imm : left - imm) & 0xffffffffn);
+            if (rexW) {
+              if (adding) {
+                markAdd(state, left, imm, result);
+              } else {
+                markSub(state, left, imm, result);
+              }
+            } else if (adding) {
+              markAddWidth(state, left, imm, 32);
+            } else {
+              markSubWidth(state, left, imm, 32);
+            }
+            state.reg[NativeRax] = result;
+          } else {
+            const result = opcode === 0x0d ? left | imm : opcode === 0x25 ? left & imm : left ^ imm;
+            const stored = rexW ? wrap(result) : result & 0xffffffffn;
+            if (rexW) {
+              markLogic(state, stored);
+            } else {
+              markLogicWidth(state, stored, 32);
+            }
+            state.reg[NativeRax] = stored;
+          }
+          state.rip = source.at + 32n;
+          return "cont";
+        }
+        if (!alu) {
           return "fault";
         }
         const modrm = source.take();
@@ -768,12 +1780,87 @@ export namespace ZerOS {
         const mod = modrm >> 6;
         const reg = ((modrm >> 3) & 7) + (rexR ? 8 : 0);
         const rmLow = modrm & 7;
+        if (operand16 && (opcode === 0x89 || opcode === 0x8b)) {
+          const merge16 = (index: number, value: bigint): void => {
+            const full = state.reg[index] ?? 0n;
+            state.reg[index] = (full & ~0xffffn) | (value & 0xffffn);
+          };
+          if (mod === 3) {
+            const rm = rmLow + (rexB ? 8 : 0);
+            const sourceReg = opcode === 0x89 ? reg : rm;
+            const destReg = opcode === 0x89 ? rm : reg;
+            merge16(destReg, state.reg[sourceReg] ?? 0n);
+            state.rip = source.at;
+            return "cont";
+          }
+          const narrow = parseMem(source, mod, rmLow, rexB, rexX);
+          if (narrow === null) {
+            return "fault";
+          }
+          const narrowAddress = octetAddress(state, narrow, source.at);
+          if (narrowAddress === null) {
+            return "fault";
+          }
+          const narrowBit = operandBit(state, narrow, narrowAddress);
+          if (narrowBit === null) {
+            return "fault";
+          }
+          if (opcode === 0x8b) {
+            const loaded = readImm(port, narrowBit, 2);
+            if (loaded === null) {
+              return "fault";
+            }
+            merge16(reg, loaded);
+          } else if (!writeCount(port, narrowBit, (state.reg[reg] ?? 0n) & 0xffffn, 2)) {
+            return "fault";
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        const word32 = opcode === 0x09 || opcode === 0x0b || opcode === 0x21 || opcode === 0x23
+          || opcode === 0x31 || opcode === 0x33 || opcode === 0x39 || opcode === 0x3b
+          || opcode === 0x89 || opcode === 0x8b;
         if (mod === 3) {
           const rm = rmLow + (rexB ? 8 : 0);
           if (opcode === 0x8d) {
             return "fault";
           }
+          if (!rexW) {
+            if (!word32 || !applyWord32(state, opcode, reg, rm)) {
+              return "fault";
+            }
+            state.rip = source.at;
+            return "cont";
+          }
           if (!applyReg(state, opcode, reg, rm)) {
+            return "fault";
+          }
+          state.rip = source.at;
+          return "cont";
+        }
+        if (!rexW && opcode !== 0x8d) {
+          if (opcode !== 0x89 && opcode !== 0x8b) {
+            return "fault";
+          }
+          const narrow = parseMem(source, mod, rmLow, rexB, rexX);
+          if (narrow === null) {
+            return "fault";
+          }
+          const narrowAddress = octetAddress(state, narrow, source.at);
+          if (narrowAddress === null) {
+            return "fault";
+          }
+          const narrowBit = operandBit(state, narrow, narrowAddress);
+          if (narrowBit === null) {
+            return "fault";
+          }
+          if (opcode === 0x8b) {
+            const loaded = readImm(port, narrowBit, 4);
+            if (loaded === null) {
+              return "fault";
+            }
+            state.reg[reg] = loaded & 0xffffffffn;
+          } else if (!writeCount(port, narrowBit, (state.reg[reg] ?? 0n) & 0xffffffffn, 4)) {
             return "fault";
           }
           state.rip = source.at;
@@ -788,15 +1875,57 @@ export namespace ZerOS {
           return "fault";
         }
         if (opcode === 0x8d) {
-          state.reg[reg] = wrap(address);
+          /* lea 只算地址。0 和页 0 是合法的指针值，访存时才检查下界。 */
+          const value = state.compat && mem.ripRelative ? address - compatOrigin / 8n : address;
+          const stored = wrap(value);
+          state.reg[reg] = rexW ? stored : stored & 0xffffffffn;
           state.rip = source.at;
           return "cont";
         }
-        if (!applyMem(state, port, opcode, reg, address)) {
+        const bit = operandBit(state, mem, address);
+        if (bit === null || !applyMem(state, port, opcode, reg, bit)) {
           return "fault";
         }
         state.rip = source.at;
         return "cont";
+      }
+
+      /**
+       * 没有 REX.W 的 32 位寄存器异或和传送。
+       * 只取两边的低 32 位，结果零扩展。传送不改标志。异或的 SF 看第 31 位。
+       */
+      function applyWord32(state: NativeState, opcode: number, reg: number, rm: number): boolean {
+        const mask = 0xffffffffn;
+        const left = (state.reg[rm] ?? 0n) & mask;
+        const right = (state.reg[reg] ?? 0n) & mask;
+        if (opcode === 0x09 || opcode === 0x0b || opcode === 0x21 || opcode === 0x23) {
+          const both = opcode === 0x21 || opcode === 0x23 ? left & right : left | right;
+          const dest = opcode === 0x09 || opcode === 0x21 ? rm : reg;
+          state.reg[dest] = both;
+          markLogicWidth(state, both, 32);
+          return true;
+        }
+        if (opcode === 0x31 || opcode === 0x33) {
+          const result = left ^ right;
+          const dest = opcode === 0x31 ? rm : reg;
+          state.reg[dest] = result;
+          markLogicWidth(state, result, 32);
+          return true;
+        }
+        if (opcode === 0x39 || opcode === 0x3b) {
+          if (opcode === 0x39) {
+            markSubWidth(state, left, right, 32);
+          } else {
+            markSubWidth(state, right, left, 32);
+          }
+          return true;
+        }
+        if (opcode === 0x89 || opcode === 0x8b) {
+          const dest = opcode === 0x89 ? rm : reg;
+          state.reg[dest] = opcode === 0x89 ? right : left;
+          return true;
+        }
+        return false;
       }
 
       function applyReg(state: NativeState, opcode: number, reg: number, rm: number): boolean {
@@ -823,6 +1952,30 @@ export namespace ZerOS {
         if (opcode === 0x2b) {
           const result = wrap(right - left);
           markSub(state, right, left, result);
+          state.reg[reg] = result;
+          return true;
+        }
+        if (opcode === 0x21) {
+          const result = wrap(left & right);
+          markLogic(state, result);
+          state.reg[rm] = result;
+          return true;
+        }
+        if (opcode === 0x23) {
+          const result = wrap(right & left);
+          markLogic(state, result);
+          state.reg[reg] = result;
+          return true;
+        }
+        if (opcode === 0x09) {
+          const result = wrap(left | right);
+          markLogic(state, result);
+          state.reg[rm] = result;
+          return true;
+        }
+        if (opcode === 0x0b) {
+          const result = wrap(right | left);
+          markLogic(state, result);
           state.reg[reg] = result;
           return true;
         }
@@ -857,19 +2010,27 @@ export namespace ZerOS {
         return false;
       }
 
-      function applyMem(state: NativeState, port: NativeOctetPort, opcode: number, reg: number, address: bigint): boolean {
+      function applyMem(state: NativeState, port: NativeOctetPort, opcode: number, reg: number, bit: bigint): boolean {
         const fromReg = state.reg[reg] ?? 0n;
-        const writing = opcode === 0x01 || opcode === 0x29 || opcode === 0x31 || opcode === 0x89;
+        const writing = opcode === 0x01 || opcode === 0x09 || opcode === 0x21 || opcode === 0x29 || opcode === 0x31 || opcode === 0x89;
         if (writing) {
-          const current = readImm(port, address * 8n, 8);
+          const current = readImm(port, bit, 8);
           if (current === null) {
             return false;
           }
           if (opcode === 0x89) {
-            return writeImm(port, address * 8n, fromReg);
+            return writeImm(port, bit, fromReg);
           }
-          const result = opcode === 0x01 ? wrap(current + fromReg) : opcode === 0x29 ? wrap(current - fromReg) : wrap(current ^ fromReg);
-          if (!writeImm(port, address * 8n, result)) {
+          const result = opcode === 0x01
+            ? wrap(current + fromReg)
+            : opcode === 0x29
+              ? wrap(current - fromReg)
+              : opcode === 0x21
+                ? wrap(current & fromReg)
+                : opcode === 0x09
+                  ? wrap(current | fromReg)
+                  : wrap(current ^ fromReg);
+          if (!writeImm(port, bit, result)) {
             return false;
           }
           if (opcode === 0x01) {
@@ -881,7 +2042,7 @@ export namespace ZerOS {
           }
           return true;
         }
-        const current = readImm(port, address * 8n, 8);
+        const current = readImm(port, bit, 8);
         if (current === null) {
           return false;
         }
@@ -897,8 +2058,12 @@ export namespace ZerOS {
           state.reg[reg] = result;
           return true;
         }
-        if (opcode === 0x33) {
-          const result = wrap(fromReg ^ current);
+        if (opcode === 0x0b || opcode === 0x23 || opcode === 0x33) {
+          const result = opcode === 0x23
+            ? wrap(fromReg & current)
+            : opcode === 0x0b
+              ? wrap(fromReg | current)
+              : wrap(fromReg ^ current);
           markLogic(state, result);
           state.reg[reg] = result;
           return true;

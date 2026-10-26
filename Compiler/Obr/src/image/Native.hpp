@@ -19,6 +19,13 @@ std::vector<std::uint8_t> nativeMovStore(int base, int src);
 std::vector<std::uint8_t> nativeMovLoad(int dest, int base);
 
 /**
+ * 带比例的寻址。操作码是 0x8D、0x8B 或 0x89。
+ * 比例是 1、2、4、8。位移放得进 8 位。变址编号 4 表示没有变址，这里不使用。
+ * 编不出时返回空。
+ */
+std::vector<std::uint8_t> nativeScaled(int opcode, int reg, int base, int index, int scale, int disp);
+
+/**
  * lea 目的, [基址 + 变址 × 比例 + 位移]。
  * 比例是 1、2、4、8。位移放得进 8 位。
  */

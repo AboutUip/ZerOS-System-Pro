@@ -36,6 +36,8 @@ export namespace ZerOS {
       const DataFloor = CpuConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
       const SlotBits = CpuConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const CoreCount = CpuConfigRoot.Hardware.Cpu.Config.OfficialCoreCount;
+      const MapEndBits = CpuConfigRoot.Hardware.Cpu.Config.MapEndBits;
+      const CompatTailBits = CpuConfigRoot.Hardware.Cpu.Config.CompatTailBits;
       const LineBits = CpuConfigRoot.Hardware.Cpu.Config.LineBits;
       const UnitCount = MemoryConfigRoot.Hardware.Memory.Config.UnitCount;
       const UnitSizeBytes = MemoryConfigRoot.Hardware.Memory.Config.UnitSizeBytes;
@@ -53,10 +55,13 @@ export namespace ZerOS {
       /** 内存坐稳之后、寄存器核对之前调用。失败会抛出。 */
       export async function runLinearMapCheck(): Promise<void> {
         const origin = BigInt(DataFloor + CoreCount * SlotBits);
-        const limit = BigInt(LineBits);
+        const limit = BigInt(MapEndBits);
         const line = BigInt(UnitCount) * BigInt(UnitSizeBytes) * 8n;
-        if (machineMap().origin !== origin || machineMap().limit !== limit || limit !== line) {
-          fail("the map arena is not the free tail of the bit line");
+        if (machineMap().origin !== origin || machineMap().limit !== limit || line !== limit + BigInt(CompatTailBits)) {
+          fail("the map arena is not the free range above the core windows");
+        }
+        if (BigInt(LineBits) !== line) {
+          fail("the bit line does not cover the compat tail");
         }
         if ((limit - origin) / 8n < BigInt(FontFileOctets)) {
           fail("the map arena cannot hold a font file");

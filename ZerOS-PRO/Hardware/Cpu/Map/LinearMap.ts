@@ -36,7 +36,7 @@ export namespace ZerOS {
       const DataFloor = CpuConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
       const SlotBits = CpuConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const CoreCount = CpuConfigRoot.Hardware.Cpu.Config.OfficialCoreCount;
-      const LineBits = CpuConfigRoot.Hardware.Cpu.Config.LineBits;
+      const MapEndBits = CpuConfigRoot.Hardware.Cpu.Config.MapEndBits;
 
       type FillPage = TouchRoot.Hardware.Cpu.FillPage;
       type MapTouch = TouchRoot.Hardware.Cpu.MapTouch;
@@ -278,11 +278,11 @@ export namespace ZerOS {
       /* ---------------------------------------------------------------------- */
 
       /**
-       * 映射区从最后一颗核心的窗口终点开始，直到位元线尽头。
-       * 核心窗口里的栈和堆不会被 mmap 占走。
+       * 映射区从最后一颗核心的窗口终点开始，到兼容尾区之前为止。
+       * 核心窗口里的栈和堆不会被 mmap 占走。尾区也不进这张表。
        */
       const machineOrigin = BigInt(DataFloor + CoreCount * SlotBits);
-      const machineLimit = BigInt(LineBits);
+      const machineLimit = BigInt(MapEndBits);
       const machine = createLinearMap(machineOrigin, machineLimit);
 
       /** 主板和 mmap 指令共用这一张表。核心线程各有自己的模块副本，不能在那边记。 */

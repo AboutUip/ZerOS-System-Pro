@@ -74,6 +74,8 @@ class Generator {
   int structWords(const std::string& name) const;
   void emitStore(TypeKind type);
   void emitLoad(TypeKind type);
+  /** 基址 + 变址 × 8/16/32/64 位收成一条带比例的访存。对不上时不写指令。 */
+  bool tryScaled(const Expr& address, const Expr* value, TypeKind type);
   void emitZap(const std::string& body, int startLine);
   void storeSlot(int slot, TypeKind type);
   void loadSlot(int slot, TypeKind type);
@@ -118,6 +120,7 @@ class Generator {
   void emitFunction(Function& function);
   bool endsWithReturn(const std::vector<Stmt>& body);
   void emitReturn();
+  void emitIntegerCall(const std::string& label, const std::vector<int>& slots, const std::vector<TypeKind>& kinds);
   void emitStmt(const Stmt& stmt, TypeKind ret);
 
   /** 暂时把后面的指令记到这一行。行号不大于 0 时保持原行。 */

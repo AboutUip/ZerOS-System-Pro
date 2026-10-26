@@ -32,6 +32,30 @@ deRfun taskLimit(): long {
   return 512L;
 }
 
+/* 已占用下标的上界，不含这一格。放在控制台暂存清零区之后、字体表 +20480 之前。
+   调度每一圈都要扫表。空槽一直扫到 512 时，按一个键要等十几秒。
+   新任务从低位往上占，扫到这里就够。释放后不把上界往回缩，中间的空槽仍算在里面。 */
+deRfun taskSpan(): long {
+  return kArena(2L) + 13248L;
+}
+
+deRfun taskScanEnd(): long {
+  long end = memory::load64(taskSpan());
+  if (end < 0L) {
+    return 0L;
+  }
+  if (end > taskLimit()) {
+    return taskLimit();
+  }
+  return end;
+}
+
+deRfun taskNote(long index): void {
+  if (index + 1L > memory::load64(taskSpan())) {
+    memory::store64(index + 1L, taskSpan());
+  }
+}
+
 /* 协议把一颗实现的上下文槽定在 1 至 256。官方标定取满 256。 */
 deRfun slotLimit(): long {
   return 256L;
@@ -47,7 +71,7 @@ deRfun tableBase(): long {
   return kArena(2L) + 65536L;
 }
 
-/* 12416 是下一个 pid。紧接着的列和行，以及 +12800 的写入窗口，给控制台用，这里不要再放别的。
+/* 12416 是下一个 pid。终端格子改放在内存文件正文之后，这里的两个字不再当光标。
    +20480 起是系统字体表，每份两个字，字体层使用。+32768 起是驱动路径。 */
 deRfun pidWord(): long {
   return kArena(2L) + 12416L;
@@ -63,7 +87,8 @@ deRfun taskFind(long core): long {
   long sleeping = -1L;
   long zombie = -1L;
   long other = -1L;
-  while (index < taskLimit()) {
+  long end = taskScanEnd();
+  while (index < end) {
     Task* task = taskAt(index);
     if (task.pid != 0L && task.core == core) {
       if (task.state == TaskState::Running) {
@@ -93,7 +118,8 @@ deRfun taskFind(long core): long {
 deRfun taskCount(long core): long {
   long count = 0L;
   long index = 0L;
-  while (index < taskLimit()) {
+  long end = taskScanEnd();
+  while (index < end) {
     Task* task = taskAt(index);
     if (task.pid != 0L && task.core == core) {
       count = count + 1L;
@@ -106,15 +132,16 @@ deRfun taskCount(long core): long {
 /* except 是正在让出的那一格。-1 表示从第 0 格找。只返回已经抄进槽的就绪任务。
    从 except 的下一格起绕一圈，先等到的先跑，不总是表里最靠前的那一格。 */
 deRfun taskReady(long core, long except): long {
+  long end = taskScanEnd();
   long start = 0L;
   if (except >= 0L) {
     start = except + 1L;
   }
   long step = 0L;
-  while (step < taskLimit()) {
+  while (step < end) {
     long index = start + step;
-    if (index >= taskLimit()) {
-      index = index - taskLimit();
+    if (index >= end) {
+      index = index - end;
     }
     if (index != except) {
       Task* task = taskAt(index);
@@ -128,6 +155,7 @@ deRfun taskReady(long core, long except): long {
 }
 
 deRfun taskClear(): void {
+  memory::store64(0L, taskSpan());
   long index = 0L;
   while (index < taskLimit()) {
     Task* task = taskAt(index);
@@ -168,7 +196,8 @@ deRfun taskRelease(long index): void {
   long pid = taskAt(index).pid;
   devDrop(pid);
   long other = 0L;
-  while (other < taskLimit()) {
+  long end = taskScanEnd();
+  while (other < end) {
     if (other != index && taskAt(other).ppid == pid && pid != 0L) {
       taskAt(other).ppid = 1L;
     }
@@ -381,7 +410,8 @@ deRfun heapOf(long core): long {
 /* 0 至 255 优先用和下标相同的槽。256 至 511 以及被占的下标，领任意一格空槽。领不到是 -1。 */
 deRfun slotBusy(long slot): long {
   long index = 0L;
-  while (index < taskLimit()) {
+  long end = taskScanEnd();
+  while (index < end) {
     if (taskAt(index).held == slot + 1L) {
       return 1L;
     }
@@ -465,6 +495,7 @@ deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state):
   task.code = 0L;
   task.waitFor = 0L;
   task.held = 0L;
+  taskNote(index);
   return pid;
 }
 
@@ -489,7 +520,8 @@ deRfun taskAllows(long core, long service): long {
 
 deRfun taskByPid(long pid): long {
   long index = 0L;
-  while (index < taskLimit()) {
+  long end = taskScanEnd();
+  while (index < end) {
     if (taskAt(index).pid == pid && pid != 0L) {
       return index;
     }
@@ -635,7 +667,8 @@ deRfun procWait(long caller, long home): long {
   }
   long live = 0L;
   long index = 0L;
-  while (index < taskLimit()) {
+  long end = taskScanEnd();
+  while (index < end) {
     Task* child = taskAt(index);
     if (child.pid != 0L && child.ppid == me.pid && (want == 0L || want == child.pid)) {
       if (child.state == TaskState::Zombie) {
@@ -664,7 +697,8 @@ deRfun procWait(long caller, long home): long {
 /* 父任务已经不在的僵尸，能挂到 1 号就挂过去，留给它的 wait。1 号也不在才收掉。 */
 deRfun procCollect(): void {
   long index = 0L;
-  while (index < taskLimit()) {
+  long end = taskScanEnd();
+  while (index < end) {
     Task* task = taskAt(index);
     if (task.state == TaskState::Zombie && task.pid != 1L && taskByPid(task.ppid) < 0L) {
       if (taskByPid(1L) >= 0L) {
