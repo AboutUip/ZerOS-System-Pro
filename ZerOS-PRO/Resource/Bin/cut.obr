@@ -1,0 +1,820 @@
+/* POSIX.1-2017 cut（utilities/cut.html）。一行命令只能选一种：
+   cut -b list [-n] [file...]
+   cut -c list [file...]
+   cut -f list [-d delim] [-s] [file...]
+   没有 -b、-c、-f，或者两种同时出现，写 cut: missing list，立刻退出 1。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -b 是文件名。
+   不认识的选项写 cut: invalid option，立刻退出 1。
+   -n、-s 不带参数，可以连在同一个减号后面。-b、-c、-f、-d 若这个参数里还剩字节，
+   剩下的就是它们的参数；否则用下一个参数。所以 -b1-3 和 -b 1-3 一样，-d: 和 -d : 一样。
+   list 是逗号分开的段。一段可以是 N、N-M、-M、N-。
+   N 和 M 是正十进制，从 1 起。0、空段、非数字、N 大于 M 都写 cut: invalid list，立刻退出 1。
+   N- 表示从 N 到行尾。-M 表示从 1 到 M。
+   段的书写顺序不要求递增；输出时按位置从小到大，重叠的位置只出现一次。
+   同一种模式写多次时，段合进同一张表。
+   -b 按八位组。-c 按 UTF-8 标量。非法序列里每一个字节算一个字符，规则和 wc 的 -m 一样。
+   -n 只许跟 -b：选中某个标量的任何一个字节，就把这个标量的全部字节都选上。
+   没有 -b 却写了 -n，算 invalid option。
+   -s 和 -d 只属于 -f。跟 -b 或 -c 一起写，算 invalid option。
+   -f 按字段。缺省分隔符是制表字节 9。-d 的参数必须是一个字节。
+   空缺或超过一个字节写 cut: invalid delimiter，立刻退出 1。
+   -s 时，没有分隔符的行整行丢掉。没有 -s 时，没有分隔符的行原样写出。
+   字段从 1 起。选中的字段之间用原来的分隔符连接。
+   行尾的换行保留；输入最后一段没有换行，输出也不补。
+   没有文件读标准输入。单独一个 - 也读标准输入，不关闭描述符 0。
+   多个文件按顺序接上，不写标题。
+   打开失败写 cut: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败写 cut: read error，这个文件算失败并继续。
+   写失败写 cut: write error，立刻退出 1。
+   一行先收进 obr::proc::alloc 的块。一行超过 8192 个八位组（不含结尾的换行）
+   就写 cut: line too long，这个文件失败，继续后面的。
+   读的文件偏移按实际个数累加。写到描述符 1 时，文件偏移按已写字节累加。
+   诊断写描述符 2。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 1 是 -b，2 是 -c，3 是 -f。0 表示还没选。
+   widen 是 -n，suppress 是 -s，sawDelim 表示写过 -d。delim 是分隔八位组。 */
+struct Cut {
+  long mode;
+  long widen;
+  long suppress;
+  long sawDelim;
+  long delim;
+}
+
+/* 一行里的 UTF-8 游标。need、got、lo、hi 和 wc 的 -m 是同一套。
+   start 是当前这个多字节序列的第一个字节下标。charNo 从 1 起。 */
+struct Walk {
+  long line;
+  long pick;
+  long mode;
+  long charNo;
+  long out;
+  long need;
+  long got;
+  long lo;
+  long hi;
+  long start;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 一行正文最多这么多个八位组，结尾的换行不算在内。 */
+deRfun lineMax(): long {
+  return 8192L;
+}
+
+/* 一次 read 或 write 最多这么多个八位组。 */
+deRfun readMax(): long {
+  return 4096L;
+}
+
+/* 位置从 1 起。整行都是分隔符时，空字段比八位组多一个，所以字段最高是 8193。
+   字节和字符都不会超过一行的八位组数。 */
+deRfun posMax(): long {
+  return 8193L;
+}
+
+/* 块的布局：行、读入暂存、位置表、拼好的输出。相邻八位组隔 8 位。
+   位置表一位一个八位组，写 1 表示选中。不用移位，重叠的段再写一次也还是 1。 */
+deRfun linePtr(long buf): long {
+  return buf;
+}
+
+deRfun readPtr(long buf): long {
+  return buf + lineMax() * 8L;
+}
+
+deRfun pickPtr(long buf): long {
+  return buf + (lineMax() + readMax()) * 8L;
+}
+
+deRfun outPtr(long buf): long {
+  return buf + (lineMax() + readMax() + posMax() + 1L) * 8L;
+}
+
+deRfun blockBits(): long {
+  return (lineMax() + readMax() + posMax() + 1L + lineMax() + 1L) * 8L;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径写到描述符 2。控制台不看偏移，所以每次从 0 写。一次最多 4096。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > readMax()) {
+      chunk = readMax();
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "cut: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 描述符 1 上已经放进字节区的一段。偏移按实际写下的个数往前走。
+   写不满就从源再拷剩下的，不把没写完的留在字节区里猜。 */
+deRfun writeOut(long home, long* place, long addr, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > readMax()) {
+      chunk = readMax();
+    }
+    copySpan(addr + done * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "cut: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "cut: write error\n");
+      return 2L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    *place = *place + wrote;
+    done = done + wrote;
+  }
+  return 0L;
+}
+
+deRfun putOctet(long out, long* filled, long value): void {
+  memory::storeOctet(value, out + *filled * 8L);
+  *filled = *filled + 1L;
+}
+
+deRfun putFrom(long out, long* filled, long src, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putOctet(out, filled, u8(src + index * 8L));
+    index = index + 1L;
+  }
+}
+
+/* 位置表下标就是从 1 起的位置。超出这一行可能出现的最大位置，视为没选。 */
+deRfun chosen(long pick, long pos): long {
+  if (pos < 1L || pos > posMax()) {
+    return 0L;
+  }
+  if (u8(pick + pos * 8L) == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun clearPick(long pick): void {
+  long pos = 0L;
+  while (pos <= posMax()) {
+    memory::storeOctet(0L, pick + pos * 8L);
+    pos = pos + 1L;
+  }
+}
+
+/* openEnd 为 1 时 hi 不用，一直标到位置表的尽头。行比这个短时，多标的位读不到。 */
+deRfun mark(long pick, long lo, long hi, long openEnd): void {
+  long end = hi;
+  if (openEnd == 1L) {
+    end = posMax();
+  }
+  if (end > posMax()) {
+    end = posMax();
+  }
+  long pos = lo;
+  if (pos < 1L) {
+    pos = 1L;
+  }
+  while (pos <= end) {
+    memory::storeOctet(1L, pick + pos * 8L);
+    pos = pos + 1L;
+  }
+}
+
+/* 从第一个字节起都必须是 0 到 9。前导 0 可以，值必须大于 0。
+   有符号 64 位放不下也拒绝。成功写成 *out 并返回 1。 */
+deRfun decimal(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L || (value == 922337203685477580L && digit > 7L)) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    cursor = cursor + 1L;
+  }
+  if (value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 一段里至多一个减号。没有减号是 N，开头是 -M，结尾是 N-，中间是 N-M。 */
+deRfun acceptSeg(long at, long len, long pick): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long hy = 0L;
+  long hyCount = 0L;
+  long index = 0L;
+  while (index < len) {
+    if (u8(at + index * 8L) == 45L) {
+      hyCount = hyCount + 1L;
+      hy = index;
+    }
+    index = index + 1L;
+  }
+  if (hyCount > 1L) {
+    return 0L;
+  }
+  if (hyCount == 0L) {
+    long n = 0L;
+    if (decimal(at, len, &n) == 0L) {
+      return 0L;
+    }
+    mark(pick, n, n, 0L);
+    return 1L;
+  }
+  if (hy == 0L) {
+    long m = 0L;
+    if (len < 2L || decimal(at + 8L, len - 1L, &m) == 0L) {
+      return 0L;
+    }
+    mark(pick, 1L, m, 0L);
+    return 1L;
+  }
+  if (hy + 1L == len) {
+    long n = 0L;
+    if (decimal(at, hy, &n) == 0L) {
+      return 0L;
+    }
+    mark(pick, n, 0L, 1L);
+    return 1L;
+  }
+  long n = 0L;
+  long m = 0L;
+  if (decimal(at, hy, &n) == 0L) {
+    return 0L;
+  }
+  if (decimal(at + (hy + 1L) * 8L, len - hy - 1L, &m) == 0L) {
+    return 0L;
+  }
+  if (n > m) {
+    return 0L;
+  }
+  mark(pick, n, m, 0L);
+  return 1L;
+}
+
+/* 逗号切开。空段在 acceptSeg 里拒绝。调用前位置表已经清过，这里只往上标。 */
+deRfun acceptList(long at, long len, long pick): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long start = 0L;
+  long index = 0L;
+  while (index <= len) {
+    long split = 0L;
+    if (index == len) {
+      split = 1L;
+    } else if (u8(at + index * 8L) == 44L) {
+      split = 1L;
+    }
+    if (split == 1L) {
+      if (acceptSeg(at + start * 8L, index - start, pick) == 0L) {
+        return 0L;
+      }
+      start = index + 1L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 选项参数贴在标志后面，或落在下一个参数里。成功时 *index 已经跳过用掉的参数。 */
+deRfun operand(long home, long* index, long count, long at, long len, long cursor, long* argAt, long* argLen): long {
+  if (cursor + 1L < len) {
+    *argAt = at + (cursor + 1L) * 8L;
+    *argLen = len - cursor - 1L;
+    *index = *index + 1L;
+    return 1L;
+  }
+  *index = *index + 1L;
+  if (*index >= count) {
+    return 0L;
+  }
+  *argAt = argPtr(home, *index);
+  *argLen = argLen(home, *index);
+  *index = *index + 1L;
+  return 1L;
+}
+
+/* -b 且没有 -n：按八位组挑。位置表从 1 往上扫，同一位只会写出去一次。 */
+deRfun takeBytes(long line, long len, long pick, long out, long* filled): void {
+  long index = 0L;
+  while (index < len) {
+    if (chosen(pick, index + 1L) == 1L) {
+      putOctet(out, filled, u8(line + index * 8L));
+    }
+    index = index + 1L;
+  }
+}
+
+/* 收下 from 起的 count 个字节。-c 时这是一个标量，看字符序号。
+   -n 时只要其中任一字节被选中，整段都写出。 */
+deRfun useSpan(Walk* w, long from, long count, long* filled): void {
+  if (w.mode == 2L) {
+    if (chosen(w.pick, w.charNo) == 1L) {
+      putFrom(w.out, filled, w.line + from * 8L, count);
+    }
+    w.charNo = w.charNo + 1L;
+  } else {
+    long hit = 0L;
+    long index = 0L;
+    while (index < count) {
+      if (chosen(w.pick, from + index + 1L) == 1L) {
+        hit = 1L;
+      }
+      index = index + 1L;
+    }
+    if (hit == 1L) {
+      putFrom(w.out, filled, w.line + from * 8L, count);
+    }
+  }
+}
+
+/* 喂一个八位组。区间和 wc 的 -m 相同。
+   后续字节超出区间时，已经收下的每个字节各算一个字符，再从这个字节重新开始。
+   单独的后续字节、C0、C1、F5 到 FF 各算一个字符。 */
+deRfun feed(Walk* w, long b, long index, long* filled): void {
+  long again = 1L;
+  long ub = b;
+  while (again == 1L) {
+    again = 0L;
+    if (w.need > 0L) {
+      if (ub >= w.lo && ub <= w.hi) {
+        w.got = w.got + 1L;
+        w.need = w.need - 1L;
+        if (w.need == 0L) {
+          useSpan(w, w.start, w.got, filled);
+          w.got = 0L;
+        } else {
+          /* 特殊区间只约束第二个字节。后面的后续字节都是 0x80 到 0xBF。 */
+          w.lo = 128L;
+          w.hi = 191L;
+        }
+      } else {
+        long back = 0L;
+        while (back < w.got) {
+          useSpan(w, w.start + back, 1L, filled);
+          back = back + 1L;
+        }
+        w.got = 0L;
+        w.need = 0L;
+        again = 1L;
+      }
+    } else if (ub < 128L) {
+      useSpan(w, index, 1L, filled);
+    } else if (ub < 194L) {
+      /* 0x80 到 0xC1：孤立的后续字节，或过短的两字节引导。 */
+      useSpan(w, index, 1L, filled);
+    } else if (ub < 224L) {
+      /* 0xC2 到 0xDF。 */
+      w.need = 1L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 128L;
+      w.hi = 191L;
+    } else if (ub == 224L) {
+      /* 0xE0。第二字节至少 0xA0，避开过短的三字节。 */
+      w.need = 2L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 160L;
+      w.hi = 191L;
+    } else if (ub < 237L) {
+      /* 0xE1 到 0xEC。 */
+      w.need = 2L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 128L;
+      w.hi = 191L;
+    } else if (ub == 237L) {
+      /* 0xED。第二字节至多 0x9F，避开代理项。 */
+      w.need = 2L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 128L;
+      w.hi = 159L;
+    } else if (ub < 240L) {
+      /* 0xEE 到 0xEF。 */
+      w.need = 2L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 128L;
+      w.hi = 191L;
+    } else if (ub == 240L) {
+      /* 0xF0。第二字节至少 0x90。 */
+      w.need = 3L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 144L;
+      w.hi = 191L;
+    } else if (ub < 244L) {
+      /* 0xF1 到 0xF3。 */
+      w.need = 3L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 128L;
+      w.hi = 191L;
+    } else if (ub == 244L) {
+      /* 0xF4。第二字节至多 0x8F，标量不超过 U+10FFFF。 */
+      w.need = 3L;
+      w.got = 1L;
+      w.start = index;
+      w.lo = 128L;
+      w.hi = 143L;
+    } else {
+      /* 0xF5 到 0xFF。 */
+      useSpan(w, index, 1L, filled);
+    }
+  }
+}
+
+/* 行已经结束。没写完的序列按已有的每个字节各算一个字符。换行不进这里。 */
+deRfun sealWalk(Walk* w, long* filled): void {
+  long back = 0L;
+  while (back < w.got) {
+    useSpan(w, w.start + back, 1L, filled);
+    back = back + 1L;
+  }
+  w.got = 0L;
+  w.need = 0L;
+}
+
+/* -c 按标量，-b 且带 -n 时按标量把选中的字节补全。 */
+deRfun takeUnits(long line, long len, long pick, long mode, long out, long* filled): void {
+  Walk w;
+  w.line = line;
+  w.pick = pick;
+  w.mode = mode;
+  w.charNo = 1L;
+  w.out = out;
+  w.need = 0L;
+  w.got = 0L;
+  w.lo = 0L;
+  w.hi = 0L;
+  w.start = 0L;
+  long index = 0L;
+  while (index < len) {
+    feed(&w, u8(line + index * 8L), index, filled);
+    index = index + 1L;
+  }
+  sealWalk(&w, filled);
+}
+
+deRfun hasDelim(long line, long len, long delim): long {
+  long index = 0L;
+  while (index < len) {
+    if (u8(line + index * 8L) == delim) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 有分隔符时，按字段序号从小到大拼。选中的字段之间放回原来的分隔字节。
+   没有分隔符时，-s 整行丢掉，否则连换行原样写出，不看字段有没有被选中。 */
+deRfun emitFields(long home, long line, long len, long hasNl, long pick, Cut* job, long out, long* place): long {
+  long filled = 0L;
+  if (hasDelim(line, len, job.delim) == 0L) {
+    if (job.suppress == 1L) {
+      return 0L;
+    }
+    putFrom(out, &filled, line, len);
+    if (hasNl == 1L) {
+      putOctet(out, &filled, 10L);
+    }
+    return writeOut(home, place, out, filled);
+  }
+  long field = 1L;
+  long start = 0L;
+  long emitted = 0L;
+  long index = 0L;
+  long running = 1L;
+  while (running == 1L) {
+    long isEnd = 0L;
+    long hit = 0L;
+    if (index == len) {
+      isEnd = 1L;
+      hit = 1L;
+    } else if (u8(line + index * 8L) == job.delim) {
+      hit = 1L;
+    }
+    if (hit == 1L) {
+      if (chosen(pick, field) == 1L) {
+        if (emitted == 1L) {
+          putOctet(out, &filled, job.delim);
+        }
+        putFrom(out, &filled, line + start * 8L, index - start);
+        emitted = 1L;
+      }
+      if (isEnd == 1L) {
+        running = 0L;
+      } else {
+        field = field + 1L;
+        start = index + 1L;
+        index = index + 1L;
+      }
+    } else {
+      index = index + 1L;
+    }
+  }
+  if (hasNl == 1L) {
+    putOctet(out, &filled, 10L);
+  }
+  return writeOut(home, place, out, filled);
+}
+
+/* 正文已经在行缓冲里，不含换行。hasNl 为 1 才在切完之后补回字节 10。 */
+deRfun emitLine(long home, long buf, long lineLen, long hasNl, Cut* job, long* place): long {
+  long line = linePtr(buf);
+  long out = outPtr(buf);
+  long pick = pickPtr(buf);
+  if (job.mode == 3L) {
+    return emitFields(home, line, lineLen, hasNl, pick, job, out, place);
+  }
+  long filled = 0L;
+  if (job.mode == 1L && job.widen == 0L) {
+    takeBytes(line, lineLen, pick, out, &filled);
+  } else {
+    takeUnits(line, lineLen, pick, job.mode, out, &filled);
+  }
+  if (hasNl == 1L) {
+    putOctet(out, &filled, 10L);
+  }
+  return writeOut(home, place, out, filled);
+}
+
+/* 读偏移从 *fileAt 起，按 slot 320 的实际个数累加。0 是结束。一次最多 4096。
+   读到的块先抄进 alloc 的暂存，再逐字节收成行。写出要用同一块字节区，不能留在原地。
+   超过 8192 个正文八位组还没遇到换行，这一文件失败，已经切好的行留着。
+   返回 0 成功，1 读失败或行太长，2 写失败。 */
+deRfun consume(long home, long fd, long* fileAt, long buf, Cut* job, long* place): long {
+  long lineLen = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, *fileAt, readMax()) != 0L) {
+      writeErr(home, "cut: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "cut: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+      if (lineLen > 0L) {
+        return emitLine(home, buf, lineLen, 0L, job, place);
+      }
+    } else {
+      if (n > readMax()) {
+        n = readMax();
+      }
+      copySpan(obr::proc::bytes(home), readPtr(buf), n);
+      *fileAt = *fileAt + n;
+      long index = 0L;
+      long line = linePtr(buf);
+      long raw = readPtr(buf);
+      while (index < n) {
+        long b = u8(raw + index * 8L);
+        if (b == 10L) {
+          long status = emitLine(home, buf, lineLen, 1L, job, place);
+          if (status != 0L) {
+            return status;
+          }
+          lineLen = 0L;
+        } else {
+          if (lineLen >= lineMax()) {
+            writeErr(home, "cut: line too long\n");
+            return 1L;
+          }
+          memory::storeOctet(b, line + lineLen * 8L);
+          lineLen = lineLen + 1L;
+        }
+        index = index + 1L;
+      }
+    }
+  }
+  return 0L;
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。然后只读打开。
+   描述符在 +192，必须在下一次 read 之前取走。描述符 0 不关。 */
+deRfun cutFile(long home, long addr, long count, long buf, Cut* job, long* place): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long off = 0L;
+  long status = consume(home, fd, &off, buf, job, place);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home, string text): int {
+  writeErr(home, text);
+  return finish(home, 1L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long buf = obr::proc::alloc(home, blockBits());
+  if (buf == 0L) {
+    return die(home, "cut: out of memory\n");
+  }
+  long pick = pickPtr(buf);
+  clearPick(pick);
+  Cut job;
+  job.mode = 0L;
+  job.widen = 0L;
+  job.suppress = 0L;
+  job.sawDelim = 0L;
+  job.delim = 9L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 98 是 b，99 是 c，100 是 d，102 是 f，110 是 n，115 是 s。 */
+      long cursor = 1L;
+      long ate = 0L;
+      while (cursor < len && ate == 0L) {
+        long flag = u8(at + cursor * 8L);
+        if (flag == 110L) {
+          job.widen = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 115L) {
+          job.suppress = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 98L || flag == 99L || flag == 102L) {
+          long kind = 1L;
+          if (flag == 99L) {
+            kind = 2L;
+          }
+          if (flag == 102L) {
+            kind = 3L;
+          }
+          if (job.mode != 0L && job.mode != kind) {
+            return die(home, "cut: missing list\n");
+          }
+          job.mode = kind;
+          long listAt = 0L;
+          long listLen = 0L;
+          if (operand(home, &index, count, at, len, cursor, &listAt, &listLen) == 0L) {
+            return die(home, "cut: missing list\n");
+          }
+          if (acceptList(listAt, listLen, pick) == 0L) {
+            return die(home, "cut: invalid list\n");
+          }
+          ate = 1L;
+        } else if (flag == 100L) {
+          long delimAt = 0L;
+          long delimLen = 0L;
+          if (operand(home, &index, count, at, len, cursor, &delimAt, &delimLen) == 0L) {
+            return die(home, "cut: invalid delimiter\n");
+          }
+          if (delimLen != 1L) {
+            return die(home, "cut: invalid delimiter\n");
+          }
+          job.delim = u8(delimAt);
+          job.sawDelim = 1L;
+          ate = 1L;
+        } else {
+          return die(home, "cut: invalid option\n");
+        }
+      }
+      if (ate == 0L) {
+        index = index + 1L;
+      }
+    } else {
+      ended = 1L;
+    }
+  }
+  if (job.widen == 1L && job.mode != 1L) {
+    return die(home, "cut: invalid option\n");
+  }
+  if (job.mode == 0L) {
+    return die(home, "cut: missing list\n");
+  }
+  if (job.sawDelim == 1L && job.mode != 3L) {
+    return die(home, "cut: invalid option\n");
+  }
+  if (job.suppress == 1L && job.mode != 3L) {
+    return die(home, "cut: invalid option\n");
+  }
+  long failed = 0L;
+  long place = 0L;
+  /* 标准输入的偏移单独留着。文件各自从 0 重新累加。描述符 0 不关。 */
+  long stdinAt = 0L;
+  if (index >= count) {
+    long status = consume(home, 0L, &stdinAt, buf, &job, &place);
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = consume(home, 0L, &stdinAt, buf, &job, &place);
+    } else {
+      status = cutFile(home, at, len, buf, &job, &place);
+    }
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

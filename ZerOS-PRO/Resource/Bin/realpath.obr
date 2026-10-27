@@ -1,0 +1,272 @@
+/* realpath。形式是 realpath 路径...。
+   没有可用的短选项。-m、-e、-q 以及其它字母都写 realpath: invalid option。
+   -- 结束选项。单独一个 - 是名为 - 的路径。
+   选项写在路径前面。第一个不是选项的参数结束选项，后面再出现的 -m 是路径名。
+   没有操作数时写 realpath: missing operand。
+   没有符号链接。绝对路径从 / 起。相对路径先接上 getcwd 的绝对路径。
+   连续斜杠收成一条。分量 . 丢掉。分量 .. 删掉上一段。再往上的 .. 停在 /。
+   末尾斜杠是空分量，丢掉。折叠先做完，然后只对收好的整条路径 stat 一次。
+   这一次 stat 成功，最后一段就存在。成功时把这条绝对路径和换行写到描述符 1。
+   stat 失败写 realpath: 原来的路径: No such file or directory，再继续后面的路径。
+   空路径同样写这一句。操作数或收好的结果超过 8192 个八位组，写 File name too long。
+   getcwd 失败或不是绝对路径时，相对路径写 cannot get current directory，绝对路径继续。
+   有失败则最终退出 1，全部成功退出 0。诊断在描述符 2，每条以换行结束。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 八位组先搬进读写区再 write。一次最多 4096。文件偏移往后累加。 */
+deRfun writeFd(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, offset, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeLine(long home, long addr, long count): void {
+  writeFd(home, 1L, addr, count);
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  obr::proc::write(home, 1L, count, 1L);
+}
+
+deRfun showFail(long home, long addr, long count, string tail): void {
+  writeErr(home, "realpath: ");
+  writeFd(home, 2L, addr, count);
+  writeErr(home, tail);
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* getcwd 把绝对路径放在读写区，长度在 +256。马上抄走，后面的读写会盖住这一段。 */
+deRfun readCwd(long home, long dest): long {
+  if (obr::proc::getcwd(home) != 0L) {
+    return -1L;
+  }
+  long count = obr::proc::slot(home, 256L);
+  if (count < 1L || count > 8192L) {
+    return -1L;
+  }
+  copySpan(obr::proc::bytes(home), dest, count);
+  return count;
+}
+
+/* 结果已经以 / 开头时不再加斜杠。装不下 8192 个八位组就返回 -1。 */
+deRfun appendComp(long out, long outLen, long from, long comp): long {
+  long extra = comp;
+  long slash = 0L;
+  if (outLen < 1L || u8(out + (outLen - 1L) * 8L) != 47L) {
+    slash = 1L;
+    extra = extra + 1L;
+  }
+  if (outLen + extra > 8192L) {
+    return -1L;
+  }
+  if (slash == 1L) {
+    memory::storeOctet(47L, out + outLen * 8L);
+    outLen = outLen + 1L;
+  }
+  copySpan(from, out + outLen * 8L, comp);
+  return outLen + comp;
+}
+
+/* 删掉最后一段。根目录 / 不再往上。 */
+deRfun popComp(long out, long outLen): long {
+  if (outLen < 2L) {
+    return outLen;
+  }
+  long at = outLen - 1L;
+  while (at > 0L && u8(out + at * 8L) != 47L) {
+    at = at - 1L;
+  }
+  if (at < 1L) {
+    return 1L;
+  }
+  return at;
+}
+
+/* 收成绝对路径。点是 46，斜杠是 47。成功返回八位组数，太长返回 -1。 */
+deRfun canon(long cwd, long cwdLen, long path, long pathLen, long out): long {
+  long outLen = 0L;
+  long absolute = 0L;
+  if (pathLen > 0L && u8(path) == 47L) {
+    absolute = 1L;
+  }
+  if (absolute == 1L) {
+    memory::storeOctet(47L, out);
+    outLen = 1L;
+  } else {
+    if (cwdLen < 1L || cwdLen > 8192L || u8(cwd) != 47L) {
+      return -1L;
+    }
+    copySpan(cwd, out, cwdLen);
+    outLen = cwdLen;
+    if (outLen > 1L && u8(out + (outLen - 1L) * 8L) == 47L) {
+      outLen = outLen - 1L;
+    }
+  }
+  long index = 0L;
+  while (index < pathLen) {
+    while (index < pathLen && u8(path + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index < pathLen) {
+      long start = index;
+      while (index < pathLen && u8(path + index * 8L) != 47L) {
+        index = index + 1L;
+      }
+      long comp = index - start;
+      long kind = 0L;
+      if (comp == 1L && u8(path + start * 8L) == 46L) {
+        kind = 1L;
+      }
+      if (comp == 2L && u8(path + start * 8L) == 46L && u8(path + (start + 1L) * 8L) == 46L) {
+        kind = 2L;
+      }
+      if (kind == 2L) {
+        outLen = popComp(out, outLen);
+      } else if (kind == 0L) {
+        long next = appendComp(out, outLen, path + start * 8L, comp);
+        if (next < 0L) {
+          return -1L;
+        }
+        outLen = next;
+      }
+    }
+  }
+  if (outLen < 1L) {
+    memory::storeOctet(47L, out);
+    outLen = 1L;
+  }
+  return outLen;
+}
+
+deRfun resolveOne(long home, long cwd, long cwdLen, long out, long at, long len): long {
+  if (len < 1L) {
+    showFail(home, at, 0L, ": No such file or directory\n");
+    return 1L;
+  }
+  if (len > 8192L) {
+    showFail(home, at, len, ": File name too long\n");
+    return 1L;
+  }
+  long absolute = 0L;
+  if (u8(at) == 47L) {
+    absolute = 1L;
+  }
+  if (absolute == 0L) {
+    if (cwdLen < 1L || u8(cwd) != 47L) {
+      showFail(home, at, len, ": cannot get current directory\n");
+      return 1L;
+    }
+  }
+  long outLen = canon(cwd, cwdLen, at, len, out);
+  if (outLen < 1L) {
+    showFail(home, at, len, ": File name too long\n");
+    return 1L;
+  }
+  plant(home, out, outLen);
+  if (obr::proc::stat(home) != 0L) {
+    showFail(home, at, len, ": No such file or directory\n");
+    return 1L;
+  }
+  writeLine(home, out, outLen);
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      writeErr(home, "realpath: invalid option\n");
+      return finish(home, 1L);
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "realpath: missing operand\n");
+    return finish(home, 1L);
+  }
+  /* 当前目录和结果各 8192 个八位组。分配单位是位，所以各是 65536。 */
+  long cwd = obr::proc::alloc(home, 65536L);
+  long out = obr::proc::alloc(home, 65536L);
+  if (cwd == 0L || out == 0L) {
+    writeErr(home, "realpath: out of memory\n");
+    return finish(home, 1L);
+  }
+  long cwdLen = readCwd(home, cwd);
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (resolveOne(home, cwd, cwdLen, out, at, len) != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  long code = 0L;
+  if (failed == 1L) {
+    code = 1L;
+  }
+  return finish(home, code);
+}

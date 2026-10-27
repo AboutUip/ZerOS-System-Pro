@@ -93,11 +93,15 @@ export namespace ZerOS {
       const nativeDwell = RuntimeRoot.Hardware.Cpu.nativeDwell;
       const nativeReadSpan = RuntimeRoot.Hardware.Cpu.nativeReadSpan;
       const nativeWriteSpan = RuntimeRoot.Hardware.Cpu.nativeWriteSpan;
+      const nativeWriteSpans = RuntimeRoot.Hardware.Cpu.nativeWriteSpans;
       const nativePaceBudget = RuntimeRoot.Hardware.Cpu.nativePaceBudget;
       const nativeChargePace = RuntimeRoot.Hardware.Cpu.nativeChargePace;
       const nativeCoast = RuntimeRoot.Hardware.Cpu.nativeCoast;
       const nativeIdleTick = RuntimeRoot.Hardware.Cpu.nativeIdleTick;
+      const nativeYieldPace = RuntimeRoot.Hardware.Cpu.nativeYieldPace;
+      const nativeKeyWait = RuntimeRoot.Hardware.Cpu.nativeKeyWait;
       const nativeGuestHot = RuntimeRoot.Hardware.Cpu.nativeGuestHot;
+      const noteCoreRank = RuntimeRoot.Hardware.Cpu.noteCoreRank;
       const nativeAccount = RuntimeRoot.Hardware.Cpu.nativeAccount;
       const enterNativeImage = RuntimeRoot.Hardware.Cpu.enterNativeImage;
       const leaveNativeImage = RuntimeRoot.Hardware.Cpu.leaveNativeImage;
@@ -739,8 +743,13 @@ export namespace ZerOS {
           }
           return page[Number(octet - base)];
         };
+        /* 核心 2 的数据起点是 1048576 + 2×268435456。档发布在这之后 49152 位，八个八位组。 */
+        const rankPublishOctet = 67246080n;
         const keep = (octet: bigint, value: number): void => {
           const stored = value & 0xff;
+          if (octet >= rankPublishOctet && octet < rankPublishOctet + 8n) {
+            noteCoreRank(Number(octet - rankPublishOctet), stored);
+          }
           const base = octet & ~pageMask;
           const page = pages.get(base);
           if (page !== undefined) {
@@ -779,43 +788,40 @@ export namespace ZerOS {
           if (dirty.size === 0) {
             return;
           }
-          /* 连续的、位地址按 8 对齐的八位组一次送上主板。逐字 place 再 store 会让引导的清表等上几十秒。 */
+          /* 连续脏字节收成一段。段与段不相邻时一次消息写回，不再每段等一次主板。 */
           const pending = [...dirty].sort((left, right): number => (left < right ? -1 : left > right ? 1 : 0));
+          const addresses: bigint[] = [];
+          const parts: Uint8Array[] = [];
           let index = 0;
           while (index < pending.length) {
-            const octet = pending[index];
-            if (octet === undefined) {
+            const origin = pending[index];
+            if (origin === undefined) {
               break;
             }
-            if (octet % 8n !== 0n) {
-              await place(ordinal, 0, BigInt(recall(octet) ?? 0));
-              await store(ordinal, MemoryOpcodeStoreOctet, octet * 8n, 0);
-              dirty.delete(octet);
-              index += 1;
-              continue;
-            }
-            const room = Math.min(MailboxSpanBytes, pending.length - index);
-            const bytes = new Uint8Array(room);
-            let count = 0;
-            let cursor = octet;
-            while (count < room) {
-              const at = pending[index + count];
-              if (at === undefined || at !== cursor) {
-                break;
-              }
-              bytes[count] = recall(at) ?? 0;
+            let count = 1;
+            while (
+              count < MailboxSpanBytes
+              && index + count < pending.length
+              && pending[index + count] === origin + BigInt(count)
+            ) {
               count += 1;
-              cursor += 1n;
             }
-            if (count < 1) {
-              break;
-            }
-            const slice = count === bytes.length ? bytes : bytes.subarray(0, count);
-            await nativeWriteSpan(ordinal, octet * 8n, slice);
+            const bytes = new Uint8Array(count);
             for (let step = 0; step < count; step += 1) {
-              dirty.delete(octet + BigInt(step));
+              bytes[step] = recall(origin + BigInt(step)) ?? 0;
+            }
+            addresses.push(origin * 8n);
+            parts.push(bytes);
+            for (let step = 0; step < count; step += 1) {
+              dirty.delete(origin + BigInt(step));
             }
             index += count;
+          }
+          let cursor = 0;
+          while (cursor < addresses.length) {
+            const end = Math.min(addresses.length, cursor + 128);
+            await nativeWriteSpans(ordinal, addresses.slice(cursor, end), parts.slice(cursor, end));
+            cursor = end;
           }
         };
         const fill = async (bit: bigint): Promise<void> => {
@@ -876,7 +882,7 @@ export namespace ZerOS {
         const sliceCheck = 8;
         /*
          * 平时用消息通道让出，监督核的空转不会每拍都吃掉 4 毫秒。
-         * 有至少 1000 Hz 的客程序正在跑时，最多每 4 毫秒改用一次定时器。
+         * 有至少 1000 Hz 的客程序正在跑，或停在系统调用里等键盘时，最多每 4 毫秒改用一次定时器。
          * 消息通道会插到定时器前面。壳程序的访存回复若只排在通道后面，按键就会等到下一次空转睡醒。
          */
         let yieldResume: (() => void) | null = null;
@@ -1029,12 +1035,23 @@ export namespace ZerOS {
                 finishNativeYield(ordinal);
                 return;
               }
+              /* 查询不离开这一拍。调度每圈要问好几次核心状态，每次都让出会把按键推迟到下一次空转。 */
+              if (outcome.opcode === NativeEscapeQuery && performance.now() - sliceAt < sliceMs) {
+                continue;
+              }
               break;
             }
             await flush();
             dropShared();
             if (ordinal >= 0 && ordinal < coastArm.length && (coastArm[ordinal] ?? 0) === 1 && ran > 0) {
-              await nativeIdleTick(ordinal);
+              /* 壳等键盘时，这一拍的 8 毫秒合睡会挡住下一次收键。只让出，不把线程睡住。
+                 有命令在取指时仍合睡，这条线程留给命令。 */
+              if (nativeKeyWait(ordinal)) {
+                nativeYieldPace(ordinal);
+                await nativeChargePace(ordinal, ran);
+              } else {
+                await nativeIdleTick(ordinal);
+              }
               nativeCoast(ordinal);
               coastArm[ordinal] = 0;
             } else {

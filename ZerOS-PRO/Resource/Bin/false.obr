@@ -1,0 +1,12 @@
+/* POSIX false。不读标准输入，不写标准输出和标准错误。
+   操作数全部忽略。退出状态是 1。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  obr::proc::exit(home, 1L);
+  return 0;
+}

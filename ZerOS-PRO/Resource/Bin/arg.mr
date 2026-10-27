@@ -1,0 +1,10 @@
+/* 派生时抄进子任务的参数和环境。布局和内核 exec 里的 argAt 相同。
+   界限起点 +4194304：个数、环境条数、两段八位组数、两张长度表、两段八位组。 */
+deRfun argc(long home): long;
+deRfun argLen(long home, long index): long;
+deRfun argPtr(long home, long index): long;
+deRfun envc(long home): long;
+deRfun envLen(long home, long index): long;
+deRfun envPtr(long home, long index): long;
+/* 找到 NAME=value 里名字相同的一条。成功返回 1，值和长度写进指针。 */
+deRfun envLookup(long home, long name, long nameLen, long* value, long* valueLen): long;

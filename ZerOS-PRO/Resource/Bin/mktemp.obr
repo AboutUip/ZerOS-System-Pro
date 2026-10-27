@@ -1,0 +1,243 @@
+/* mktemp。形式是 mktemp [-d] [模板]。
+   选项写在模板前面。-- 结束选项。单独一个 - 当作模板。
+   第一个不是选项的参数结束选项，所以模板后面的 -d 不再是开关。
+   -d 可以重复，效果相同：建目录。不写 -d 就建空文件。
+   其它字母写 mktemp: invalid option。多于一个模板写 mktemp: too many arguments。
+   没有模板时用 /tmp/tmp.XXXXXX。相对模板保持相对，不接当前目录。
+   模板末尾至少要有三个大写 X（字节 88）。只替换末尾这一串连续的 X。
+   空串、长于 8192 个八位组、末尾大写 X 不足三个，都写 mktemp: invalid template。
+   替换用计数器的三十六进制。数位是 0-9 然后 a-z，低位放在最右边，左边用 0 补齐。
+   计数从 0 开始，每次加 1，最多试 4096 个名字。
+   先 stat。状态 0 表示名字已经在用，换下一个。状态 2 才创建。
+   建文件用打开标志 1（只写并截断）。目录用 mkdir。
+   创建返回 11，或者建文件时返回 4，也当成名字被占用，换下一个。
+   其它失败停止。4096 个都被占用同样失败。失败写 mktemp: cannot create 和这一次的路径。
+   新建文件的描述符不是 0 才关闭。描述符 0 保持原样。
+   成功把换好的路径和一个换行写到描述符 1，退出 0。失败退出 1。
+   诊断写到描述符 2，每条以换行结束。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 八位组先搬进读写区再 write。一次最多 4096。文件偏移往后累加。 */
+deRfun writeFd(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, offset, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeLine(long home, long addr, long count): void {
+  writeFd(home, 1L, addr, count);
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  obr::proc::write(home, 1L, count, 1L);
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun plantText(long addr, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], addr + index * 8L);
+    index = index + 1L;
+  }
+  return count;
+}
+
+/* 末尾连续的大写 X 有几个。X 是 88。整段都是 X 时个数等于长度。 */
+deRfun trailingX(long addr, long count): long {
+  long width = 0L;
+  while (width < count) {
+    long at = count - width - 1L;
+    if (u8(addr + at * 8L) != 88L) {
+      return width;
+    }
+    width = width + 1L;
+  }
+  return width;
+}
+
+/* 把 serial 写成 width 位。0 到 9 是字节 48 起，10 到 35 是 a 到 z。 */
+deRfun stamp(long addr, long mark, long width, long serial): void {
+  long left = serial;
+  long place = width;
+  while (place > 0L) {
+    place = place - 1L;
+    long digit = left % 36L;
+    left = left / 36L;
+    long octet = 48L + digit;
+    if (digit >= 10L) {
+      octet = 97L + digit - 10L;
+    }
+    memory::storeOctet(octet, addr + (mark + place) * 8L);
+  }
+}
+
+/* 路径已经 plant。目录走 mkdir。文件用标志 1，成功后马上取走 +192 的描述符。 */
+deRfun createAt(long home, long asDir): long {
+  if (asDir == 1L) {
+    return obr::proc::mkdir(home);
+  }
+  long status = obr::proc::open(home, 1L);
+  if (status == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    if (fd != 0L) {
+      obr::proc::close(home, fd);
+    }
+  }
+  return status;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long asDir = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        /* 100 是 d。 */
+        if (u8(at + cursor * 8L) == 100L) {
+          asDir = 1L;
+        } else {
+          writeErr(home, "mktemp: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  long rest = count - index;
+  if (rest > 1L) {
+    writeErr(home, "mktemp: too many arguments\n");
+    return finish(home, 1L);
+  }
+  /* 8192 个八位组。分配单位是位，所以是 65536。 */
+  long buf = obr::proc::alloc(home, 65536L);
+  if (buf == 0L) {
+    writeErr(home, "mktemp: out of memory\n");
+    return finish(home, 1L);
+  }
+  long len = 0L;
+  if (rest == 0L) {
+    len = plantText(buf, "/tmp/tmp.XXXXXX");
+  } else {
+    long at = argPtr(home, index);
+    len = argLen(home, index);
+    if (len < 1L || len > 8192L) {
+      writeErr(home, "mktemp: invalid template\n");
+      return finish(home, 1L);
+    }
+    copySpan(at, buf, len);
+  }
+  long width = trailingX(buf, len);
+  if (width < 3L) {
+    writeErr(home, "mktemp: invalid template\n");
+    return finish(home, 1L);
+  }
+  long mark = len - width;
+  long serial = 0L;
+  long made = 0L;
+  long hard = 0L;
+  while (serial < 4096L && made == 0L && hard == 0L) {
+    stamp(buf, mark, width, serial);
+    plant(home, buf, len);
+    long status = obr::proc::stat(home);
+    if (status == 0L) {
+      serial = serial + 1L;
+    } else if (status != 2L) {
+      hard = 1L;
+    } else {
+      plant(home, buf, len);
+      long created = createAt(home, asDir);
+      if (created == 0L) {
+        made = 1L;
+      } else {
+        long retry = 0L;
+        if (created == 11L) {
+          retry = 1L;
+        }
+        if (asDir == 0L && created == 4L) {
+          retry = 1L;
+        }
+        if (retry == 1L) {
+          serial = serial + 1L;
+        } else {
+          hard = 1L;
+        }
+      }
+    }
+  }
+  if (made == 1L) {
+    writeLine(home, buf, len);
+    return finish(home, 0L);
+  }
+  writeErr(home, "mktemp: cannot create ");
+  writeFd(home, 2L, buf, len);
+  writeErr(home, "\n");
+  return finish(home, 1L);
+}

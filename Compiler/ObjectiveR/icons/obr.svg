@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="obrBg" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#1b2b4a"/>
+    </linearGradient>
+    <linearGradient id="obrAccent" x1="26" y1="26" x2="102" y2="102" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#3b82f6"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="8" width="104" height="112" rx="14" fill="url(#obrBg)"/>
+  <path d="M84 8v30h32" fill="#334155"/>
+  <rect x="24" y="26" width="80" height="8" rx="4" fill="#0ea5e9" opacity="0.9"/>
+  <circle cx="40" cy="70" r="16" fill="none" stroke="url(#obrAccent)" stroke-width="8"/>
+  <path d="M57 82l16 16" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/>
+  <text x="63" y="108" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="800" fill="#67e8f9">OBR</text>
+</svg>

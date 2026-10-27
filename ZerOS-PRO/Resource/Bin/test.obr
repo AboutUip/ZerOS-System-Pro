@@ -1,0 +1,635 @@
+/* POSIX.1-2017 test。不另写名字是左方括号的程序，也不看 argv[0]。
+   不把 -- 当成选项结束，不实现 -h 或 --help 帮助。--help 只是一个非空字符串。
+   参数从下标 1 起。真退出 0，假退出 1。
+   没有操作数退出 1。整个命令只有一个参数且这个参数正好是 ! 时退出 1。
+   圆括号里的单个 !，以及别的单独非空字符串，仍按非空为真，所以 test ( ! ) 退出 0。
+   语法对不上就写 test: invalid expression，退出 2。不认识的运算符也走这一条。
+   不做 <、>、==、-nt、-ot、-ef、-g、-u、-k。
+
+   零到四个参数按标准的个数规则：
+   一个参数：非空为真。空串为假。上面的单独 ! 是唯一例外。
+   两个参数：! 否定后一个字符串的非空；已知的一元测试作用在后一个参数上；
+   其它是语法错误。
+   三个参数：中间若是 =、!= 或整数比较，就做这个二元测试。
+   中间若是 -a 或 -o，左右各按「一个参数非空」判断，不再把左边的 ! 当成否定。
+   否则若开头是 !，就否定后面那两个参数组成的测试。
+   否则若是 ( 某个词 )，中间那个词按一个参数的非空规则判断。
+   四个参数：开头是 ! 就否定后面三个参数组成的测试。
+   整组是 ( 词 词 ) 时，对中间两个词做两个参数的测试。
+   其余四个，以及多于四个，按下面的优先级，-a 和 -o 左结合：
+   圆括号先配平。! 只否定紧跟着的那一项，这一项可以是比较、一元测试或括号。
+   ! 不穿过 -a。
+   = 和 != 高于一元测试。一元测试高于 -eq 这一类整数比较。
+   这些又高于单独一个非空字符串。-a 高于 -o。
+
+   字符串按八位组比较，长度不同就是不等。
+   整数可以有一个前导正号或负号，其余全是十进制数字，前导 0 不是八进制。
+   不跳过空白。放不进有符号 64 位，或不是整数，都是语法错误。
+   -n 非空，-z 为空。-t 的参数必须是整数；只有 0、1、2 为真。
+   没有查询终端的服务，所以不看它们有没有被重定向。
+   -e 是 stat 成功。-r、-w、-x 也只看存在，因为当前只有根用户，没有 access。
+   -f 是种类 1 或 5，-d 是 2、4 或 6，-c 是 3，-s 是大小大于 0。
+   -b、-p、-S、-h、-L 永远为假：没有块设备、管道、套接字和符号链接。
+   操作数仍然必须在，缺了是语法错误；文件不存在则对应的存在类测试为假，不另写诊断。
+   路径先写入 path，长度字在起点，八位组从 +64 起。stat 之后立刻抄走种类和大小。
+   不关闭描述符 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long bit = text[index];
+    memory::storeOctet(bit, obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home): long {
+  writeErr(home, "test: invalid expression\n");
+  obr::proc::exit(home, 2L);
+  return 0L;
+}
+
+deRfun flip(long value): long {
+  if (value == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun sameText(long addr, long count, string text): long {
+  int raw = length(text);
+  long expect = raw;
+  if (count != expect) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    long bit = text[index];
+    if (u8(addr + index * 8L) != bit) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun argSame(long home, long index, string text): long {
+  return sameText(argPtr(home, index), argLen(home, index), text);
+}
+
+/* 有符号最大值除以 10。乘式拆开，避免 pie 把大立即数当成数据地址。 */
+deRfun maxTen(): long {
+  long hi = 65536L * 65536L * 65536L * 16384L;
+  return (hi - 1L + hi) / 10L;
+}
+
+/* 可选一个正号或负号。负数往下减，有符号最小值不必先变成正数。 */
+deRfun readInt(long addr, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long neg = 0L;
+  long lead = u8(addr);
+  if (lead == 43L) {
+    index = 1L;
+  } else if (lead == 45L) {
+    neg = 1L;
+    index = 1L;
+  }
+  if (index >= len) {
+    return 0L;
+  }
+  long value = 0L;
+  while (index < len) {
+    long octet = u8(addr + index * 8L);
+    if (octet < 48L || octet > 57L) {
+      return 0L;
+    }
+    long digit = octet - 48L;
+    if (neg == 0L) {
+      if (value > maxTen()) {
+        return 0L;
+      }
+      if (value == maxTen() && digit > 7L) {
+        return 0L;
+      }
+      value = value * 10L + digit;
+    } else {
+      if (value < -maxTen()) {
+        return 0L;
+      }
+      if (value == -maxTen() && digit > 8L) {
+        return 0L;
+      }
+      value = value * 10L - digit;
+    }
+    index = index + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 成功返回 1，并把种类、大小抄出来。失败返回 0，调用方把它当成假，不写诊断。 */
+deRfun probe(long home, long addr, long count, long* kind, long* size): long {
+  if (count < 0L || count > 8192L) {
+    return 0L;
+  }
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+  if (obr::proc::stat(home) != 0L) {
+    return 0L;
+  }
+  *kind = obr::proc::slot(home, 128L);
+  *size = obr::proc::slot(home, 192L);
+  return 1L;
+}
+
+/* 一个参数：非空为真。这里不特殊处理 !，那个例外只在 main 里。 */
+deRfun one(long home, long* pos): long {
+  long len = argLen(home, *pos);
+  *pos = *pos + 1L;
+  if (len == 0L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun knownUnary(long home, long index): long {
+  if (argSame(home, index, "-b") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-c") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-d") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-e") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-f") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-h") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-L") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-n") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-p") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-r") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-S") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-s") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-t") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-w") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-x") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-z") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 长度正好 2 并且以减号开头。-a 和 -o 也算，调用方再把它们摘出去。 */
+deRfun dashPair(long home, long index): long {
+  if (argLen(home, index) != 2L) {
+    return 0L;
+  }
+  if (u8(argPtr(home, index)) != 45L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun isStringOp(long home, long index): long {
+  if (argSame(home, index, "=") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "!=") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isIntOp(long home, long index): long {
+  if (argSame(home, index, "-eq") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-ne") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-lt") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-le") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-gt") == 1L) {
+    return 1L;
+  }
+  if (argSame(home, index, "-ge") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isBinop(long home, long index): long {
+  if (isStringOp(home, index) == 1L) {
+    return 1L;
+  }
+  return isIntOp(home, index);
+}
+
+/* 操作数已经确认还在 end 里面。pos 事先跳过运算符和操作数。 */
+deRfun unary(long home, long* pos, long end): long {
+  if (*pos + 1L >= end) {
+    return die(home);
+  }
+  long op = *pos;
+  long arg = *pos + 1L;
+  long addr = argPtr(home, arg);
+  long len = argLen(home, arg);
+  *pos = *pos + 2L;
+  if (argSame(home, op, "-n") == 1L) {
+    if (len != 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-z") == 1L) {
+    if (len == 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-t") == 1L) {
+    long fd = 0L;
+    if (readInt(addr, len, &fd) == 0L) {
+      return die(home);
+    }
+    if (fd == 0L || fd == 1L || fd == 2L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-b") == 1L || argSame(home, op, "-p") == 1L || argSame(home, op, "-S") == 1L || argSame(home, op, "-h") == 1L || argSame(home, op, "-L") == 1L) {
+    return 0L;
+  }
+  long kind = 0L;
+  long size = 0L;
+  long ok = probe(home, addr, len, &kind, &size);
+  if (argSame(home, op, "-e") == 1L || argSame(home, op, "-r") == 1L || argSame(home, op, "-w") == 1L || argSame(home, op, "-x") == 1L) {
+    return ok;
+  }
+  if (ok == 0L) {
+    return 0L;
+  }
+  if (argSame(home, op, "-c") == 1L) {
+    if (kind == 3L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-f") == 1L) {
+    if (kind == 1L || kind == 5L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-d") == 1L) {
+    if (kind == 2L || kind == 4L || kind == 6L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-s") == 1L) {
+    if (size > 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  return die(home);
+}
+
+deRfun binary(long home, long* pos): long {
+  long leftAt = argPtr(home, *pos);
+  long leftLen = argLen(home, *pos);
+  long op = *pos + 1L;
+  long rightAt = argPtr(home, *pos + 2L);
+  long rightLen = argLen(home, *pos + 2L);
+  *pos = *pos + 3L;
+  if (argSame(home, op, "=") == 1L) {
+    return sameSpan(leftAt, leftLen, rightAt, rightLen);
+  }
+  if (argSame(home, op, "!=") == 1L) {
+    return flip(sameSpan(leftAt, leftLen, rightAt, rightLen));
+  }
+  long left = 0L;
+  long right = 0L;
+  if (readInt(leftAt, leftLen, &left) == 0L || readInt(rightAt, rightLen, &right) == 0L) {
+    return die(home);
+  }
+  if (argSame(home, op, "-eq") == 1L) {
+    if (left == right) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-ne") == 1L) {
+    if (left != right) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-lt") == 1L) {
+    if (left < right) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-le") == 1L) {
+    if (left <= right) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-gt") == 1L) {
+    if (left > right) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (argSame(home, op, "-ge") == 1L) {
+    if (left >= right) {
+      return 1L;
+    }
+    return 0L;
+  }
+  return die(home);
+}
+
+deRfun two(long home, long* pos, long end): long {
+  if (*pos + 1L >= end) {
+    return die(home);
+  }
+  if (argSame(home, *pos, "!") == 1L) {
+    *pos = *pos + 1L;
+    return flip(one(home, pos));
+  }
+  if (knownUnary(home, *pos) == 1L) {
+    return unary(home, pos, end);
+  }
+  return die(home);
+}
+
+/* 三个参数中间的 -a / -o。两边都是一个词，按非空判断。 */
+deRfun joinTwo(long home, long* pos): long {
+  long andOp = argSame(home, *pos + 1L, "-a");
+  long left = one(home, pos);
+  *pos = *pos + 1L;
+  long right = one(home, pos);
+  if (andOp == 1L) {
+    if (left == 1L && right == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (left == 1L || right == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun three(long home, long* pos, long end): long {
+  if (*pos + 2L >= end) {
+    return die(home);
+  }
+  if (isBinop(home, *pos + 1L) == 1L) {
+    return binary(home, pos);
+  }
+  if (argSame(home, *pos + 1L, "-a") == 1L || argSame(home, *pos + 1L, "-o") == 1L) {
+    return joinTwo(home, pos);
+  }
+  if (argSame(home, *pos, "!") == 1L) {
+    *pos = *pos + 1L;
+    return flip(two(home, pos, end));
+  }
+  if (argSame(home, *pos, "(") == 1L && argSame(home, *pos + 2L, ")") == 1L) {
+    *pos = *pos + 1L;
+    long value = one(home, pos);
+    *pos = *pos + 1L;
+    return value;
+  }
+  return die(home);
+}
+
+deRfun matchParen(long home, long from, long end): long {
+  long depth = 1L;
+  long index = from;
+  while (index < end) {
+    if (argSame(home, index, "(") == 1L) {
+      depth = depth + 1L;
+    } else if (argSame(home, index, ")") == 1L) {
+      depth = depth - 1L;
+      if (depth == 0L) {
+        return index;
+      }
+    }
+    index = index + 1L;
+  }
+  return die(home);
+}
+
+/* 开括号已经留在 *pos。配平后的那一对不放进里面的参数个数。 */
+deRfun group(long home, long* pos, long end): long {
+  *pos = *pos + 1L;
+  long from = *pos;
+  long close = matchParen(home, from, end);
+  long inner = close - from;
+  if (inner < 1L) {
+    return die(home);
+  }
+  long value = posix(home, pos, inner);
+  if (*pos != close) {
+    return die(home);
+  }
+  *pos = close + 1L;
+  return value;
+}
+
+deRfun term(long home, long* pos, long end): long {
+  long neg = 0L;
+  while (*pos < end && argSame(home, *pos, "!") == 1L) {
+    neg = 1L - neg;
+    *pos = *pos + 1L;
+  }
+  if (*pos >= end) {
+    return die(home);
+  }
+  long value = 0L;
+  long left = end - *pos;
+  /* 圆括号先配平。= 和 != 再高于一元，一元再高于整数比较。 */
+  if (argSame(home, *pos, "(") == 1L) {
+    value = group(home, pos, end);
+  } else if (left >= 3L && isStringOp(home, *pos + 1L) == 1L) {
+    value = binary(home, pos);
+  } else if (knownUnary(home, *pos) == 1L) {
+    value = unary(home, pos, end);
+  } else if (left >= 3L && isIntOp(home, *pos + 1L) == 1L) {
+    value = binary(home, pos);
+  } else if (dashPair(home, *pos) == 1L && argSame(home, *pos, "-a") == 0L && argSame(home, *pos, "-o") == 0L) {
+    return die(home);
+  } else {
+    value = one(home, pos);
+  }
+  if (neg == 1L) {
+    return flip(value);
+  }
+  return value;
+}
+
+deRfun andExpr(long home, long* pos, long end): long {
+  long value = term(home, pos, end);
+  while (*pos < end && argSame(home, *pos, "-a") == 1L) {
+    *pos = *pos + 1L;
+    long right = term(home, pos, end);
+    if (value == 1L && right == 1L) {
+      value = 1L;
+    } else {
+      value = 0L;
+    }
+  }
+  return value;
+}
+
+deRfun orExpr(long home, long* pos, long end): long {
+  long value = andExpr(home, pos, end);
+  while (*pos < end && argSame(home, *pos, "-o") == 1L) {
+    *pos = *pos + 1L;
+    long right = andExpr(home, pos, end);
+    if (value == 1L || right == 1L) {
+      value = 1L;
+    } else {
+      value = 0L;
+    }
+  }
+  return value;
+}
+
+deRfun parseExpr(long home, long* pos, long end): long {
+  if (*pos >= end) {
+    return die(home);
+  }
+  return orExpr(home, pos, end);
+}
+
+/* 吃掉正好 nargs 个参数。四个及以上里，! 和整组圆括号仍先按个数规则。 */
+deRfun posix(long home, long* pos, long nargs): long {
+  long start = *pos;
+  long end = start + nargs;
+  long value = 0L;
+  if (nargs == 1L) {
+    value = one(home, pos);
+  } else if (nargs == 2L) {
+    value = two(home, pos, end);
+  } else if (nargs == 3L) {
+    value = three(home, pos, end);
+  } else if (nargs == 4L && argSame(home, *pos, "!") == 1L) {
+    *pos = *pos + 1L;
+    value = flip(three(home, pos, end));
+  } else if (nargs == 4L && argSame(home, *pos, "(") == 1L && argSame(home, start + 3L, ")") == 1L) {
+    *pos = *pos + 1L;
+    value = two(home, pos, start + 3L);
+    if (*pos != start + 3L) {
+      return die(home);
+    }
+    *pos = *pos + 1L;
+  } else if (nargs >= 4L) {
+    value = parseExpr(home, pos, end);
+  } else {
+    return die(home);
+  }
+  if (*pos != end) {
+    return die(home);
+  }
+  return value;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long total = argc(home);
+  if (total < 2L) {
+    return finish(home, 1L);
+  }
+  if (total == 2L && argSame(home, 1L, "!") == 1L) {
+    return finish(home, 1L);
+  }
+  long pos = 1L;
+  long value = posix(home, &pos, total - 1L);
+  if (value == 1L) {
+    return finish(home, 0L);
+  }
+  return finish(home, 1L);
+}

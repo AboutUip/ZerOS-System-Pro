@@ -171,7 +171,7 @@ deRfun editCases(): void {
   editInit(state);
   expect(editFeed(state, 27L) == 0L && editFeed(state, 65L) == 0L && editLen(state) == 0L, 41L);
   long echoLen = plant(dest, "echo");
-  expect(builtinId(dest, echoLen) == 1L, 42L);
+  expect(builtinId(dest, echoLen) == 0L, 42L);
   editInit(state);
   expect(feedText(state, "mid") == 0L, 43L);
   editFeed(state, 1L);
@@ -198,6 +198,23 @@ deRfun argIs(long cmd, long index, string text): long {
   return bytesEq(cmdArgAt(cmd, index), cmdArgLen(cmd, index), text);
 }
 
+/* 结束词区和 edit.obr 相同：out+102400 起，四格，步长 1280。头文件不导出这些读法。 */
+deRfun hdSlot(long out, long index): long {
+  return out + 102400L + 64L + index * 1280L;
+}
+
+deRfun hdCount(long out): long {
+  return memory::load64(out + 102400L);
+}
+
+deRfun hdDelimLen(long out, long index): long {
+  return memory::load64(hdSlot(out, index) + 128L);
+}
+
+deRfun hdDelimAt(long out, long index): long {
+  return hdSlot(out, index) + 256L;
+}
+
 deRfun parseCases(): void {
   long out = outAt();
   expect(feedCmd("", 0L) == 0L && listCount(out) == 0L, 50L);
@@ -205,7 +222,7 @@ deRfun parseCases(): void {
   expect(feedCmd("echo hi", 0L) == 0L && listCount(out) == 1L, 52L);
   long cmd = cmdOf(out, listCmd(out, 0L));
   expect(cmdArgc(cmd) == 2L && argIs(cmd, 0L, "echo") == 1L && argIs(cmd, 1L, "hi") == 1L, 53L);
-  expect(builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L)) == 1L, 54L);
+  expect(builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L)) == 0L, 54L);
   expect(feedCmd("echo \"hi there\"", 0L) == 0L, 55L);
   cmd = cmdOf(out, listCmd(out, 0L));
   expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, "hi there") == 1L, 56L);
@@ -260,7 +277,7 @@ deRfun parseCases(): void {
   cmd = cmdOf(out, 0L);
   expect(cmdArgc(cmd) == 3L && argIs(cmd, 1L, "-n") == 1L && argIs(cmd, 2L, "hi") == 1L, 94L);
   expect(feedCmd("cd /os", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 2L) == 2L, 95L);
-  expect(feedCmd("pwd", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 3L) == 3L, 96L);
+  expect(feedCmd("pwd", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 3L) == 0L, 96L);
   expect(feedCmd("exit 2", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 4L) == 4L, 97L);
   expect(feedCmd("history", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 7L) == 5L, 98L);
   expect(feedCmd("clear", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 5L) == 6L, 99L);
@@ -281,6 +298,21 @@ deRfun parseCases(): void {
   expect(feedCmd("echo '$?'", 4L) == 0L && argIs(cmdOf(out, 0L), 1L, "$?") == 1L, 129L);
   expect(feedCmd("  # c", 0L) == 0L && listCount(out) == 0L, 130L);
   expect(builtinId(blobAt(), 0L) == 0L, 131L);
+  expect(feedCmd("echo <<EOF", 0L) == 0L, 140L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 1L && argIs(cmd, 0L, "echo") == 1L && cmdRedir(cmd) == 0L && hdCount(out) == 1L, 141L);
+  expect(hdDelimLen(out, 0L) == 3L && bytesEq(hdDelimAt(out, 0L), 3L, "EOF") == 1L, 142L);
+  expect(feedCmd("echo << xxx <<EOF", 0L) == 0L, 143L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 1L && argIs(cmd, 0L, "echo") == 1L && hdCount(out) == 2L, 144L);
+  expect(hdDelimLen(out, 0L) == 3L && bytesEq(hdDelimAt(out, 0L), 3L, "xxx") == 1L && hdDelimLen(out, 1L) == 3L && bytesEq(hdDelimAt(out, 1L), 3L, "EOF") == 1L, 145L);
+  expect(feedCmd("echo \"<<\"", 0L) == 0L, 146L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, "<<") == 1L && hdCount(out) == 0L, 147L);
+  expect(feedCmd("cmd <<", 0L) == 1L, 148L);
+  expect(feedCmd("cmd < file", 0L) == 0L, 149L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdRedir(cmd) == 3L && hdCount(out) == 0L, 150L);
 }
 
 deRfun pathIs(string cwd, string rel, string want): long {

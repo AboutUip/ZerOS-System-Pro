@@ -1,0 +1,1325 @@
+/* POSIX find 的一个定死子集。形式是 find [-H|-L] [path...] [expression]。
+   -H 和 -L 只能写在路径前面，后写的覆盖先写的。本系统没有符号链接，
+   两个都不改变走法，只是接受。-- 结束选项。路径还没开始时，别的以 - 开头、
+   长度至少为 2、又不是 -H/-L 的词，若也不是表达式的开头，就是
+   find: invalid option。单独一个 - 不是路径。没有路径就从 . 开始。
+   表达式从第一个原语、运算符或左括号开始，后面的词都算表达式。
+
+   原语：-name -path -type -perm -user -group -size -print -prune -depth。
+   运算符：! 非，-a 与，-o 或，括号分组。两个原语紧贴也是与。
+   优先级是非、然后与、然后或，都左结合。与和或短路。
+   表达式里没有 -print 时，先把整段当成已经加了括号，再在外面与上 -print。
+   这样 -name a -o -name b 两边都会打印。完全没有表达式时，表达式就是 -print。
+   文本里出现过 -depth，整次都先走内容再看目录；否则先目录再内容。
+   -depth 时 -prune 仍为真，但不阻止进入。-prune 只有真的被求值才挡住这一层。
+
+   不做 -fstype -inum -mtime -atime -ctime -newer -links -nouser -nogroup
+   -xdev -exec -ok。这些词只要出现在参数里，就 find: invalid predicate，
+   退出 1，还没开始走。括号不配、表达式在运算符或左括号处结束、
+   缺操作数，都是 find: invalid expression，同样不走。
+
+   模式按八位组比整段，不是子串。* 任意长，? 一个字节，[] 是字节集。
+   右方括号紧跟在左方括号或取补符 ! 后面时是字面。减号在两端是字面；
+   左边还有一个待定的单字节、右边又是一个单字节时是闭区间，起点大于终点
+   是 invalid pattern。反斜杠使下一个字节变成字面，末尾落单的反斜杠不合法。
+   点开头的名字不特殊。-name 只比最后一段，-path 比即将打印的整条路径。
+
+   -type：f 是种类 1 和 5，d 是 2、4、6，c 是 3。b、p、l 永远为假。
+   -perm 只接受八进制，可以有一个前导减号。没有减号时低 9 位必须全等；
+   有减号时，模式里为 1 的位在文件上也必须为 1。超过 4 位、非八进制、
+   或低 9 位之外还有位，是 invalid mode。-user 和 -group 是十进制非负整数。
+   -size 是十进制，可有前导 + 或 -。缺省按 512 字节向上取整，0 是 0 块。
+   后缀 c 按字节。-print 写路径和换行。-prune 与 -depth 的结果都是真。
+
+   每个起点先 stat。失败按打不开写 find: 路径: No such file or directory，
+   继续下一个起点。目录用 readdir，下标从 0，容量 512。返回 2，或成功但
+   名字长度是 0，都是列完。别的非 0 是 find: 路径: cannot read，不再进入。
+   名字在字节区，长度在 slot 256，先拷走。跳过 . 和 ..，不排序。
+   父路径是 / 或已经以 / 结尾就直接接名字，否则中间加一个 /。
+   不给目录加尾部斜杠。超过 32 层是 find: too deep，不再往下。
+   路径超过 8192 个八位组是 find: path too long，不进入。
+   这些失败最后退出 1。没有错误退出 0。
+
+   stat 成功后立刻把种类、大小、权限、属主、属组从 slot 128/192/256/320/384
+   抄走。标准输出的偏移从 0 累加，一次最多 4096。写失败立刻
+   find: write error 并退出 1。诊断写描述符 2，偏移每次从 0。
+   遍历用自己的堆栈，最多 32 帧，不用递归。alloc 的单位是位。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。负值加上 256 才是 0 到 255 的八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断都走描述符 2，偏移固定从 0，不跟标准输出的位置混在一起。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径可能有 8192 个八位组，诊断也按 4096 切开。每一刀的偏移仍是 0。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (done + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    done = done + chunk;
+  }
+}
+
+deRfun note(long home, string prefix, long addr, long count, string suffix): void {
+  writeErr(home, prefix);
+  writeErrSpan(home, addr, count);
+  writeErr(home, suffix);
+}
+
+/* 标准输出的位置从调用方的字往下加。数据在另一块缓冲里，写不满就按实际个数重抄。 */
+deRfun emit(long home, long addr, long count, long* place): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (done + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    done = done + wrote;
+    *place = *place + wrote;
+  }
+  return 0L;
+}
+
+deRfun stop(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun fail(long home, string text): int {
+  writeErr(home, text);
+  return stop(home, 1L);
+}
+
+/* 长度字在 path()，八位组从 +64 起、隔 8 位。下一次 stat 或 readdir 会盖住。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun sameWord(long addr, long len, string text): long {
+  int raw = length(text);
+  long count = raw;
+  if (len != count) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    long bit = text[index];
+    if (u8(addr + index * 8L) != bit) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 目录项里的 . 和 .. 不能再进去。起点路径即使是 . 也不在这里丢。 */
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 种类 2 是 NAS 目录，4 是设备目录，6 是内存目录。 */
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 参数分类。0 不认识，1 是 -o，2 是 -a，3 是 !，4 是 (，5 是 )。
+   6 到 15 是原语：name path type perm user group size print prune depth。
+   右括号不算表达式的开头。 */
+deRfun token(long addr, long len): long {
+  if (sameWord(addr, len, "!") == 1L) {
+    return 3L;
+  }
+  if (sameWord(addr, len, "(") == 1L) {
+    return 4L;
+  }
+  if (sameWord(addr, len, ")") == 1L) {
+    return 5L;
+  }
+  if (sameWord(addr, len, "-o") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-a") == 1L) {
+    return 2L;
+  }
+  if (sameWord(addr, len, "-name") == 1L) {
+    return 6L;
+  }
+  if (sameWord(addr, len, "-path") == 1L) {
+    return 7L;
+  }
+  if (sameWord(addr, len, "-type") == 1L) {
+    return 8L;
+  }
+  if (sameWord(addr, len, "-perm") == 1L) {
+    return 9L;
+  }
+  if (sameWord(addr, len, "-user") == 1L) {
+    return 10L;
+  }
+  if (sameWord(addr, len, "-group") == 1L) {
+    return 11L;
+  }
+  if (sameWord(addr, len, "-size") == 1L) {
+    return 12L;
+  }
+  if (sameWord(addr, len, "-print") == 1L) {
+    return 13L;
+  }
+  if (sameWord(addr, len, "-prune") == 1L) {
+    return 14L;
+  }
+  if (sameWord(addr, len, "-depth") == 1L) {
+    return 15L;
+  }
+  return 0L;
+}
+
+/* 这一轮明确不做的谓词。只要参数表里有这个词就拒绝，不当成文件名或模式。 */
+deRfun banned(long addr, long len): long {
+  if (sameWord(addr, len, "-fstype") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-inum") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-mtime") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-atime") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-ctime") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-newer") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-links") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-nouser") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-nogroup") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-xdev") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-exec") == 1L) {
+    return 1L;
+  }
+  if (sameWord(addr, len, "-ok") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 方括号集合。index 指着 [。check 为 0 只检查形状，为 1 时看 ch 在不在里面。
+   合法时 *after 落在右方括号后面。返回 1 命中，0 不命中或只是检查通过，-1 不合法。
+   取补只认左方括号后紧跟的未转义感叹号。第一个 ] 若紧跟在 [ 或 ! 后面，是字面。
+   减号左边没有待定的单字节时，它自己是字面，所以区间后面再写减号仍是字面。
+   左边有一个待定字节、右边又是一个字节时做成闭区间。 */
+deRfun bracket(long addr, long len, long index, long ch, long check, long* after): long {
+  long i = index + 1L;
+  if (i >= len) {
+    return -1L;
+  }
+  long comp = 0L;
+  if (u8(addr + i * 8L) == 33L) {
+    comp = 1L;
+    i = i + 1L;
+  }
+  if (i >= len) {
+    return -1L;
+  }
+  long pending = -1L;
+  long hit = 0L;
+  long lead = 1L;
+  long closed = 0L;
+  while (closed == 0L) {
+    if (i >= len) {
+      return -1L;
+    }
+    long raw = u8(addr + i * 8L);
+    if (raw == 92L) {
+      if (i + 1L >= len) {
+        return -1L;
+      }
+      long lit = u8(addr + (i + 1L) * 8L);
+      i = i + 2L;
+      if (pending >= 0L && check == 1L && ch == pending) {
+        hit = 1L;
+      }
+      pending = lit;
+      lead = 0L;
+    } else if (raw == 93L) {
+      if (lead == 1L) {
+        pending = 93L;
+        i = i + 1L;
+        lead = 0L;
+      } else {
+        if (pending >= 0L && check == 1L && ch == pending) {
+          hit = 1L;
+        }
+        i = i + 1L;
+        closed = 1L;
+      }
+    } else if (raw == 45L) {
+      if (pending < 0L) {
+        pending = 45L;
+        i = i + 1L;
+        lead = 0L;
+      } else if (i + 1L >= len) {
+        return -1L;
+      } else if (u8(addr + (i + 1L) * 8L) == 93L) {
+        if (check == 1L && ch == pending) {
+          hit = 1L;
+        }
+        if (check == 1L && ch == 45L) {
+          hit = 1L;
+        }
+        pending = -1L;
+        i = i + 1L;
+        lead = 0L;
+      } else {
+        long hi = 0L;
+        long step = i + 1L;
+        long peek = u8(addr + step * 8L);
+        if (peek == 92L) {
+          if (step + 1L >= len) {
+            return -1L;
+          }
+          hi = u8(addr + (step + 1L) * 8L);
+          i = step + 2L;
+        } else {
+          hi = peek;
+          i = step + 1L;
+        }
+        if (pending > hi) {
+          return -1L;
+        }
+        if (check == 1L && ch >= pending && ch <= hi) {
+          hit = 1L;
+        }
+        pending = -1L;
+        lead = 0L;
+      }
+    } else {
+      if (pending >= 0L && check == 1L && ch == pending) {
+        hit = 1L;
+      }
+      pending = raw;
+      i = i + 1L;
+      lead = 0L;
+    }
+  }
+  *after = i;
+  if (check == 0L) {
+    return 0L;
+  }
+  if (comp == 1L) {
+    if (hit == 1L) {
+      return 0L;
+    }
+    return 1L;
+  }
+  return hit;
+}
+
+/* 1 是整段模式合法，0 是 invalid pattern。星号和问号在括号外不用再检查。 */
+deRfun checkPattern(long addr, long len): long {
+  long i = 0L;
+  while (i < len) {
+    long raw = u8(addr + i * 8L);
+    if (raw == 92L) {
+      if (i + 1L >= len) {
+        return 0L;
+      }
+      i = i + 2L;
+    } else if (raw == 91L) {
+      long after = 0L;
+      if (bracket(addr, len, i, 0L, 0L, &after) < 0L || after <= i) {
+        return 0L;
+      }
+      i = after;
+    } else {
+      i = i + 1L;
+    }
+  }
+  return 1L;
+}
+
+/* 从模式下标吃掉一个原子。1 是这个字节匹配，2 是星号，0 是不匹配，-1 是坏模式。
+   *next 是模式的新下标。星号本身不吃文本。 */
+deRfun eat(long addr, long len, long index, long ch, long* next): long {
+  if (index >= len) {
+    return 0L;
+  }
+  long raw = u8(addr + index * 8L);
+  if (raw == 92L) {
+    if (index + 1L >= len) {
+      return -1L;
+    }
+    long lit = u8(addr + (index + 1L) * 8L);
+    if (lit != ch) {
+      return 0L;
+    }
+    *next = index + 2L;
+    return 1L;
+  }
+  if (raw == 63L) {
+    *next = index + 1L;
+    return 1L;
+  }
+  if (raw == 42L) {
+    *next = index + 1L;
+    return 2L;
+  }
+  if (raw == 91L) {
+    long after = 0L;
+    long hit = bracket(addr, len, index, ch, 1L, &after);
+    if (hit < 0L) {
+      return -1L;
+    }
+    if (after <= index) {
+      return -1L;
+    }
+    *next = after;
+    return hit;
+  }
+  if (raw != ch) {
+    return 0L;
+  }
+  *next = index + 1L;
+  return 1L;
+}
+
+/* 模式要比整段文本。只记住最近一个星号，回溯时让它多吃一个字节。
+   点开头的文本没有特殊规则，星号能吃掉它，也能吃掉斜杠。 */
+deRfun matchGlob(long pat, long patLen, long text, long textLen): long {
+  long pi = 0L;
+  long ti = 0L;
+  long starP = -1L;
+  long starT = -1L;
+  while (ti < textLen) {
+    long next = 0L;
+    long kind = 0L;
+    long ch = u8(text + ti * 8L);
+    if (pi < patLen) {
+      kind = eat(pat, patLen, pi, ch, &next);
+    }
+    if (kind < 0L) {
+      return 0L;
+    }
+    if (kind == 1L) {
+      if (next <= pi) {
+        return 0L;
+      }
+      pi = next;
+      ti = ti + 1L;
+    } else if (kind == 2L) {
+      if (next <= pi) {
+        return 0L;
+      }
+      starP = pi;
+      starT = ti;
+      pi = next;
+    } else if (starP >= 0L) {
+      pi = starP + 1L;
+      starT = starT + 1L;
+      ti = starT;
+    } else {
+      return 0L;
+    }
+  }
+  while (pi < patLen) {
+    if (u8(pat + pi * 8L) != 42L) {
+      break;
+    }
+    pi = pi + 1L;
+  }
+  if (pi == patLen) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* -name 用的最后一段。打印仍用原路径。末尾的斜杠先剥掉，整段都是斜杠时留下一个。 */
+deRfun leaf(long addr, long len, long* outLen): long {
+  long end = len;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  if (end < 1L) {
+    *outLen = 0L;
+    return addr;
+  }
+  long start = end;
+  while (start > 0L && u8(addr + (start - 1L) * 8L) != 47L) {
+    start = start - 1L;
+  }
+  *outLen = end - start;
+  return addr + start * 8L;
+}
+
+/* 十进制非负整数。空串、符号、非数字和有符号 64 位装不下都是失败。 */
+deRfun readDec(long addr, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < len) {
+    long raw = u8(addr + index * 8L);
+    if (raw < 48L || raw > 57L) {
+      return 0L;
+    }
+    long digit = raw - 48L;
+    if (value > 922337203685477580L) {
+      return 0L;
+    }
+    if (value == 922337203685477580L && digit > 7L) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 八进制权限。可以有一个前导减号，表示“这些位都要有”。
+   数字 1 到 4 位，值不能超出低 9 位。成功返回 1。 */
+deRfun readPerm(long addr, long len, long* mode, long* least): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long flag = 0L;
+  if (u8(addr) == 45L) {
+    flag = 1L;
+    index = 1L;
+  }
+  long digits = len - index;
+  if (digits < 1L || digits > 4L) {
+    return 0L;
+  }
+  long value = 0L;
+  while (index < len) {
+    long raw = u8(addr + index * 8L);
+    if (raw < 48L || raw > 55L) {
+      return 0L;
+    }
+    value = value * 8L + (raw - 48L);
+    index = index + 1L;
+  }
+  if (value > 511L) {
+    return 0L;
+  }
+  *mode = value;
+  *least = flag;
+  return 1L;
+}
+
+/* 大小。how 0 相等，1 是加号的大于，2 是减号的小于。scale 0 是 512 字节一块，1 是字节。 */
+deRfun readSize(long addr, long len, long* target, long* how, long* scale): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long op = 0L;
+  long lead = u8(addr);
+  if (lead == 43L) {
+    op = 1L;
+    index = 1L;
+  } else if (lead == 45L) {
+    op = 2L;
+    index = 1L;
+  }
+  if (index >= len) {
+    return 0L;
+  }
+  long end = len;
+  long unit = 0L;
+  long last = u8(addr + (len - 1L) * 8L);
+  if (last == 99L) {
+    unit = 1L;
+    end = len - 1L;
+  }
+  if (end <= index) {
+    return 0L;
+  }
+  long value = 0L;
+  if (readDec(addr + index * 8L, end - index, &value) != 1L) {
+    return 0L;
+  }
+  *target = value;
+  *how = op;
+  *scale = unit;
+  return 1L;
+}
+
+/* 低 9 位里，need 为 1 的位在 bits 上也必须为 1。用乘除，不用位运算。 */
+deRfun hasBits(long bits, long need): long {
+  long mask = 1L;
+  while (mask <= 256L) {
+    if (need / mask % 2L == 1L && bits / mask % 2L == 0L) {
+      return 0L;
+    }
+    mask = mask * 2L;
+  }
+  return 1L;
+}
+
+/* 512 字节一块，向上取整。0 字节是 0 块。除数是常量 512，不会是 0。 */
+deRfun rounded(long size): long {
+  if (size <= 0L) {
+    return 0L;
+  }
+  long whole = size / 512L;
+  long rem = size % 512L;
+  if (rem != 0L) {
+    whole = whole + 1L;
+  }
+  return whole;
+}
+
+/* 节点 4 个字：种类、三个操作数。编号从 1 起，0 留空。
+   1 或，2 与，3 非，4 名字，5 路径模式，6 类型，7 权限，
+   8 属主，9 属组，10 大小，11 打印，12 剪枝，13 深度。
+   运算符栈另用 4 表示左括号，那个 4 不会写成节点。 */
+deRfun make(long home, long nodes, long cap, long* next, long tag, long a, long b, long c): long {
+  long id = *next;
+  if (id < 1L || id > cap) {
+    fail(home, "find: out of memory\n");
+    return 0L;
+  }
+  *next = id + 1L;
+  long base = nodes + id * 256L;
+  memory::store64(tag, base);
+  memory::store64(a, base + 64L);
+  memory::store64(b, base + 128L);
+  memory::store64(c, base + 192L);
+  return id;
+}
+
+deRfun prec(long kind): long {
+  if (kind == 3L) {
+    return 3L;
+  }
+  if (kind == 2L) {
+    return 2L;
+  }
+  if (kind == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun pushOp(long home, long ops, long cap, long* opTop, long kind): void {
+  if (*opTop > cap) {
+    fail(home, "find: out of memory\n");
+    return;
+  }
+  memory::store64(kind, ops + *opTop * 64L);
+  *opTop = *opTop + 1L;
+}
+
+deRfun pushVal(long home, long values, long cap, long* valTop, long id): void {
+  if (*valTop > cap) {
+    fail(home, "find: out of memory\n");
+    return;
+  }
+  memory::store64(id, values + *valTop * 64L);
+  *valTop = *valTop + 1L;
+}
+
+/* 弹出一个运算符，配上值栈上的节点。左括号不能被弹成节点。 */
+deRfun apply(long home, long nodes, long cap, long* next, long ops, long* opTop, long values, long* valTop): void {
+  if (*opTop < 1L) {
+    fail(home, "find: invalid expression\n");
+    return;
+  }
+  *opTop = *opTop - 1L;
+  long kind = memory::load64(ops + *opTop * 64L);
+  if (kind == 3L) {
+    if (*valTop < 1L) {
+      fail(home, "find: invalid expression\n");
+      return;
+    }
+    *valTop = *valTop - 1L;
+    long child = memory::load64(values + *valTop * 64L);
+    long id = make(home, nodes, cap, next, 3L, child, 0L, 0L);
+    pushVal(home, values, cap, valTop, id);
+    return;
+  }
+  if (kind == 1L || kind == 2L) {
+    if (*valTop < 2L) {
+      fail(home, "find: invalid expression\n");
+      return;
+    }
+    *valTop = *valTop - 1L;
+    long right = memory::load64(values + *valTop * 64L);
+    *valTop = *valTop - 1L;
+    long left = memory::load64(values + *valTop * 64L);
+    long id = make(home, nodes, cap, next, kind, left, right, 0L);
+    pushVal(home, values, cap, valTop, id);
+    return;
+  }
+  fail(home, "find: invalid expression\n");
+}
+
+/* 把优先级不低于 minPrec 的运算符做成节点。左括号挡住，不弹。左结合用 >=。 */
+deRfun fold(long home, long nodes, long cap, long* next, long ops, long* opTop, long values, long* valTop, long minPrec): void {
+  while (*opTop > 0L) {
+    long kind = memory::load64(ops + (*opTop - 1L) * 64L);
+    if (kind == 4L) {
+      return;
+    }
+    if (prec(kind) < minPrec) {
+      return;
+    }
+    apply(home, nodes, cap, next, ops, opTop, values, valTop);
+  }
+}
+
+/* 读一个原语。cursor 进来时指着原语自己，出去时已经越过它和它的参数。 */
+deRfun primary(long home, long nodes, long cap, long* next, long* cursor, long end, long* hasPrint, long* depthFirst): long {
+  long at = argPtr(home, *cursor);
+  long len = argLen(home, *cursor);
+  long kind = token(at, len);
+  *cursor = *cursor + 1L;
+  if (kind == 13L) {
+    *hasPrint = 1L;
+    return make(home, nodes, cap, next, 11L, 0L, 0L, 0L);
+  }
+  if (kind == 14L) {
+    return make(home, nodes, cap, next, 12L, 0L, 0L, 0L);
+  }
+  if (kind == 15L) {
+    *depthFirst = 1L;
+    return make(home, nodes, cap, next, 13L, 0L, 0L, 0L);
+  }
+  if (*cursor >= end) {
+    fail(home, "find: invalid expression\n");
+    return 0L;
+  }
+  long arg = argPtr(home, *cursor);
+  long argn = argLen(home, *cursor);
+  *cursor = *cursor + 1L;
+  if (kind == 6L || kind == 7L) {
+    if (checkPattern(arg, argn) != 1L) {
+      fail(home, "find: invalid pattern\n");
+      return 0L;
+    }
+    long tag = 4L;
+    if (kind == 7L) {
+      tag = 5L;
+    }
+    return make(home, nodes, cap, next, tag, arg, argn, 0L);
+  }
+  if (kind == 8L) {
+    if (argn != 1L) {
+      fail(home, "find: invalid type\n");
+      return 0L;
+    }
+    long letter = u8(arg);
+    if (letter != 102L && letter != 100L && letter != 99L && letter != 98L && letter != 112L && letter != 108L) {
+      fail(home, "find: invalid type\n");
+      return 0L;
+    }
+    return make(home, nodes, cap, next, 6L, letter, 0L, 0L);
+  }
+  if (kind == 9L) {
+    long mode = 0L;
+    long least = 0L;
+    if (readPerm(arg, argn, &mode, &least) != 1L) {
+      fail(home, "find: invalid mode\n");
+      return 0L;
+    }
+    return make(home, nodes, cap, next, 7L, mode, least, 0L);
+  }
+  if (kind == 10L) {
+    long who = 0L;
+    if (readDec(arg, argn, &who) != 1L) {
+      fail(home, "find: invalid user\n");
+      return 0L;
+    }
+    return make(home, nodes, cap, next, 8L, who, 0L, 0L);
+  }
+  if (kind == 11L) {
+    long who = 0L;
+    if (readDec(arg, argn, &who) != 1L) {
+      fail(home, "find: invalid group\n");
+      return 0L;
+    }
+    return make(home, nodes, cap, next, 9L, who, 0L, 0L);
+  }
+  if (kind == 12L) {
+    long target = 0L;
+    long how = 0L;
+    long scale = 0L;
+    if (readSize(arg, argn, &target, &how, &scale) != 1L) {
+      fail(home, "find: invalid size\n");
+      return 0L;
+    }
+    return make(home, nodes, cap, next, 10L, target, how, scale);
+  }
+  fail(home, "find: invalid expression\n");
+  return 0L;
+}
+
+/* 调度场。ready 为 1 表示左边已经有一个完整的值，紧接着的原语就是隐含的与。
+   非的优先级最高，所以在压入与之前会先把它收掉。或更低，不会拆开与。
+   没有 -print 时，整棵树先作为一边，再与上打印。这就是先加括号再与。 */
+deRfun compile(long home, long nodes, long cap, long values, long ops, long begin, long end, long* depthFirst): long {
+  long next = 1L;
+  long opTop = 0L;
+  long valTop = 0L;
+  long ready = 0L;
+  long hasPrint = 0L;
+  long cursor = begin;
+  *depthFirst = 0L;
+  while (cursor < end) {
+    long at = argPtr(home, cursor);
+    long len = argLen(home, cursor);
+    long kind = token(at, len);
+    if (kind == 1L) {
+      if (ready == 0L) {
+        fail(home, "find: invalid expression\n");
+        return 0L;
+      }
+      fold(home, nodes, cap, &next, ops, &opTop, values, &valTop, 1L);
+      pushOp(home, ops, cap, &opTop, 1L);
+      ready = 0L;
+      cursor = cursor + 1L;
+    } else if (kind == 2L) {
+      if (ready == 0L) {
+        fail(home, "find: invalid expression\n");
+        return 0L;
+      }
+      fold(home, nodes, cap, &next, ops, &opTop, values, &valTop, 2L);
+      pushOp(home, ops, cap, &opTop, 2L);
+      ready = 0L;
+      cursor = cursor + 1L;
+    } else if (kind == 3L) {
+      if (ready == 1L) {
+        fold(home, nodes, cap, &next, ops, &opTop, values, &valTop, 2L);
+        pushOp(home, ops, cap, &opTop, 2L);
+      }
+      pushOp(home, ops, cap, &opTop, 3L);
+      ready = 0L;
+      cursor = cursor + 1L;
+    } else if (kind == 4L) {
+      if (ready == 1L) {
+        fold(home, nodes, cap, &next, ops, &opTop, values, &valTop, 2L);
+        pushOp(home, ops, cap, &opTop, 2L);
+      }
+      pushOp(home, ops, cap, &opTop, 4L);
+      ready = 0L;
+      cursor = cursor + 1L;
+    } else if (kind == 5L) {
+      if (ready == 0L) {
+        fail(home, "find: invalid expression\n");
+        return 0L;
+      }
+      while (opTop > 0L) {
+        long top = memory::load64(ops + (opTop - 1L) * 64L);
+        if (top == 4L) {
+          break;
+        }
+        apply(home, nodes, cap, &next, ops, &opTop, values, &valTop);
+      }
+      if (opTop < 1L) {
+        fail(home, "find: invalid expression\n");
+        return 0L;
+      }
+      long top = memory::load64(ops + (opTop - 1L) * 64L);
+      if (top != 4L) {
+        fail(home, "find: invalid expression\n");
+        return 0L;
+      }
+      opTop = opTop - 1L;
+      ready = 1L;
+      cursor = cursor + 1L;
+    } else if (kind >= 6L) {
+      if (ready == 1L) {
+        fold(home, nodes, cap, &next, ops, &opTop, values, &valTop, 2L);
+        pushOp(home, ops, cap, &opTop, 2L);
+      }
+      long id = primary(home, nodes, cap, &next, &cursor, end, &hasPrint, depthFirst);
+      pushVal(home, values, cap, &valTop, id);
+      ready = 1L;
+    } else {
+      fail(home, "find: invalid expression\n");
+      return 0L;
+    }
+  }
+  if (ready == 0L) {
+    fail(home, "find: invalid expression\n");
+    return 0L;
+  }
+  while (opTop > 0L) {
+    long top = memory::load64(ops + (opTop - 1L) * 64L);
+    if (top == 4L) {
+      fail(home, "find: invalid expression\n");
+      return 0L;
+    }
+    apply(home, nodes, cap, &next, ops, &opTop, values, &valTop);
+  }
+  if (valTop != 1L) {
+    fail(home, "find: invalid expression\n");
+    return 0L;
+  }
+  long root = memory::load64(values);
+  if (hasPrint == 0L) {
+    long printed = make(home, nodes, cap, &next, 11L, 0L, 0L, 0L);
+    root = make(home, nodes, cap, &next, 2L, root, printed, 0L);
+  }
+  return root;
+}
+
+/* 一帧 16 个字。0 长度，1 阶段，2 目录下标，3 剪枝，4 种类，5 大小，
+   6 权限，7 属主，8 属组，9 深度，10 是不是目录。阶段 0 刚到达，
+   1 正在列孩子，2 是 -depth 时孩子走完再求值。 */
+deRfun boot(long frame, long len, long depth): void {
+  memory::store64(len, frame);
+  memory::store64(0L, frame + 64L);
+  memory::store64(0L, frame + 128L);
+  memory::store64(0L, frame + 192L);
+  memory::store64(depth, frame + 576L);
+  memory::store64(0L, frame + 640L);
+}
+
+/* 父路径正好是 /，或已经以 / 结尾，就直接接名字。否则中间加一个 /。
+   不在名字后面再加斜杠。拼出来超过 8192 个八位组就失败。 */
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  if (nameLen < 1L) {
+    return -1L;
+  }
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* -depth 时这一层还要等孩子走完再求值，所以阶段改成 2。否则这一层结束。 */
+deRfun finishDir(long frame, long depthFirst, long* sp): void {
+  if (depthFirst == 1L) {
+    memory::store64(2L, frame + 64L);
+  } else {
+    *sp = *sp - 1L;
+  }
+}
+
+/* 求值。与和或短路，被跳过的 -prune 不会把剪枝字设上。
+   -print 的副作用在它真的被求值时发生。非会先求里面的式子，剪枝已经记下。 */
+deRfun judge(long home, long nodes, long id, long frame, long path, long pathLen, long* outAt): long {
+  long base = nodes + id * 256L;
+  long tag = memory::load64(base);
+  long a = memory::load64(base + 64L);
+  long b = memory::load64(base + 128L);
+  long c = memory::load64(base + 192L);
+  if (tag == 1L) {
+    if (judge(home, nodes, a, frame, path, pathLen, outAt) != 0L) {
+      return 1L;
+    }
+    return judge(home, nodes, b, frame, path, pathLen, outAt);
+  }
+  if (tag == 2L) {
+    if (judge(home, nodes, a, frame, path, pathLen, outAt) == 0L) {
+      return 0L;
+    }
+    return judge(home, nodes, b, frame, path, pathLen, outAt);
+  }
+  if (tag == 3L) {
+    if (judge(home, nodes, a, frame, path, pathLen, outAt) == 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (tag == 4L) {
+    long leafLen = 0L;
+    long leafAt = leaf(path, pathLen, &leafLen);
+    if (matchGlob(a, b, leafAt, leafLen) == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (tag == 5L) {
+    if (matchGlob(a, b, path, pathLen) == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (tag == 6L) {
+    long kind = memory::load64(frame + 256L);
+    if (a == 102L) {
+      if (kind == 1L || kind == 5L) {
+        return 1L;
+      }
+      return 0L;
+    }
+    if (a == 100L) {
+      return isDir(kind);
+    }
+    if (a == 99L) {
+      if (kind == 3L) {
+        return 1L;
+      }
+      return 0L;
+    }
+    return 0L;
+  }
+  if (tag == 7L) {
+    long mode = memory::load64(frame + 384L);
+    long bits = mode % 512L;
+    if (bits < 0L) {
+      bits = bits + 512L;
+    }
+    if (b == 1L) {
+      if (hasBits(bits, a) == 1L) {
+        return 1L;
+      }
+      return 0L;
+    }
+    if (bits == a) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (tag == 8L) {
+    long uid = memory::load64(frame + 448L);
+    if (uid == a) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (tag == 9L) {
+    long gid = memory::load64(frame + 512L);
+    if (gid == a) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (tag == 10L) {
+    long size = memory::load64(frame + 320L);
+    long value = size;
+    if (c == 0L) {
+      value = rounded(size);
+    } else if (value < 0L) {
+      value = 0L;
+    }
+    if (b == 1L) {
+      if (value > a) {
+        return 1L;
+      }
+      return 0L;
+    }
+    if (b == 2L) {
+      if (value < a) {
+        return 1L;
+      }
+      return 0L;
+    }
+    if (value == a) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (tag == 11L) {
+    if (pathLen > 0L) {
+      if (emit(home, path, pathLen, outAt) != 0L) {
+        fail(home, "find: write error\n");
+        return 0L;
+      }
+    }
+    memory::storeOctet(10L, obr::proc::bytes(home));
+    if (obr::proc::write(home, 1L, *outAt, 1L) != 0L) {
+      fail(home, "find: write error\n");
+      return 0L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote != 1L) {
+      fail(home, "find: write error\n");
+      return 0L;
+    }
+    *outAt = *outAt + 1L;
+    return 1L;
+  }
+  if (tag == 12L) {
+    memory::store64(1L, frame + 192L);
+    return 1L;
+  }
+  if (tag == 13L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 一个起点。路径槽每帧 65536 位，即 8192 个八位组。帧距 1024 位。
+   栈顶从 0 起，最深是下标 31，对应第 32 层。再深的名字不压栈。
+   没有 -depth 时先求值这一层，剪枝字仍是 0 才列孩子。
+   有 -depth 时先把孩子都走完，再求值；那时剪枝已经挡不住。 */
+deRfun visit(long home, long nodes, long root, long depthFirst, long paths, long frames, long names, long addr, long len, long* outAt, long* failed): void {
+  if (len < 0L || len > 8192L) {
+    writeErr(home, "find: path too long\n");
+    *failed = 1L;
+    return;
+  }
+  copySpan(addr, paths, len);
+  boot(frames, len, 1L);
+  long sp = 0L;
+  while (sp >= 0L) {
+    long frame = frames + sp * 1024L;
+    long path = paths + sp * 65536L;
+    long pathLen = memory::load64(frame);
+    long phase = memory::load64(frame + 64L);
+    long depth = memory::load64(frame + 576L);
+    if (phase == 0L) {
+      plant(home, path, pathLen);
+      if (obr::proc::stat(home) != 0L) {
+        note(home, "find: ", path, pathLen, ": No such file or directory\n");
+        *failed = 1L;
+        sp = sp - 1L;
+      } else {
+        long kind = obr::proc::slot(home, 128L);
+        long size = obr::proc::slot(home, 192L);
+        long mode = obr::proc::slot(home, 256L);
+        long uid = obr::proc::slot(home, 320L);
+        long gid = obr::proc::slot(home, 384L);
+        memory::store64(kind, frame + 256L);
+        memory::store64(size, frame + 320L);
+        memory::store64(mode, frame + 384L);
+        memory::store64(uid, frame + 448L);
+        memory::store64(gid, frame + 512L);
+        long dir = isDir(kind);
+        memory::store64(dir, frame + 640L);
+        memory::store64(0L, frame + 192L);
+        if (depthFirst == 1L && dir == 1L) {
+          memory::store64(1L, frame + 64L);
+          memory::store64(0L, frame + 128L);
+        } else {
+          judge(home, nodes, root, frame, path, pathLen, outAt);
+          long pruned = memory::load64(frame + 192L);
+          if (depthFirst == 0L && dir == 1L && pruned == 0L) {
+            memory::store64(1L, frame + 64L);
+            memory::store64(0L, frame + 128L);
+          } else {
+            sp = sp - 1L;
+          }
+        }
+      }
+    } else if (phase == 2L) {
+      memory::store64(0L, frame + 192L);
+      judge(home, nodes, root, frame, path, pathLen, outAt);
+      sp = sp - 1L;
+    } else if (phase == 1L) {
+      plant(home, path, pathLen);
+      long dent = memory::load64(frame + 128L);
+      long listed = obr::proc::readdir(home, dent, 512L);
+      if (listed == 2L) {
+        finishDir(frame, depthFirst, &sp);
+      } else if (listed != 0L) {
+        note(home, "find: ", path, pathLen, ": cannot read\n");
+        *failed = 1L;
+        finishDir(frame, depthFirst, &sp);
+      } else {
+        long nameLen = obr::proc::slot(home, 256L);
+        if (nameLen == 0L) {
+          finishDir(frame, depthFirst, &sp);
+        } else if (nameLen < 0L || nameLen > 512L) {
+          note(home, "find: ", path, pathLen, ": cannot read\n");
+          *failed = 1L;
+          finishDir(frame, depthFirst, &sp);
+        } else {
+          copySpan(obr::proc::bytes(home), names, nameLen);
+          memory::store64(dent + 1L, frame + 128L);
+          if (isDot(names, nameLen) == 0L) {
+            if (depth >= 32L) {
+              writeErr(home, "find: too deep\n");
+              *failed = 1L;
+              finishDir(frame, depthFirst, &sp);
+            } else {
+              long child = sp + 1L;
+              long childPath = paths + child * 65536L;
+              long childLen = joinPath(path, pathLen, names, nameLen, childPath);
+              if (childLen < 0L) {
+                writeErr(home, "find: path too long\n");
+                *failed = 1L;
+              } else {
+                boot(frames + child * 1024L, childLen, depth + 1L);
+                sp = child;
+              }
+            }
+          }
+        }
+      }
+    } else {
+      sp = sp - 1L;
+    }
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  while (index < count) {
+    if (banned(argPtr(home, index), argLen(home, index)) == 1L) {
+      return fail(home, "find: invalid predicate\n");
+    }
+    index = index + 1L;
+  }
+  /* 选项只在第一条路径之前。表达式一开始，后面的词就不再当路径。 */
+  long opt = 1L;
+  long pathAt = -1L;
+  long pathN = 0L;
+  long exprAt = -1L;
+  index = 1L;
+  long scanning = 1L;
+  while (index < count && scanning == 1L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long kind = token(at, len);
+    if (opt == 1L && len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      opt = 0L;
+      index = index + 1L;
+    } else if (opt == 1L && (sameWord(at, len, "-H") == 1L || sameWord(at, len, "-L") == 1L)) {
+      index = index + 1L;
+    } else if (kind != 0L && kind != 5L) {
+      exprAt = index;
+      scanning = 0L;
+    } else if (len == 1L && u8(at) == 45L) {
+      return fail(home, "find: invalid expression\n");
+    } else if (opt == 1L && len >= 2L && u8(at) == 45L) {
+      return fail(home, "find: invalid option\n");
+    } else if (sameWord(at, len, "-H") == 1L || sameWord(at, len, "-L") == 1L) {
+      return fail(home, "find: invalid option\n");
+    } else {
+      if (pathN == 0L) {
+        pathAt = index;
+      }
+      pathN = pathN + 1L;
+      opt = 0L;
+      index = index + 1L;
+    }
+  }
+  /* 节点、值栈、运算符栈按参数个数留出余量。路径 32 帧，名字缓冲 512 个八位组。
+     alloc 的长度是位，不是八位组。 */
+  long cap = count * 4L + 8L;
+  if (cap < 16L) {
+    cap = 16L;
+  }
+  long nodes = obr::proc::alloc(home, (cap + 1L) * 256L);
+  long values = obr::proc::alloc(home, (cap + 1L) * 64L);
+  long ops = obr::proc::alloc(home, (cap + 1L) * 64L);
+  long paths = obr::proc::alloc(home, 32L * 65536L);
+  long frames = obr::proc::alloc(home, 32L * 1024L);
+  long names = obr::proc::alloc(home, 512L * 8L);
+  if (nodes == 0L || values == 0L || ops == 0L || paths == 0L || frames == 0L || names == 0L) {
+    return fail(home, "find: out of memory\n");
+  }
+  long depthFirst = 0L;
+  long root = 0L;
+  if (exprAt < 0L) {
+    long next = 1L;
+    root = make(home, nodes, cap, &next, 11L, 0L, 0L, 0L);
+  } else {
+    root = compile(home, nodes, cap, values, ops, exprAt, count, &depthFirst);
+  }
+  long outAt = 0L;
+  long failed = 0L;
+  if (pathN == 0L) {
+    memory::storeOctet(46L, names);
+    visit(home, nodes, root, depthFirst, paths, frames, names, names, 1L, &outAt, &failed);
+  } else {
+    long cursor = pathAt;
+    long pathEnd = count;
+    if (exprAt >= 0L) {
+      pathEnd = exprAt;
+    }
+    while (cursor < pathEnd) {
+      visit(home, nodes, root, depthFirst, paths, frames, names, argPtr(home, cursor), argLen(home, cursor), &outAt, &failed);
+      cursor = cursor + 1L;
+    }
+  }
+  if (failed != 0L) {
+    return stop(home, 1L);
+  }
+  return stop(home, 0L);
+}

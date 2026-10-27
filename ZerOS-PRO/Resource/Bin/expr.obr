@@ -1,0 +1,512 @@
+/* expr 的选定行为。只做有符号 64 位整数，从下标 1 起把每个参数当成一个词。
+   没有参数写 expr: missing operand，退出 2。
+   整数可以有一个前导加号或减号，后面全是十进制数字。前导 0 仍是十进制，不当时八进制。
+   单独一个加号或减号是一元运算符，右结合，优先级高于乘除。
+   乘、除、取余是 *、/、% ，乘号就是一个参数星号。三者左结合，优先级高于加减。
+   二元加和减左结合，优先级高于比较。
+   比较只在最外层出现一次，两边都是加减表达式。运算符是 =、!=、<、<=、>、>=。
+   比较得到 1 或 0。圆括号是单独的参数 ( 和 )，括号里可以再写比较。
+   整数除法和取余向 0 取整，余数的符号跟被除数走。除数或模数是 0 时不真的去除，
+   写 expr: division by zero，退出 2。
+   词对不上、括号不配、运算符缺操作数、比较串成一串、以及结果放不进
+   有符号 64 位，都写 expr: invalid expression，退出 2。
+   有符号最小值除以 -1 或再取负，也是非法表达式。
+   不做字符串比较，不认 match、冒号、| 和 &。
+   成功时把十进制结果写到标准输出并加换行。数值 0 退出 1，其余退出 0。
+   整数结果不会是空串。写失败写 expr: write error，退出 2。
+   诊断写描述符 2，偏移从 0。一次写出最多 4096 个八位组。
+   描述符 0 不关闭。main 经 finish 调 exit。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 字节已经在读写区开头。文件偏移从 0 起。写不满就把剩下的挪回开头。 */
+deRfun writeReady(long home, long count): long {
+  long pending = count;
+  long place = 0L;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, place, chunk) != 0L) {
+      writeErr(home, "expr: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "expr: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    place = place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 2 的 62 次方。每一项都小于 1048576，pie 才不会把立即数当成数据地址再加一槽。 */
+deRfun two62(): long {
+  return 65536L * 65536L * 65536L * 16384L;
+}
+
+deRfun maxInt(): long {
+  long hi = two62();
+  return hi - 1L + hi;
+}
+
+/* 有符号最小值没有对应的正数字面量，用 2 的 62 次方再取负。 */
+deRfun minInt(): long {
+  long hi = two62();
+  return -hi - hi;
+}
+
+deRfun maxTen(): long {
+  return maxInt() / 10L;
+}
+
+deRfun argIs(long home, long index, string text): long {
+  int raw = length(text);
+  long need = raw;
+  if (argLen(home, index) != need) {
+    return 0L;
+  }
+  long at = argPtr(home, index);
+  int cursor = 0;
+  while (cursor < raw) {
+    long bit = text[cursor];
+    long pos = cursor;
+    if (u8(at + pos * 8L) != bit) {
+      return 0L;
+    }
+    cursor = cursor + 1;
+  }
+  return 1L;
+}
+
+/* 幅度最大到 2 的 63 次方，这样负的最小值进得去，再大的在乘之前就拒绝。 */
+deRfun parseNum(long addr, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long neg = 0L;
+  long first = u8(addr);
+  if (first == 43L || first == 45L) {
+    if (first == 45L) {
+      neg = 1L;
+    }
+    index = 1L;
+  }
+  if (index >= len || len - index > 19L) {
+    return 0L;
+  }
+  long value = 0L;
+  while (index < len) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    digit = digit - 48L;
+    if (value > maxTen()) {
+      return 0L;
+    }
+    if (value == maxTen() && digit > 8L) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  if (neg == 0L && value > maxInt()) {
+    return 0L;
+  }
+  if (neg == 1L) {
+    value = 0L - value;
+  }
+  if (value > maxInt() || value < minInt()) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 超出有符号 64 位就把 *fault 记成 1。调用方不再使用返回值。 */
+deRfun keep(long value, long* fault): long {
+  if (value > maxInt() || value < minInt()) {
+    *fault = 1L;
+    return 0L;
+  }
+  return value;
+}
+
+/* 1 是 =，2 是 !=，3 是 <，4 是 <=，5 是 >，6 是 >=。不是比较就返回 0。 */
+deRfun relOp(long home, long index, long count): long {
+  if (index >= count) {
+    return 0L;
+  }
+  if (argIs(home, index, "!=") == 1L) {
+    return 2L;
+  }
+  if (argIs(home, index, "<=") == 1L) {
+    return 4L;
+  }
+  if (argIs(home, index, ">=") == 1L) {
+    return 6L;
+  }
+  if (argIs(home, index, "=") == 1L) {
+    return 1L;
+  }
+  if (argIs(home, index, "<") == 1L) {
+    return 3L;
+  }
+  if (argIs(home, index, ">") == 1L) {
+    return 5L;
+  }
+  return 0L;
+}
+
+deRfun addOp(long home, long index, long count): long {
+  if (index >= count) {
+    return 0L;
+  }
+  if (argIs(home, index, "+") == 1L) {
+    return 1L;
+  }
+  if (argIs(home, index, "-") == 1L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+deRfun mulOp(long home, long index, long count): long {
+  if (index >= count) {
+    return 0L;
+  }
+  if (argIs(home, index, "*") == 1L) {
+    return 1L;
+  }
+  if (argIs(home, index, "/") == 1L) {
+    return 2L;
+  }
+  if (argIs(home, index, "%") == 1L) {
+    return 3L;
+  }
+  return 0L;
+}
+
+deRfun compare(long op, long left, long right): long {
+  if (op == 1L) {
+    if (left == right) {
+      return 1L;
+    }
+  }
+  if (op == 2L) {
+    if (left != right) {
+      return 1L;
+    }
+  }
+  if (op == 3L) {
+    if (left < right) {
+      return 1L;
+    }
+  }
+  if (op == 4L) {
+    if (left <= right) {
+      return 1L;
+    }
+  }
+  if (op == 5L) {
+    if (left > right) {
+      return 1L;
+    }
+  }
+  if (op == 6L) {
+    if (left >= right) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun applyAdd(long op, long left, long right, long* fault): long {
+  long value = left + right;
+  if (op == 2L) {
+    value = left - right;
+  }
+  return keep(value, fault);
+}
+
+/* 除和取余先看除数。最小值除以 -1 放不进 64 位，取余则是 0。都不真的去除。 */
+deRfun applyMul(long op, long left, long right, long* fault): long {
+  if (op == 1L) {
+    return keep(left * right, fault);
+  }
+  if (right == 0L) {
+    *fault = 2L;
+    return 0L;
+  }
+  if (left == minInt() && right == -1L) {
+    if (op == 2L) {
+      *fault = 1L;
+      return 0L;
+    }
+    return 0L;
+  }
+  if (op == 2L) {
+    return keep(left / right, fault);
+  }
+  return keep(left % right, fault);
+}
+
+deRfun parsePrimary(long home, long* index, long count, long* fault): long {
+  if (*fault != 0L) {
+    return 0L;
+  }
+  if (*index >= count) {
+    *fault = 1L;
+    return 0L;
+  }
+  if (argIs(home, *index, "(") == 1L) {
+    *index = *index + 1L;
+    long value = parseExpr(home, index, count, fault);
+    if (*fault != 0L) {
+      return 0L;
+    }
+    if (*index >= count || argIs(home, *index, ")") == 0L) {
+      *fault = 1L;
+      return 0L;
+    }
+    *index = *index + 1L;
+    return value;
+  }
+  long value = 0L;
+  if (parseNum(argPtr(home, *index), argLen(home, *index), &value) == 0L) {
+    *fault = 1L;
+    return 0L;
+  }
+  *index = *index + 1L;
+  return value;
+}
+
+deRfun parseUnary(long home, long* index, long count, long* fault): long {
+  if (*fault != 0L) {
+    return 0L;
+  }
+  if (*index < count && argIs(home, *index, "+") == 1L) {
+    *index = *index + 1L;
+    return parseUnary(home, index, count, fault);
+  }
+  if (*index < count && argIs(home, *index, "-") == 1L) {
+    *index = *index + 1L;
+    long value = parseUnary(home, index, count, fault);
+    if (*fault != 0L) {
+      return 0L;
+    }
+    if (value == minInt()) {
+      *fault = 1L;
+      return 0L;
+    }
+    return 0L - value;
+  }
+  return parsePrimary(home, index, count, fault);
+}
+
+deRfun parseMul(long home, long* index, long count, long* fault): long {
+  if (*fault != 0L) {
+    return 0L;
+  }
+  long left = parseUnary(home, index, count, fault);
+  if (*fault != 0L) {
+    return 0L;
+  }
+  long going = 1L;
+  while (going == 1L) {
+    long op = mulOp(home, *index, count);
+    if (op == 0L) {
+      going = 0L;
+    } else {
+      *index = *index + 1L;
+      long right = parseUnary(home, index, count, fault);
+      if (*fault != 0L) {
+        return 0L;
+      }
+      left = applyMul(op, left, right, fault);
+      if (*fault != 0L) {
+        return 0L;
+      }
+    }
+  }
+  return left;
+}
+
+deRfun parseAdd(long home, long* index, long count, long* fault): long {
+  if (*fault != 0L) {
+    return 0L;
+  }
+  long left = parseMul(home, index, count, fault);
+  if (*fault != 0L) {
+    return 0L;
+  }
+  long going = 1L;
+  while (going == 1L) {
+    long op = addOp(home, *index, count);
+    if (op == 0L) {
+      going = 0L;
+    } else {
+      *index = *index + 1L;
+      long right = parseMul(home, index, count, fault);
+      if (*fault != 0L) {
+        return 0L;
+      }
+      left = applyAdd(op, left, right, fault);
+      if (*fault != 0L) {
+        return 0L;
+      }
+    }
+  }
+  return left;
+}
+
+/* 比较最多一次。右边仍是完整的加减表达式，所以 1 + 2 = 3 * 4 先算两边。 */
+deRfun parseExpr(long home, long* index, long count, long* fault): long {
+  if (*fault != 0L) {
+    return 0L;
+  }
+  long left = parseAdd(home, index, count, fault);
+  if (*fault != 0L) {
+    return 0L;
+  }
+  long op = relOp(home, *index, count);
+  if (op != 0L) {
+    *index = *index + 1L;
+    long right = parseAdd(home, index, count, fault);
+    if (*fault != 0L) {
+      return 0L;
+    }
+    left = compare(op, left, right);
+  }
+  return left;
+}
+
+/* 最小值单独写成十进制。其余先取绝对值，再从高位写。失败返回 1。 */
+deRfun printValue(long home, long value): long {
+  long buf = obr::proc::bytes(home);
+  long n = 0L;
+  if (value == minInt()) {
+    n = putText(buf, 0L, "-9223372036854775808");
+  } else {
+    long neg = 0L;
+    long mag = value;
+    if (value < 0L) {
+      neg = 1L;
+      mag = 0L - value;
+    }
+    if (neg == 1L) {
+      memory::storeOctet(45L, buf);
+      n = 1L;
+    }
+    if (mag == 0L) {
+      memory::storeOctet(48L, buf + n * 8L);
+      n = n + 1L;
+    } else {
+      long power = 1L;
+      long probe = mag;
+      while (probe > 9L) {
+        probe = probe / 10L;
+        power = power * 10L;
+      }
+      while (power > 0L) {
+        long digit = mag / power;
+        memory::storeOctet(48L + digit, buf + n * 8L);
+        n = n + 1L;
+        mag = mag % power;
+        power = power / 10L;
+      }
+    }
+  }
+  memory::storeOctet(10L, buf + n * 8L);
+  n = n + 1L;
+  return writeReady(home, n);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count < 2L) {
+    writeErr(home, "expr: missing operand\n");
+    return finish(home, 2L);
+  }
+  long index = 1L;
+  long fault = 0L;
+  long value = parseExpr(home, &index, count, &fault);
+  if (fault == 0L && index != count) {
+    fault = 1L;
+  }
+  if (fault == 2L) {
+    writeErr(home, "expr: division by zero\n");
+    return finish(home, 2L);
+  }
+  if (fault != 0L) {
+    writeErr(home, "expr: invalid expression\n");
+    return finish(home, 2L);
+  }
+  if (printValue(home, value) != 0L) {
+    return finish(home, 2L);
+  }
+  if (value == 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

@@ -1,0 +1,929 @@
+/* POSIX.1-2017 cp 的本系统选定。
+   形式是 cp [-fipR] 源... 目标。下标 0 是程序名，从 1 起扫。
+   -- 结束选项。第一个不是选项的参数也结束选项，单独一个 - 是文件名。
+   短选项可以叠在一起。-r 与 -R 都是递归。-p 在复制后按源的模式和属主
+   调用 chmod、chown，不改时间，本系统没有时间戳服务。
+   -f 与 -i 后写的生效，并且互相清掉。-fi 询问，-if 不询问。
+   -H -L -P 接受但无效果，没有符号链接。
+   别的字母，以及 -h、--help，写 cp: invalid option，立刻退出 1。
+
+   少于两个操作数写 cp: missing operand，退出 1。
+   多个源时目标必须已经是目录，否则写 cp: 路径: not a directory
+   或 No such file or directory，退出 1，一个都不复制。
+   目标以斜杠结尾时也必须是目录。源以斜杠结尾却不是目录，同样拒绝。
+   没有 -R 又遇到目录：cp: 路径: is a directory，继续别的源，最终 1。
+   种类 1 和 5 当文件复制。3 不复制，写 cannot copy。2、4、6 当目录。
+
+   目标已是目录时，新路径是目标加上源的最后一段。否则目标自己就是新路径。
+   先把两边收成可比的路径：相对路径拼上当前目录，再去掉 .、.. 和重复斜杠。
+   文件两边相同就写 cp: 路径: same file，不打开写出，避免截断正在读的源。
+   目录两边相同就写 cannot copy a directory into itself，也不创建。
+   递归时，子项收完等于这次的目标目录就跳过，避免把刚建出来的目录再读进去。
+   拿不到当前目录时，只按收过的原文比较。
+
+   -i 只在目标已存在、并且正要覆盖文件时询问。向描述符 2 写
+   cp: overwrite 路径? 再加一个空格。从描述符 0 读到换行或 512 个八位组，
+   只认第一个：y 或 Y 才覆盖。没有字节、别的回答，都跳过，不算失败。
+   读失败写 cp: read error，立刻退出 1。偏移一直累加，不关闭描述符 0。
+
+   打开标志 0 是读，1 是写并截断。成功的描述符立刻从 slot 192 抄走。
+   只关闭大于 2 的描述符。-f 时写出打开失败，并且目标不是目录，就先 unlink
+   再打开一次。打开结果是 4 表示目录，不删除。
+   打不开或 stat 失败写 cp: 路径: No such file or directory，继续，最终 1。
+   读或写数据失败写 cp: read error 或 cp: write error，立刻退出 1。
+   一次最多 4096 个八位组。-p 失败写 cannot preserve，数据留下，继续。
+
+   readdir 下标从 0 起，容量 512。返回 2，或名字长度 0，都是列完。
+   跳过 . 和 ..。这里不在列目录时删除条目，所以看完一条就把下标加一。
+   层数从操作数算第 1 层，超过 32 写 cp: too deep。
+   拼出来超过 8192 写 cp: path too long。
+   同一条源路径再走进去写 directory loop。
+   分配单位是位。失败写 cp: out of memory，退出 1。
+   结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun note(long home, long addr, long count, string suffix): void {
+  writeErr(home, "cp: ");
+  if (count > 0L) {
+    writeSpan(home, addr, count);
+  }
+  writeErr(home, suffix);
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun trimEnd(long addr, long count): long {
+  long end = count;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  return end;
+}
+
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 2 是目录，4 和 6 也是目录。1 和 5 是文件，3 是字符设备。 */
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (nameLen < 1L || total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 最后一段。末尾斜杠先拿掉。整段都是斜杠时长度为 0。 */
+deRfun baseOf(long addr, long count, long* at, long* len): void {
+  long end = trimEnd(addr, count);
+  long start = end;
+  while (start > 0L && u8(addr + (start - 1L) * 8L) != 47L) {
+    start = start - 1L;
+  }
+  *at = addr + start * 8L;
+  *len = end - start;
+}
+
+deRfun collapse(long src, long srcLen, long dest): long {
+  long absolute = 0L;
+  long out = 0L;
+  if (srcLen > 0L && u8(src) == 47L) {
+    absolute = 1L;
+    memory::storeOctet(47L, dest);
+    out = 1L;
+  }
+  long index = 0L;
+  while (index < srcLen) {
+    while (index < srcLen && u8(src + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index < srcLen) {
+      long start = index;
+      while (index < srcLen && u8(src + index * 8L) != 47L) {
+        index = index + 1L;
+      }
+      long n = index - start;
+      long kind = 0L;
+      if (n == 1L && u8(src + start * 8L) == 46L) {
+        kind = 1L;
+      }
+      if (n == 2L && u8(src + start * 8L) == 46L && u8(src + (start + 1L) * 8L) == 46L) {
+        kind = 2L;
+      }
+      if (kind == 2L && absolute == 1L) {
+        if (out > 1L) {
+          long p = out - 1L;
+          while (p > 0L && u8(dest + p * 8L) != 47L) {
+            p = p - 1L;
+          }
+          if (p == 0L) {
+            out = 1L;
+          } else {
+            out = p;
+          }
+        }
+      } else if (kind == 2L && out == 0L) {
+        memory::storeOctet(46L, dest);
+        memory::storeOctet(46L, dest + 8L);
+        out = 2L;
+      } else if (kind == 2L) {
+        long slash = -1L;
+        long p = out - 1L;
+        while (p > 0L) {
+          if (u8(dest + p * 8L) == 47L) {
+            slash = p;
+            p = 0L;
+          } else {
+            p = p - 1L;
+          }
+        }
+        long comp = 0L;
+        if (slash >= 0L) {
+          comp = slash + 1L;
+        }
+        long clen = out - comp;
+        long keep = 0L;
+        if (clen == 2L && u8(dest + comp * 8L) == 46L && u8(dest + (comp + 1L) * 8L) == 46L) {
+          keep = 1L;
+        }
+        if (keep == 1L) {
+          if (out + 3L > 8192L) {
+            return -1L;
+          }
+          memory::storeOctet(47L, dest + out * 8L);
+          memory::storeOctet(46L, dest + (out + 1L) * 8L);
+          memory::storeOctet(46L, dest + (out + 2L) * 8L);
+          out = out + 3L;
+        } else if (slash < 0L) {
+          out = 0L;
+        } else {
+          out = slash;
+        }
+      } else if (kind == 0L) {
+        long extra = n;
+        long lead = 0L;
+        if (out != 0L && (absolute != 1L || out != 1L)) {
+          lead = 1L;
+          extra = n + 1L;
+        }
+        if (n < 1L || out + extra > 8192L) {
+          return -1L;
+        }
+        if (lead == 1L) {
+          memory::storeOctet(47L, dest + out * 8L);
+          out = out + 1L;
+        }
+        copySpan(src + start * 8L, dest + out * 8L, n);
+        out = out + n;
+      }
+    }
+  }
+  if (out == 0L) {
+    memory::storeOctet(46L, dest);
+    return 1L;
+  }
+  return out;
+}
+
+deRfun resolve(long cwd, long cwdLen, long path, long pathLen, long scratch, long dest): long {
+  if (pathLen < 1L || pathLen > 8192L) {
+    return -1L;
+  }
+  long absLen = 0L;
+  if (cwdLen < 1L || u8(path) == 47L) {
+    copySpan(path, scratch, pathLen);
+    absLen = pathLen;
+  } else {
+    absLen = joinPath(cwd, cwdLen, path, pathLen, scratch);
+    if (absLen < 0L) {
+      return -1L;
+    }
+  }
+  return collapse(scratch, absLen, dest);
+}
+
+/* work：+704 当前目录，+768 它的长度，+832 草稿，+896 与 +960 是两条折好的路径。 */
+deRfun pathsSame(long work, long a, long aLen, long b, long bLen): long {
+  long cwd = memory::load64(work + 704L);
+  long cwdLen = memory::load64(work + 768L);
+  long scratch = memory::load64(work + 832L);
+  long foldA = memory::load64(work + 896L);
+  long foldB = memory::load64(work + 960L);
+  long na = resolve(cwd, cwdLen, a, aLen, scratch, foldA);
+  long nb = resolve(cwd, cwdLen, b, bLen, scratch, foldB);
+  if (na >= 0L && nb >= 0L) {
+    return sameSpan(foldA, na, foldB, nb);
+  }
+  return sameSpan(a, trimEnd(a, aLen), b, trimEnd(b, bLen));
+}
+
+deRfun spanStep(long count): long {
+  long step = 64L + count * 8L;
+  long rem = step % 64L;
+  if (rem != 0L) {
+    step = step + (64L - rem);
+  }
+  return step;
+}
+
+deRfun seen(long base, long addr, long count): long {
+  long total = memory::load64(base);
+  long cursor = 128L;
+  long index = 0L;
+  while (index < total) {
+    long len = memory::load64(base + cursor);
+    if (sameSpan(base + cursor + 64L, len, addr, count) == 1L) {
+      return 1L;
+    }
+    cursor = cursor + spanStep(len);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun remember(long base, long cap, long addr, long count): long {
+  long next = memory::load64(base + 64L);
+  long step = spanStep(count);
+  if (next < 128L || next + step > cap) {
+    return 1L;
+  }
+  memory::store64(count, base + next);
+  copySpan(addr, base + next + 64L, count);
+  memory::store64(next + step, base + 64L);
+  memory::store64(memory::load64(base) + 1L, base);
+  return 0L;
+}
+
+deRfun readCwd(long home, long dest): long {
+  if (obr::proc::getcwd(home) != 0L) {
+    return 0L;
+  }
+  long n = obr::proc::slot(home, 256L);
+  if (n < 1L || n > 8192L) {
+    return 0L;
+  }
+  copySpan(obr::proc::bytes(home), dest, n);
+  return n;
+}
+
+/* 大于 2 才关。0、1、2 留给标准输入、输出和错误。 */
+deRfun shut(long home, long fd): void {
+  if (fd > 2L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+/* 返回 1 才覆盖，0 是跳过，-1 是读失败。offsetAt 里的读偏移会累加。 */
+deRfun ask(long home, long addr, long count, long offsetAt): long {
+  writeErr(home, "cp: overwrite ");
+  if (count > 0L) {
+    writeSpan(home, addr, count);
+  }
+  writeErr(home, "? ");
+  long cursor = memory::load64(offsetAt);
+  long got = 0L;
+  long have = 0L;
+  long first = 0L;
+  long reading = 1L;
+  while (reading == 1L && got < 512L) {
+    if (obr::proc::read(home, 0L, cursor, 1L) != 0L) {
+      writeErr(home, "cp: read error\n");
+      return -1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "cp: read error\n");
+      return -1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      long octet = u8(obr::proc::bytes(home));
+      if (have == 0L) {
+        first = octet;
+        have = 1L;
+      }
+      cursor = cursor + 1L;
+      got = got + 1L;
+      if (octet == 10L) {
+        reading = 0L;
+      }
+    }
+  }
+  memory::store64(cursor, offsetAt);
+  if (have == 1L && (first == 121L || first == 89L)) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 读一块就写一块。返回 0 成功，-1 已经写过诊断。 */
+deRfun pour(long home, long inFd, long outFd): long {
+  long inOff = 0L;
+  long outOff = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, inFd, inOff, 4096L) != 0L) {
+      writeErr(home, "cp: read error\n");
+      return -1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "cp: read error\n");
+      return -1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long pending = n;
+      while (pending > 0L) {
+        long chunk = pending;
+        if (chunk > 4096L) {
+          chunk = 4096L;
+        }
+        if (obr::proc::write(home, outFd, outOff, chunk) != 0L) {
+          writeErr(home, "cp: write error\n");
+          return -1L;
+        }
+        long wrote = obr::proc::slot(home, 320L);
+        if (wrote < 1L) {
+          writeErr(home, "cp: write error\n");
+          return -1L;
+        }
+        if (wrote > chunk) {
+          wrote = chunk;
+        }
+        pending = pending - wrote;
+        outOff = outOff + wrote;
+        if (pending > 0L) {
+          copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+        }
+      }
+      inOff = inOff + n;
+    }
+  }
+  return 0L;
+}
+
+deRfun preserve(long home, long dst, long dstLen, long mode, long uid, long gid): long {
+  plant(home, dst, dstLen);
+  if (obr::proc::chmod(home, mode) != 0L) {
+    return 1L;
+  }
+  plant(home, dst, dstLen);
+  if (obr::proc::chown(home, uid, gid) != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun ensureDir(long home, long dst, long dstLen): long {
+  plant(home, dst, dstLen);
+  long status = obr::proc::stat(home);
+  if (status == 0L) {
+    long kind = obr::proc::slot(home, 128L);
+    if (isDir(kind) == 0L) {
+      note(home, dst, dstLen, ": not a directory\n");
+      return 1L;
+    }
+    return 0L;
+  }
+  if (status != 2L) {
+    note(home, dst, dstLen, ": No such file or directory\n");
+    return 1L;
+  }
+  plant(home, dst, dstLen);
+  if (obr::proc::mkdir(home) != 0L) {
+    note(home, dst, dstLen, ": cannot create directory\n");
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 返回 0 成功或用户跳过，1 这一项失败，-1 必须马上停。
+   相同路径在打开写出之前就返回，标志 1 会截断。 */
+deRfun copyFile(long home, long work, long src, long srcLen, long dst, long dstLen, long mode, long uid, long gid): long {
+  if (pathsSame(work, src, srcLen, dst, dstLen) == 1L) {
+    note(home, src, srcLen, ": same file\n");
+    return 1L;
+  }
+  plant(home, dst, dstLen);
+  long status = obr::proc::stat(home);
+  long exists = 0L;
+  if (status == 0L) {
+    long kind = obr::proc::slot(home, 128L);
+    if (isDir(kind) == 1L) {
+      note(home, dst, dstLen, ": is a directory\n");
+      return 1L;
+    }
+    exists = 1L;
+  }
+  if (exists == 1L && memory::load64(work + 64L) == 1L) {
+    long answer = ask(home, dst, dstLen, work + 640L);
+    if (answer < 0L) {
+      return -1L;
+    }
+    if (answer == 0L) {
+      return 0L;
+    }
+  }
+  plant(home, src, srcLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    note(home, src, srcLen, ": No such file or directory\n");
+    return 1L;
+  }
+  long inFd = obr::proc::slot(home, 192L);
+  plant(home, dst, dstLen);
+  long opened = obr::proc::open(home, 1L);
+  if (opened != 0L && opened != 4L && exists == 1L && memory::load64(work) == 1L) {
+    plant(home, dst, dstLen);
+    obr::proc::unlink(home);
+    plant(home, dst, dstLen);
+    opened = obr::proc::open(home, 1L);
+  }
+  if (opened == 4L) {
+    shut(home, inFd);
+    note(home, dst, dstLen, ": is a directory\n");
+    return 1L;
+  }
+  if (opened != 0L) {
+    shut(home, inFd);
+    note(home, dst, dstLen, ": No such file or directory\n");
+    return 1L;
+  }
+  long outFd = obr::proc::slot(home, 192L);
+  if (inFd == outFd) {
+    shut(home, inFd);
+    note(home, src, srcLen, ": same file\n");
+    return 1L;
+  }
+  long poured = pour(home, inFd, outFd);
+  shut(home, inFd);
+  shut(home, outFd);
+  if (poured != 0L) {
+    return -1L;
+  }
+  if (memory::load64(work + 192L) == 1L) {
+    if (preserve(home, dst, dstLen, mode, uid, gid) != 0L) {
+      note(home, dst, dstLen, ": cannot preserve\n");
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 一帧 512 位：状态、源地址、源长度、目标地址、目标长度、目录下标、深度。
+   状态 0 还要判断，1 正在列，3 子项刚返回。 */
+deRfun pushNode(long stack, long top, long src, long srcLen, long dst, long dstLen, long depth): long {
+  if (top >= 32L || depth > 32L) {
+    return -1L;
+  }
+  long at = stack + top * 512L;
+  memory::store64(0L, at);
+  memory::store64(src, at + 64L);
+  memory::store64(srcLen, at + 128L);
+  memory::store64(dst, at + 192L);
+  memory::store64(dstLen, at + 256L);
+  memory::store64(0L, at + 320L);
+  memory::store64(depth, at + 384L);
+  return top + 1L;
+}
+
+/* +1024 与 +1088 是这次复制的目标目录，用来跳过它自己。 */
+deRfun walk(long home, long work, long src, long srcLen, long dst, long dstLen): long {
+  memory::store64(dst, work + 1024L);
+  memory::store64(dstLen, work + 1088L);
+  long visited = memory::load64(work + 448L);
+  memory::store64(0L, visited);
+  memory::store64(128L, visited + 64L);
+  long stack = memory::load64(work + 576L);
+  long top = pushNode(stack, 0L, src, srcLen, dst, dstLen, 1L);
+  if (top < 0L) {
+    writeErr(home, "cp: too deep\n");
+    return 1L;
+  }
+  long failed = 0L;
+  while (top > 0L) {
+    long frame = stack + (top - 1L) * 512L;
+    long state = memory::load64(frame);
+    long node = memory::load64(frame + 64L);
+    long nlen = memory::load64(frame + 128L);
+    long dest = memory::load64(frame + 192L);
+    long dlen = memory::load64(frame + 256L);
+    if (state == 0L) {
+      plant(home, node, nlen);
+      long status = obr::proc::stat(home);
+      if (status != 0L) {
+        note(home, node, nlen, ": No such file or directory\n");
+        failed = 1L;
+        top = top - 1L;
+      } else {
+        long kind = obr::proc::slot(home, 128L);
+        long mode = obr::proc::slot(home, 256L);
+        long uid = obr::proc::slot(home, 320L);
+        long gid = obr::proc::slot(home, 384L);
+        if (isDir(kind) == 1L) {
+          if (pathsSame(work, node, nlen, dest, dlen) == 1L) {
+            note(home, node, nlen, ": cannot copy a directory into itself\n");
+            failed = 1L;
+            top = top - 1L;
+          } else if (ensureDir(home, dest, dlen) != 0L) {
+            failed = 1L;
+            top = top - 1L;
+          } else {
+            if (memory::load64(work + 192L) == 1L) {
+              if (preserve(home, dest, dlen, mode, uid, gid) != 0L) {
+                note(home, dest, dlen, ": cannot preserve\n");
+                failed = 1L;
+              }
+            }
+            if (seen(visited, node, nlen) == 1L) {
+              note(home, node, nlen, ": directory loop\n");
+              failed = 1L;
+              top = top - 1L;
+            } else if (remember(visited, memory::load64(work + 512L), node, nlen) != 0L) {
+              writeErr(home, "cp: out of memory\n");
+              return -1L;
+            } else {
+              memory::store64(1L, frame);
+              memory::store64(0L, frame + 320L);
+            }
+          }
+        } else if (kind == 1L || kind == 5L) {
+          long outcome = copyFile(home, work, node, nlen, dest, dlen, mode, uid, gid);
+          if (outcome < 0L) {
+            return -1L;
+          }
+          if (outcome != 0L) {
+            failed = 1L;
+          }
+          top = top - 1L;
+        } else {
+          note(home, node, nlen, ": cannot copy\n");
+          failed = 1L;
+          top = top - 1L;
+        }
+      }
+    } else if (state == 3L) {
+      long index = memory::load64(frame + 320L);
+      memory::store64(index + 1L, frame + 320L);
+      memory::store64(1L, frame);
+    } else {
+      long index = memory::load64(frame + 320L);
+      long depth = memory::load64(frame + 384L);
+      plant(home, node, nlen);
+      long listed = obr::proc::readdir(home, index, 512L);
+      if (listed == 2L) {
+        top = top - 1L;
+      } else if (listed != 0L) {
+        note(home, node, nlen, ": cannot read\n");
+        failed = 1L;
+        top = top - 1L;
+      } else {
+        long nameLen = obr::proc::slot(home, 256L);
+        if (nameLen == 0L) {
+          top = top - 1L;
+        } else if (nameLen < 0L || nameLen > 512L) {
+          note(home, node, nlen, ": cannot read\n");
+          failed = 1L;
+          top = top - 1L;
+        } else {
+          long names = memory::load64(work + 384L);
+          copySpan(obr::proc::bytes(home), names, nameLen);
+          if (isDot(names, nameLen) == 1L) {
+            memory::store64(index + 1L, frame + 320L);
+          } else if (depth >= 32L) {
+            writeErr(home, "cp: too deep\n");
+            failed = 1L;
+            top = top - 1L;
+          } else {
+            long childSrc = memory::load64(work + 256L) + depth * 65536L;
+            long childDst = memory::load64(work + 320L) + depth * 65536L;
+            long childSLen = joinPath(node, nlen, names, nameLen, childSrc);
+            long childDLen = joinPath(dest, dlen, names, nameLen, childDst);
+            if (childSLen < 0L || childDLen < 0L) {
+              writeErr(home, "cp: path too long\n");
+              failed = 1L;
+              memory::store64(index + 1L, frame + 320L);
+            } else if (pathsSame(work, childSrc, childSLen, memory::load64(work + 1024L), memory::load64(work + 1088L)) == 1L) {
+              memory::store64(index + 1L, frame + 320L);
+            } else {
+              memory::store64(3L, frame);
+              long next = pushNode(stack, top, childSrc, childSLen, childDst, childDLen, depth + 1L);
+              if (next < 0L) {
+                memory::store64(1L, frame);
+                writeErr(home, "cp: too deep\n");
+                failed = 1L;
+                memory::store64(index + 1L, frame + 320L);
+              } else {
+                top = next;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return failed;
+}
+
+deRfun copyOne(long home, long work, long src, long srcLen, long target, long targetLen): long {
+  if (srcLen < 1L) {
+    note(home, src, srcLen, ": No such file or directory\n");
+    return 1L;
+  }
+  if (targetLen < 1L) {
+    note(home, target, targetLen, ": No such file or directory\n");
+    return 1L;
+  }
+  plant(home, src, srcLen);
+  long status = obr::proc::stat(home);
+  if (status != 0L) {
+    note(home, src, srcLen, ": No such file or directory\n");
+    return 1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  long mode = obr::proc::slot(home, 256L);
+  long uid = obr::proc::slot(home, 320L);
+  long gid = obr::proc::slot(home, 384L);
+  if (u8(src + (srcLen - 1L) * 8L) == 47L && isDir(kind) == 0L) {
+    note(home, src, srcLen, ": not a directory\n");
+    return 1L;
+  }
+  plant(home, target, targetLen);
+  long targetStatus = obr::proc::stat(home);
+  long targetExists = 0L;
+  long targetDir = 0L;
+  if (targetStatus == 0L) {
+    long targetKind = obr::proc::slot(home, 128L);
+    targetExists = 1L;
+    if (isDir(targetKind) == 1L) {
+      targetDir = 1L;
+    }
+  }
+  if (u8(target + (targetLen - 1L) * 8L) == 47L && targetDir == 0L) {
+    if (targetExists == 0L) {
+      note(home, target, targetLen, ": No such file or directory\n");
+    } else {
+      note(home, target, targetLen, ": not a directory\n");
+    }
+    return 1L;
+  }
+  long dst = target;
+  long dstLen = targetLen;
+  if (targetDir == 1L) {
+    long leafAt = 0L;
+    long leafLen = 0L;
+    baseOf(src, srcLen, &leafAt, &leafLen);
+    if (leafLen < 1L) {
+      note(home, src, srcLen, ": cannot copy\n");
+      return 1L;
+    }
+    dst = memory::load64(work + 320L);
+    dstLen = joinPath(target, targetLen, leafAt, leafLen, dst);
+    if (dstLen < 0L) {
+      writeErr(home, "cp: path too long\n");
+      return 1L;
+    }
+  }
+  if (isDir(kind) == 1L) {
+    if (memory::load64(work + 128L) == 0L) {
+      note(home, src, srcLen, ": is a directory\n");
+      return 1L;
+    }
+    if (targetDir == 0L && targetExists == 1L) {
+      note(home, target, targetLen, ": not a directory\n");
+      return 1L;
+    }
+    return walk(home, work, src, srcLen, dst, dstLen);
+  }
+  if (kind != 1L && kind != 5L) {
+    note(home, src, srcLen, ": cannot copy\n");
+    return 1L;
+  }
+  return copyFile(home, work, src, srcLen, dst, dstLen, mode, uid, gid);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long force = 0L;
+  long asking = 0L;
+  long recur = 0L;
+  long preserveMode = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else {
+      /* 102 f，105 i，112 p，114 r，82 R，72 H，76 L，80 P。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long mark = u8(at + cursor * 8L);
+        long known = 0L;
+        if (mark == 102L) {
+          known = 1L;
+          force = 1L;
+          asking = 0L;
+        } else if (mark == 105L) {
+          known = 1L;
+          asking = 1L;
+          force = 0L;
+        } else if (mark == 112L) {
+          known = 1L;
+          preserveMode = 1L;
+        } else if (mark == 82L || mark == 114L) {
+          known = 1L;
+          recur = 1L;
+        } else if (mark == 72L || mark == 76L || mark == 80L) {
+          known = 1L;
+        }
+        if (known == 0L) {
+          writeErr(home, "cp: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  if (count - index < 2L) {
+    writeErr(home, "cp: missing operand\n");
+    return finish(home, 1L);
+  }
+  long pathBits = 32L * 65536L;
+  long srcSlots = obr::proc::alloc(home, pathBits);
+  long dstSlots = obr::proc::alloc(home, pathBits);
+  long names = obr::proc::alloc(home, 512L * 8L);
+  long visitBits = 65536L * 128L;
+  long visited = obr::proc::alloc(home, visitBits);
+  long stack = obr::proc::alloc(home, 32L * 512L);
+  long cwd = obr::proc::alloc(home, 65536L);
+  long scratch = obr::proc::alloc(home, 65536L);
+  long foldA = obr::proc::alloc(home, 65536L);
+  long foldB = obr::proc::alloc(home, 65536L);
+  long work = obr::proc::alloc(home, 2048L);
+  if (srcSlots == 0L || dstSlots == 0L || names == 0L || visited == 0L || stack == 0L) {
+    writeErr(home, "cp: out of memory\n");
+    return finish(home, 1L);
+  }
+  if (cwd == 0L || scratch == 0L || foldA == 0L || foldB == 0L || work == 0L) {
+    writeErr(home, "cp: out of memory\n");
+    return finish(home, 1L);
+  }
+  long cwdLen = readCwd(home, cwd);
+  memory::store64(force, work);
+  memory::store64(asking, work + 64L);
+  memory::store64(recur, work + 128L);
+  memory::store64(preserveMode, work + 192L);
+  memory::store64(srcSlots, work + 256L);
+  memory::store64(dstSlots, work + 320L);
+  memory::store64(names, work + 384L);
+  memory::store64(visited, work + 448L);
+  memory::store64(visitBits, work + 512L);
+  memory::store64(stack, work + 576L);
+  memory::store64(0L, work + 640L);
+  memory::store64(cwd, work + 704L);
+  memory::store64(cwdLen, work + 768L);
+  memory::store64(scratch, work + 832L);
+  memory::store64(foldA, work + 896L);
+  memory::store64(foldB, work + 960L);
+  if (count - index > 2L) {
+    long target = argPtr(home, count - 1L);
+    long targetLen = argLen(home, count - 1L);
+    plant(home, target, targetLen);
+    long targetStatus = obr::proc::stat(home);
+    if (targetStatus != 0L) {
+      note(home, target, targetLen, ": No such file or directory\n");
+      return finish(home, 1L);
+    }
+    long targetKind = obr::proc::slot(home, 128L);
+    if (isDir(targetKind) == 0L) {
+      note(home, target, targetLen, ": not a directory\n");
+      return finish(home, 1L);
+    }
+  }
+  long failed = 0L;
+  while (index + 1L < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long target = argPtr(home, count - 1L);
+    long targetLen = argLen(home, count - 1L);
+    long outcome = copyOne(home, work, at, len, target, targetLen);
+    if (outcome < 0L) {
+      return finish(home, 1L);
+    }
+    if (outcome != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

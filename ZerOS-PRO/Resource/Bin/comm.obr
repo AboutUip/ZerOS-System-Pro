@@ -1,0 +1,476 @@
+/* POSIX.1-2017 comm（utilities/comm.html）。形式是 comm [-123] file1 file2。
+   正好两个文件。少了写 comm: missing operand，多了写 comm: too many arguments，退出 1。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -1 是文件名。
+   单独一个 - 不是选项，它是标准输入，不关闭描述符 0。
+   两个操作数都是 - 时写 comm: standard input used twice，退出 1，不去打开。
+   以 - 开头、长度至少 2、又不是单独的 --，按短选项簇解。只允许 1、2、3。
+   可以连写、重复，-123 和 -1 -23 相同。别的字母写 comm: invalid option，立刻退出 1。
+   -1 不写只出现在第一个文件的行。-2 不写只出现在第二个文件的行。
+   -3 不写两边都有的行。被抑掉的列什么都不写，也不占制表。
+
+   比较按无符号八位组，从左到右。不看区域设置，也不检查输入是不是已经排好序。
+   换行不参加比较。一边是另一边的前缀时，较短的那一行较小。两边都空则相等。
+   只走一次合并，不先排序：
+   两边相等归第三列，两边都往下走。左边较小归第一列，只推进左边。
+   右边较小归第二列，只推进右边。一边先结束，另一边剩下的行全部归到它那一列。
+
+   行前的制表个数等于这一列前面还显示着的列数。
+   三列都在：第一列不加，第二列一个，第三列两个。
+   -1 之后第二列不加，第三列一个。-12 之后第三列不加。-2 之后第三列一个。
+   每一行输出都在正文后写字节 10。输入末尾没有换行的那一段也算一行，写出时仍补上换行。
+   行不含换行超过 8192 个八位组，写 comm: line too long，立刻退出 1。
+   打开失败写 comm: 路径: No such file or directory，退出 1，不写结果。
+   两个文件都打开之后才开始比。读失败写 comm: read error，写失败写 comm: write error，都立刻退出 1。
+   两边都没有行：什么都不写，退出 0。结束用服务 28，main 仍返回 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 不含结尾换行的正文上限。正好 8192 个八位组仍然是一行，再多一个才算太长。 */
+deRfun lineMax(): long {
+  return 8192L;
+}
+
+/* 一次 read 或 write 的上限。读入暂存也是这么大。 */
+deRfun chunkMax(): long {
+  return 4096L;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。不用移位。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断写描述符 2。控制台不看偏移，这一路每次从 0 写。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径按八位组抄到描述符 2，不经过字符串。一次最多 4096，偏移仍写 0。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "comm: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 单独一个减号（字节 45）才是标准输入。更长的名字只是路径。 */
+deRfun isDash(long addr, long count): long {
+  if (count == 1L && u8(addr) == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 字节区开头已经放好 count 个八位组。描述符 1 的偏移从 *place 起，按 slot 320 往下加。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。失败返回 1。 */
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "comm: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "comm: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 正文按 4096 搬进字节区再写到描述符 1。空正文不写。 */
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 这一列前面还显示着几列，就加几个制表（字节 9）。被抑掉的列不占。
+   第一列前面没有列。第三列只看第一列和第二列还在不在。 */
+deRfun lead(long column, long hide1, long hide2): long {
+  long tabs = 0L;
+  if (column > 1L && hide1 == 0L) {
+    tabs = tabs + 1L;
+  }
+  if (column > 2L && hide2 == 0L) {
+    tabs = tabs + 1L;
+  }
+  return tabs;
+}
+
+/* 先写制表，再写正文，最后一定补字节 10。输入那一行自己有没有换行，这里不管。 */
+deRfun emitColumn(long home, long* place, long addr, long len, long tabs): long {
+  if (tabs > 0L) {
+    long index = 0L;
+    while (index < tabs) {
+      memory::storeOctet(9L, obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeReady(home, place, tabs) != 0L) {
+      return 1L;
+    }
+  }
+  if (emitSpan(home, place, addr, len) != 0L) {
+    return 1L;
+  }
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  return writeReady(home, place, 1L);
+}
+
+/* 这一列被抑掉就什么都不写。column 是 1、2、3。 */
+deRfun show(long home, long* place, long column, long hide1, long hide2, long hide3, long addr, long len): long {
+  if (column == 1L && hide1 == 1L) {
+    return 0L;
+  }
+  if (column == 2L && hide2 == 1L) {
+    return 0L;
+  }
+  if (column == 3L && hide3 == 1L) {
+    return 0L;
+  }
+  return emitColumn(home, place, addr, len, lead(column, hide1, hide2));
+}
+
+/* 只读打开。成功时描述符在 +192，立刻抄进 *fd，下一次读写会盖住这个字。
+   描述符 0 留给标准输入，这里不关。路径超过 8192 也当打不开。 */
+deRfun openRead(long home, long addr, long count, long* fd): long {
+  if (isDash(addr, count) == 1L) {
+    *fd = 0L;
+    return 0L;
+  }
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  return 0L;
+}
+
+/* 标准输入的描述符是 0，不关闭。别的描述符用完就关。 */
+deRfun shut(long home, long fd): void {
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+/* 从 fileOff 读，最多 4096，马上抄进这一边自己的暂存。
+   写结果也用字节区开头，不能把还没拆完的一块留在那里。
+   实际个数在 +320。0 是结束。偏移按抄走的个数累加，不要每次从 0 读。
+   返回非 0 或个数为负是读失败。返回 0 成功。 */
+deRfun readChunk(long home, long fd, long stage, long* fileOff, long* got): long {
+  if (obr::proc::read(home, fd, *fileOff, chunkMax()) != 0L) {
+    writeErr(home, "comm: read error\n");
+    return 1L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 0L) {
+    writeErr(home, "comm: read error\n");
+    return 1L;
+  }
+  if (n > chunkMax()) {
+    n = chunkMax();
+  }
+  copySpan(obr::proc::bytes(home), stage, n);
+  *fileOff = *fileOff + n;
+  *got = n;
+  return 0L;
+}
+
+/* 无符号八位组从左到右。换行不在正文里。
+   前缀相同则较短的较小。两边长度都是 0 则相等。
+   左边较小返回 -1，相等返回 0，右边较小返回 1。 */
+deRfun order(long a, long aLen, long b, long bLen): long {
+  long n = aLen;
+  if (bLen < aLen) {
+    n = bLen;
+  }
+  long index = 0L;
+  while (index < n) {
+    long av = u8(a + index * 8L);
+    long bv = u8(b + index * 8L);
+    if (av < bv) {
+      return -1L;
+    }
+    if (av > bv) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  if (aLen < bLen) {
+    return -1L;
+  }
+  if (aLen > bLen) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 收下这一边的下一行。正文写在 buf 开头，暂存从 8192 个八位组之后开始。
+   hold 和 cursor 跨行保留，指着暂存里还没拆的那一段。lineLen 每次从头计。
+   见到字节 10 就结束这一行，换行本身不放进正文。
+   文件在换行之后结束，不会多出一行。末尾没有换行时，已经收下的八位组仍是一行。
+   没有行时 *has 是 0。太长或读失败返回 1，诊断已经写过。 */
+deRfun nextLine(long home, long fd, long buf, long* fileOff, long* hold, long* cursor, long* lineLen, long* has): long {
+  long stage = buf + lineMax() * 8L;
+  *lineLen = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    if (*cursor >= *hold) {
+      long got = 0L;
+      if (readChunk(home, fd, stage, fileOff, &got) != 0L) {
+        return 1L;
+      }
+      *hold = got;
+      *cursor = 0L;
+      if (got == 0L) {
+        if (*lineLen > 0L) {
+          *has = 1L;
+        } else {
+          *has = 0L;
+        }
+        return 0L;
+      }
+    }
+    long bit = u8(stage + *cursor * 8L);
+    *cursor = *cursor + 1L;
+    if (bit == 10L) {
+      *has = 1L;
+      return 0L;
+    }
+    if (*lineLen >= lineMax()) {
+      writeErr(home, "comm: line too long\n");
+      return 1L;
+    }
+    memory::storeOctet(bit, buf + *lineLen * 8L);
+    *lineLen = *lineLen + 1L;
+  }
+  return 0L;
+}
+
+/* 两边各有当前行时按 order 归列，只推进较小的那一边；相等则第三列，两边一起走。
+   一边已经没有行，另一边剩下的全部算它自己的列，不再和空行比较。
+   返回 0 成功。返回 1 时读、写或行太长，诊断已经写过。 */
+deRfun merge(long home, long fd1, long buf1, long fd2, long buf2, long hide1, long hide2, long hide3): long {
+  long off1 = 0L;
+  long hold1 = 0L;
+  long at1 = 0L;
+  long len1 = 0L;
+  long has1 = 0L;
+  long off2 = 0L;
+  long hold2 = 0L;
+  long at2 = 0L;
+  long len2 = 0L;
+  long has2 = 0L;
+  long place = 0L;
+  if (nextLine(home, fd1, buf1, &off1, &hold1, &at1, &len1, &has1) != 0L) {
+    return 1L;
+  }
+  if (nextLine(home, fd2, buf2, &off2, &hold2, &at2, &len2, &has2) != 0L) {
+    return 1L;
+  }
+  while (has1 == 1L && has2 == 1L) {
+    long rel = order(buf1, len1, buf2, len2);
+    if (rel == 0L) {
+      if (show(home, &place, 3L, hide1, hide2, hide3, buf1, len1) != 0L) {
+        return 1L;
+      }
+      if (nextLine(home, fd1, buf1, &off1, &hold1, &at1, &len1, &has1) != 0L) {
+        return 1L;
+      }
+      if (nextLine(home, fd2, buf2, &off2, &hold2, &at2, &len2, &has2) != 0L) {
+        return 1L;
+      }
+    } else if (rel < 0L) {
+      if (show(home, &place, 1L, hide1, hide2, hide3, buf1, len1) != 0L) {
+        return 1L;
+      }
+      if (nextLine(home, fd1, buf1, &off1, &hold1, &at1, &len1, &has1) != 0L) {
+        return 1L;
+      }
+    } else {
+      if (show(home, &place, 2L, hide1, hide2, hide3, buf2, len2) != 0L) {
+        return 1L;
+      }
+      if (nextLine(home, fd2, buf2, &off2, &hold2, &at2, &len2, &has2) != 0L) {
+        return 1L;
+      }
+    }
+  }
+  while (has1 == 1L) {
+    if (show(home, &place, 1L, hide1, hide2, hide3, buf1, len1) != 0L) {
+      return 1L;
+    }
+    if (nextLine(home, fd1, buf1, &off1, &hold1, &at1, &len1, &has1) != 0L) {
+      return 1L;
+    }
+  }
+  while (has2 == 1L) {
+    if (show(home, &place, 2L, hide1, hide2, hide3, buf2, len2) != 0L) {
+      return 1L;
+    }
+    if (nextLine(home, fd2, buf2, &off2, &hold2, &at2, &len2, &has2) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long hide1 = 0L;
+  long hide2 = 0L;
+  long hide3 = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 49 是 1，50 是 2，51 是 3。同一簇里从左到右看，重复只是再抑一次。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long flag = u8(at + cursor * 8L);
+        if (flag == 49L) {
+          hide1 = 1L;
+        } else if (flag == 50L) {
+          hide2 = 1L;
+        } else if (flag == 51L) {
+          hide3 = 1L;
+        } else {
+          writeErr(home, "comm: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long files = count - index;
+  if (files < 2L) {
+    writeErr(home, "comm: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (files > 2L) {
+    writeErr(home, "comm: too many arguments\n");
+    return finish(home, 1L);
+  }
+  long at1 = argPtr(home, index);
+  long len1 = argLen(home, index);
+  long at2 = argPtr(home, index + 1L);
+  long len2 = argLen(home, index + 1L);
+  if (isDash(at1, len1) == 1L && isDash(at2, len2) == 1L) {
+    writeErr(home, "comm: standard input used twice\n");
+    return finish(home, 1L);
+  }
+  long fd1 = 0L;
+  long fd2 = 0L;
+  if (openRead(home, at1, len1, &fd1) != 0L) {
+    return finish(home, 1L);
+  }
+  if (openRead(home, at2, len2, &fd2) != 0L) {
+    shut(home, fd1);
+    return finish(home, 1L);
+  }
+  /* 分配单位是位。两行正文各一块，8192 个八位组，相邻隔 8 位。
+     每块后面再留 4096 个八位组当读入暂存。写结果会占用字节区开头。 */
+  long span = (lineMax() + chunkMax()) * 8L;
+  long buf1 = obr::proc::alloc(home, span);
+  long buf2 = obr::proc::alloc(home, span);
+  if (buf1 == 0L || buf2 == 0L) {
+    writeErr(home, "comm: out of memory\n");
+    shut(home, fd1);
+    shut(home, fd2);
+    return finish(home, 1L);
+  }
+  long status = merge(home, fd1, buf1, fd2, buf2, hide1, hide2, hide3);
+  shut(home, fd1);
+  shut(home, fd2);
+  if (status != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

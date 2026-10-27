@@ -1,0 +1,59 @@
+/* POSIX.1-2017 echo（utilities/echo.html）的本系统选定。
+   下标 0 是程序名，不打印。操作数从 1 起，按八位组原样写出。
+   操作数之间隔一个空格（字节 32），最后写换行（字节 10）到描述符 1。
+   -n 不是开关，反斜杠不转义。没有操作数时只写换行。成功退出 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+/* 读写区里已经放好的一段写到标准输出。一次的个数由调用方限制，这里不再拆。 */
+deRfun writeOut(long home, long count): void {
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+/* 八位组放进读写区，相邻隔 8 位。满 4096 个先写出去，再从这块区的开头继续放。 */
+deRfun putByte(long home, long* filled, long value): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    writeOut(home, count);
+    count = 0L;
+  }
+  memory::storeOctet(value, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long filled = 0L;
+  long total = argc(home);
+  long index = 1L;
+  while (index < total) {
+    if (index > 1L) {
+      putByte(home, &filled, 32L);
+    }
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long cursor = 0L;
+    while (cursor < len) {
+      putByte(home, &filled, u8(at + cursor * 8L));
+      cursor = cursor + 1L;
+    }
+    index = index + 1L;
+  }
+  putByte(home, &filled, 10L);
+  writeOut(home, filled);
+  obr::proc::exit(home, 0L);
+  return 0;
+}

@@ -13,7 +13,7 @@ import memory;
 import obr.nas;
 import obr.os;
 
-/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat */
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd */
 
 deRfun pack(): long {
   return 4294967296L;
@@ -110,6 +110,17 @@ deRfun boot(): void {
   bootArm();
 }
 
+/* 退出状态只留低 8 位。负数按补码绕回，和 wait 读到的范围一致。 */
+deRfun exitBits(long code): long {
+  while (code < 0L) {
+    code = code + 256L;
+  }
+  while (code >= 256L) {
+    code = code - 256L;
+  }
+  return code;
+}
+
 deRfun dispatch(long caller, long service): void {
   if (taskAllows(caller, service) == 0L) {
     reply(caller, -1L);
@@ -203,7 +214,13 @@ deRfun dispatch(long caller, long service): void {
     compatSvc(caller);
     return;
   }
-  if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L) {
+  /* 不再回复调用者。父任务正在 wait 时，procExit 会把状态交回去。 */
+  if (service == 28L) {
+    procExit(caller, exitBits(word(home + 128L)));
+    schedResume(caller);
+    return;
+  }
+  if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L || service == 29L) {
     long filed = vfsCall(caller, service);
     if (filed != -2L) {
       reply(caller, filed);
@@ -258,7 +275,10 @@ deRfun main(): int {
   boot();
   while (1) {
     conPump();
-    schedSweep();
+    /* 大家都在睡时，扫表和问宿主要几十毫秒，按键就排在这一圈后面。先收键、先取调用。 */
+    if (schedIdle() == 0L) {
+      schedSweep();
+    }
     long value = 0L;
     long found = obr::os::take(&value);
     if (found == 1L) {
@@ -270,7 +290,9 @@ deRfun main(): int {
     noteInstall();
     termBring();
     if (memory::load64(537931776L) == 0L) {
-      schedTick();
+      if (schedIdle() == 0L) {
+        schedTick();
+      }
       obr::os::hertz(obr::os::core(), 30L);
       obr::os::core();
       obr::os::hertz(obr::os::core(), 100000000L);

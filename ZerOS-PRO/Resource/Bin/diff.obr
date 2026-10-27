@@ -1,0 +1,476 @@
+/* POSIX diff 的一个定死子集。形式是 diff 文件1 文件2。
+   必须正好两个文件。少了写 diff: missing operand，多了写 diff: too many arguments，
+   都立刻退出 2。-- 结束选项。第一个不是选项的参数也结束选项，后面的 -u 是文件名。
+   在那之前，长度至少为 2 且以 - 开头的参数都是 diff: invalid option，
+   包括 -u、-c、-r、-h 和 --help。这些格式都不做。立刻退出 2。
+
+   单独一个 - 读标准输入，并且不关闭描述符 0。
+   两个都是 - 时写 diff: standard input used twice，立刻退出 2，不去打开、也不去读。
+   打开失败写 diff: 路径: No such file or directory，退出 2，不比较。
+   第一个已经打开、第二个失败时，先关上第一个。描述符 0 不关。
+
+   按行号对齐，不是最长公共子序列。第 n 行只和第 n 行比。
+   行以字节 10 分割，换行不留在正文里，也不参加比较。
+   文件在换行之后结束，不会多出一行。末尾没有换行时，已经收下的八位组仍是一行。
+   整行八位组必须相同才算相同。短的一行不等于长的那一行。
+   一行不含换行最多 8192 个八位组，正好 8192 仍然是一行，再多一个写
+   diff: line too long，退出 2。已经写出的差异留着。
+
+   相同的行什么都不写，全部相同则退出 0。
+   两边都还有行、正文不同时，写左行号、c、右行号、换行，中间没有空格。
+   接着 <、空格、左行、换行、---、换行、>、空格、右行、换行。然后继续比后面的行。
+   有任何不同，最后退出 1。不合并连续差异，也不写 2,3 这种区间。
+   一边先没有行时，多出来的每一行单独一条：
+   左边还剩，写左行号、d、右边已经有的行数（没有则是 0），再只写 < 那一行。
+   右边还剩，写左边已经有的行数（没有则是 0）、a、右行号，再只写 > 那一行。
+   d 和 a 不写 ---，也不写空的另一边。
+   例如右边是空文件、左边有一行：1d0。左边是空文件、右边有一行：0a1。
+
+   读失败写 diff: read error，写失败写 diff: write error，都退出 2。
+   一次读写最多 4096 个八位组。两边各有自己的行缓冲和读入暂存，
+   因为字节区只有一块。标准输出的偏移从 0 累加。诊断写描述符 2，偏移每次从 0。
+   结束用服务 28。alloc 的单位是位。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。负值加上 256 才是 0 到 255 的八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  if (count < 0L) {
+    return;
+  }
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "diff: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 字节区开头已经放好 count 个八位组。失败返回 2，诊断已经写过。 */
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "diff: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "diff: write error\n");
+      return 2L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 十进制，不补前导零。0 写成一个 0。行号只会是 0 或正数。 */
+deRfun emitNum(long home, long* place, long value): long {
+  long div = 1L;
+  long temp = value;
+  while (temp >= 10L) {
+    temp = temp / 10L;
+    div = div * 10L;
+  }
+  long rest = value;
+  long count = 0L;
+  long at = obr::proc::bytes(home);
+  while (div > 0L) {
+    long digit = rest / div;
+    memory::storeOctet(48L + digit, at + count * 8L);
+    rest = rest % div;
+    div = div / 10L;
+    count = count + 1L;
+  }
+  return writeReady(home, place, count);
+}
+
+deRfun emitText(long home, long* place, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[offset + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeReady(home, place, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 命令行是左行号、一个字母、右行号，中间没有空格。 */
+deRfun emitHead(long home, long* place, long leftNo, string letter, long rightNo): long {
+  if (emitNum(home, place, leftNo) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, place, letter) != 0L) {
+    return 2L;
+  }
+  if (emitNum(home, place, rightNo) != 0L) {
+    return 2L;
+  }
+  return emitText(home, place, "\n");
+}
+
+/* mark 自带空格，是 "< " 或 "> "。正文后面补换行。空正文仍然有这一行。 */
+deRfun emitSide(long home, long* place, string mark, long addr, long len): long {
+  if (emitText(home, place, mark) != 0L) {
+    return 2L;
+  }
+  if (emitSpan(home, place, addr, len) != 0L) {
+    return 2L;
+  }
+  return emitText(home, place, "\n");
+}
+
+deRfun changed(long home, long* place, long leftNo, long rightNo, long left, long leftLen, long right, long rightLen): long {
+  if (emitHead(home, place, leftNo, "c", rightNo) != 0L) {
+    return 2L;
+  }
+  if (emitSide(home, place, "< ", left, leftLen) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, place, "---\n") != 0L) {
+    return 2L;
+  }
+  return emitSide(home, place, "> ", right, rightLen);
+}
+
+deRfun deleted(long home, long* place, long leftNo, long rightNo, long left, long leftLen): long {
+  if (emitHead(home, place, leftNo, "d", rightNo) != 0L) {
+    return 2L;
+  }
+  return emitSide(home, place, "< ", left, leftLen);
+}
+
+deRfun added(long home, long* place, long leftNo, long rightNo, long right, long rightLen): long {
+  if (emitHead(home, place, leftNo, "a", rightNo) != 0L) {
+    return 2L;
+  }
+  return emitSide(home, place, "> ", right, rightLen);
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 单独一个减号（字节 45）才是标准输入。更长的名字只是路径。 */
+deRfun isDash(long addr, long count): long {
+  if (count == 1L && u8(addr) == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，立刻抄走。描述符 0 留给标准输入，这里不关。
+   路径空或超过 8192 也当打不开。 */
+deRfun openRead(long home, long addr, long count, long* fd): long {
+  if (isDash(addr, count) == 1L) {
+    *fd = 0L;
+    return 0L;
+  }
+  if (count < 1L || count > 8192L) {
+    long shown = count;
+    if (shown < 0L) {
+      shown = 0L;
+    }
+    miss(home, addr, shown);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  return 0L;
+}
+
+deRfun shut(long home, long fd): void {
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+/* 从 fileOff 读，最多 4096，马上抄进这一边自己的暂存。实际个数在 +320。
+   0 是结束。偏移按抄走的个数累加。返回 2 表示读失败。 */
+deRfun readChunk(long home, long fd, long stage, long* fileOff, long* got): long {
+  if (obr::proc::read(home, fd, *fileOff, 4096L) != 0L) {
+    writeErr(home, "diff: read error\n");
+    return 2L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 0L) {
+    writeErr(home, "diff: read error\n");
+    return 2L;
+  }
+  if (n > 4096L) {
+    n = 4096L;
+  }
+  copySpan(obr::proc::bytes(home), stage, n);
+  *fileOff = *fileOff + n;
+  *got = n;
+  return 0L;
+}
+
+/* 正文写在 buf 开头，暂存从 8192 个八位组之后开始。
+   hold 和 cursor 跨行保留。见到字节 10 就结束这一行，换行本身不放进正文。
+   没有行时 *has 是 0。太长或读失败返回 2。 */
+deRfun nextLine(long home, long fd, long buf, long* fileOff, long* hold, long* cursor, long* lineLen, long* has): long {
+  long stage = buf + 8192L * 8L;
+  *lineLen = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    if (*cursor >= *hold) {
+      long got = 0L;
+      if (readChunk(home, fd, stage, fileOff, &got) != 0L) {
+        return 2L;
+      }
+      *hold = got;
+      *cursor = 0L;
+      if (got == 0L) {
+        if (*lineLen > 0L) {
+          *has = 1L;
+        } else {
+          *has = 0L;
+        }
+        return 0L;
+      }
+    }
+    long bit = u8(stage + *cursor * 8L);
+    *cursor = *cursor + 1L;
+    if (bit == 10L) {
+      *has = 1L;
+      return 0L;
+    }
+    if (*lineLen >= 8192L) {
+      writeErr(home, "diff: line too long\n");
+      return 2L;
+    }
+    memory::storeOctet(bit, buf + *lineLen * 8L);
+    *lineLen = *lineLen + 1L;
+  }
+  return 0L;
+}
+
+deRfun sameLine(long a, long aLen, long b, long bLen): long {
+  if (aLen != bLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < aLen) {
+    if (u8(a + index * 8L) != u8(b + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 返回 0 相同，1 有差异，2 读、写或行太长。行号从 1 起，某一边还没有行时用 0。 */
+deRfun compare(long home, long fd1, long buf1, long fd2, long buf2): long {
+  long off1 = 0L;
+  long hold1 = 0L;
+  long at1 = 0L;
+  long len1 = 0L;
+  long has1 = 0L;
+  long off2 = 0L;
+  long hold2 = 0L;
+  long at2 = 0L;
+  long len2 = 0L;
+  long has2 = 0L;
+  long place = 0L;
+  long leftNo = 0L;
+  long rightNo = 0L;
+  long differed = 0L;
+  if (nextLine(home, fd1, buf1, &off1, &hold1, &at1, &len1, &has1) != 0L) {
+    return 2L;
+  }
+  if (nextLine(home, fd2, buf2, &off2, &hold2, &at2, &len2, &has2) != 0L) {
+    return 2L;
+  }
+  while (has1 == 1L && has2 == 1L) {
+    leftNo = leftNo + 1L;
+    rightNo = rightNo + 1L;
+    if (sameLine(buf1, len1, buf2, len2) == 0L) {
+      if (changed(home, &place, leftNo, rightNo, buf1, len1, buf2, len2) != 0L) {
+        return 2L;
+      }
+      differed = 1L;
+    }
+    if (nextLine(home, fd1, buf1, &off1, &hold1, &at1, &len1, &has1) != 0L) {
+      return 2L;
+    }
+    if (nextLine(home, fd2, buf2, &off2, &hold2, &at2, &len2, &has2) != 0L) {
+      return 2L;
+    }
+  }
+  while (has1 == 1L) {
+    leftNo = leftNo + 1L;
+    if (deleted(home, &place, leftNo, rightNo, buf1, len1) != 0L) {
+      return 2L;
+    }
+    differed = 1L;
+    if (nextLine(home, fd1, buf1, &off1, &hold1, &at1, &len1, &has1) != 0L) {
+      return 2L;
+    }
+  }
+  while (has2 == 1L) {
+    rightNo = rightNo + 1L;
+    if (added(home, &place, leftNo, rightNo, buf2, len2) != 0L) {
+      return 2L;
+    }
+    differed = 1L;
+    if (nextLine(home, fd2, buf2, &off2, &hold2, &at2, &len2, &has2) != 0L) {
+      return 2L;
+    }
+  }
+  return differed;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      writeErr(home, "diff: invalid option\n");
+      return finish(home, 2L);
+    } else {
+      ended = 1L;
+    }
+  }
+  long files = count - index;
+  if (files < 2L) {
+    writeErr(home, "diff: missing operand\n");
+    return finish(home, 2L);
+  }
+  if (files > 2L) {
+    writeErr(home, "diff: too many arguments\n");
+    return finish(home, 2L);
+  }
+  long at1 = argPtr(home, index);
+  long len1 = argLen(home, index);
+  long at2 = argPtr(home, index + 1L);
+  long len2 = argLen(home, index + 1L);
+  if (isDash(at1, len1) == 1L && isDash(at2, len2) == 1L) {
+    writeErr(home, "diff: standard input used twice\n");
+    return finish(home, 2L);
+  }
+  long fd1 = 0L;
+  long fd2 = 0L;
+  if (openRead(home, at1, len1, &fd1) != 0L) {
+    return finish(home, 2L);
+  }
+  if (openRead(home, at2, len2, &fd2) != 0L) {
+    shut(home, fd1);
+    return finish(home, 2L);
+  }
+  /* 两行正文各 8192 个八位组，后面再留 4096 当读入暂存。单位是位。 */
+  long span = (8192L + 4096L) * 8L;
+  long buf1 = obr::proc::alloc(home, span);
+  long buf2 = obr::proc::alloc(home, span);
+  if (buf1 == 0L || buf2 == 0L) {
+    writeErr(home, "diff: out of memory\n");
+    shut(home, fd1);
+    shut(home, fd2);
+    return finish(home, 2L);
+  }
+  long status = compare(home, fd1, buf1, fd2, buf2);
+  shut(home, fd1);
+  shut(home, fd2);
+  return finish(home, status);
+}

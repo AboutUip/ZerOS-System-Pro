@@ -1,0 +1,553 @@
+/* POSIX.1-2017 fold（utilities/fold.html）。形式是 fold [-bs] [-w width] [file...]。
+   缺省宽度 80。把超过宽度的行拆开，拆开处补一个字节 10。原来的换行保留，并且列号回到 0。
+   没有 -b 时：普通字节占 1 列；制表（9）把列号推进到下一个 8 的倍数（已经在倍数上就再加 8）；退格（8）列号减 1，到 0 就停；回车（13）列号回到 0，这个字节本身要写出；换行（10）写出并回到 0。
+   -b 按字节计。制表、退格、回车这时都只占 1 列，不再改列号。换行仍写出并回到 0。
+   -s：这一段里如果有空格（32）或制表，就在最后一个这种空白之后拆开。没有空白才在刚好到宽度的那个字节之后拆开。
+   -b 和 -s 可以同时有，可以重复，也可以写在一起，如 -bs，-bw80 里的 w 仍要宽度。
+   -w 写成 -w 80 或 -w80。宽度是正十进制整数。0、负数、空缺、不是纯数字，以及大于 4096，都写 fold: invalid width，立刻退出 1。后面的 -w 覆盖前面的。
+   不认识的选项写 fold: invalid option，立刻退出 1。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -b 是文件名。
+   没有文件就读标准输入。单独一个 - 也读标准输入，并且不关闭描述符 0。
+   多个文件按顺序接在一起，不写 ==> 标题。列号和还没拆开的那段跨文件留着，最后才把这段写出，末尾不另补换行。
+   打开失败写 fold: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败写 fold: read error，继续后面的文件。写失败写 fold: write error，立刻退出 1。
+   还没决定拆点的那段留在 obr::proc::alloc 的块里。宽度最大按 4096 列，块按 4096 个八位组留。
+   移位先收成 32 位，列号可以到 4096，制表停靠除法，不用 1L << n。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 跨文件保留的折行状态。hold 是还没决定拆点的那段，八位组相邻隔 8 位。
+   anchor 为 1 时，最后一个空白已经写到标准输出，hold 里只剩它后面的后缀。
+   这段放不下时，换行要补在后缀前面，而不是补在后缀后面。 */
+struct Fold {
+  long width;
+  long byByte;
+  long breakSpace;
+  long column;
+  long hold;
+  long holdLen;
+  long anchor;
+  long outAt;
+}
+
+/* 待拆的一段、一次读、一次写，都不超过这个数。宽度再大，普通字节在拆开之前就放不进这块。 */
+deRfun room(): long {
+  return 4096L;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 源在目的后面，从前向后拷。用于把后缀挪回段首。 */
+deRfun moveTail(long buf, long drop, long keep): void {
+  copySpan(buf + drop * 8L, buf, keep);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径八位组写到标准错误。控制台不看偏移，所以这一路每次从 0 写。一次最多 4096。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > room()) {
+      chunk = room();
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "fold: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 字节区开头已经放好 count 个八位组，count 不超过 4096。
+   描述符 1 的偏移按 slot 320 的实际个数往下加，不要每次从 0 写。
+   写不满就把剩下的挪回字节区开头再写。失败已经写过诊断，返回 2。 */
+deRfun emitReady(long home, Fold* run, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    if (obr::proc::write(home, 1L, run.outAt, pending) != 0L) {
+      writeErr(home, "fold: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "fold: write error\n");
+      return 2L;
+    }
+    if (wrote > pending) {
+      wrote = pending;
+    }
+    pending = pending - wrote;
+    run.outAt = run.outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* addr 上的八位组相邻隔 8 位。按 4096 搬进字节区再写到描述符 1。 */
+deRfun emitAt(long home, Fold* run, long addr, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > room()) {
+      chunk = room();
+    }
+    copySpan(addr + done * 8L, obr::proc::bytes(home), chunk);
+    if (emitReady(home, run, chunk) != 0L) {
+      return 2L;
+    }
+    done = done + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitNl(long home, Fold* run): long {
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  return emitReady(home, run, 1L);
+}
+
+/* 从第一个字节起都必须是 0 到 9。前导 0 可以。值必须是 1 到 4096。
+   减号、正号、空串和别的字符都拒绝。有符号 64 位放不下也拒绝。
+   成功写成 *out 并返回 1，否则返回 0，不改 *out。 */
+deRfun takeWidth(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L || (value == 922337203685477580L && digit > 7L)) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    cursor = cursor + 1L;
+  }
+  if (value < 1L || value > room()) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 没有 -b 时按列。有 -b 时每个字节都加 1，制表、退格、回车不再特殊。
+   制表的下一站是 (列号 / 8 + 1) * 8。已经站在 8 的倍数上，商再加 1，正好再走 8 列。
+   这里不用移位：移位先把值收成 32 位，列号允许到 4096。 */
+deRfun columnAfter(long column, long b, long byByte): long {
+  if (byByte != 0L) {
+    return column + 1L;
+  }
+  if (b == 8L) {
+    if (column > 0L) {
+      return column - 1L;
+    }
+    return 0L;
+  }
+  if (b == 13L) {
+    return 0L;
+  }
+  if (b == 9L) {
+    return (column / 8L + 1L) * 8L;
+  }
+  return column + 1L;
+}
+
+/* 从列号 0 把这一段重新量一遍。拆在空白后面时，后缀换到新行，旧列号不再算数。 */
+deRfun measure(long buf, long count, long byByte): long {
+  long column = 0L;
+  long index = 0L;
+  while (index < count) {
+    column = columnAfter(column, u8(buf + index * 8L), byByte);
+    index = index + 1L;
+  }
+  return column;
+}
+
+/* 从段尾往回找最后一个空格或制表。没有就返回 -1。退格和回车不是这种空白。 */
+deRfun findBlank(long buf, long count): long {
+  long index = count;
+  while (index > 0L) {
+    index = index - 1L;
+    long b = u8(buf + index * 8L);
+    if (b == 32L || b == 9L) {
+      return index;
+    }
+  }
+  return -1L;
+}
+
+deRfun putHold(Fold* run, long b): void {
+  memory::storeOctet(b, run.hold + run.holdLen * 8L);
+  run.holdLen = run.holdLen + 1L;
+}
+
+/* 还要再放一个放得下的字节，但块已经满了。
+   没有空白：整段都会留在当前行，先写出去，列号不动。
+   有空白：空白之前的可以写走。空白还占着段首并且块仍满时，先写走这一个空白，记到 anchor。
+   anchor 已经记着、后缀又把块撑满：这一行在那个空白处拆开，调用方要按新列号重看这个字节。
+   返回 0 可以收下当前字节，3 要重看，2 是写失败。 */
+deRfun makeRoom(long home, Fold* run): long {
+  if (run.holdLen < room()) {
+    return 0L;
+  }
+  long blankAt = -1L;
+  if (run.breakSpace != 0L) {
+    blankAt = findBlank(run.hold, run.holdLen);
+  }
+  if (blankAt >= 0L) {
+    if (blankAt > 0L) {
+      if (emitAt(home, run, run.hold, blankAt) != 0L) {
+        return 2L;
+      }
+      long keep = run.holdLen - blankAt;
+      moveTail(run.hold, blankAt, keep);
+      run.holdLen = keep;
+    }
+    run.anchor = 0L;
+    if (run.holdLen >= room()) {
+      if (emitAt(home, run, run.hold, 1L) != 0L) {
+        return 2L;
+      }
+      long keep = run.holdLen - 1L;
+      moveTail(run.hold, 1L, keep);
+      run.holdLen = keep;
+      run.anchor = 1L;
+    }
+    return 0L;
+  }
+  if (run.anchor != 0L) {
+    if (emitNl(home, run) != 0L) {
+      return 2L;
+    }
+    run.column = measure(run.hold, run.holdLen, run.byByte);
+    run.anchor = 0L;
+    if (run.holdLen >= room()) {
+      if (emitAt(home, run, run.hold, run.holdLen) != 0L) {
+        return 2L;
+      }
+      run.holdLen = 0L;
+    }
+    return 3L;
+  }
+  if (emitAt(home, run, run.hold, run.holdLen) != 0L) {
+    return 2L;
+  }
+  run.holdLen = 0L;
+  return 0L;
+}
+
+/* 收下 b。换行立刻把这段和这个 10 写出，列号回到 0，不另插一个 10。
+   别的字节先看收下之后的列号。超过宽度时：
+   -s 且这段里有空格或制表，就在最后一个这种空白之后补 10，后缀留在下一段。
+   anchor 记着已经写出的空白时，10 补在后缀前面。
+   否则整段写出再补 10。空行上这一字节本身就超宽时先收下，否则会停在同一处。
+   块满了还放得下，先把已经确定的前缀写走。返回 2 表示写失败。 */
+deRfun push(long home, Fold* run, long b): long {
+  long again = 1L;
+  while (again == 1L) {
+    again = 0L;
+    if (b == 10L) {
+      if (run.holdLen > 0L) {
+        if (emitAt(home, run, run.hold, run.holdLen) != 0L) {
+          return 2L;
+        }
+      }
+      if (emitNl(home, run) != 0L) {
+        return 2L;
+      }
+      run.holdLen = 0L;
+      run.column = 0L;
+      run.anchor = 0L;
+      return 0L;
+    }
+    long next = columnAfter(run.column, b, run.byByte);
+    if (next > run.width) {
+      long blankAt = -1L;
+      if (run.breakSpace != 0L) {
+        blankAt = findBlank(run.hold, run.holdLen);
+      }
+      if (blankAt >= 0L) {
+        long head = blankAt + 1L;
+        if (emitAt(home, run, run.hold, head) != 0L) {
+          return 2L;
+        }
+        if (emitNl(home, run) != 0L) {
+          return 2L;
+        }
+        long keep = run.holdLen - head;
+        moveTail(run.hold, head, keep);
+        run.holdLen = keep;
+        run.column = measure(run.hold, run.holdLen, run.byByte);
+        run.anchor = 0L;
+        again = 1L;
+      } else if (run.anchor != 0L) {
+        if (emitNl(home, run) != 0L) {
+          return 2L;
+        }
+        run.column = measure(run.hold, run.holdLen, run.byByte);
+        run.anchor = 0L;
+        again = 1L;
+      } else if (run.holdLen == 0L && run.column == 0L) {
+        putHold(run, b);
+        run.column = next;
+      } else if (run.holdLen == 0L) {
+        if (emitNl(home, run) != 0L) {
+          return 2L;
+        }
+        run.column = 0L;
+        run.anchor = 0L;
+        again = 1L;
+      } else {
+        if (emitAt(home, run, run.hold, run.holdLen) != 0L) {
+          return 2L;
+        }
+        if (emitNl(home, run) != 0L) {
+          return 2L;
+        }
+        run.holdLen = 0L;
+        run.column = 0L;
+        run.anchor = 0L;
+        again = 1L;
+      }
+    } else {
+      long roomed = makeRoom(home, run);
+      if (roomed == 2L) {
+        return 2L;
+      }
+      if (roomed == 3L) {
+        again = 1L;
+      } else {
+        putHold(run, b);
+        run.column = next;
+      }
+    }
+  }
+  return 0L;
+}
+
+/* 文件结束时还留着的那段原样写出，不补 10。输入自己的换行已经在 push 里写出。 */
+deRfun seal(long home, Fold* run): long {
+  if (run.holdLen > 0L) {
+    if (emitAt(home, run, run.hold, run.holdLen) != 0L) {
+      return 2L;
+    }
+    run.holdLen = 0L;
+  }
+  return 0L;
+}
+
+/* 读偏移从这次打开的 0 起，按 slot 320 的实际个数累加。0 个是结束。一次最多 4096。
+   读进字节区开头之后，先抄到第 4096 个八位组之后。写出也用字节区开头，不能把还没看的输入盖掉。
+   返回 0 成功，1 读失败，2 写失败。 */
+deRfun pour(long home, Fold* run, long fd): long {
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, room()) != 0L) {
+      writeErr(home, "fold: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "fold: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > room()) {
+        n = room();
+      }
+      long base = obr::proc::bytes(home);
+      long stash = base + room() * 8L;
+      copySpan(base, stash, n);
+      long index = 0L;
+      while (index < n) {
+        if (push(home, run, u8(stash + index * 8L)) != 0L) {
+          return 2L;
+        }
+        index = index + 1L;
+      }
+      offset = offset + n;
+    }
+  }
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，必须在下一次 read 之前取走。描述符 0 不关。 */
+deRfun pourFile(long home, Fold* run, long addr, long count): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = pour(home, run, fd);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Fold run;
+  run.width = 80L;
+  run.byByte = 0L;
+  run.breakSpace = 0L;
+  run.column = 0L;
+  run.hold = 0L;
+  run.holdLen = 0L;
+  run.anchor = 0L;
+  run.outAt = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 98 是 b，115 是 s，119 是 w。b 和 s 可以连写。w 把剩下的字节当宽度，没有剩下的就用下一个参数。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long flag = u8(at + cursor * 8L);
+        if (flag == 98L) {
+          run.byByte = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 115L) {
+          run.breakSpace = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 119L) {
+          long numAt = 0L;
+          long numLen = 0L;
+          if (cursor + 1L < len) {
+            numAt = at + (cursor + 1L) * 8L;
+            numLen = len - cursor - 1L;
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "fold: invalid width\n");
+              return finish(home, 1L);
+            }
+            numAt = argPtr(home, index);
+            numLen = argLen(home, index);
+            cursor = len;
+          }
+          long width = 0L;
+          if (takeWidth(numAt, numLen, &width) == 0L) {
+            writeErr(home, "fold: invalid width\n");
+            return finish(home, 1L);
+          }
+          run.width = width;
+        } else {
+          writeErr(home, "fold: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  /* 分配单位是位。4096 个八位组，相邻隔 8 位。 */
+  run.hold = obr::proc::alloc(home, room() * 8L);
+  if (run.hold == 0L) {
+    return finish(home, 1L);
+  }
+  long failed = 0L;
+  if (index >= count) {
+    long status = pour(home, &run, 0L);
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = pour(home, &run, 0L);
+    } else {
+      status = pourFile(home, &run, at, len);
+    }
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (seal(home, &run) != 0L) {
+    return finish(home, 1L);
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

@@ -1,0 +1,148 @@
+/* POSIX.1-2017 basename（utilities/basename.html）。
+   形式只有 basename string [suffix]。没有短选项，也不做 -a、-s。
+   以 - 开头的词是路径字符串，-- 同样是一条路径，不当成结束选项。
+   零个操作数写 basename: missing operand，多于两个写 basename: too many arguments。
+   诊断在描述符 2。结果在描述符 1，末尾一个换行。成功退出 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+/* 八位组先搬进读写字节区再 write。一次最多 4096。相邻八位组隔 8 位。 */
+deRfun writeFd(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, offset, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 每个八位组都是斜杠（字节 47）才算。空串不是，结果不能因此变成 / 。 */
+deRfun allSlash(long addr, long count): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) != 47L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 去掉末尾斜杠后的长度。整串都是斜杠时不能走这里，否则会把唯一的 / 也拿掉。 */
+deRfun dropTail(long addr, long count): long {
+  long end = count;
+  while (end > 0L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  return end;
+}
+
+/* 最后一个斜杠的下一格。这一段里没有斜杠时，整段都算最后一段。 */
+deRfun afterSlash(long addr, long end): long {
+  long start = 0L;
+  long index = 0L;
+  while (index < end) {
+    if (u8(addr + index * 8L) == 47L) {
+      start = index + 1L;
+    }
+    index = index + 1L;
+  }
+  return start;
+}
+
+/* 按八位组看剩余段是不是以 suffix 结尾。suffix 更长就不可能是。 */
+deRfun endsWith(long addr, long count, long suf, long sufLen): long {
+  if (sufLen > count) {
+    return 0L;
+  }
+  long index = 0L;
+  long base = count - sufLen;
+  while (index < sufLen) {
+    if (u8(addr + (base + index) * 8L) != u8(suf + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long total = argc(home);
+  if (total < 2L) {
+    writeErr(home, "basename: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (total > 3L) {
+    writeErr(home, "basename: too many arguments\n");
+    return finish(home, 1L);
+  }
+  long at = argPtr(home, 1L);
+  long len = argLen(home, 1L);
+  long start = 0L;
+  long outLen = 0L;
+  if (allSlash(at, len) == 1L) {
+    start = 0L;
+    outLen = 1L;
+  } else {
+    long end = dropTail(at, len);
+    start = afterSlash(at, end);
+    outLen = end - start;
+    if (total == 3L) {
+      long suf = argPtr(home, 2L);
+      long sufLen = argLen(home, 2L);
+      /* 空串不删。和整段相同也不删，否则会得到空结果。不是结尾同样留下。 */
+      if (sufLen > 0L) {
+        if (sufLen != outLen) {
+          if (endsWith(at + start * 8L, outLen, suf, sufLen) == 1L) {
+            outLen = outLen - sufLen;
+          }
+        }
+      }
+    }
+  }
+  writeFd(home, 1L, at + start * 8L, outLen);
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  obr::proc::write(home, 1L, outLen, 1L);
+  return finish(home, 0L);
+}

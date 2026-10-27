@@ -131,6 +131,8 @@ export namespace ZerOS {
       };
       /** 一队显卡命令已经送出，还要等主板做完才回答这次本地执行。 */
       let pendingBurst: { readonly cursor: number; readonly executed: number; readonly fault: string } | null = null;
+      /* carry 把字节写在主板上。这一核心若还留着同一段的旧八位组，下一次装入会读到旧的。 */
+      let carriedSpan: { readonly start: bigint; readonly count: number } | null = null;
       /**
        * 帧指针所在的那个字。0 号核心是 70729728。
        * 其它核心在挂载时加上 核心号 × 槽距，与 obrc -slot 一致。
@@ -261,6 +263,8 @@ export namespace ZerOS {
       let keepOnStore = false;
       let depositBytes: Uint8Array | null = null;
       let depositBit = 0n;
+      let depositParts: Uint8Array[] | null = null;
+      let depositAddresses: bigint[] | null = null;
       let spanBytes: Uint8Array | null = null;
       /** 这段读完要附在加速命令上，而不是交回装入。 */
       let fontHold: { readonly payload: Record<string, unknown>; readonly register: number } | null = null;
@@ -1896,11 +1900,13 @@ export namespace ZerOS {
           const startKey = bit / 8n;
           const endKey = startKey + BigInt(cap);
           let run = cap;
-          for (const key of keptOctets.keys()) {
-            if (key > startKey && key < endKey) {
-              const distance = Number(key - startKey);
-              if (distance < run) {
-                run = distance;
+          if (keptOctets.size > 0) {
+            for (const key of keptOctets.keys()) {
+              if (key > startKey && key < endKey) {
+                const distance = Number(key - startKey);
+                if (distance < run) {
+                  run = distance;
+                }
               }
             }
           }
@@ -2043,7 +2049,7 @@ export namespace ZerOS {
         }
         const bits = accessBits(opcode);
         if (hitsBound(address, bits, checkBound)) {
-          return { kind: "fault", message: "", hostFault: "bound" };
+          return { kind: "fault", message: `${address.toString()}+${String(bits)}`, hostFault: "bound" };
         }
         const data = writing ? readRegister(register) : 0n;
         const frame = address === FrameAddress && opcode === (writing ? Store64 : Load64);
@@ -2129,7 +2135,7 @@ export namespace ZerOS {
         }
         const count = Number(countWord);
         if (count > 0 && hitsBound(address, count * 8, checkBound)) {
-          return { kind: "fault", message: "", hostFault: "bound" };
+          return { kind: "fault", message: `${address.toString()}+${String(count * 8)}`, hostFault: "bound" };
         }
         const portNumber = readNumber(index);
         if (portNumber === null) {
@@ -2167,7 +2173,7 @@ export namespace ZerOS {
         }
         const count = Number(countWord);
         if (count > 0 && hitsBound(address, count * 8, checkBound)) {
-          return { kind: "fault", message: "", hostFault: "bound" };
+          return { kind: "fault", message: `${address.toString()}+${String(count * 8)}`, hostFault: "bound" };
         }
         const portNumber = readNumber(index);
         const handle = readNumber(handleRegister);
@@ -2591,6 +2597,48 @@ export namespace ZerOS {
           }
           return;
         }
+        if (kind === "store-spans-result" && depositActive) {
+          depositActive = false;
+          const parts = depositParts;
+          const addresses = depositAddresses;
+          depositParts = null;
+          depositAddresses = null;
+          const storedOk = record?.["ok"] !== false;
+          const cpuPort = cpu;
+          if (!storedOk || parts === null || addresses === null || parts.length !== addresses.length) {
+            keepOnStore = false;
+            if (cpuPort !== null) {
+              const storedMessage = record?.["message"];
+              cpuPort.postMessage({
+                kind: "stored",
+                ok: false,
+                message: typeof storedMessage === "string" ? storedMessage : `${corePrefix} native store failed`,
+              });
+            }
+            return;
+          }
+          if (!keepOnStore && keptOctets.size > 0) {
+            for (let index = 0; index < parts.length; index += 1) {
+              const payload = parts[index];
+              const bit = addresses[index];
+              if (payload === undefined || bit === undefined) {
+                continue;
+              }
+              const start = bit / 8n;
+              const end = start + BigInt(payload.length);
+              for (const key of keptOctets.keys()) {
+                if (key >= start && key < end) {
+                  keptOctets.delete(key);
+                }
+              }
+            }
+          }
+          keepOnStore = false;
+          if (cpuPort !== null) {
+            cpuPort.postMessage({ kind: "stored", ok: true, message: "" });
+          }
+          return;
+        }
         if (kind === "load-span-result" && spanActive) {
           const spanOk = record?.["ok"] !== false;
           const chunk = record?.["bytes"];
@@ -2606,6 +2654,18 @@ export namespace ZerOS {
         }
         if (kind !== "exec-result" && kind !== "inbox-result" && kind !== "port-result") {
           return;
+        }
+        if (kind === "port-result" && carriedSpan !== null) {
+          const span = carriedSpan;
+          carriedSpan = null;
+          if (record?.["ok"] !== false) {
+            const end = span.start + BigInt(span.count);
+            for (const key of keptOctets.keys()) {
+              if (key >= span.start && key < end) {
+                keptOctets.delete(key);
+              }
+            }
+          }
         }
         waiting = false;
         const ok = record?.["ok"] !== false;
@@ -3047,6 +3107,7 @@ export namespace ZerOS {
         }
         pendingRegister = destination;
         waiting = true;
+        carriedSpan = { start: address / 8n, count };
         port.postMessage({ kind: "carry", port: portNumber, handle, offset, address, count });
       }
 
@@ -3452,7 +3513,14 @@ export namespace ZerOS {
           if (guestCore) {
             queryCache.clear();
           }
-          const outcome = runBurst(start);
+          let outcome: { readonly cursor: number; readonly executed: number; readonly flush: boolean };
+          try {
+            outcome = runBurst(start);
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : `${corePrefix} local execution failed`;
+            port.postMessage({ kind: "burst", ok: false, message, cursor: start, executed: 0 });
+            return;
+          }
           const fault = quietFault;
           quietFault = "";
           if (outcome.flush && heldQueue.length > 0) {
@@ -3666,6 +3734,35 @@ export namespace ZerOS {
           depositBit = address;
           depositActive = true;
           boardPort.postMessage({ kind: "store-span", address, bytes });
+          return;
+        }
+        if (kind === "store-spans") {
+          const addresses = record["addresses"];
+          const parts = record["parts"];
+          const storePort = cpu;
+          if (storePort === null) {
+            return;
+          }
+          const accepted = acceptStoreSpans(addresses, parts);
+          if (depositActive || spanActive || accepted === null) {
+            keepOnStore = false;
+            storePort.postMessage({ kind: "stored", ok: false, message: `${corePrefix} native store failed` });
+            return;
+          }
+          const boardPort = board;
+          if (boardPort === null) {
+            keepOnStore = false;
+            storePort.postMessage({ kind: "stored", ok: false, message: `${corePrefix} native store failed` });
+            return;
+          }
+          depositParts = accepted.parts;
+          depositAddresses = accepted.addresses;
+          depositActive = true;
+          boardPort.postMessage({
+            kind: "store-spans",
+            addresses: accepted.addresses,
+            parts: accepted.parts,
+          });
           return;
         }
         if (kind === "span") {
@@ -3951,6 +4048,34 @@ export namespace ZerOS {
         }
         frameWord = frameHeld ? frame : null;
         return true;
+      }
+
+      /** 多段写入的地址和字节必须成对，并且每一段都能按八位组落下。 */
+      function acceptStoreSpans(
+        addresses: unknown,
+        parts: unknown,
+      ): { readonly addresses: bigint[]; readonly parts: Uint8Array[] } | null {
+        if (!Array.isArray(addresses) || !Array.isArray(parts) || addresses.length !== parts.length) {
+          return null;
+        }
+        if (addresses.length < 2 || addresses.length > 128) {
+          return null;
+        }
+        const acceptedAddresses: bigint[] = [];
+        const acceptedParts: Uint8Array[] = [];
+        for (let index = 0; index < addresses.length; index += 1) {
+          const address = addresses[index];
+          const bytes = parts[index];
+          if (typeof address !== "bigint" || !(bytes instanceof Uint8Array)) {
+            return null;
+          }
+          if (bytes.length < 1 || bytes.length > 262144 || address < 0n || address % 8n !== 0n) {
+            return null;
+          }
+          acceptedAddresses.push(address);
+          acceptedParts.push(bytes);
+        }
+        return { addresses: acceptedAddresses, parts: acceptedParts };
       }
 
       export function acceptCoreMessage(data: unknown): void {

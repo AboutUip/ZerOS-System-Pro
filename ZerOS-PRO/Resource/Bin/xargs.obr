@@ -1,0 +1,713 @@
+/* xargs 的选定行为。
+   形式是 xargs [-n 个数] [实用程序 [参数...]]。从下标 1 起扫。
+   只认 -n。-n 可以写成下一个参数，也可以贴在后面，例如 -n2。
+   个数是十进制，可以有前导 0，至少为 1。0、负数、夹着别的字节，都是
+   xargs: invalid number，退出 1。-n 后面没有个数是 xargs: missing operand，退出 1。
+   后写的 -n 覆盖先写的。不写 -n 时，一次在 64 个参数、8192 个八位组里尽量多带。
+   不认识的选项，包括 -0、-I、-P、-t、-r、-h、--help、--，都是
+   xargs: invalid option，退出 1。单独一个减号是实用程序名，不是选项。
+   第一个不是选项的词就是实用程序，它后面的词都是每次都带上的参数。
+   没有实用程序时用 /bin/echo，参数向量的第 0 条就是这九个字节。
+
+   标准输入按八位组切词，不按码点。分隔字节是空格 32、制表 9、换行 10、回车 13。
+   单引号和双引号里的这些字节留下来，引号本身不交给实用程序。
+   两种引号互不结束，引号可以嵌在词中间，前后文本拼成同一个词。
+   一对空引号是一条长度为 0 的参数，也算一个词。
+   反斜杠在引号内外都只保留后一个字节，后一个字节不再当分隔或引号。
+   反斜杠落在输入末尾就丢掉。引号没合上时，输入结束就把已经开始的词交出去。
+   只有空白时没有词。没有任何词就不派生，退出 0，也不检查实用程序在不在。
+   一个词超过 8192 个八位组是 xargs: argument list too long，退出 1。
+   读失败是 xargs: read error，退出 1。当前这批已经凑齐的词会先派生；
+   子进程不是 0 就改用子进程的状态，不再写读错误。
+
+   每次派生都带上实用程序和它原有的参数，再附上这一批从输入读到的词。
+   -n 限制的是新读到的词，不把原有参数算进去。
+   参数连程序名最多 64 条，八位组一共最多 8192。放不下就先把已经凑齐的一批派出去。
+   连一个新词都放不下，就是 argument list too long，退出 1。
+   名字里有斜杠就按这条路径 stat，否则在 PATH 里按冒号分段。
+   PATH 没有这一条时用 /bin:/os:/kernel。空段是当前目录。
+   段末不是斜杠就补一个。种类是 1 或 5 才算找到，目录和其他种类继续下一段。
+   找不到写 xargs: 名字: No such file or directory，退出 127。名字用用户写的那个，
+   缺省实用程序就写 /bin/echo。
+   找到了但 spawn 失败，写 xargs: 名字: cannot execute，退出 126。
+   子进程状态先收成 0 到 255：负数当 0，大于 255 的取余 256。
+   收成 0 就继续下一批，否则立刻以这个状态退出，不再读、不再派生。
+
+   派生照 env：先把界限起点 +4194304 的 139520 位整段抄出来。
+   每次 spawn 前把这份整段抄回活窗口，环境原样回去，再只改参数。
+   不清整段。参数向量第 0 条是用户写的名字，不是搜到的路径。
+   描述符 0 不关闭。诊断写描述符 2，偏移从 0。一次读写最多 4096 个八位组。
+   alloc 的单位是位。失败写 xargs: out of memory，退出 1。
+   main 经 finish 调 exit。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 139520 位正好是 2180 个 64 位字。按字抄，不经过八位组的符号扩展。 */
+deRfun copyWindow(long from, long to): void {
+  long index = 0L;
+  while (index < 139520L) {
+    memory::store64(memory::load64(from + index), to + index);
+    index = index + 64L;
+  }
+}
+
+deRfun sumLens(long table, long index): long {
+  long filled = 0L;
+  long cursor = 0L;
+  while (cursor < index) {
+    filled = filled + memory::load64(table + cursor * 64L);
+    cursor = cursor + 1L;
+  }
+  return filled;
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun sayMiss(long home, long addr, long count): void {
+  writeErr(home, "xargs: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun sayExec(long home, long addr, long count): void {
+  writeErr(home, "xargs: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": cannot execute\n");
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 种类在 slot 128。必须在这次 stat 之后、下一次系统调用之前抄出来。 */
+deRfun fileKind(long home): long {
+  if (obr::proc::stat(home) != 0L) {
+    return -1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  return kind;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun hasSlash(long addr, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) == 47L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun savedArgLen(long saved, long index): long {
+  return memory::load64(saved + 256L + index * 64L);
+}
+
+deRfun savedArgPtr(long saved, long index): long {
+  return saved + 8448L + sumLens(saved + 256L, index) * 8L;
+}
+
+/* 头上的四个数必须落在限度里，并且和两张长度表加出来的一样。 */
+deRfun windowOk(long saved): long {
+  long argc = memory::load64(saved);
+  long envc = memory::load64(saved + 64L);
+  long argBytes = memory::load64(saved + 128L);
+  long envBytes = memory::load64(saved + 192L);
+  if (argc < 0L || argc > 64L || envc < 0L || envc > 64L) {
+    return 0L;
+  }
+  if (argBytes < 0L || argBytes > 8192L || envBytes < 0L || envBytes > 8192L) {
+    return 0L;
+  }
+  long sum = 0L;
+  long index = 0L;
+  while (index < argc) {
+    long len = savedArgLen(saved, index);
+    if (len < 0L || len > 8192L || sum + len > 8192L) {
+      return 0L;
+    }
+    sum = sum + len;
+    index = index + 1L;
+  }
+  if (sum != argBytes) {
+    return 0L;
+  }
+  sum = 0L;
+  index = 0L;
+  while (index < envc) {
+    long len = memory::load64(saved + 4352L + index * 64L);
+    if (len < 0L || len > 8192L || sum + len > 8192L) {
+      return 0L;
+    }
+    sum = sum + len;
+    index = index + 1L;
+  }
+  if (sum != envBytes) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 组装区：字 0 是条数，字 1 是八位组数。长度从 +128 起，八位组从 +4224 起。
+   64 条长度是 4096 位，再加 8192 个八位组，整块 69760 位。 */
+deRfun clearBatch(long batch): void {
+  memory::store64(0L, batch);
+  memory::store64(0L, batch + 64L);
+  long index = 0L;
+  while (index < 64L) {
+    memory::store64(0L, batch + 128L + index * 64L);
+    index = index + 1L;
+  }
+}
+
+deRfun batchLen(long batch, long index): long {
+  return memory::load64(batch + 128L + index * 64L);
+}
+
+deRfun batchPtr(long batch, long index): long {
+  return batch + 4224L + sumLens(batch + 128L, index) * 8L;
+}
+
+/* 放不下返回 1。条数到 64，或八位组合计超过 8192，都算放不下。 */
+deRfun batchAdd(long batch, long addr, long len): long {
+  long count = memory::load64(batch);
+  long total = memory::load64(batch + 64L);
+  if (len < 0L || len > 8192L || count >= 64L || total + len > 8192L) {
+    return 1L;
+  }
+  if (len > 0L) {
+    copySpan(addr, batch + 4224L + total * 8L, len);
+  }
+  memory::store64(len, batch + 128L + count * 64L);
+  memory::store64(count + 1L, batch);
+  memory::store64(total + len, batch + 64L);
+  return 0L;
+}
+
+deRfun resetBatch(long batch, long prefixArgc, long prefixBytes): void {
+  memory::store64(prefixArgc, batch);
+  memory::store64(prefixBytes, batch + 64L);
+  long index = prefixArgc;
+  while (index < 64L) {
+    memory::store64(0L, batch + 128L + index * 64L);
+    index = index + 1L;
+  }
+}
+
+/* useEcho 不是 0 时，第 0 条是 /bin/echo。否则从 begin 起把原来的参数整段接上。 */
+deRfun loadPrefix(long batch, long saved, long begin, long useEcho): long {
+  clearBatch(batch);
+  if (useEcho == 1L) {
+    long n = putText(batch + 4224L, 0L, "/bin/echo");
+    memory::store64(1L, batch);
+    memory::store64(n, batch + 64L);
+    memory::store64(n, batch + 128L);
+    return 0L;
+  }
+  long argc = memory::load64(saved);
+  long index = begin;
+  while (index < argc) {
+    if (batchAdd(batch, savedArgPtr(saved, index), savedArgLen(saved, index)) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  if (memory::load64(batch) < 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* scratch 前 8192 个八位组拼路径。缺省 PATH 在 +65536，名字 PATH 在 +65664。
+   找到时路径留在 scratch 开头，长度写进 *outLen。 */
+deRfun resolve(long home, long scratch, long name, long nameLen, long* outLen): long {
+  if (hasSlash(name, nameLen) == 1L) {
+    if (nameLen < 1L || nameLen > 8192L) {
+      return 0L;
+    }
+    copySpan(name, scratch, nameLen);
+    plant(home, scratch, nameLen);
+    long kind = fileKind(home);
+    if (kind == 1L || kind == 5L) {
+      *outLen = nameLen;
+      return 1L;
+    }
+    return 0L;
+  }
+  long path = 0L;
+  long pathLen = 0L;
+  long value = 0L;
+  long valueLen = 0L;
+  if (envLookup(home, scratch + 65664L, 4L, &value, &valueLen) == 1L) {
+    path = value;
+    pathLen = valueLen;
+  } else {
+    path = scratch + 65536L;
+    pathLen = putText(path, 0L, "/bin:/os:/kernel");
+  }
+  long cursor = 0L;
+  while (cursor <= pathLen) {
+    long start = cursor;
+    while (cursor < pathLen && u8(path + cursor * 8L) != 58L) {
+      cursor = cursor + 1L;
+    }
+    long compLen = cursor - start;
+    long joined = 0L;
+    long ok = 1L;
+    if (compLen == 0L) {
+      if (nameLen < 0L || nameLen > 8192L) {
+        ok = 0L;
+      } else {
+        if (nameLen > 0L) {
+          copySpan(name, scratch, nameLen);
+        }
+        joined = nameLen;
+      }
+    } else {
+      long extra = 0L;
+      if (u8(path + (start + compLen - 1L) * 8L) != 47L) {
+        extra = 1L;
+      }
+      joined = compLen + extra + nameLen;
+      if (nameLen < 0L || joined > 8192L) {
+        ok = 0L;
+      } else {
+        copySpan(path + start * 8L, scratch, compLen);
+        if (extra == 1L) {
+          memory::storeOctet(47L, scratch + compLen * 8L);
+        }
+        if (nameLen > 0L) {
+          copySpan(name, scratch + (compLen + extra) * 8L, nameLen);
+        }
+      }
+    }
+    if (ok == 1L && joined > 0L) {
+      plant(home, scratch, joined);
+      long kind = fileKind(home);
+      if (kind == 1L || kind == 5L) {
+        *outLen = joined;
+        return 1L;
+      }
+    }
+    if (cursor >= pathLen) {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  return 0L;
+}
+
+/* 先把抄出来的整段放回活窗口，环境就回来了。然后只改参数条数、参数八位组数、
+   64 个参数长度和参数八位组。用不到的参数长度写 0。这里不清 139520 位。 */
+deRfun publish(long home, long saved, long batch): void {
+  long base = home + 65536L * 64L;
+  copyWindow(saved, base);
+  long argcOut = memory::load64(batch);
+  long total = memory::load64(batch + 64L);
+  memory::store64(argcOut, base);
+  memory::store64(total, base + 128L);
+  long index = 0L;
+  while (index < 64L) {
+    long len = 0L;
+    if (index < argcOut) {
+      len = batchLen(batch, index);
+    }
+    memory::store64(len, base + 256L + index * 64L);
+    index = index + 1L;
+  }
+  if (total > 0L) {
+    copySpan(batch + 4224L, base + 8448L, total);
+  }
+}
+
+/* 第一次才解析实用程序。成功返回子进程收成 0 到 255 的状态。找不到是 127，派生失败是 126。 */
+deRfun launch(long home, long saved, long batch, long scratch, long* ready, long* pathLen): long {
+  long name = batchPtr(batch, 0L);
+  long nameLen = batchLen(batch, 0L);
+  if (*ready == 0L) {
+    if (resolve(home, scratch, name, nameLen, pathLen) == 0L) {
+      sayMiss(home, name, nameLen);
+      return 127L;
+    }
+    *ready = 1L;
+  }
+  publish(home, saved, batch);
+  plant(home, scratch, *pathLen);
+  if (obr::proc::spawn(home, 0L) != 0L) {
+    sayExec(home, name, nameLen);
+    return 126L;
+  }
+  long pid = obr::proc::slot(home, 192L);
+  obr::proc::wait(home, pid);
+  long code = obr::proc::slot(home, 192L);
+  if (code < 0L) {
+    code = 0L;
+  }
+  if (code > 255L) {
+    code = code % 256L;
+  }
+  return code;
+}
+
+/* 流：+0 读位置，+64 这一块的长度，+128 文件偏移，+192 已经到结尾，+256 错误。
+   错误 1 是读失败，2 是词超过 8192。缓冲从 +320 起，4096 个八位组。整块 33088 位。 */
+deRfun nextByte(long home, long stream): long {
+  long pos = memory::load64(stream);
+  long len = memory::load64(stream + 64L);
+  if (pos < len) {
+    long byte = u8(stream + 320L + pos * 8L);
+    memory::store64(pos + 1L, stream);
+    return byte;
+  }
+  if (memory::load64(stream + 192L) == 1L) {
+    return -1L;
+  }
+  long offset = memory::load64(stream + 128L);
+  if (obr::proc::read(home, 0L, offset, 4096L) != 0L) {
+    memory::store64(1L, stream + 256L);
+    return -1L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 0L) {
+    memory::store64(1L, stream + 256L);
+    return -1L;
+  }
+  if (n == 0L) {
+    memory::store64(1L, stream + 192L);
+    return -1L;
+  }
+  if (n > 4096L) {
+    n = 4096L;
+  }
+  copySpan(obr::proc::bytes(home), stream + 320L, n);
+  memory::store64(n, stream + 64L);
+  memory::store64(1L, stream);
+  memory::store64(offset + n, stream + 128L);
+  return u8(stream + 320L);
+}
+
+deRfun pushByte(long word, long* len, long value): long {
+  if (*len >= 8192L) {
+    return 1L;
+  }
+  memory::storeOctet(value, word + *len * 8L);
+  *len = *len + 1L;
+  return 0L;
+}
+
+deRfun blank(long byte): long {
+  if (byte == 9L) {
+    return 1L;
+  }
+  if (byte == 10L) {
+    return 1L;
+  }
+  if (byte == 13L) {
+    return 1L;
+  }
+  if (byte == 32L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 得到一个词返回 1，输入结束且没有词返回 0，读失败或词太长返回 -1。
+   模式 0 在引号外，1 是单引号，2 是双引号。反斜杠先于引号处理。 */
+deRfun takeWord(long home, long stream, long word, long* wordLen): long {
+  memory::store64(0L, stream + 256L);
+  *wordLen = 0L;
+  long mode = 0L;
+  long inWord = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    long byte = nextByte(home, stream);
+    if (memory::load64(stream + 256L) != 0L) {
+      return -1L;
+    }
+    if (byte < 0L) {
+      if (inWord == 1L) {
+        return 1L;
+      }
+      return 0L;
+    }
+    if (byte == 92L) {
+      long next = nextByte(home, stream);
+      if (memory::load64(stream + 256L) != 0L) {
+        return -1L;
+      }
+      if (next < 0L) {
+        if (inWord == 1L) {
+          return 1L;
+        }
+        return 0L;
+      }
+      if (pushByte(word, wordLen, next) != 0L) {
+        memory::store64(2L, stream + 256L);
+        return -1L;
+      }
+      inWord = 1L;
+    } else if (mode == 0L && byte == 39L) {
+      mode = 1L;
+      inWord = 1L;
+    } else if (mode == 0L && byte == 34L) {
+      mode = 2L;
+      inWord = 1L;
+    } else if (mode == 1L && byte == 39L) {
+      mode = 0L;
+    } else if (mode == 2L && byte == 34L) {
+      mode = 0L;
+    } else if (mode == 0L && blank(byte) == 1L) {
+      if (inWord == 1L) {
+        return 1L;
+      }
+    } else {
+      if (pushByte(word, wordLen, byte) != 0L) {
+        memory::store64(2L, stream + 256L);
+        return -1L;
+      }
+      inWord = 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 有符号最大值除以 10。乘式拆开，避免 pie 把大立即数当成数据地址。 */
+deRfun maxTen(): long {
+  long hi = 65536L * 65536L * 65536L * 16384L;
+  return (hi - 1L + hi) / 10L;
+}
+
+/* 成功时 *out 至少是 1，并且放得进有符号 64 位。失败返回 0。 */
+deRfun readCount(long addr, long len, long* out): long {
+  if (len < 1L || len > 19L) {
+    return 0L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < len) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    digit = digit - 48L;
+    if (value > maxTen()) {
+      return 0L;
+    }
+    if (value == maxTen() && digit > 7L) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  if (value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 选项在实用程序前面。返回 1 时诊断已经写过。*index 停在实用程序上，没有实用程序就停在末尾。 */
+deRfun parseOpt(long home, long saved, long* index, long* limit): long {
+  long argc = memory::load64(saved);
+  long ended = 0L;
+  while (*index < argc && ended == 0L) {
+    long at = savedArgPtr(saved, *index);
+    long len = savedArgLen(saved, *index);
+    if (len >= 2L && u8(at) == 45L) {
+      if (u8(at + 8L) == 110L) {
+        long numAt = 0L;
+        long numLen = 0L;
+        if (len == 2L) {
+          *index = *index + 1L;
+          if (*index >= argc) {
+            writeErr(home, "xargs: missing operand\n");
+            return 1L;
+          }
+          numAt = savedArgPtr(saved, *index);
+          numLen = savedArgLen(saved, *index);
+        } else {
+          numAt = at + 16L;
+          numLen = len - 2L;
+        }
+        long count = 0L;
+        if (readCount(numAt, numLen, &count) == 0L) {
+          writeErr(home, "xargs: invalid number\n");
+          return 1L;
+        }
+        *limit = count;
+        *index = *index + 1L;
+      } else {
+        writeErr(home, "xargs: invalid option\n");
+        return 1L;
+      }
+    } else {
+      ended = 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  /* 139520 是活窗口。69760 是一批参数。65536 是一个词。
+     33088 是输入流。65728 是路径拼接，末尾留给缺省 PATH 和名字 PATH。 */
+  long saved = obr::proc::alloc(home, 139520L);
+  long batch = obr::proc::alloc(home, 69760L);
+  long word = obr::proc::alloc(home, 65536L);
+  long stream = obr::proc::alloc(home, 33088L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  if (saved == 0L || batch == 0L || word == 0L || stream == 0L || scratch == 0L) {
+    writeErr(home, "xargs: out of memory\n");
+    return finish(home, 1L);
+  }
+  copyWindow(home + 65536L * 64L, saved);
+  if (windowOk(saved) == 0L) {
+    writeErr(home, "xargs: argument list too long\n");
+    return finish(home, 1L);
+  }
+  memory::store64(0L, stream);
+  memory::store64(0L, stream + 64L);
+  memory::store64(0L, stream + 128L);
+  memory::store64(0L, stream + 192L);
+  memory::store64(0L, stream + 256L);
+  putText(scratch + 65664L, 0L, "PATH");
+  long begin = 1L;
+  long limit = 0L;
+  if (parseOpt(home, saved, &begin, &limit) != 0L) {
+    return finish(home, 1L);
+  }
+  long useEcho = 0L;
+  if (begin >= memory::load64(saved)) {
+    useEcho = 1L;
+  }
+  long primed = 0L;
+  long prefixArgc = 0L;
+  long prefixBytes = 0L;
+  long added = 0L;
+  long ready = 0L;
+  long pathLen = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    long wordLen = 0L;
+    long got = takeWord(home, stream, word, &wordLen);
+    if (got < 0L) {
+      if (added > 0L) {
+        long code = launch(home, saved, batch, scratch, &ready, &pathLen);
+        if (code != 0L) {
+          return finish(home, code);
+        }
+      }
+      if (memory::load64(stream + 256L) == 1L) {
+        writeErr(home, "xargs: read error\n");
+      } else {
+        writeErr(home, "xargs: argument list too long\n");
+      }
+      return finish(home, 1L);
+    } else if (got == 0L) {
+      reading = 0L;
+    } else {
+      if (primed == 0L) {
+        if (loadPrefix(batch, saved, begin, useEcho) != 0L) {
+          writeErr(home, "xargs: argument list too long\n");
+          return finish(home, 1L);
+        }
+        prefixArgc = memory::load64(batch);
+        prefixBytes = memory::load64(batch + 64L);
+        primed = 1L;
+      }
+      long fit = batchAdd(batch, word, wordLen);
+      if (fit != 0L) {
+        if (added == 0L) {
+          writeErr(home, "xargs: argument list too long\n");
+          return finish(home, 1L);
+        }
+        long code = launch(home, saved, batch, scratch, &ready, &pathLen);
+        if (code != 0L) {
+          return finish(home, code);
+        }
+        resetBatch(batch, prefixArgc, prefixBytes);
+        added = 0L;
+        if (batchAdd(batch, word, wordLen) != 0L) {
+          writeErr(home, "xargs: argument list too long\n");
+          return finish(home, 1L);
+        }
+      }
+      added = added + 1L;
+      if (limit > 0L) {
+        if (added >= limit) {
+          long code = launch(home, saved, batch, scratch, &ready, &pathLen);
+          if (code != 0L) {
+            return finish(home, code);
+          }
+          resetBatch(batch, prefixArgc, prefixBytes);
+          added = 0L;
+        }
+      }
+    }
+  }
+  if (added > 0L) {
+    long code = launch(home, saved, batch, scratch, &ready, &pathLen);
+    return finish(home, code);
+  }
+  return finish(home, 0L);
+}

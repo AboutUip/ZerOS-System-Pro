@@ -113,6 +113,16 @@ deRfun obr::proc::wait(long home, long pid): long {
   return obr::os::svc(21L);
 }
 
+/* 成功时监督核不回复，调用停在这里。 */
+deRfun obr::proc::exit(long home, long code): long {
+  memory::store64(code, home + 128L);
+  return obr::os::svc(28L);
+}
+
+deRfun obr::proc::getcwd(long home): long {
+  return obr::os::svc(29L);
+}
+
 deRfun obr::proc::alloc(long home, long size): long {
   memory::store64(size, home);
   return obr::os::svc(2L);

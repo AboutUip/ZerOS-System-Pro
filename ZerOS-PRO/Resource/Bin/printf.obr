@@ -1,0 +1,996 @@
+/* POSIX printf。形式是 printf format [argument...]。
+   没有别的选项。只有单独的 -- 结束选项，下一个词就是格式，哪怕以减号开头。
+   没有格式写 printf: missing operand，退出 1。
+   单独一个减号是格式文本，不是选项。其它以减号开头的词也是格式。
+
+   格式里的普通八位组原样写到描述符 1。字节 37 开始一次转换。
+   做了 %、b、c、s、d、i、o、u、x、X。
+   a、A、e、E、f、F、g、G 和别的字母，以及百分号后面缺了转换字符，
+   写 printf: invalid conversion，立刻退出 1。不做浮点。
+
+   走完一遍格式，如果还有没用到的参数，就从格式开头再来一遍。
+   参数用完就停，不会补空串或 0 再多跑一遍。
+   这一遍一个参数都没吃掉、后面却还有词时，丢掉下一个词再重复。
+   那些词没有转换可填，丢掉只是让重复能够结束，词本身不写出来。
+   缺参数时字符串当空串，数字当 0，已经能写的照样写，最后退出 1。
+
+   标志只认减号、加号、空格、数字 0、井号，可以组合，顺序不限。
+   宽度是十进制或一个星号。精度是点后面的十进制，或点后面一个星号。
+   点后面什么都没有，精度就是 0。宽度和精度最大 4096，再大写 printf: invalid width。
+   星号得到负数时，宽度取绝对值并左对齐；精度当成没写。
+   有符号最小值当作宽度会超过 4096。当作精度则是负数，等于没写精度。
+
+   整数可以有一个正负号。0x 或 0X 开头是十六进制。
+   否则前导 0 且后面还有数字是八进制。单独一个 0 是十进制 0。
+   空、有废字、或放不进有符号 64 位，写 printf: invalid number，这一次按 0 写，继续，最终退出 1。
+   %d 和 %i 是有符号十进制。%u、%o、%x、%X 先把负数变成绝对值。
+   有符号最小值没有正的相反数，按 2 的 63 次方写出。不用位移，用乘 8、乘 16、除和余。
+
+   精度是最少数字位，没写就是 1。精度 0 且值是 0 时，数字部分为空。
+   井号给非零的八进制加一个前导 0，给非零的十六进制加 0x 或 0X。值是 0 不加。
+   加号和空格只对有符号转换。0 也算非负：有加号就写加号，否则有空格标志就写一个空格。
+   负数的负号在填充外面。宽度用空格填。
+   标志 0、没有左对齐、也没有精度时，0 填在符号和前缀后面。左对齐只在右边补空格。
+
+   %s 按八位组写，不按 Unicode 标量。精度是最多写多少个八位组，没写就全写。
+   %c 只写第一个八位组，空参数什么都不写。精度、加号、空格、0、井号对 %c、%s、%% 都不参与填充。
+   %b 先解释转义，精度是解释之后最多写多少个八位组。
+   反斜杠本身、a 是 7、b 是 8、f 是 12、n 是 10、r 是 13、t 是 9、v 是 11。
+   接着 1 到 3 位八进制数字是那个值，大于 255 写 printf: invalid escape，退出 1。
+   别的反斜杠加字节就是那个字节。末尾落单的反斜杠也是 invalid escape。
+   反斜杠加 c 立刻停：这一次剩下的不写，格式剩下的不写，也不再重复格式。
+   停之前，已经解释出来的那段仍按宽度补齐。
+
+   描述符 1 的偏移从 0 累加，一次最多 4096。写失败写 printf: write error，退出 1。
+   诊断写描述符 2，偏移从 0。
+   分配 32 个八位组倒着放整数各位，单位是位。失败写 printf: out of memory。
+   状态经 obr::proc::exit 交出，main 仍返回 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 一次转换已经收下的标志、宽度和精度。kind 是转换字节。 */
+struct Field {
+  long left;
+  long plus;
+  long blank;
+  long zero;
+  long hash;
+  long width;
+  long precSet;
+  long prec;
+  long kind;
+}
+
+/* 一次 write 的上限。 */
+deRfun chunkMax(): long {
+  return 4096L;
+}
+
+/* 宽度和精度的上限。再大就拒绝。 */
+deRfun fieldMax(): long {
+  return 4096L;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。不用移位。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断写描述符 2。控制台不看偏移，这一路每次从 0 写。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 字节区开头已经放好 count 个八位组。描述符 1 的偏移从 *place 起，按 slot 320 往下加。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。失败返回 1。 */
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "printf: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "printf: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 把字节区里还没送出的标准输出写完。失败时诊断已经写过。 */
+deRfun flushOut(long home, long* filled, long* place): long {
+  if (*filled > 0L) {
+    if (writeReady(home, place, *filled) != 0L) {
+      return 1L;
+    }
+    *filled = 0L;
+  }
+  return 0L;
+}
+
+/* 先把已经能写的标准输出送走，再写诊断。写标准输出失败则不再写这条诊断。 */
+deRfun note(long home, long* filled, long* place, string text): long {
+  if (flushOut(home, filled, place) != 0L) {
+    return 1L;
+  }
+  writeErr(home, text);
+  return 0L;
+}
+
+deRfun emitByte(long home, long* filled, long* place, long value): long {
+  if (*filled >= chunkMax()) {
+    if (flushOut(home, filled, place) != 0L) {
+      return 1L;
+    }
+  }
+  memory::storeOctet(value, obr::proc::bytes(home) + *filled * 8L);
+  *filled = *filled + 1L;
+  return 0L;
+}
+
+deRfun emitRepeat(long home, long* filled, long* place, long value, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (emitByte(home, filled, place, value) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 从参数或数字缓冲按八位组抄到描述符 1。空的一段什么都不写。 */
+deRfun emitSpan(long home, long* filled, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    if (*filled >= chunkMax()) {
+      if (flushOut(home, filled, place) != 0L) {
+        return 1L;
+      }
+    }
+    long room = chunkMax() - *filled;
+    long piece = count - offset;
+    if (piece > room) {
+      piece = room;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home) + *filled * 8L, piece);
+    *filled = *filled + piece;
+    offset = offset + piece;
+  }
+  return 0L;
+}
+
+/* 字符串里的字符都是数字或字母，标量和八位组相同。 */
+deRfun emitLit(long home, long* filled, long* place, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    if (emitByte(home, filled, place, text[index]) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 按进制取一位。不合法返回 -1。十六进制接受 a–f 和 A–F。 */
+deRfun digitOf(long ch, long radix): long {
+  long value = -1L;
+  if (ch >= 48L && ch <= 57L) {
+    value = ch - 48L;
+  } else if (ch >= 97L && ch <= 102L) {
+    value = ch - 87L;
+  } else if (ch >= 65L && ch <= 70L) {
+    value = ch - 55L;
+  }
+  if (value < 0L || value >= radix) {
+    return -1L;
+  }
+  return value;
+}
+
+/* 再收一位之后：1 仍放得进非负的有符号 64 位，2 正好是 2 的 63 次方，0 已经太大。
+   十进制的 2 的 63 次方是界限上再加 8。八进制和十六进制是界限再加一之后乘上进制。 */
+deRfun grow(long value, long radix, long digit): long {
+  if (radix == 10L) {
+    if (value < 922337203685477580L) {
+      return 1L;
+    }
+    if (value == 922337203685477580L && digit <= 7L) {
+      return 1L;
+    }
+    if (value == 922337203685477580L && digit == 8L) {
+      return 2L;
+    }
+    return 0L;
+  }
+  if (radix == 8L) {
+    if (value < 1152921504606846975L) {
+      return 1L;
+    }
+    if (value == 1152921504606846975L && digit <= 7L) {
+      return 1L;
+    }
+    if (value == 1152921504606846976L && digit == 0L) {
+      return 2L;
+    }
+    return 0L;
+  }
+  if (value < 576460752303423487L) {
+    return 1L;
+  }
+  if (value == 576460752303423487L && digit <= 15L) {
+    return 1L;
+  }
+  if (value == 576460752303423488L && digit == 0L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+/* 成功返回 1。*huge 为 1 时值是有符号最小值，*out 保持 0，正的相反数放不进去。
+   失败返回 0，不改调用方已经准备好的用法：调用方会把结果当成 0。 */
+deRfun takeInt(long at, long len, long* out, long* huge): long {
+  *out = 0L;
+  *huge = 0L;
+  if (len < 1L) {
+    return 0L;
+  }
+  long pos = 0L;
+  long neg = 0L;
+  long first = u8(at);
+  if (first == 43L || first == 45L) {
+    if (first == 45L) {
+      neg = 1L;
+    }
+    pos = 1L;
+  }
+  if (pos >= len) {
+    return 0L;
+  }
+  long radix = 10L;
+  long head = u8(at + pos * 8L);
+  if (pos + 1L < len && head == 48L) {
+    long second = u8(at + (pos + 1L) * 8L);
+    if (second == 120L || second == 88L) {
+      radix = 16L;
+      pos = pos + 2L;
+      if (pos >= len) {
+        return 0L;
+      }
+    } else if (second >= 48L && second <= 57L) {
+      radix = 8L;
+    }
+  }
+  long value = 0L;
+  long saw = 0L;
+  while (pos < len) {
+    long digit = digitOf(u8(at + pos * 8L), radix);
+    if (digit < 0L) {
+      return 0L;
+    }
+    long grew = grow(value, radix, digit);
+    if (grew == 2L) {
+      if (neg == 1L && pos + 1L == len) {
+        *huge = 1L;
+        *out = 0L;
+        return 1L;
+      }
+      return 0L;
+    }
+    if (grew != 1L) {
+      return 0L;
+    }
+    value = value * radix + digit;
+    saw = 1L;
+    pos = pos + 1L;
+  }
+  if (saw == 0L) {
+    return 0L;
+  }
+  if (neg == 1L) {
+    *out = 0L - value;
+  } else {
+    *out = value;
+  }
+  *huge = 0L;
+  return 1L;
+}
+
+/* 还有参数就抄走并返回 1。没有了返回 0，地址和长度都是 0，下标不动。 */
+deRfun pull(long home, long* index, long count, long* addr, long* len): long {
+  if (*index >= count) {
+    *addr = 0L;
+    *len = 0L;
+    return 0L;
+  }
+  *addr = argPtr(home, *index);
+  *len = argLen(home, *index);
+  *index = *index + 1L;
+  return 1L;
+}
+
+/* 下一个参数当成整数。缺了或解不开都得到 0，并记 *bad。
+   解开失败会写 invalid number。写标准输出失败返回 1，其它返回 0。 */
+deRfun readArgInt(long home, long* filled, long* place, long* index, long count, long* bad, long* value, long* huge): long {
+  long addr = 0L;
+  long len = 0L;
+  *value = 0L;
+  *huge = 0L;
+  if (pull(home, index, count, &addr, &len) == 0L) {
+    *bad = 1L;
+    return 0L;
+  }
+  if (takeInt(addr, len, value, huge) == 0L) {
+    if (note(home, filled, place, "printf: invalid number\n") != 0L) {
+      return 1L;
+    }
+    *bad = 1L;
+    *value = 0L;
+    *huge = 0L;
+    return 0L;
+  }
+  return 0L;
+}
+
+/* 格式里的十进制宽度或精度。超过 4096 返回 0。4096 仍然接受。 */
+deRfun readDec(long addr, long len, long* pos, long* out): long {
+  long value = 0L;
+  long saw = 0L;
+  long bound = fieldMax();
+  long step = bound / 10L;
+  long room = bound % 10L;
+  while (*pos < len) {
+    long ch = u8(addr + *pos * 8L);
+    if (ch < 48L || ch > 57L) {
+      break;
+    }
+    long digit = ch - 48L;
+    if (value > step || (value == step && digit > room)) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    saw = 1L;
+    *pos = *pos + 1L;
+  }
+  if (saw == 0L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 低位在前。缓冲只有 32 个八位组。进制不会是 0，除以 0 会停机。 */
+deRfun plantDigits(long buf, long mag, long base, long upper): long {
+  if (base < 2L) {
+    return 0L;
+  }
+  long count = 0L;
+  long rest = mag;
+  while (rest > 0L && count < 32L) {
+    long digit = rest % base;
+    rest = rest / base;
+    long ascii = 48L + digit;
+    if (digit >= 10L) {
+      ascii = 87L + digit;
+      if (upper == 1L) {
+        ascii = 55L + digit;
+      }
+    }
+    memory::storeOctet(ascii, buf + count * 8L);
+    count = count + 1L;
+  }
+  return count;
+}
+
+deRfun emitRev(long home, long* filled, long* place, long buf, long count): long {
+  long index = count;
+  while (index > 0L) {
+    index = index - 1L;
+    if (emitByte(home, filled, place, u8(buf + index * 8L)) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 2 的 63 次方。八进制是 1 和 21 个 0，十六进制是 8 和 15 个 0，十进制是这 19 位。 */
+deRfun hugeText(long base): string {
+  if (base == 8L) {
+    return "1000000000000000000000";
+  }
+  if (base == 16L) {
+    return "8000000000000000";
+  }
+  return "9223372036854775808";
+}
+
+/* 符号在前。八进制前缀一个 0。十六进制前缀 0x 或 0X。 */
+deRfun emitMark(long home, long* filled, long* place, long sign, long signChar, long prefix, long upper): long {
+  if (sign == 1L) {
+    if (emitByte(home, filled, place, signChar) != 0L) {
+      return 1L;
+    }
+  }
+  if (prefix == 1L) {
+    if (emitByte(home, filled, place, 48L) != 0L) {
+      return 1L;
+    }
+  } else if (prefix == 2L) {
+    if (emitByte(home, filled, place, 48L) != 0L) {
+      return 1L;
+    }
+    long mark = 120L;
+    if (upper == 1L) {
+      mark = 88L;
+    }
+    if (emitByte(home, filled, place, mark) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun emitBody(long home, long buf, long* filled, long* place, long raw, long lead, long huge, long base): long {
+  if (emitRepeat(home, filled, place, 48L, lead) != 0L) {
+    return 1L;
+  }
+  if (huge == 1L) {
+    return emitLit(home, filled, place, hugeText(base));
+  }
+  return emitRev(home, filled, place, buf, raw);
+}
+
+/* 按宽度把整数排好。0 标志只在没有精度、也没有左对齐时填在符号和前缀后面。 */
+deRfun emitInt(long home, long buf, long* filled, long* place, Field* field, long value, long huge): long {
+  long base = 10L;
+  long upper = 0L;
+  long signedConv = 0L;
+  if (field.kind == 100L || field.kind == 105L) {
+    signedConv = 1L;
+  } else if (field.kind == 111L) {
+    base = 8L;
+  } else if (field.kind == 120L) {
+    base = 16L;
+  } else if (field.kind == 88L) {
+    base = 16L;
+    upper = 1L;
+  }
+  long mag = value;
+  long negative = 0L;
+  if (huge == 0L && value < 0L) {
+    mag = 0L - value;
+    negative = 1L;
+  }
+  long raw = 0L;
+  if (huge == 1L) {
+    int rawInt = length(hugeText(base));
+    raw = rawInt;
+  } else if (mag > 0L) {
+    raw = plantDigits(buf, mag, base, upper);
+  }
+  long minDigits = 1L;
+  if (field.precSet == 1L) {
+    minDigits = field.prec;
+  }
+  long digitLen = raw;
+  if (minDigits > raw) {
+    digitLen = minDigits;
+  }
+  if (raw == 0L && minDigits == 0L) {
+    digitLen = 0L;
+  }
+  long lead = 0L;
+  if (digitLen > raw) {
+    lead = digitLen - raw;
+  }
+  long sign = 0L;
+  long signChar = 0L;
+  if (signedConv == 1L) {
+    if (huge == 1L || negative == 1L) {
+      sign = 1L;
+      signChar = 45L;
+    } else if (field.plus == 1L) {
+      sign = 1L;
+      signChar = 43L;
+    } else if (field.blank == 1L) {
+      sign = 1L;
+      signChar = 32L;
+    }
+  }
+  long nonZero = 0L;
+  if (huge == 1L || value != 0L) {
+    nonZero = 1L;
+  }
+  long prefix = 0L;
+  if (field.hash == 1L && nonZero == 1L) {
+    if (base == 8L) {
+      prefix = 1L;
+    } else if (base == 16L) {
+      prefix = 2L;
+    }
+  }
+  long core = sign + prefix + digitLen;
+  long pad = 0L;
+  if (field.width > core) {
+    pad = field.width - core;
+  }
+  long padZero = 0L;
+  if (field.zero == 1L && field.left == 0L && field.precSet == 0L) {
+    padZero = 1L;
+  }
+  if (field.left == 1L) {
+    if (emitMark(home, filled, place, sign, signChar, prefix, upper) != 0L) {
+      return 1L;
+    }
+    if (emitBody(home, buf, filled, place, raw, lead, huge, base) != 0L) {
+      return 1L;
+    }
+    return emitRepeat(home, filled, place, 32L, pad);
+  }
+  if (padZero == 1L) {
+    if (emitMark(home, filled, place, sign, signChar, prefix, upper) != 0L) {
+      return 1L;
+    }
+    if (emitRepeat(home, filled, place, 48L, pad) != 0L) {
+      return 1L;
+    }
+    return emitBody(home, buf, filled, place, raw, lead, huge, base);
+  }
+  if (emitRepeat(home, filled, place, 32L, pad) != 0L) {
+    return 1L;
+  }
+  if (emitMark(home, filled, place, sign, signChar, prefix, upper) != 0L) {
+    return 1L;
+  }
+  return emitBody(home, buf, filled, place, raw, lead, huge, base);
+}
+
+/* 右对齐先补空格。len 是实际要写的八位组数，可以是 0。 */
+deRfun emitPlain(long home, long* filled, long* place, long addr, long len, long left, long width): long {
+  long pad = 0L;
+  if (width > len) {
+    pad = width - len;
+  }
+  if (left == 0L) {
+    if (emitRepeat(home, filled, place, 32L, pad) != 0L) {
+      return 1L;
+    }
+  }
+  if (len > 0L) {
+    if (emitSpan(home, filled, place, addr, len) != 0L) {
+      return 1L;
+    }
+  }
+  if (left == 1L) {
+    if (emitRepeat(home, filled, place, 32L, pad) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 从 cursor 取出 %b 的下一个输出字节。kind 0 是一个字节，1 是 \c，2 是非法转义。
+   调用方保证 cursor 还在参数里面。 */
+deRfun nextUnit(long addr, long len, long cursor, long* unit, long* kind): long {
+  *unit = 0L;
+  *kind = 2L;
+  long ch = u8(addr + cursor * 8L);
+  if (ch != 92L) {
+    *unit = ch;
+    *kind = 0L;
+    return cursor + 1L;
+  }
+  if (cursor + 1L >= len) {
+    return cursor;
+  }
+  long next = u8(addr + (cursor + 1L) * 8L);
+  if (next == 92L) {
+    *unit = 92L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next == 97L) {
+    *unit = 7L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next == 98L) {
+    *unit = 8L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next == 99L) {
+    *kind = 1L;
+    return cursor + 2L;
+  }
+  if (next == 102L) {
+    *unit = 12L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next == 110L) {
+    *unit = 10L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next == 114L) {
+    *unit = 13L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next == 116L) {
+    *unit = 9L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next == 118L) {
+    *unit = 11L;
+    *kind = 0L;
+    return cursor + 2L;
+  }
+  if (next >= 48L && next <= 55L) {
+    long value = 0L;
+    long used = 0L;
+    long at = cursor + 1L;
+    while (used < 3L && at < len) {
+      long dig = u8(addr + at * 8L);
+      if (dig < 48L || dig > 55L) {
+        break;
+      }
+      value = value * 8L + (dig - 48L);
+      used = used + 1L;
+      at = at + 1L;
+    }
+    if (value > 255L) {
+      return at;
+    }
+    *unit = value;
+    *kind = 0L;
+    return at;
+  }
+  *unit = next;
+  *kind = 0L;
+  return cursor + 2L;
+}
+
+/* 先把转义走完，确认没有非法转义，再按宽度写出。\c 把 *halt 设成 1。 */
+deRfun emitB(long home, long* filled, long* place, long addr, long len, long left, long width, long precSet, long prec, long* halt): long {
+  long cursor = 0L;
+  long produced = 0L;
+  long stopped = 0L;
+  while (cursor < len && stopped == 0L) {
+    long unit = 0L;
+    long kind = 0L;
+    cursor = nextUnit(addr, len, cursor, &unit, &kind);
+    if (kind == 2L) {
+      if (note(home, filled, place, "printf: invalid escape\n") != 0L) {
+        return 1L;
+      }
+      return 1L;
+    }
+    if (kind == 1L) {
+      stopped = 1L;
+    } else {
+      produced = produced + 1L;
+    }
+  }
+  long show = produced;
+  if (precSet == 1L && prec < show) {
+    show = prec;
+  }
+  long pad = 0L;
+  if (width > show) {
+    pad = width - show;
+  }
+  if (left == 0L) {
+    if (emitRepeat(home, filled, place, 32L, pad) != 0L) {
+      return 1L;
+    }
+  }
+  cursor = 0L;
+  long written = 0L;
+  while (written < show) {
+    long unit = 0L;
+    long kind = 0L;
+    cursor = nextUnit(addr, len, cursor, &unit, &kind);
+    if (kind == 2L) {
+      if (note(home, filled, place, "printf: invalid escape\n") != 0L) {
+        return 1L;
+      }
+      return 1L;
+    }
+    if (kind != 0L) {
+      break;
+    }
+    if (emitByte(home, filled, place, unit) != 0L) {
+      return 1L;
+    }
+    written = written + 1L;
+  }
+  if (left == 1L) {
+    if (emitRepeat(home, filled, place, 32L, pad) != 0L) {
+      return 1L;
+    }
+  }
+  if (stopped == 1L) {
+    *halt = 1L;
+  }
+  return 0L;
+}
+
+/* 从 *cursor 指向的百分号开始，把这一次转换的标志收进 *field。
+   硬错误返回 1，诊断已经写过。成功返回 0，*cursor 停在转换字符后面。 */
+deRfun fillField(long home, long* filled, long* place, long fmt, long fmtLen, long* cursor, long* argIndex, long argCount, long* bad, Field* field): long {
+  long pos = *cursor + 1L;
+  field.left = 0L;
+  field.plus = 0L;
+  field.blank = 0L;
+  field.zero = 0L;
+  field.hash = 0L;
+  field.width = 0L;
+  field.precSet = 0L;
+  field.prec = 0L;
+  field.kind = 0L;
+  while (pos < fmtLen) {
+    long ch = u8(fmt + pos * 8L);
+    if (ch == 45L) {
+      field.left = 1L;
+    } else if (ch == 43L) {
+      field.plus = 1L;
+    } else if (ch == 32L) {
+      field.blank = 1L;
+    } else if (ch == 48L) {
+      field.zero = 1L;
+    } else if (ch == 35L) {
+      field.hash = 1L;
+    } else {
+      break;
+    }
+    pos = pos + 1L;
+  }
+  if (pos < fmtLen) {
+    long ch = u8(fmt + pos * 8L);
+    if (ch == 42L) {
+      pos = pos + 1L;
+      long number = 0L;
+      long huge = 0L;
+      if (readArgInt(home, filled, place, argIndex, argCount, bad, &number, &huge) != 0L) {
+        return 1L;
+      }
+      long bound = fieldMax();
+      if (huge == 1L || number > bound || number < (0L - bound)) {
+        if (note(home, filled, place, "printf: invalid width\n") != 0L) {
+          return 1L;
+        }
+        return 1L;
+      }
+      if (number < 0L) {
+        number = 0L - number;
+        field.left = 1L;
+      }
+      field.width = number;
+    } else if (ch >= 48L && ch <= 57L) {
+      long number = 0L;
+      if (readDec(fmt, fmtLen, &pos, &number) == 0L) {
+        if (note(home, filled, place, "printf: invalid width\n") != 0L) {
+          return 1L;
+        }
+        return 1L;
+      }
+      field.width = number;
+    }
+  }
+  if (pos < fmtLen && u8(fmt + pos * 8L) == 46L) {
+    pos = pos + 1L;
+    field.precSet = 1L;
+    field.prec = 0L;
+    if (pos < fmtLen && u8(fmt + pos * 8L) == 42L) {
+      pos = pos + 1L;
+      long number = 0L;
+      long huge = 0L;
+      if (readArgInt(home, filled, place, argIndex, argCount, bad, &number, &huge) != 0L) {
+        return 1L;
+      }
+      if (huge == 1L || number < 0L) {
+        field.precSet = 0L;
+        field.prec = 0L;
+      } else if (number > fieldMax()) {
+        if (note(home, filled, place, "printf: invalid width\n") != 0L) {
+          return 1L;
+        }
+        return 1L;
+      } else {
+        field.prec = number;
+      }
+    } else if (pos < fmtLen) {
+      long ch = u8(fmt + pos * 8L);
+      if (ch >= 48L && ch <= 57L) {
+        long number = 0L;
+        if (readDec(fmt, fmtLen, &pos, &number) == 0L) {
+          if (note(home, filled, place, "printf: invalid width\n") != 0L) {
+            return 1L;
+          }
+          return 1L;
+        }
+        field.prec = number;
+      }
+    }
+  }
+  if (pos >= fmtLen) {
+    if (note(home, filled, place, "printf: invalid conversion\n") != 0L) {
+      return 1L;
+    }
+    return 1L;
+  }
+  field.kind = u8(fmt + pos * 8L);
+  *cursor = pos + 1L;
+  return 0L;
+}
+
+/* 37 是 %，98 b，99 c，100 d，105 i，111 o，115 s，117 u，120 x，88 X。 */
+deRfun conversion(long home, long buf, long* filled, long* place, long fmt, long fmtLen, long* cursor, long* argIndex, long argCount, long* bad, long* halt): long {
+  Field field;
+  if (fillField(home, filled, place, fmt, fmtLen, cursor, argIndex, argCount, bad, &field) != 0L) {
+    return 1L;
+  }
+  if (field.kind == 37L) {
+    memory::storeOctet(37L, buf);
+    return emitPlain(home, filled, place, buf, 1L, field.left, field.width);
+  }
+  if (field.kind == 98L || field.kind == 99L || field.kind == 115L) {
+    long addr = 0L;
+    long len = 0L;
+    if (pull(home, argIndex, argCount, &addr, &len) == 0L) {
+      *bad = 1L;
+      addr = 0L;
+      len = 0L;
+    }
+    if (field.kind == 98L) {
+      return emitB(home, filled, place, addr, len, field.left, field.width, field.precSet, field.prec, halt);
+    }
+    if (field.kind == 99L) {
+      long show = 0L;
+      if (len > 0L) {
+        show = 1L;
+      }
+      return emitPlain(home, filled, place, addr, show, field.left, field.width);
+    }
+    long show = len;
+    if (field.precSet == 1L && field.prec < len) {
+      show = field.prec;
+    }
+    return emitPlain(home, filled, place, addr, show, field.left, field.width);
+  }
+  if (field.kind == 100L || field.kind == 105L || field.kind == 111L || field.kind == 117L || field.kind == 120L || field.kind == 88L) {
+    long number = 0L;
+    long huge = 0L;
+    if (readArgInt(home, filled, place, argIndex, argCount, bad, &number, &huge) != 0L) {
+      return 1L;
+    }
+    return emitInt(home, buf, filled, place, &field, number, huge);
+  }
+  if (note(home, filled, place, "printf: invalid conversion\n") != 0L) {
+    return 1L;
+  }
+  return 1L;
+}
+
+/* 把格式走一遍。普通八位组原样写。*halt 为 1 时是 %b 里的 \c，调用方不要再重复。 */
+deRfun pass(long home, long buf, long* filled, long* place, long fmt, long fmtLen, long* argIndex, long argCount, long* bad, long* halt): long {
+  long cursor = 0L;
+  while (cursor < fmtLen && *halt == 0L) {
+    long start = cursor;
+    while (cursor < fmtLen) {
+      if (u8(fmt + cursor * 8L) == 37L) {
+        break;
+      }
+      cursor = cursor + 1L;
+    }
+    if (cursor > start) {
+      if (emitSpan(home, filled, place, fmt + start * 8L, cursor - start) != 0L) {
+        return 1L;
+      }
+    }
+    if (cursor < fmtLen && *halt == 0L) {
+      if (conversion(home, buf, filled, place, fmt, fmtLen, &cursor, argIndex, argCount, bad, halt) != 0L) {
+        return 1L;
+      }
+    }
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  if (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "printf: missing operand\n");
+    return finish(home, 1L);
+  }
+  long fmt = argPtr(home, index);
+  long fmtLen = argLen(home, index);
+  index = index + 1L;
+  /* 分配单位是位。32 个八位组倒着放各位，有符号范围内的八进制最多 22 位。
+     %% 也暂存一个百分号在这里。 */
+  long buf = obr::proc::alloc(home, 32L * 8L);
+  if (buf == 0L) {
+    writeErr(home, "printf: out of memory\n");
+    return finish(home, 1L);
+  }
+  long filled = 0L;
+  long place = 0L;
+  long bad = 0L;
+  long argIndex = index;
+  long again = 1L;
+  while (again == 1L) {
+    long mark = argIndex;
+    long halt = 0L;
+    if (pass(home, buf, &filled, &place, fmt, fmtLen, &argIndex, count, &bad, &halt) != 0L) {
+      return finish(home, 1L);
+    }
+    if (halt == 1L || argIndex >= count) {
+      again = 0L;
+    } else if (argIndex == mark) {
+      argIndex = argIndex + 1L;
+    }
+  }
+  if (flushOut(home, &filled, &place) != 0L) {
+    return finish(home, 1L);
+  }
+  if (bad != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

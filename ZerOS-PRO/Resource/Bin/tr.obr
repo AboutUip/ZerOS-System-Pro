@@ -1,0 +1,862 @@
+/* POSIX.1-2017 tr（utilities/tr.html）这一轮。
+   只读标准输入，只写标准输出，没有文件操作数，不关闭描述符 0。
+   形式：
+   tr [-cC] [-s] string1 string2
+   tr -s [-cC] string1
+   tr -d [-cC] string1
+   tr -ds [-cC] string1 string2
+   -- 结束选项。第一个不是选项的词也结束选项。单独一个 - 是字符串，内容是减号。
+   以 - 开头、长度至少 2、又不是单独的 --，按短选项簇解。只允许 c、C、d、s。
+   这一轮 -c 和 -C 相同：按字节 0 到 255 取补，不看区域设置，补集从小到大排。
+   字符串按字节解，不解 UTF-8。string2 比 string1 短时，多出来的源字节不映射。
+   不把 string2 的末字节再重复出去。后写的映射盖过先写的。
+   [c*0] 是零次。[c*] 把 c 重复到和展开后的 string1 一样长，这个长度含补集。
+   删除在映射之前。-d 不用 string2 做映射。压缩在删除和映射之后。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 过滤时留着的状态。map 和 sqz 各 256 个八位组，相邻隔 8 位。
+   deleting 为 1 时，除了字节 255，映射格写成 255 表示删掉。
+   255 读出来在补码下是 -1，和“映射到字节 255”分不开，所以 255 自己记在 drop255。
+   通道的八位组只收 0 到 255，不能把 -1 直接写进去。 */
+struct Tr {
+  long deleting;
+  long drop255;
+  long seen;
+  long last;
+  long place;
+  long map;
+  long sqz;
+  long out;
+}
+
+/* 字符串里下一个已经认出的片段。kind 1 是单个字节，2 是类，3 是重复。
+   err 1 转义，3 类，4 重复。范围和超长由展开那边报。 */
+struct Atom {
+  long kind;
+  long byte;
+  long next;
+  long count;
+  long err;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断写描述符 2，偏移写 0。控制台不看偏移。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 展开用的错误号。1 转义，2 范围，3 类，4 重复，5 太长。 */
+deRfun failCode(long home, long err): int {
+  if (err == 1L) {
+    writeErr(home, "tr: invalid escape\n");
+  } else if (err == 2L) {
+    writeErr(home, "tr: invalid range\n");
+  } else if (err == 3L) {
+    writeErr(home, "tr: invalid class\n");
+  } else if (err == 4L) {
+    writeErr(home, "tr: invalid repeat\n");
+  } else {
+    writeErr(home, "tr: string too long\n");
+  }
+  return finish(home, 1L);
+}
+
+/* 展开结果最多 256 个八位组。放不下就返回 0。 */
+deRfun pushByte(long buf, long* n, long value): long {
+  if (*n >= 256L) {
+    return 0L;
+  }
+  memory::storeOctet(value, buf + *n * 8L);
+  *n = *n + 1L;
+  return 1L;
+}
+
+/* 闭区间。调用方保证 lo 不大于 hi。 */
+deRfun pushSpan(long buf, long* n, long lo, long hi): long {
+  long add = hi - lo + 1L;
+  if (*n + add > 256L) {
+    return 0L;
+  }
+  long value = lo;
+  while (value <= hi) {
+    memory::storeOctet(value, buf + *n * 8L);
+    *n = *n + 1L;
+    value = value + 1L;
+  }
+  return 1L;
+}
+
+/* 左端已经在缓冲里。这里补上它右边直到右端，两端字节值都算进范围。 */
+deRfun pushBetween(long buf, long* n, long left, long right): long {
+  long add = right - left;
+  if (*n + add > 256L) {
+    return 0L;
+  }
+  long value = left + 1L;
+  while (value <= right) {
+    memory::storeOctet(value, buf + *n * 8L);
+    *n = *n + 1L;
+    value = value + 1L;
+  }
+  return 1L;
+}
+
+deRfun sameText(long addr, long len, string text): long {
+  int raw = length(text);
+  long count = raw;
+  if (len != count) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    long want = text[index];
+    if (u8(addr + index * 8L) != want) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 类名按 ASCII。不认识返回 0。编号和 appendClass 同一套。 */
+deRfun classId(long name, long nameLen): long {
+  if (sameText(name, nameLen, "alnum") == 1L) {
+    return 1L;
+  }
+  if (sameText(name, nameLen, "alpha") == 1L) {
+    return 2L;
+  }
+  if (sameText(name, nameLen, "blank") == 1L) {
+    return 3L;
+  }
+  if (sameText(name, nameLen, "cntrl") == 1L) {
+    return 4L;
+  }
+  if (sameText(name, nameLen, "digit") == 1L) {
+    return 5L;
+  }
+  if (sameText(name, nameLen, "graph") == 1L) {
+    return 6L;
+  }
+  if (sameText(name, nameLen, "lower") == 1L) {
+    return 7L;
+  }
+  if (sameText(name, nameLen, "print") == 1L) {
+    return 8L;
+  }
+  if (sameText(name, nameLen, "punct") == 1L) {
+    return 9L;
+  }
+  if (sameText(name, nameLen, "space") == 1L) {
+    return 10L;
+  }
+  if (sameText(name, nameLen, "upper") == 1L) {
+    return 11L;
+  }
+  if (sameText(name, nameLen, "xdigit") == 1L) {
+    return 12L;
+  }
+  return 0L;
+}
+
+/* 类里的字节按值从小到大。punct 是 graph 里不是字母数字的那些。 */
+deRfun appendClass(long buf, long* n, long id): long {
+  if (id == 1L) {
+    if (pushSpan(buf, n, 48L, 57L) == 0L) {
+      return 0L;
+    }
+    if (pushSpan(buf, n, 65L, 90L) == 0L) {
+      return 0L;
+    }
+    return pushSpan(buf, n, 97L, 122L);
+  }
+  if (id == 2L) {
+    if (pushSpan(buf, n, 65L, 90L) == 0L) {
+      return 0L;
+    }
+    return pushSpan(buf, n, 97L, 122L);
+  }
+  if (id == 3L) {
+    if (pushByte(buf, n, 9L) == 0L) {
+      return 0L;
+    }
+    return pushByte(buf, n, 32L);
+  }
+  if (id == 4L) {
+    if (pushSpan(buf, n, 0L, 31L) == 0L) {
+      return 0L;
+    }
+    return pushByte(buf, n, 127L);
+  }
+  if (id == 5L) {
+    return pushSpan(buf, n, 48L, 57L);
+  }
+  if (id == 6L) {
+    return pushSpan(buf, n, 33L, 126L);
+  }
+  if (id == 7L) {
+    return pushSpan(buf, n, 97L, 122L);
+  }
+  if (id == 8L) {
+    return pushSpan(buf, n, 32L, 126L);
+  }
+  if (id == 9L) {
+    if (pushSpan(buf, n, 33L, 47L) == 0L) {
+      return 0L;
+    }
+    if (pushSpan(buf, n, 58L, 64L) == 0L) {
+      return 0L;
+    }
+    if (pushSpan(buf, n, 91L, 96L) == 0L) {
+      return 0L;
+    }
+    return pushSpan(buf, n, 123L, 126L);
+  }
+  if (id == 10L) {
+    if (pushByte(buf, n, 9L) == 0L) {
+      return 0L;
+    }
+    if (pushByte(buf, n, 10L) == 0L) {
+      return 0L;
+    }
+    if (pushByte(buf, n, 11L) == 0L) {
+      return 0L;
+    }
+    if (pushByte(buf, n, 12L) == 0L) {
+      return 0L;
+    }
+    if (pushByte(buf, n, 13L) == 0L) {
+      return 0L;
+    }
+    return pushByte(buf, n, 32L);
+  }
+  if (id == 11L) {
+    return pushSpan(buf, n, 65L, 90L);
+  }
+  if (id == 12L) {
+    if (pushSpan(buf, n, 48L, 57L) == 0L) {
+      return 0L;
+    }
+    if (pushSpan(buf, n, 65L, 70L) == 0L) {
+      return 0L;
+    }
+    return pushSpan(buf, n, 97L, 102L);
+  }
+  return 0L;
+}
+
+/* 反斜杠已经在 i。成功时字节和下一位置写进指针，失败返回 1。 */
+deRfun takeEscape(long at, long len, long i, long* byte, long* next): long {
+  if (i + 1L >= len) {
+    return 1L;
+  }
+  long c = u8(at + (i + 1L) * 8L);
+  if (c == 92L) {
+    *byte = 92L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c == 110L) {
+    *byte = 10L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c == 116L) {
+    *byte = 9L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c == 114L) {
+    *byte = 13L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c == 97L) {
+    *byte = 7L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c == 98L) {
+    *byte = 8L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c == 102L) {
+    *byte = 12L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c == 118L) {
+    *byte = 11L;
+    *next = i + 2L;
+    return 0L;
+  }
+  if (c >= 48L && c <= 55L) {
+    long val = c - 48L;
+    long used = 1L;
+    long more = 1L;
+    while (more == 1L && used < 3L && i + 1L + used < len) {
+      long digit = u8(at + (i + 1L + used) * 8L);
+      if (digit < 48L || digit > 55L) {
+        more = 0L;
+      } else {
+        val = val * 8L + (digit - 48L);
+        used = used + 1L;
+      }
+    }
+    if (val > 255L) {
+      return 1L;
+    }
+    *byte = val;
+    *next = i + 1L + used;
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 一个普通字节，或一条转义。2 表示这里已经没有字节。 */
+deRfun takeOne(long at, long len, long i, long* byte, long* next): long {
+  if (i >= len) {
+    return 2L;
+  }
+  if (u8(at + i * 8L) == 92L) {
+    return takeEscape(at, len, i, byte, next);
+  }
+  *byte = u8(at + i * 8L);
+  *next = i + 1L;
+  return 0L;
+}
+
+/* which 为 1 是 string1。string1 里出现 [c*n] 直接算重复错误。
+   fill 是 [c*] 要重复的次数，等于展开并取补之后的 string1 长度。 */
+deRfun parseAtom(long at, long len, long i, long which, long fill, Atom* atom): void {
+  atom.kind = 0L;
+  atom.byte = 0L;
+  atom.next = i;
+  atom.count = 0L;
+  atom.err = 0L;
+  if (i >= len) {
+    atom.err = 1L;
+    return;
+  }
+  long c = u8(at + i * 8L);
+  if (c == 92L) {
+    long byte = 0L;
+    long next = 0L;
+    if (takeEscape(at, len, i, &byte, &next) != 0L) {
+      atom.err = 1L;
+      return;
+    }
+    atom.kind = 1L;
+    atom.byte = byte;
+    atom.next = next;
+    return;
+  }
+  if (c != 91L) {
+    atom.kind = 1L;
+    atom.byte = c;
+    atom.next = i + 1L;
+    return;
+  }
+  if (i + 1L < len && u8(at + (i + 1L) * 8L) == 58L) {
+    long start = i + 2L;
+    long cursor = start;
+    long closed = 0L;
+    while (closed == 0L && cursor + 1L < len) {
+      if (u8(at + cursor * 8L) == 58L && u8(at + (cursor + 1L) * 8L) == 93L) {
+        closed = 1L;
+      } else {
+        cursor = cursor + 1L;
+      }
+    }
+    if (closed == 0L) {
+      atom.err = 3L;
+      return;
+    }
+    long id = classId(at + start * 8L, cursor - start);
+    if (id == 0L) {
+      atom.err = 3L;
+      return;
+    }
+    atom.kind = 2L;
+    atom.count = id;
+    atom.next = cursor + 2L;
+    return;
+  }
+  if (i + 1L < len && u8(at + (i + 1L) * 8L) == 61L) {
+    long byte = 0L;
+    long next = 0L;
+    long status = takeOne(at, len, i + 2L, &byte, &next);
+    if (status == 1L) {
+      atom.err = 1L;
+      return;
+    }
+    if (status != 0L) {
+      atom.err = 3L;
+      return;
+    }
+    if (next + 1L < len && u8(at + next * 8L) == 61L && u8(at + (next + 1L) * 8L) == 93L) {
+      atom.kind = 1L;
+      atom.byte = byte;
+      atom.next = next + 2L;
+      return;
+    }
+    atom.err = 3L;
+    return;
+  }
+  if (i + 1L < len) {
+    long byte = 0L;
+    long next = 0L;
+    long status = takeOne(at, len, i + 1L, &byte, &next);
+    if (status == 1L) {
+      atom.err = 1L;
+      return;
+    }
+    if (status == 0L && next < len && u8(at + next * 8L) == 42L) {
+      if (which == 1L) {
+        atom.err = 4L;
+        return;
+      }
+      long cursor = next + 1L;
+      if (cursor < len && u8(at + cursor * 8L) == 93L) {
+        atom.kind = 3L;
+        atom.byte = byte;
+        atom.count = fill;
+        atom.next = cursor + 1L;
+        return;
+      }
+      if (cursor >= len) {
+        atom.err = 4L;
+        return;
+      }
+      long first = u8(at + cursor * 8L);
+      if (first < 48L || first > 57L) {
+        atom.err = 4L;
+        return;
+      }
+      long val = 0L;
+      long reading = 1L;
+      while (reading == 1L && cursor < len) {
+        long digit = u8(at + cursor * 8L);
+        if (digit < 48L || digit > 57L) {
+          reading = 0L;
+        } else {
+          val = val * 10L + (digit - 48L);
+          if (val > 256L) {
+            atom.err = 4L;
+            return;
+          }
+          cursor = cursor + 1L;
+        }
+      }
+      if (cursor >= len || u8(at + cursor * 8L) != 93L) {
+        atom.err = 4L;
+        return;
+      }
+      atom.kind = 3L;
+      atom.byte = byte;
+      atom.count = val;
+      atom.next = cursor + 1L;
+      return;
+    }
+  }
+  atom.kind = 1L;
+  atom.byte = 91L;
+  atom.next = i + 1L;
+}
+
+/* 减号两边都是已经解出的单个字节才是范围。类和重复不能当端点。
+   开头、结尾的减号是字面减号。左端大于右端返回 2。 */
+deRfun expandString(long at, long len, long buf, long* n, long which, long fill): long {
+  *n = 0L;
+  long index = 0L;
+  long prevKind = 0L;
+  long prevByte = 0L;
+  Atom atom;
+  while (index < len) {
+    long c = u8(at + index * 8L);
+    if (c == 45L) {
+      if (index + 1L >= len || prevKind == 0L) {
+        if (pushByte(buf, n, 45L) == 0L) {
+          return 5L;
+        }
+        prevKind = 1L;
+        prevByte = 45L;
+        index = index + 1L;
+      } else {
+        parseAtom(at, len, index + 1L, which, fill, &atom);
+        if (atom.err != 0L) {
+          return atom.err;
+        }
+        if (prevKind == 1L && atom.kind == 1L) {
+          if (prevByte > atom.byte) {
+            return 2L;
+          }
+          if (pushBetween(buf, n, prevByte, atom.byte) == 0L) {
+            return 5L;
+          }
+          prevKind = 1L;
+          prevByte = atom.byte;
+          index = atom.next;
+        } else {
+          return 2L;
+        }
+      }
+    } else {
+      parseAtom(at, len, index, which, fill, &atom);
+      if (atom.err != 0L) {
+        return atom.err;
+      }
+      if (atom.kind == 1L) {
+        if (pushByte(buf, n, atom.byte) == 0L) {
+          return 5L;
+        }
+        prevKind = 1L;
+        prevByte = atom.byte;
+      } else if (atom.kind == 2L) {
+        if (appendClass(buf, n, atom.count) == 0L) {
+          return 5L;
+        }
+        prevKind = 2L;
+      } else if (atom.kind == 3L) {
+        long count = 0L;
+        while (count < atom.count) {
+          if (pushByte(buf, n, atom.byte) == 0L) {
+            return 5L;
+          }
+          count = count + 1L;
+        }
+        prevKind = 2L;
+      } else {
+        return 3L;
+      }
+      index = atom.next;
+    }
+  }
+  return 0L;
+}
+
+/* seen 是 256 格的临时集合。补集按字节值从小到大写回 seq。 */
+deRfun complementSet(long seq, long* n, long seen): void {
+  long index = 0L;
+  while (index < 256L) {
+    memory::storeOctet(0L, seen + index * 8L);
+    index = index + 1L;
+  }
+  index = 0L;
+  while (index < *n) {
+    long bit = u8(seq + index * 8L);
+    memory::storeOctet(1L, seen + bit * 8L);
+    index = index + 1L;
+  }
+  long written = 0L;
+  index = 0L;
+  while (index < 256L) {
+    if (u8(seen + index * 8L) == 0L) {
+      memory::storeOctet(index, seq + written * 8L);
+      written = written + 1L;
+    }
+    index = index + 1L;
+  }
+  *n = written;
+}
+
+/* 映射初值是自己。压缩格先清成 0。 */
+deRfun initTables(long map, long sqz): void {
+  long index = 0L;
+  while (index < 256L) {
+    memory::storeOctet(index, map + index * 8L);
+    memory::storeOctet(0L, sqz + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 删掉的格子写成 255。补码读出来是 -1。字节 255 另记。 */
+deRfun markDelete(Tr* run, long seq, long n): void {
+  long index = 0L;
+  while (index < n) {
+    long bit = u8(seq + index * 8L);
+    if (bit == 255L) {
+      run.drop255 = 1L;
+    } else {
+      memory::storeOctet(255L, run.map + bit * 8L);
+    }
+    index = index + 1L;
+  }
+}
+
+/* 只映到 string2 还有字节的那些位置。更长的尾巴丢掉，较短时剩下的源保持初值。 */
+deRfun applyMap(long seq1, long n1, long seq2, long n2, long map): void {
+  long limit = n1;
+  if (n2 < limit) {
+    limit = n2;
+  }
+  long index = 0L;
+  while (index < limit) {
+    long src = u8(seq1 + index * 8L);
+    long dst = u8(seq2 + index * 8L);
+    memory::storeOctet(dst, map + src * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun markSqueeze(long seq, long n, long sqz): void {
+  long index = 0L;
+  while (index < n) {
+    long bit = u8(seq + index * 8L);
+    memory::storeOctet(1L, sqz + bit * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 输出已经放在 run.out。先搬进字节区，写不满就把剩下的挪回开头。 */
+deRfun emitOut(long home, Tr* run, long count): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  copySpan(run.out, obr::proc::bytes(home), count);
+  long pending = count;
+  while (pending > 0L) {
+    if (obr::proc::write(home, 1L, run.place, pending) != 0L) {
+      writeErr(home, "tr: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "tr: write error\n");
+      return 1L;
+    }
+    if (wrote > pending) {
+      wrote = pending;
+    }
+    pending = pending - wrote;
+    run.place = run.place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 先删，再映射，再把压缩集合里连续相同的字节收成一个。状态跨过读块留着。 */
+deRfun filter(Tr* run, long input, long n, long* produced): void {
+  long index = 0L;
+  *produced = 0L;
+  while (index < n) {
+    long bit = u8(input + index * 8L);
+    index = index + 1L;
+    long skip = 0L;
+    if (run.deleting == 1L) {
+      if (bit == 255L) {
+        if (run.drop255 == 1L) {
+          skip = 1L;
+        }
+      } else if (u8(run.map + bit * 8L) == 255L) {
+        skip = 1L;
+      }
+    }
+    if (skip == 0L) {
+      long outB = bit;
+      if (run.deleting == 0L) {
+        outB = u8(run.map + bit * 8L);
+      }
+      long crush = 0L;
+      if (u8(run.sqz + outB * 8L) == 1L && run.seen == 1L && run.last == outB) {
+        crush = 1L;
+      }
+      if (crush == 0L) {
+        memory::storeOctet(outB, run.out + *produced * 8L);
+        *produced = *produced + 1L;
+        run.seen = 1L;
+        run.last = outB;
+      }
+    }
+  }
+}
+
+/* 描述符 0 不关。一次最多读 4096，偏移从 0 累加。个数在 slot 320。 */
+deRfun pour(long home, Tr* run): long {
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, 0L, offset, 4096L) != 0L) {
+      writeErr(home, "tr: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "tr: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long produced = 0L;
+      filter(run, obr::proc::bytes(home), n, &produced);
+      if (emitOut(home, run, produced) != 0L) {
+        return 1L;
+      }
+      offset = offset + n;
+    }
+  }
+  return 0L;
+}
+
+/* 四块 256 加上 4096 的输出。256 * 4 + 4096 = 5120 个八位组，乘 8 是位数。 */
+deRfun blockBits(): long {
+  return 40960L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long complement = 0L;
+  long deleting = 0L;
+  long squeezing = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        /* 99 是 c，67 是 C，100 是 d，115 是 s。 */
+        long bit = u8(at + cursor * 8L);
+        if (bit == 99L || bit == 67L) {
+          complement = 1L;
+        } else if (bit == 100L) {
+          deleting = 1L;
+        } else if (bit == 115L) {
+          squeezing = 1L;
+        } else {
+          writeErr(home, "tr: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long remain = count - index;
+  if (remain < 1L) {
+    writeErr(home, "tr: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (deleting == 1L && squeezing == 0L) {
+    if (remain > 1L) {
+      writeErr(home, "tr: too many arguments\n");
+      return finish(home, 1L);
+    }
+  } else if (deleting == 0L && squeezing == 1L) {
+    if (remain > 2L) {
+      writeErr(home, "tr: too many arguments\n");
+      return finish(home, 1L);
+    }
+  } else {
+    if (remain < 2L) {
+      writeErr(home, "tr: missing operand\n");
+      return finish(home, 1L);
+    }
+    if (remain > 2L) {
+      writeErr(home, "tr: too many arguments\n");
+      return finish(home, 1L);
+    }
+  }
+  long has2 = 0L;
+  if (deleting == 1L && squeezing == 1L) {
+    has2 = 1L;
+  } else if (deleting == 0L && squeezing == 0L) {
+    has2 = 1L;
+  } else if (squeezing == 1L && remain == 2L) {
+    has2 = 1L;
+  }
+  long base = obr::proc::alloc(home, blockBits());
+  long seq1 = base;
+  long seq2 = base + 2048L;
+  long map = base + 4096L;
+  long sqz = base + 6144L;
+  long out = base + 8192L;
+  long len1 = 0L;
+  long err = expandString(argPtr(home, index), argLen(home, index), seq1, &len1, 1L, 0L);
+  if (err != 0L) {
+    return failCode(home, err);
+  }
+  if (complement == 1L) {
+    complementSet(seq1, &len1, sqz);
+  }
+  long len2 = 0L;
+  if (has2 == 1L) {
+    err = expandString(argPtr(home, index + 1L), argLen(home, index + 1L), seq2, &len2, 2L, len1);
+    if (err != 0L) {
+      return failCode(home, err);
+    }
+  }
+  initTables(map, sqz);
+  Tr run;
+  run.deleting = deleting;
+  run.drop255 = 0L;
+  run.seen = 0L;
+  run.last = 0L;
+  run.place = 0L;
+  run.map = map;
+  run.sqz = sqz;
+  run.out = out;
+  if (deleting == 1L) {
+    markDelete(&run, seq1, len1);
+  } else {
+    applyMap(seq1, len1, seq2, len2, map);
+  }
+  if (squeezing == 1L) {
+    if (has2 == 1L) {
+      markSqueeze(seq2, len2, sqz);
+    } else {
+      markSqueeze(seq1, len1, sqz);
+    }
+  }
+  if (pour(home, &run) != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

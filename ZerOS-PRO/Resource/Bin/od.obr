@@ -1,0 +1,1006 @@
+/* POSIX.1-2017 od（utilities/od.html）。形式是
+   od [-v] [-A base] [-j skip] [-N count] [-t type]... [file...]。
+   不做浮点，也不做 8 字节整数：有符号 64 位装不下无符号 64 位。
+   缺省等于 -A o -t o2。每行 16 个输入字节。
+   多个文件按顺序接成一条流，地址不在文件交界处归零。
+   没有文件，或单独一个 -，读标准输入，不关闭描述符 0。
+
+   -- 结束选项。第一个不是选项的参数也结束选项。
+   以 - 开头、长度至少 2、又不是单独的 --，按短选项簇解。
+   只允许 v、A、j、N、t。v 可以重复。
+   A、j、N、t 必须是这一串的最后一个字母。
+   参数可以紧跟在后面（-Ao、-j16、-N8、-tx1），也可以是下一个词。
+   缺参数：od: missing operand，退出 1。
+   别的字母：od: invalid option，立刻退出 1。
+   后写的 -A、-j、-N 覆盖先写的。-t 累加，合计最多 8 个。
+
+   -A 后面正好一个字符：d 十进制，o 八进制，x 十六进制，n 不写地址。
+   别的：od: invalid base。缺省 o。
+   地址固定 7 位，不够左边补 0。十六进制用小写 a–f。
+   超过 7 位时只留低 7 位，对 8 的 7 次方、10 的 7 次方、16 的 7 次方取余。
+   -A n 时行首不写地址，也不写最后那行纯地址。
+
+   -j 先丢掉这么多个输入字节，显示的地址从 skip 起算。
+   -N 是丢掉 skip 之后最多再读的字节。0 表示不再读，按空输入收尾。
+   数字：0x 或 0X 开头是十六进制；否则以 0 开头且后面还有数字是八进制；
+   否则十进制。单独一个 0 是十进制 0。
+   可以有一个后缀：b 乘 512，k 乘 1024，m 乘 1048576。
+   十六进制里 b 是数位，会先被吃掉；k 和 m 不是数位，留在末尾才是后缀。
+   空、负号、别的字、乘出有符号 64 位：od: invalid number。
+
+   -t 可以写多次，也可以在同一个参数里连着写多个类型。
+   再多：od: too many types。没有 -t 时就是一个 o2。解不开：od: invalid type。
+   a 是命名字符，每格三列。c 是字符，可印的三列，带反斜杠的四列。
+   d、u、o、x 后面可以跟 1、2 或 4，不跟就是 4。
+   d 有符号十进制，u 无符号十进制，o 八进制，x 小写十六进制。
+   尺寸 8、f、别的字母都是 invalid type。
+   多字节按小端，用乘 256 累加。不满一个单元的高字节当 0。
+   数字不补前导 0。字段之间一个空格。a 和 c 的每格之间也是一个空格。
+
+   没有 -v 时，连续相同的 16 字节块只在第一次重复时写一行星号。
+   比的是输入字节，不是排好的文字。不满 16 的尾部不参加压缩。
+   收尾时有地址再写一行，内容是 skip 加上参加排版的字节数。
+   打开失败写 od: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败写 od: read error，立刻退出 1。写失败写 od: write error，立刻退出 1。
+   状态经 obr::proc::exit 交出，main 仍返回 0。诊断是英文 ASCII。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 选项。base 为 0 表示 -A n，不写地址。kinds 和 sizes 各 8 个字。
+   0 是 a，1 是 c，2 是 d，3 是 u，4 是 o，5 是 x。尺寸是 1、2 或 4。 */
+struct Opt {
+  long verbose;
+  long base;
+  long skip;
+  long hasCount;
+  long count;
+  long kinds;
+  long sizes;
+  long typeCount;
+}
+
+/* 排版。line 就是字节区开头，因为 write 只从那里取字节。
+   cur 是正在攒的 16 字节，prev 是上一个满块，用来比星号。
+   digits 从低位收下余数，再倒过来写。address 是下一块第一个字节的显示地址。 */
+struct Dump {
+  long home;
+  long outAt;
+  long base;
+  long verbose;
+  long kinds;
+  long sizes;
+  long typeCount;
+  long line;
+  long digits;
+  long cur;
+  long prev;
+  long havePrev;
+  long starred;
+  long address;
+}
+
+/* 接成一条流。fd 为 -1 表示还没打开。描述符 0 的偏移单独记在 stdinOff，
+   因为下一个 - 还是同一条标准输入，不能从 0 再读一遍。 */
+struct In {
+  long home;
+  long index;
+  long argCount;
+  long stdinOnly;
+  long opened;
+  long fd;
+  long off;
+  long stdinOff;
+  long buf;
+  long pos;
+  long len;
+  long failed;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断写描述符 2。控制台不看偏移，这一路每次从 0 写。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径八位组写到标准错误。一次最多 4096。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "od: ");
+  if (count > 0L) {
+    writeErrSpan(home, addr, count);
+  }
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 诊断已经写好。exit 不再返回。 */
+deRfun die(long home, string text): void {
+  writeErr(home, text);
+  obr::proc::exit(home, 1L);
+}
+
+/* 字节区开头已经放好 count 个八位组。描述符 1 的偏移按实际写下的个数往前走。
+   写不满就把剩下的挪回字节区开头再写。失败立刻退出。 */
+deRfun flush(Dump* d, long count): void {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(d.home, 1L, d.outAt, chunk) != 0L) {
+      die(d.home, "od: write error\n");
+      return;
+    }
+    long wrote = obr::proc::slot(d.home, 320L);
+    if (wrote < 1L) {
+      die(d.home, "od: write error\n");
+      return;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    d.outAt = d.outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(d.home) + wrote * 8L, obr::proc::bytes(d.home), pending);
+    }
+  }
+}
+
+/* 按进制取一位。不合法返回 -1。十六进制接受 a–f 和 A–F。 */
+deRfun digitOf(long ch, long radix): long {
+  long value = -1L;
+  if (ch >= 48L && ch <= 57L) {
+    value = ch - 48L;
+  } else if (ch >= 97L && ch <= 102L) {
+    value = ch - 87L;
+  } else if (ch >= 65L && ch <= 70L) {
+    value = ch - 55L;
+  }
+  if (value < 0L || value >= radix) {
+    return -1L;
+  }
+  return value;
+}
+
+/* value * radix + digit 必须放进有符号 64 位。
+   十进制的界限是 922337203685477580，再加的个位不能超过 7。
+   八进制的界限余数也是 7，十六进制的界限余数是 15。 */
+deRfun fitDigit(long value, long radix, long digit): long {
+  long limit = 922337203685477580L;
+  long room = 7L;
+  if (radix == 8L) {
+    limit = 1152921504606846975L;
+    room = 7L;
+  } else if (radix == 16L) {
+    limit = 576460752303423487L;
+    room = 15L;
+  }
+  if (value > limit) {
+    return 0L;
+  }
+  if (value == limit && digit > room) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 成功写成 *out 并返回 1。失败返回 0，不改 *out。
+   后缀 b、k、m 只认小写。乘完仍要放进有符号 64 位。 */
+deRfun takeCount(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long first = u8(at);
+  if (first == 45L) {
+    return 0L;
+  }
+  long radix = 10L;
+  long pos = 0L;
+  if (len >= 2L && first == 48L) {
+    long second = u8(at + 8L);
+    if (second == 120L || second == 88L) {
+      radix = 16L;
+      pos = 2L;
+    } else if (second >= 48L && second <= 57L) {
+      radix = 8L;
+      pos = 0L;
+    }
+  }
+  long value = 0L;
+  long saw = 0L;
+  long stop = 0L;
+  while (pos < len && stop == 0L) {
+    long digit = digitOf(u8(at + pos * 8L), radix);
+    if (digit < 0L) {
+      stop = 1L;
+    } else {
+      if (fitDigit(value, radix, digit) == 0L) {
+        return 0L;
+      }
+      value = value * radix + digit;
+      saw = 1L;
+      pos = pos + 1L;
+    }
+  }
+  if (saw == 0L) {
+    return 0L;
+  }
+  if (pos < len) {
+    if (pos + 1L != len) {
+      return 0L;
+    }
+    long suf = u8(at + pos * 8L);
+    long mult = 0L;
+    if (suf == 98L) {
+      mult = 512L;
+    } else if (suf == 107L) {
+      mult = 1024L;
+    } else if (suf == 109L) {
+      mult = 1048576L;
+    } else {
+      return 0L;
+    }
+    /* 512、1024、1048576 各自的最大乘数。等于这个数仍然乘得下，再大就溢出。 */
+    if (mult == 512L && value > 18014398509481983L) {
+      return 0L;
+    }
+    if (mult == 1024L && value > 9007199254740991L) {
+      return 0L;
+    }
+    if (mult == 1048576L && value > 8796093022207L) {
+      return 0L;
+    }
+    value = value * mult;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* a c d u o x 分别是 0 到 5。别的字母返回 -1。 */
+deRfun kindOf(long ch): long {
+  if (ch == 97L) {
+    return 0L;
+  }
+  if (ch == 99L) {
+    return 1L;
+  }
+  if (ch == 100L) {
+    return 2L;
+  }
+  if (ch == 117L) {
+    return 3L;
+  }
+  if (ch == 111L) {
+    return 4L;
+  }
+  if (ch == 120L) {
+    return 5L;
+  }
+  return -1L;
+}
+
+/* 0 成功，1 是 invalid type，2 是 too many types。
+   d、u、o、x 后面紧跟 1、2、4 才是尺寸，否则当成 4，再看下一个类型。
+   8、f 和别的字都不是类型，整段作废。 */
+deRfun parseTypes(Opt* opt, long at, long len): long {
+  if (len < 1L) {
+    return 1L;
+  }
+  long pos = 0L;
+  while (pos < len) {
+    long kind = kindOf(u8(at + pos * 8L));
+    if (kind < 0L) {
+      return 1L;
+    }
+    long size = 1L;
+    if (kind >= 2L) {
+      size = 4L;
+      if (pos + 1L < len) {
+        long next = u8(at + (pos + 1L) * 8L);
+        if (next == 49L || next == 50L || next == 52L) {
+          size = next - 48L;
+          pos = pos + 2L;
+        } else if (kindOf(next) >= 0L) {
+          pos = pos + 1L;
+        } else {
+          return 1L;
+        }
+      } else {
+        pos = pos + 1L;
+      }
+    } else {
+      pos = pos + 1L;
+    }
+    if (opt.typeCount >= 8L) {
+      return 2L;
+    }
+    memory::store64(kind, opt.kinds + opt.typeCount * 64L);
+    memory::store64(size, opt.sizes + opt.typeCount * 64L);
+    opt.typeCount = opt.typeCount + 1L;
+  }
+  return 0L;
+}
+
+/* 正好一个字符。成功写成 *out。n 写成 0，表示不写地址。 */
+deRfun parseBase(long at, long len, long* out): long {
+  if (len != 1L) {
+    return 0L;
+  }
+  long ch = u8(at);
+  if (ch == 100L) {
+    *out = 10L;
+    return 1L;
+  }
+  if (ch == 111L) {
+    *out = 8L;
+    return 1L;
+  }
+  if (ch == 120L) {
+    *out = 16L;
+    return 1L;
+  }
+  if (ch == 110L) {
+    *out = 0L;
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 0 到 9 用数字，10 到 15 用 a 到 f。87 加 10 是 a。 */
+deRfun digitChar(long digit): long {
+  if (digit >= 10L) {
+    return 87L + digit;
+  }
+  return 48L + digit;
+}
+
+deRfun put(Dump* d, long* used, long ch): void {
+  memory::storeOctet(ch, d.line + *used * 8L);
+  *used = *used + 1L;
+}
+
+/* 固定 7 位。先按进制取余收低位，再从高位写回去，空位是 0。 */
+deRfun putAddress(Dump* d, long* used): void {
+  long span = 2097152L;
+  if (d.base == 10L) {
+    span = 10000000L;
+  }
+  if (d.base == 16L) {
+    span = 268435456L;
+  }
+  long rest = d.address % span;
+  long index = 0L;
+  while (index < 7L) {
+    memory::storeOctet(rest % d.base, d.digits + index * 8L);
+    rest = rest / d.base;
+    index = index + 1L;
+  }
+  while (index > 0L) {
+    index = index - 1L;
+    put(d, used, digitChar(u8(d.digits + index * 8L)));
+  }
+}
+
+/* 不补前导 0。负数先写减号，再写绝对值。0 写成一个 0。 */
+deRfun putNumber(Dump* d, long* used, long value, long radix): void {
+  if (value < 0L) {
+    put(d, used, 45L);
+    value = 0L - value;
+  }
+  if (value == 0L) {
+    put(d, used, 48L);
+    return;
+  }
+  long n = 0L;
+  long rest = value;
+  while (rest > 0L) {
+    memory::storeOctet(rest % radix, d.digits + n * 8L);
+    rest = rest / radix;
+    n = n + 1L;
+  }
+  while (n > 0L) {
+    n = n - 1L;
+    put(d, used, digitChar(u8(d.digits + n * 8L)));
+  }
+}
+
+/* a 的其余字节：三位八进制，左边补 0。1 写成 001，255 写成 377。 */
+deRfun putOctalCell(Dump* d, long* used, long value): void {
+  long n = 0L;
+  long rest = value;
+  while (n < 3L) {
+    memory::storeOctet(rest % 8L, d.digits + n * 8L);
+    rest = rest / 8L;
+    n = n + 1L;
+  }
+  while (n > 0L) {
+    n = n - 1L;
+    put(d, used, 48L + u8(d.digits + n * 8L));
+  }
+}
+
+/* 0 到 32 的名字已经含左边的空格，每格正好三列。127 单独是 del。 */
+deRfun putNamed(Dump* d, long* used, long code): void {
+  if (code == 127L) {
+    put(d, used, 100L);
+    put(d, used, 101L);
+    put(d, used, 108L);
+    return;
+  }
+  string names = "nulsohstxetxeotenqackbel bs ht nl vt ff cr so sidledc1dc2dc3dc4naksynetbcan emsubesc fs gs rs us sp";
+  long slot = code * 3L;
+  put(d, used, names[slot]);
+  put(d, used, names[slot + 1L]);
+  put(d, used, names[slot + 2L]);
+}
+
+/* 带反斜杠的格子一共四列，不够就在左边补空格。 */
+deRfun putEsc(Dump* d, long* used, long mark): void {
+  put(d, used, 32L);
+  put(d, used, 32L);
+  put(d, used, 92L);
+  put(d, used, mark);
+}
+
+/* 32 到 126 除了反斜杠是三列。反斜杠写成两个反斜杠。
+   0、7、8、12、10、13、9、11 分别是 \0 \a \b \f \n \r \t \v。
+   其余不可印字节是反斜杠加三位八进制，不够三位左边补 0。 */
+deRfun putC(Dump* d, long* used, long code): void {
+  if (code >= 32L && code <= 126L && code != 92L) {
+    put(d, used, 32L);
+    put(d, used, 32L);
+    put(d, used, code);
+    return;
+  }
+  if (code == 92L) {
+    putEsc(d, used, 92L);
+    return;
+  }
+  if (code == 0L) {
+    putEsc(d, used, 48L);
+    return;
+  }
+  if (code == 7L) {
+    putEsc(d, used, 97L);
+    return;
+  }
+  if (code == 8L) {
+    putEsc(d, used, 98L);
+    return;
+  }
+  if (code == 12L) {
+    putEsc(d, used, 102L);
+    return;
+  }
+  if (code == 10L) {
+    putEsc(d, used, 110L);
+    return;
+  }
+  if (code == 13L) {
+    putEsc(d, used, 114L);
+    return;
+  }
+  if (code == 9L) {
+    putEsc(d, used, 116L);
+    return;
+  }
+  if (code == 11L) {
+    putEsc(d, used, 118L);
+    return;
+  }
+  long rest = code;
+  long low = rest % 8L;
+  rest = rest / 8L;
+  long mid = rest % 8L;
+  rest = rest / 8L;
+  long high = rest % 8L;
+  put(d, used, 92L);
+  put(d, used, 48L + high);
+  put(d, used, 48L + mid);
+  put(d, used, 48L + low);
+}
+
+/* 从高字节往低字节乘 256。偏移 0 是最低的 8 位。
+   这一格超出 count 的位置是缺的高字节，当成 0。移位只动低 32 位，所以这里不用。 */
+deRfun unitValue(long block, long count, long offset, long size): long {
+  long acc = 0L;
+  long index = size;
+  while (index > 0L) {
+    index = index - 1L;
+    long octet = 0L;
+    long pos = offset + index;
+    if (pos < count) {
+      octet = u8(block + pos * 8L);
+    }
+    acc = acc * 256L + octet;
+  }
+  return acc;
+}
+
+/* 最高位是 1 时收成负数。1 字节减 256，2 字节减 65536，4 字节减 4294967296。 */
+deRfun signedValue(long raw, long size): long {
+  if (size == 1L && raw >= 128L) {
+    return raw - 256L;
+  }
+  if (size == 2L && raw >= 32768L) {
+    return raw - 65536L;
+  }
+  if (size == 4L && raw >= 2147483648L) {
+    return raw - 4294967296L;
+  }
+  return raw;
+}
+
+/* 这一块的第 typeIndex 个类型写一行。n 是这块里真实的输入字节，可以少于 16。
+   有地址时先写 7 位地址，再两个空格。单元个数按尺寸向上取整。 */
+deRfun emitLine(Dump* d, long n, long typeIndex): void {
+  long used = 0L;
+  if (d.base != 0L) {
+    putAddress(d, &used);
+    put(d, &used, 32L);
+    put(d, &used, 32L);
+  }
+  long kind = memory::load64(d.kinds + typeIndex * 64L);
+  long size = memory::load64(d.sizes + typeIndex * 64L);
+  long units = (n + size - 1L) / size;
+  long unit = 0L;
+  while (unit < units) {
+    if (unit > 0L) {
+      put(d, &used, 32L);
+    }
+    long offset = unit * size;
+    if (kind == 0L) {
+      long code = u8(d.cur + offset * 8L);
+      if (code <= 32L || code == 127L) {
+        putNamed(d, &used, code);
+      } else if (code <= 126L) {
+        put(d, &used, 32L);
+        put(d, &used, 32L);
+        put(d, &used, code);
+      } else {
+        putOctalCell(d, &used, code);
+      }
+    } else if (kind == 1L) {
+      putC(d, &used, u8(d.cur + offset * 8L));
+    } else {
+      long raw = unitValue(d.cur, n, offset, size);
+      if (kind == 2L) {
+        raw = signedValue(raw, size);
+      }
+      long radix = 10L;
+      if (kind == 4L) {
+        radix = 8L;
+      }
+      if (kind == 5L) {
+        radix = 16L;
+      }
+      putNumber(d, &used, raw, radix);
+    }
+    unit = unit + 1L;
+  }
+  put(d, &used, 10L);
+  flush(d, used);
+}
+
+deRfun same16(long left, long right): long {
+  long index = 0L;
+  while (index < 16L) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun emitStar(Dump* d): void {
+  memory::storeOctet(42L, d.line);
+  memory::storeOctet(10L, d.line + 8L);
+  flush(d, 2L);
+}
+
+/* 满 16 字节才参加压缩。第一次重复写星号，后面的重复不写。地址照样往前走。 */
+deRfun emitFull(Dump* d): void {
+  if (d.verbose == 0L && d.havePrev == 1L && same16(d.cur, d.prev) == 1L) {
+    if (d.starred == 0L) {
+      emitStar(d);
+      d.starred = 1L;
+    }
+  } else {
+    long index = 0L;
+    while (index < d.typeCount) {
+      emitLine(d, 16L, index);
+      index = index + 1L;
+    }
+    d.starred = 0L;
+  }
+  copySpan(d.cur, d.prev, 16L);
+  d.havePrev = 1L;
+  d.address = d.address + 16L;
+}
+
+/* 尾部不满 16，不和上一块比，每个类型照样写一行。 */
+deRfun emitPartial(Dump* d, long n): void {
+  long index = 0L;
+  while (index < d.typeCount) {
+    emitLine(d, n, index);
+    index = index + 1L;
+  }
+  d.address = d.address + n;
+}
+
+/* 下一字节的地址。-A n 时这一行不写。skip 为 0 且没有输入时就是 7 个 0。 */
+deRfun emitTrailer(Dump* d): void {
+  if (d.base == 0L) {
+    return;
+  }
+  long used = 0L;
+  putAddress(d, &used);
+  put(d, &used, 10L);
+  flush(d, used);
+}
+
+/* 打开下一个文件。标准输入的描述符留着。打不开就记失败并试后面的。
+   成功时描述符立刻从 slot 192 取走。返回 1 还有文件，0 是流结束。 */
+deRfun openNext(In* in): long {
+  if (in.stdinOnly == 1L) {
+    if (in.opened == 1L) {
+      return 0L;
+    }
+    in.fd = 0L;
+    in.off = 0L;
+    in.opened = 1L;
+    return 1L;
+  }
+  while (in.index < in.argCount) {
+    long at = argPtr(in.home, in.index);
+    long len = argLen(in.home, in.index);
+    in.index = in.index + 1L;
+    if (len == 1L && u8(at) == 45L) {
+      in.fd = 0L;
+      in.off = in.stdinOff;
+      return 1L;
+    }
+    if (len < 0L || len > 8192L) {
+      miss(in.home, at, 0L);
+      in.failed = 1L;
+    } else {
+      plant(in.home, at, len);
+      if (obr::proc::open(in.home, 0L) != 0L) {
+        miss(in.home, at, len);
+        in.failed = 1L;
+      } else {
+        in.fd = obr::proc::slot(in.home, 192L);
+        in.off = 0L;
+        return 1L;
+      }
+    }
+  }
+  return 0L;
+}
+
+/* 读一次最多 4096。实际个数在 slot 320，马上抄进自己的缓冲。
+   写也用字节区开头，不抄走的话下一行会把刚读到的字节盖掉。
+   0 个是这个文件结束。读失败立刻退出。 */
+deRfun fill(In* in): long {
+  long going = 1L;
+  while (going == 1L) {
+    if (in.fd < 0L) {
+      if (openNext(in) == 0L) {
+        return 0L;
+      }
+    }
+    if (obr::proc::read(in.home, in.fd, in.off, 4096L) != 0L) {
+      die(in.home, "od: read error\n");
+      return 0L;
+    }
+    long n = obr::proc::slot(in.home, 320L);
+    if (n < 0L) {
+      die(in.home, "od: read error\n");
+      return 0L;
+    }
+    if (n == 0L) {
+      if (in.fd != 0L) {
+        obr::proc::close(in.home, in.fd);
+      } else {
+        in.stdinOff = in.off;
+      }
+      in.fd = -1L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      copySpan(obr::proc::bytes(in.home), in.buf, n);
+      in.pos = 0L;
+      in.len = n;
+      in.off = in.off + n;
+      if (in.fd == 0L) {
+        in.stdinOff = in.off;
+      }
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 返回 1 时 *out 是下一个输入字节。返回 0 是流结束。 */
+deRfun pull(In* in, long* out): long {
+  if (in.pos >= in.len) {
+    if (fill(in) == 0L) {
+      return 0L;
+    }
+  }
+  *out = u8(in.buf + in.pos * 8L);
+  in.pos = in.pos + 1L;
+  return 1L;
+}
+
+/* -N 0 且不用跳过时不读正文，只确认文件在不在。单独的 - 不动描述符 0。 */
+deRfun touch(long home, long at, long len): long {
+  if (len == 1L && u8(at) == 45L) {
+    return 0L;
+  }
+  if (len < 0L || len > 8192L) {
+    miss(home, at, 0L);
+    return 1L;
+  }
+  plant(home, at, len);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, at, len);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Opt opt;
+  opt.verbose = 0L;
+  opt.base = 8L;
+  opt.skip = 0L;
+  opt.hasCount = 0L;
+  opt.count = 0L;
+  opt.typeCount = 0L;
+  opt.kinds = obr::proc::alloc(home, 8L * 64L);
+  opt.sizes = obr::proc::alloc(home, 8L * 64L);
+  if (opt.kinds == 0L || opt.sizes == 0L) {
+    writeErr(home, "od: out of memory\n");
+    return finish(home, 1L);
+  }
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 118 是 v。65、106、78、116 是 A、j、N、t。
+         这四个必须是簇里最后一个字母，剩下的字节就是参数；没有剩下的就用下一个词。
+         内层把 index 拨到那个词上，出了簇再加 1，于是参数本身不会被当成文件。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long flag = u8(at + cursor * 8L);
+        if (flag == 118L) {
+          opt.verbose = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 65L || flag == 106L || flag == 78L || flag == 116L) {
+          long opAt = 0L;
+          long opLen = 0L;
+          if (cursor + 1L < len) {
+            opAt = at + (cursor + 1L) * 8L;
+            opLen = len - cursor - 1L;
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "od: missing operand\n");
+              return finish(home, 1L);
+            }
+            opAt = argPtr(home, index);
+            opLen = argLen(home, index);
+            cursor = len;
+          }
+          if (flag == 65L) {
+            long base = 0L;
+            if (parseBase(opAt, opLen, &base) == 0L) {
+              writeErr(home, "od: invalid base\n");
+              return finish(home, 1L);
+            }
+            opt.base = base;
+          } else if (flag == 106L || flag == 78L) {
+            long number = 0L;
+            if (takeCount(opAt, opLen, &number) == 0L) {
+              writeErr(home, "od: invalid number\n");
+              return finish(home, 1L);
+            }
+            if (flag == 106L) {
+              opt.skip = number;
+            } else {
+              opt.hasCount = 1L;
+              opt.count = number;
+            }
+          } else {
+            long status = parseTypes(&opt, opAt, opLen);
+            if (status == 1L) {
+              writeErr(home, "od: invalid type\n");
+              return finish(home, 1L);
+            }
+            if (status == 2L) {
+              writeErr(home, "od: too many types\n");
+              return finish(home, 1L);
+            }
+          }
+        } else {
+          writeErr(home, "od: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  if (opt.typeCount == 0L) {
+    memory::store64(4L, opt.kinds);
+    memory::store64(2L, opt.sizes);
+    opt.typeCount = 1L;
+  }
+  /* 分配单位是位。读缓冲 4096 个八位组。当前块和上一个满块各 16 个，相邻隔 8 位。
+     余数缓冲 32 个，够放下 32 位八进制的 11 位。 */
+  long readBuf = obr::proc::alloc(home, 4096L * 8L);
+  long cur = obr::proc::alloc(home, 16L * 8L);
+  long prev = obr::proc::alloc(home, 16L * 8L);
+  long digits = obr::proc::alloc(home, 32L * 8L);
+  if (readBuf == 0L || cur == 0L || prev == 0L || digits == 0L) {
+    writeErr(home, "od: out of memory\n");
+    return finish(home, 1L);
+  }
+  Dump dump;
+  dump.home = home;
+  dump.outAt = 0L;
+  dump.base = opt.base;
+  dump.verbose = opt.verbose;
+  dump.kinds = opt.kinds;
+  dump.sizes = opt.sizes;
+  dump.typeCount = opt.typeCount;
+  dump.line = obr::proc::bytes(home);
+  dump.digits = digits;
+  dump.cur = cur;
+  dump.prev = prev;
+  dump.havePrev = 0L;
+  dump.starred = 0L;
+  dump.address = opt.skip;
+  long failed = 0L;
+  if (opt.skip == 0L && opt.hasCount == 1L && opt.count == 0L) {
+    while (index < count) {
+      long at = argPtr(home, index);
+      long len = argLen(home, index);
+      if (touch(home, at, len) != 0L) {
+        failed = 1L;
+      }
+      index = index + 1L;
+    }
+  } else {
+    In in;
+    in.home = home;
+    in.index = index;
+    in.argCount = count;
+    in.stdinOnly = 0L;
+    if (index >= count) {
+      in.stdinOnly = 1L;
+    }
+    in.opened = 0L;
+    in.fd = -1L;
+    in.off = 0L;
+    in.stdinOff = 0L;
+    in.buf = readBuf;
+    in.pos = 0L;
+    in.len = 0L;
+    in.failed = 0L;
+    long left = opt.skip;
+    while (left > 0L) {
+      long octet = 0L;
+      if (pull(&in, &octet) == 0L) {
+        left = 0L;
+      } else {
+        left = left - 1L;
+      }
+    }
+    long remain = opt.count;
+    long blockLen = 0L;
+    long taking = 1L;
+    while (taking == 1L) {
+      if (opt.hasCount == 1L && remain == 0L) {
+        taking = 0L;
+      } else {
+        long octet = 0L;
+        if (pull(&in, &octet) == 0L) {
+          taking = 0L;
+        } else {
+          memory::storeOctet(octet, cur + blockLen * 8L);
+          blockLen = blockLen + 1L;
+          if (opt.hasCount == 1L) {
+            remain = remain - 1L;
+          }
+          if (blockLen == 16L) {
+            emitFull(&dump);
+            blockLen = 0L;
+          }
+        }
+      }
+    }
+    if (blockLen > 0L) {
+      emitPartial(&dump, blockLen);
+    }
+    if (in.failed != 0L) {
+      failed = 1L;
+    }
+  }
+  emitTrailer(&dump);
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

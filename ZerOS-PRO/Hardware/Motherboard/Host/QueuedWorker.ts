@@ -83,7 +83,8 @@ export namespace ZerOS {
        * 开发时装本目录的 BoardDispatch.ts。构建后装同目录的 BoardDispatch.js。
        */
       export function openBoardWorker(): Worker {
-        const moduleUrl = resolveModuleUrl("./BoardDispatch.ts");
+        /* 查询用来躲开上一次主板线程的模块缓存。改了座位上的搬运就要把数字加一。 */
+        const moduleUrl = `${resolveModuleUrl("./BoardDispatch.ts")}?board=1`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Motherboard.acceptBoardMessage",
@@ -106,7 +107,8 @@ export namespace ZerOS {
 
       /** 打开 CPU 主体线程。核心 Worker 另开，不在这里创建。 */
       export function openCpuWorker(): Worker {
-        const moduleUrl = resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts");
+        /* 查询只用来躲开浏览器对上一次核心图的缓存。改了 CpuDispatch 的依赖就要把数字加一。 */
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=9`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCpuMessage",
@@ -116,7 +118,8 @@ export namespace ZerOS {
 
       /** 打开一个核心线程。主板每挂载一个核心调用一次。 */
       export function openCoreWorker(): Worker {
-        const moduleUrl = resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts");
+        /* 和 CPU 主体一样，查询用来躲开上一次核心线程的模块缓存。 */
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts")}?core=1`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCoreMessage",

@@ -1,0 +1,2286 @@
+/* POSIX.1-2017 grep（utilities/grep.html）。
+   形式是 grep [-E 或 -F] [-c -l -q -i -n -s -v -x] [-e 模式]... [-f 文件]... [文件...]。
+   不做 -P -r -R -w -o -A -B -C -m -a -H -h -z，也不做长选项。
+   缺省是基本正则。-E 与 -F 后写的生效。都没写就是 BRE。
+   -c、-l、-q 后写的生效。三者都没写，就按匹配行打印正文。
+   -- 结束选项。第一个不是选项的参数也结束选项，它可能是模式。
+   单独一个 - 不是选项。作为文件或 -f 的参数时，它是标准输入，不关闭描述符 0。
+   短选项簇只允许 E F c l q i n s v x e f。别的字母写 grep: invalid option，立刻退出 2。
+   e 和 f 拿参数，并且必须是这一簇的最后一个字母。
+   这个字母后面还剩的字节就是参数；一个不剩就用下一个参数。
+   所以 -efoo 的模式是 foo，-nfoo 是先打开 -n，再把 oo 当成 -f 的文件。
+   缺参数、或者既没有操作数也没有 -e 或 -f，写 grep: missing operand，退出 2。
+   没有 -e 也没有 -f 时，第一个操作数是一整段模式，不再按换行拆开。
+   有 -e 或 -f 时，不再单独拿模式操作数，剩下的都是文件。没有文件就读标准输入。
+   -e 的参数和 -f 的文件按字节 10 拆开，换行本身不进模式。
+   末尾那一个换行不再多出一个空模式。空的 -e 参数是一个空模式。
+   只有一个换行的参数是一个空模式。两个连续换行是两个空模式。
+   空的 -f 文件是 0 个模式，不算错误。
+   -i 只折叠 ASCII 大写和小写，输出仍是原文。先收齐选项和模式原文再编译，
+   所以 -i 写在 -e 后面也生效。
+   -s 只压掉文件不存在或读失败的诊断。选项、模式、写失败仍要写出来。退出状态仍按错误算。
+   -v 选中不匹配任何一个模式的行。-x 只从位置 0 试，并且必须消耗到行尾。
+   -q 不写标准输出。一旦有选中行，立刻退出 0，后面的文件不再读。
+   前面即使有打开失败，只要这次找到匹配也退出 0。
+   -l 每个有选中行的文件只写一次路径加换行。标准输入的名字固定是 (standard input)，
+   即使它是唯一输入。
+   -c 每个文件写选中行数。多个输入时先写路径、冒号，再写数字和换行。
+   只有一个输入时只写数字和换行。个数是 0 也要写。不打印行本文。
+   普通输出一行只写一次。输入多于一个时，行首是路径和冒号。
+   有 -n 再写从 1 起的十进制行号和冒号，不补零、不补空格。
+   然后是不含换行的正文，最后一定补字节 10。
+   输入末尾没有换行的那一段也算一行。只有一个输入时不加路径前缀。
+   多个输入里的标准输入，前缀用上面那串固定名字。
+   退出状态：有选中行且没有错误是 0；没有选中行且没有错误是 1；发生过错误是 2。
+   打开失败则继续后面的文件，已经写出的保留；最终既有匹配又有打开失败时退出 2。
+   读失败、写失败、行太长、模式非法都立刻退出 2。
+   至多 32 个模式。每个模式不含换行至多 512 个八位组。
+   一个 -f 文件整体至多 8192 个八位组。每个模式至多 4096 条指令。
+   回溯栈至多 1024 帧。超出分别用 pattern too long、too many patterns、
+   pattern too complex、pattern file too large。
+   行不含换行超过 8192 个八位组就是 line too long。正好 8192 仍是一行。
+   一次读或写至多 4096。读入后立刻把字节从系统调用窗口拷走。
+   标准输出偏移从 0 累加。诊断写描述符 2，偏移每次从 0。
+   字符就是八位组。点号匹配除 0 以外的任意一个字节。
+   -F 是字面搜索，不走正则引擎。0 个模式时任何行都不匹配；再加 -v 则每一行都选中。
+   空模式没有 -x 时每一行都匹配；有 -x 时只匹配空行。多个模式是或。
+   直线量词用一帧计数，按个数往回退。带分支的量词每次重复压一帧。
+   量词先尽量多吃，失败再退。匹配到空串之后不再在同一位置打转。
+   匹配函数不递归。结束用服务 28，main 仍返回 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 模式个数、单条模式、模式文件、一行正文。正好卡在上限上仍然合法。 */
+deRfun patMax(): long {
+  return 32L;
+}
+
+deRfun patTextMax(): long {
+  return 512L;
+}
+
+deRfun fileTextMax(): long {
+  return 8192L;
+}
+
+deRfun lineMax(): long {
+  return 8192L;
+}
+
+deRfun chunkMax(): long {
+  return 4096L;
+}
+
+deRfun insMax(): long {
+  return 4096L;
+}
+
+deRfun classMax(): long {
+  return 128L;
+}
+
+/* 复杂量词每个用三个槽。直线量词不占槽。 */
+deRfun slotMax(): long {
+  return 64L;
+}
+
+deRfun frameMax(): long {
+  return 1024L;
+}
+
+/* 帧头 28 个字，后面 64 个槽。0 是备用程序计数器，1 是字符串位置，
+   2 到 19 是九个分组的起点和终点，20 是种类，21 是量词已经吃下的次数。 */
+deRfun frameWords(): long {
+  return 92L;
+}
+
+/* 一条指令八个字，相邻隔 64 位。字 0 是操作码。 */
+deRfun opEnd(): long { return 1L; }
+deRfun opChar(): long { return 2L; }
+deRfun opAny(): long { return 3L; }
+deRfun opClass(): long { return 4L; }
+deRfun opBol(): long { return 5L; }
+deRfun opEol(): long { return 6L; }
+deRfun opSave(): long { return 7L; }
+deRfun opBack(): long { return 8L; }
+deRfun opJump(): long { return 9L; }
+deRfun opSplit(): long { return 10L; }
+deRfun opQrun(): long { return 11L; }
+deRfun opSet(): long { return 12L; }
+deRfun opSeti(): long { return 13L; }
+deRfun opAddi(): long { return 14L; }
+deRfun opJlt(): long { return 15L; }
+deRfun opJeq(): long { return 16L; }
+deRfun opSame(): long { return 17L; }
+
+/* 运行时用的块。caps 是 18 个字，trial 和 snap 也是。stack 是回溯栈。 */
+struct Box {
+  long home;
+  long ere;
+  long fixed;
+  long outMode;
+  long ignore;
+  long number;
+  long silent;
+  long invert;
+  long whole;
+  long pats;
+  long npat;
+  long info;
+  long caps;
+  long slots;
+  long stack;
+  long trial;
+  long snap;
+  long many;
+  long stdinUsed;
+}
+
+/* 编译一个模式。err 1 是非法模式，2 是太复杂。jumps 记下还没填的跳转。 */
+struct Prog {
+  long code;
+  long count;
+  long classes;
+  long classCount;
+  long slotCount;
+  long groups;
+  long ere;
+  long ignore;
+  long err;
+  long jumps;
+  long jumpTop;
+  long scratch;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。不用移位。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun copyWords(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::store64(memory::load64(from + index * 64L), to + index * 64L);
+    index = index + 1L;
+  }
+}
+
+deRfun insAt(long code, long pc): long {
+  return code + pc * 512L;
+}
+
+deRfun word(long code, long pc, long index): long {
+  return memory::load64(insAt(code, pc) + index * 64L);
+}
+
+deRfun putIns(long code, long pc, long op, long a, long b, long c, long d, long e): void {
+  long at = insAt(code, pc);
+  memory::store64(op, at);
+  memory::store64(a, at + 64L);
+  memory::store64(b, at + 128L);
+  memory::store64(c, at + 192L);
+  memory::store64(d, at + 256L);
+  memory::store64(e, at + 320L);
+  memory::store64(0L, at + 384L);
+  memory::store64(0L, at + 448L);
+}
+
+deRfun emit(Prog* p, long op, long a, long b, long c, long d, long e): long {
+  if (p.err != 0L) {
+    return 0L;
+  }
+  if (p.count >= insMax()) {
+    p.err = 2L;
+    return 0L;
+  }
+  long index = p.count;
+  putIns(p.code, index, op, a, b, c, d, e);
+  p.count = index + 1L;
+  return index;
+}
+
+deRfun patch(long code, long pc, long index, long value): void {
+  memory::store64(value, insAt(code, pc) + index * 64L);
+}
+
+/* 诊断写描述符 2。控制台不看偏移，这一路每次从 0 写。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count, long silent): void {
+  if (silent != 0L) {
+    return;
+  }
+  writeErr(home, "grep: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun isDash(long addr, long count): long {
+  if (count == 1L && u8(addr) == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，立刻抄走。描述符 0 留给标准输入。
+   路径超过 8192 也当打不开。失败已经写过诊断，返回 1。 */
+deRfun openRead(long home, long addr, long count, long silent, long* fd): long {
+  if (isDash(addr, count) == 1L) {
+    *fd = 0L;
+    return 0L;
+  }
+  if (count < 0L || count > fileTextMax()) {
+    miss(home, addr, count, silent);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count, silent);
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  return 0L;
+}
+
+deRfun shut(long home, long fd): void {
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+/* 字节区开头已经放好 count 个八位组。描述符 1 的偏移从 *place 起，按 slot 320 往下加。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。失败返回 1。 */
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "grep: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "grep: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun writeText(long home, long* place, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long ch = text[index];
+    memory::storeOctet(ch, obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count == 0L) {
+    return 0L;
+  }
+  return writeReady(home, place, count);
+}
+
+deRfun writeByte(long home, long* place, long bit): long {
+  memory::storeOctet(bit, obr::proc::bytes(home));
+  return writeReady(home, place, 1L);
+}
+
+/* 十进制，不补零。0 也写出一个数字。除数从 1 起，不会除以 0。 */
+deRfun writeDec(long home, long* place, long value): long {
+  if (value == 0L) {
+    return writeByte(home, place, 48L);
+  }
+  long div = 1L;
+  long left = value;
+  while (left >= 10L) {
+    left = left / 10L;
+    div = div * 10L;
+  }
+  long mark = 0L;
+  long base = obr::proc::bytes(home);
+  while (div > 0L) {
+    long digit = value / div;
+    memory::storeOctet(48L + digit, base + mark * 8L);
+    mark = mark + 1L;
+    value = value % div;
+    div = div / 10L;
+  }
+  return writeReady(home, place, mark);
+}
+
+deRfun writeName(long home, long* place, long isIn, long addr, long count): long {
+  if (isIn == 1L) {
+    return writeText(home, place, "(standard input)");
+  }
+  return emitSpan(home, place, addr, count);
+}
+
+/* 只折叠 65 到 90。97 到 122 保持不动，两边都折过再比。 */
+deRfun foldByte(long bit): long {
+  if (bit >= 65L && bit <= 90L) {
+    return bit + 32L;
+  }
+  return bit;
+}
+
+deRfun sameByte(long left, long right, long ignore): long {
+  if (ignore == 1L) {
+    left = foldByte(left);
+    right = foldByte(right);
+  }
+  if (left == right) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun eqSpan(long left, long right, long count, long ignore): long {
+  long index = 0L;
+  while (index < count) {
+    if (sameByte(u8(left + index * 8L), u8(right + index * 8L), ignore) == 0L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 长度字在前 32 个字里。正文从 2048 位起，每条 512 个八位组、隔 8 位。 */
+deRfun patLenAt(long pats, long index): long {
+  return pats + index * 64L;
+}
+
+deRfun patTextAt(long pats, long index): long {
+  return pats + 2048L + index * 4096L;
+}
+
+deRfun addOne(Box* box, long addr, long count): long {
+  if (count > patTextMax()) {
+    writeErr(box.home, "grep: pattern too long\n");
+    return 1L;
+  }
+  if (box.npat >= patMax()) {
+    writeErr(box.home, "grep: too many patterns\n");
+    return 1L;
+  }
+  long index = box.npat;
+  memory::store64(count, patLenAt(box.pats, index));
+  copySpan(addr, patTextAt(box.pats, index), count);
+  box.npat = index + 1L;
+  return 0L;
+}
+
+/* 按字节 10 拆。换行不进模式。末尾的换行不再多一个空模式。长度为 0 时什么也不加。 */
+deRfun splitAdd(Box* box, long addr, long count): long {
+  if (count == 0L) {
+    return 0L;
+  }
+  long start = 0L;
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) == 10L) {
+      if (addOne(box, addr + start * 8L, index - start) != 0L) {
+        return 1L;
+      }
+      start = index + 1L;
+    }
+    index = index + 1L;
+  }
+  if (start < count) {
+    if (addOne(box, addr + start * 8L, count - start) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 把整个文件读进 buf。超过 8192 就停。返回 0 成功，1 失败，诊断已经写过。 */
+deRfun readAll(Box* box, long fd, long buf, long* got): long {
+  long total = 0L;
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(box.home, fd, offset, chunkMax()) != 0L) {
+      if (box.silent == 0L) {
+        writeErr(box.home, "grep: read error\n");
+      }
+      return 1L;
+    }
+    long n = obr::proc::slot(box.home, 320L);
+    if (n < 0L) {
+      if (box.silent == 0L) {
+        writeErr(box.home, "grep: read error\n");
+      }
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > chunkMax()) {
+        n = chunkMax();
+      }
+      if (total + n > fileTextMax()) {
+        writeErr(box.home, "grep: pattern file too large\n");
+        return 1L;
+      }
+      copySpan(obr::proc::bytes(box.home), buf + total * 8L, n);
+      total = total + n;
+      offset = offset + n;
+    }
+  }
+  *got = total;
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun frameAt(long stack, long depth): long {
+  return stack + depth * frameWords() * 64L;
+}
+
+deRfun capAddr(long caps, long group, long which): long {
+  return caps + ((group - 1L) * 2L + which) * 64L;
+}
+
+deRfun mark(long addr, long bit): void {
+  memory::storeOctet(1L, addr + bit * 8L);
+}
+
+deRfun markSpan(long addr, long lo, long hi): void {
+  long bit = lo;
+  while (bit <= hi) {
+    mark(addr, bit);
+    bit = bit + 1L;
+  }
+}
+
+deRfun fillNot(long addr): void {
+  long index = 0L;
+  while (index < 256L) {
+    if (u8(addr + index * 8L) == 0L) {
+      memory::storeOctet(1L, addr + index * 8L);
+    } else {
+      memory::storeOctet(0L, addr + index * 8L);
+    }
+    index = index + 1L;
+  }
+}
+
+/* 类已经编完，包括取补。已经置位的字母，另一个大小写也置位。 */
+deRfun fillCase(long addr): void {
+  long index = 65L;
+  while (index <= 90L) {
+    long up = u8(addr + index * 8L);
+    long lo = u8(addr + (index + 32L) * 8L);
+    if (up != 0L) {
+      mark(addr, index + 32L);
+    }
+    if (lo != 0L) {
+      mark(addr, index);
+    }
+    index = index + 1L;
+  }
+}
+
+deRfun takeClass(Prog* p): long {
+  if (p.err != 0L) {
+    return 0L;
+  }
+  if (p.classCount >= classMax()) {
+    p.err = 2L;
+    return 0L;
+  }
+  long addr = p.classes + p.classCount * 2048L;
+  p.classCount = p.classCount + 1L;
+  long index = 0L;
+  while (index < 256L) {
+    memory::storeOctet(0L, addr + index * 8L);
+    index = index + 1L;
+  }
+  return addr;
+}
+
+deRfun isName(long pat, long at, long count, string text): long {
+  int raw = length(text);
+  long n = raw;
+  if (n != count) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < n) {
+    long ch = text[index];
+    if (u8(pat + (at + index) * 8L) != ch) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun applyName(Prog* p, long addr, long pat, long at, long count): void {
+  if (isName(pat, at, count, "alnum") == 1L) {
+    markSpan(addr, 48L, 57L);
+    markSpan(addr, 65L, 90L);
+    markSpan(addr, 97L, 122L);
+  } else if (isName(pat, at, count, "alpha") == 1L) {
+    markSpan(addr, 65L, 90L);
+    markSpan(addr, 97L, 122L);
+  } else if (isName(pat, at, count, "blank") == 1L) {
+    mark(addr, 9L);
+    mark(addr, 32L);
+  } else if (isName(pat, at, count, "cntrl") == 1L) {
+    markSpan(addr, 0L, 31L);
+    mark(addr, 127L);
+  } else if (isName(pat, at, count, "digit") == 1L) {
+    markSpan(addr, 48L, 57L);
+  } else if (isName(pat, at, count, "graph") == 1L) {
+    markSpan(addr, 33L, 126L);
+  } else if (isName(pat, at, count, "lower") == 1L) {
+    markSpan(addr, 97L, 122L);
+  } else if (isName(pat, at, count, "print") == 1L) {
+    markSpan(addr, 32L, 126L);
+  } else if (isName(pat, at, count, "punct") == 1L) {
+    markSpan(addr, 33L, 47L);
+    markSpan(addr, 58L, 64L);
+    markSpan(addr, 91L, 96L);
+    markSpan(addr, 123L, 126L);
+  } else if (isName(pat, at, count, "space") == 1L) {
+    mark(addr, 9L);
+    mark(addr, 10L);
+    mark(addr, 11L);
+    mark(addr, 12L);
+    mark(addr, 13L);
+    mark(addr, 32L);
+  } else if (isName(pat, at, count, "upper") == 1L) {
+    markSpan(addr, 65L, 90L);
+  } else if (isName(pat, at, count, "xdigit") == 1L) {
+    markSpan(addr, 48L, 57L);
+    markSpan(addr, 65L, 70L);
+    markSpan(addr, 97L, 102L);
+  } else {
+    p.err = 1L;
+  }
+}
+
+/* 返回 1 是单字节，2 是已经填进类里的名字。失败时 err 已经写上，返回 0。 */
+deRfun parseItem(Prog* p, long addr, long pat, long len, long* pos, long* out): long {
+  if (*pos >= len) {
+    p.err = 1L;
+    return 0L;
+  }
+  long bit = u8(pat + *pos * 8L);
+  if (bit == 91L && *pos + 1L < len) {
+    long kind = u8(pat + (*pos + 1L) * 8L);
+    if (kind == 58L || kind == 61L || kind == 46L) {
+      *pos = *pos + 2L;
+      if (kind == 58L) {
+        long ns = *pos;
+        while (*pos < len && u8(pat + *pos * 8L) != 58L) {
+          *pos = *pos + 1L;
+        }
+        long nl = *pos - ns;
+        if (*pos >= len) {
+          p.err = 1L;
+          return 0L;
+        }
+        *pos = *pos + 1L;
+        if (*pos >= len || u8(pat + *pos * 8L) != 93L) {
+          p.err = 1L;
+          return 0L;
+        }
+        *pos = *pos + 1L;
+        applyName(p, addr, pat, ns, nl);
+        if (p.err != 0L) {
+          return 0L;
+        }
+        return 2L;
+      }
+      if (*pos >= len) {
+        p.err = 1L;
+        return 0L;
+      }
+      long ch = u8(pat + *pos * 8L);
+      *pos = *pos + 1L;
+      if (*pos >= len || u8(pat + *pos * 8L) != kind) {
+        p.err = 1L;
+        return 0L;
+      }
+      *pos = *pos + 1L;
+      if (*pos >= len || u8(pat + *pos * 8L) != 93L) {
+        p.err = 1L;
+        return 0L;
+      }
+      *pos = *pos + 1L;
+      *out = ch;
+      return 1L;
+    }
+  }
+  *out = bit;
+  *pos = *pos + 1L;
+  return 1L;
+}
+
+/* pos 指着左方括号。右方括号紧跟在左方括号或取补后面时是字面。
+   减号在类的开头或紧挨着结束的右方括号时是字面。
+   两边都是单字节时做闭区间。区间终点可以接着当下一处减号的左端。 */
+deRfun compileClass(Prog* p, long pat, long len, long* pos): long {
+  if (p.err != 0L) {
+    return 0L;
+  }
+  *pos = *pos + 1L;
+  if (*pos >= len) {
+    p.err = 1L;
+    return 0L;
+  }
+  long neg = 0L;
+  if (u8(pat + *pos * 8L) == 94L) {
+    neg = 1L;
+    *pos = *pos + 1L;
+  }
+  long addr = takeClass(p);
+  if (p.err != 0L) {
+    return 0L;
+  }
+  if (*pos >= len) {
+    p.err = 1L;
+    return 0L;
+  }
+  long prev = 0L;
+  long have = 0L;
+  long begun = 0L;
+  if (u8(pat + *pos * 8L) == 93L) {
+    mark(addr, 93L);
+    prev = 93L;
+    have = 1L;
+    begun = 1L;
+    *pos = *pos + 1L;
+  }
+  while (p.err == 0L && *pos < len && u8(pat + *pos * 8L) != 93L) {
+    long bit = u8(pat + *pos * 8L);
+    if (bit == 45L) {
+      long atEnd = 0L;
+      if (*pos + 1L >= len || u8(pat + (*pos + 1L) * 8L) == 93L) {
+        atEnd = 1L;
+      }
+      if (atEnd == 1L || (have == 0L && begun == 0L)) {
+        mark(addr, 45L);
+        prev = 45L;
+        have = 1L;
+        begun = 1L;
+        *pos = *pos + 1L;
+      } else if (have == 1L) {
+        *pos = *pos + 1L;
+        long ch2 = 0L;
+        long kind2 = parseItem(p, addr, pat, len, pos, &ch2);
+        if (kind2 == 0L) {
+          return 0L;
+        }
+        if (kind2 != 1L || prev > ch2) {
+          p.err = 1L;
+          return 0L;
+        }
+        markSpan(addr, prev, ch2);
+        prev = ch2;
+        have = 1L;
+        begun = 1L;
+      } else {
+        p.err = 1L;
+        return 0L;
+      }
+    } else {
+      long ch = 0L;
+      long kind = parseItem(p, addr, pat, len, pos, &ch);
+      if (kind == 0L) {
+        return 0L;
+      }
+      if (kind == 1L) {
+        mark(addr, ch);
+        prev = ch;
+        have = 1L;
+      } else {
+        have = 0L;
+      }
+      begun = 1L;
+    }
+  }
+  if (*pos >= len || u8(pat + *pos * 8L) != 93L) {
+    p.err = 1L;
+    return 0L;
+  }
+  *pos = *pos + 1L;
+  if (neg == 1L) {
+    fillNot(addr);
+  }
+  if (p.ignore == 1L) {
+    fillCase(addr);
+  }
+  return addr;
+}
+
+deRfun readNum(long pat, long len, long* pos, long* out): long {
+  if (*pos >= len) {
+    return 0L;
+  }
+  long bit = u8(pat + *pos * 8L);
+  if (bit < 48L || bit > 57L) {
+    return 0L;
+  }
+  long val = 0L;
+  while (*pos < len) {
+    bit = u8(pat + *pos * 8L);
+    if (bit < 48L || bit > 57L) {
+      break;
+    }
+    val = val * 10L + (bit - 48L);
+    if (val > 255L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+  }
+  *out = val;
+  return 1L;
+}
+
+deRfun atClose(long ere, long pat, long len, long pos): long {
+  if (pos >= len) {
+    return 0L;
+  }
+  long bit = u8(pat + pos * 8L);
+  if (ere == 1L) {
+    if (bit == 41L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (bit == 92L && pos + 1L < len && u8(pat + (pos + 1L) * 8L) == 41L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun atBar(long ere, long pat, long len, long pos): long {
+  if (ere == 0L || pos >= len) {
+    return 0L;
+  }
+  if (u8(pat + pos * 8L) == 124L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun braceEnd(long ere, long pat, long len, long pos): long {
+  if (ere == 1L) {
+    if (pos < len && u8(pat + pos * 8L) == 125L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (pos + 1L < len && u8(pat + pos * 8L) == 92L && u8(pat + (pos + 1L) * 8L) == 125L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 调用时 pos 指着 { 或反斜杠。成功时吃掉结束括号。maxv 为 -1 表示不封顶。 */
+deRfun parseBrace(Prog* p, long pat, long len, long* pos, long* minv, long* maxv): long {
+  if (p.ere == 0L) {
+    if (*pos + 1L >= len) {
+      p.err = 1L;
+      return 0L;
+    }
+    *pos = *pos + 2L;
+  } else {
+    *pos = *pos + 1L;
+  }
+  long m = 0L;
+  if (readNum(pat, len, pos, &m) == 0L) {
+    p.err = 1L;
+    return 0L;
+  }
+  long n = m;
+  long open = 0L;
+  if (*pos < len && u8(pat + *pos * 8L) == 44L) {
+    *pos = *pos + 1L;
+    if (braceEnd(p.ere, pat, len, *pos) == 1L) {
+      open = 1L;
+      n = -1L;
+    } else {
+      if (readNum(pat, len, pos, &n) == 0L) {
+        p.err = 1L;
+        return 0L;
+      }
+      if (m > n) {
+        p.err = 1L;
+        return 0L;
+      }
+    }
+  }
+  if (braceEnd(p.ere, pat, len, *pos) == 0L) {
+    p.err = 1L;
+    return 0L;
+  }
+  if (p.ere == 1L) {
+    *pos = *pos + 1L;
+  } else {
+    *pos = *pos + 2L;
+  }
+  *minv = m;
+  if (open == 1L) {
+    *maxv = -1L;
+  } else {
+    *maxv = n;
+  }
+  return 1L;
+}
+
+deRfun dollarAnchor(long ere, long pat, long len, long pos): long {
+  long next = pos + 1L;
+  if (next >= len) {
+    return 1L;
+  }
+  if (atClose(ere, pat, len, next) == 1L) {
+    return 1L;
+  }
+  if (atBar(ere, pat, len, next) == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun stopped(long ere, long pat, long len, long pos): long {
+  if (pos >= len) {
+    return 1L;
+  }
+  if (atBar(ere, pat, len, pos) == 1L) {
+    return 1L;
+  }
+  if (atClose(ere, pat, len, pos) == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun pushJump(Prog* p, long hole): void {
+  if (p.err != 0L) {
+    return;
+  }
+  if (p.jumpTop >= 512L) {
+    p.err = 2L;
+    return;
+  }
+  memory::store64(hole, p.jumps + p.jumpTop * 64L);
+  p.jumpTop = p.jumpTop + 1L;
+}
+
+deRfun takeSlot(Prog* p): long {
+  if (p.err != 0L) {
+    return 0L;
+  }
+  if (p.slotCount >= slotMax()) {
+    p.err = 2L;
+    return 0L;
+  }
+  long slot = p.slotCount;
+  p.slotCount = slot + 1L;
+  return slot;
+}
+
+/* 直线原子没有分支、没有嵌套量词。width 为 -1 时，退回必须重放，因为里面有分组或锚点。 */
+deRfun atomKind(long code, long start, long n, long* width): long {
+  long w = 0L;
+  long variable = 0L;
+  long index = 0L;
+  while (index < n) {
+    long op = word(code, start + index, 0L);
+    if (op == opChar() || op == opAny() || op == opClass()) {
+      w = w + 1L;
+    } else if (op == opSave() || op == opBack() || op == opBol() || op == opEol()) {
+      variable = 1L;
+    } else {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  if (variable == 1L) {
+    *width = -1L;
+  } else {
+    *width = w;
+  }
+  return 1L;
+}
+
+/* 把原子里的绝对跳转加上 delta。只改指向指令的那几个字。 */
+deRfun relocIns(long src, long dst, long delta): void {
+  copyWords(src, dst, 8L);
+  long op = memory::load64(dst);
+  if (op == opJump() || op == opQrun()) {
+    memory::store64(memory::load64(dst + 64L) + delta, dst + 64L);
+  } else if (op == opSplit()) {
+    memory::store64(memory::load64(dst + 64L) + delta, dst + 64L);
+    memory::store64(memory::load64(dst + 128L) + delta, dst + 128L);
+  } else if (op == opJlt() || op == opJeq()) {
+    memory::store64(memory::load64(dst + 192L) + delta, dst + 192L);
+  } else if (op == opSame()) {
+    memory::store64(memory::load64(dst + 128L) + delta, dst + 128L);
+    memory::store64(memory::load64(dst + 192L) + delta, dst + 192L);
+  }
+}
+
+/* 直线量词收成一条 QRUN。原子挪到它后面。width 非负时，每次正好吃这么多个字节。 */
+deRfun wrapQrun(Prog* p, long start, long minv, long maxv, long width): void {
+  long atomLen = p.count - start;
+  if (start + 1L + atomLen > insMax()) {
+    p.err = 2L;
+    return;
+  }
+  long index = atomLen;
+  while (index > 0L) {
+    index = index - 1L;
+    copyWords(insAt(p.code, start + index), insAt(p.code, start + 1L + index), 8L);
+  }
+  putIns(p.code, start, opQrun(), start + 1L, atomLen, minv, maxv, width);
+  p.count = start + 1L + atomLen;
+}
+
+/* 带分支或嵌套量词。先尽量多吃，空匹配只计一次，不够下限就让这一条失败。
+   不封顶时前奏是 9 条，封顶时是 11 条，后面再加 9 条收尾。原子整体平移。 */
+deRfun wrapComplex(Prog* p, long start, long minv, long maxv): void {
+  long atomLen = p.count - start;
+  long index = 0L;
+  while (index < atomLen) {
+    copyWords(insAt(p.code, start + index), insAt(p.scratch, index), 8L);
+    index = index + 1L;
+  }
+  long limited = 0L;
+  long delta = 9L;
+  if (maxv >= 0L) {
+    limited = 1L;
+    delta = 11L;
+  }
+  if (start + delta + atomLen + 9L > insMax()) {
+    p.err = 2L;
+    return;
+  }
+  long posSlot = takeSlot(p);
+  long cntSlot = takeSlot(p);
+  long phaseSlot = takeSlot(p);
+  if (p.err != 0L) {
+    return;
+  }
+  p.count = start;
+  emit(p, opSeti(), cntSlot, 0L, 0L, 0L, 0L);
+  long jltMin = emit(p, opJlt(), cntSlot, minv, 0L, 0L, 0L);
+  long jumpExtra = emit(p, opJump(), 0L, 0L, 0L, 0L, 0L);
+  long phase0 = emit(p, opSeti(), phaseSlot, 0L, 0L, 0L, 0L);
+  long jumpAtom1 = emit(p, opJump(), 0L, 0L, 0L, 0L, 0L);
+  long extra = p.count;
+  long jltMax = 0L;
+  long jumpRest1 = 0L;
+  if (limited == 1L) {
+    jltMax = emit(p, opJlt(), cntSlot, maxv, 0L, 0L, 0L);
+    jumpRest1 = emit(p, opJump(), 0L, 0L, 0L, 0L, 0L);
+  }
+  long splitAt = emit(p, opSplit(), 0L, 0L, 0L, 0L, 0L);
+  long phase1 = emit(p, opSeti(), phaseSlot, 1L, 0L, 0L, 0L);
+  long jumpAtom2 = emit(p, opJump(), 0L, 0L, 0L, 0L, 0L);
+  long setPos = emit(p, opSet(), posSlot, 0L, 0L, 0L, 0L);
+  if (p.err != 0L) {
+    return;
+  }
+  index = 0L;
+  while (index < atomLen) {
+    relocIns(insAt(p.scratch, index), insAt(p.code, start + delta + index), delta);
+    index = index + 1L;
+  }
+  p.count = start + delta + atomLen;
+  long sameAt = emit(p, opSame(), posSlot, 0L, 0L, 0L, 0L);
+  long jeqEmpty = emit(p, opJeq(), phaseSlot, 0L, 0L, 0L, 0L);
+  long jumpRest2 = emit(p, opJump(), 0L, 0L, 0L, 0L, 0L);
+  long emptyReq = emit(p, opAddi(), cntSlot, 1L, 0L, 0L, 0L);
+  emit(p, opJlt(), cntSlot, minv, -1L, 0L, 0L);
+  long jumpRestEmpty = emit(p, opJump(), 0L, 0L, 0L, 0L, 0L);
+  long addi = emit(p, opAddi(), cntSlot, 1L, 0L, 0L, 0L);
+  emit(p, opJeq(), phaseSlot, 0L, jltMin, 0L, 0L);
+  emit(p, opJump(), extra, 0L, 0L, 0L, 0L);
+  long rest = p.count;
+  if (p.err != 0L) {
+    return;
+  }
+  patch(p.code, jltMin, 3L, phase0);
+  patch(p.code, jumpExtra, 1L, extra);
+  patch(p.code, jumpAtom1, 1L, setPos);
+  patch(p.code, jumpAtom2, 1L, setPos);
+  if (limited == 1L) {
+    patch(p.code, jltMax, 3L, splitAt);
+    patch(p.code, jumpRest1, 1L, rest);
+  }
+  patch(p.code, splitAt, 1L, phase1);
+  patch(p.code, splitAt, 2L, rest);
+  patch(p.code, sameAt, 2L, jeqEmpty);
+  patch(p.code, sameAt, 3L, addi);
+  patch(p.code, jeqEmpty, 3L, emptyReq);
+  patch(p.code, jumpRest2, 1L, rest);
+  patch(p.code, jumpRestEmpty, 1L, rest);
+}
+
+deRfun wrap(Prog* p, long start, long minv, long maxv): void {
+  if (p.err != 0L) {
+    return;
+  }
+  long n = p.count - start;
+  long width = 0L;
+  if (atomKind(p.code, start, n, &width) == 1L) {
+    wrapQrun(p, start, minv, maxv, width);
+  } else {
+    wrapComplex(p, start, minv, maxv);
+  }
+}
+
+deRfun compileGroup(Prog* p, long pat, long len, long* pos): void {
+  if (p.err != 0L) {
+    return;
+  }
+  if (p.groups >= 9L) {
+    p.err = 1L;
+    return;
+  }
+  if (p.ere == 1L) {
+    *pos = *pos + 1L;
+  } else {
+    *pos = *pos + 2L;
+  }
+  p.groups = p.groups + 1L;
+  long group = p.groups;
+  emit(p, opSave(), group, 0L, 0L, 0L, 0L);
+  compileExpr(p, pat, len, pos, 1L);
+  if (p.err != 0L) {
+    return;
+  }
+  if (atClose(p.ere, pat, len, *pos) == 0L) {
+    p.err = 1L;
+    return;
+  }
+  if (p.ere == 1L) {
+    *pos = *pos + 1L;
+  } else {
+    *pos = *pos + 2L;
+  }
+  emit(p, opSave(), group, 1L, 0L, 0L, 0L);
+}
+
+deRfun compileEscape(Prog* p, long pat, long len, long* pos): void {
+  if (*pos + 1L >= len) {
+    p.err = 1L;
+    return;
+  }
+  long n = u8(pat + (*pos + 1L) * 8L);
+  if (p.ere == 0L && n == 40L) {
+    compileGroup(p, pat, len, pos);
+    return;
+  }
+  if (p.ere == 0L && n == 41L) {
+    p.err = 1L;
+    return;
+  }
+  if (p.ere == 0L && n >= 49L && n <= 57L) {
+    long group = n - 48L;
+    if (group > p.groups) {
+      p.err = 1L;
+      return;
+    }
+    *pos = *pos + 2L;
+    emit(p, opBack(), group, 0L, 0L, 0L, 0L);
+    return;
+  }
+  if (p.ere == 0L && n == 123L) {
+    p.err = 1L;
+    return;
+  }
+  *pos = *pos + 2L;
+  emit(p, opChar(), n, 0L, 0L, 0L, 0L);
+}
+
+deRfun compileAtom(Prog* p, long pat, long len, long* pos): void {
+  if (p.err != 0L || *pos >= len) {
+    p.err = 1L;
+    return;
+  }
+  long bit = u8(pat + *pos * 8L);
+  if (bit == 46L) {
+    *pos = *pos + 1L;
+    emit(p, opAny(), 0L, 0L, 0L, 0L, 0L);
+    return;
+  }
+  if (bit == 91L) {
+    long addr = compileClass(p, pat, len, pos);
+    if (p.err != 0L) {
+      return;
+    }
+    emit(p, opClass(), addr, 0L, 0L, 0L, 0L);
+    return;
+  }
+  if (bit == 92L) {
+    compileEscape(p, pat, len, pos);
+    return;
+  }
+  if (p.ere == 1L && bit == 40L) {
+    compileGroup(p, pat, len, pos);
+    return;
+  }
+  *pos = *pos + 1L;
+  emit(p, opChar(), bit, 0L, 0L, 0L, 0L);
+}
+
+/* 返回 1 表示这个字节已经当成量词或字面量处理过。返回 0 则交给原子。 */
+deRfun tryQuant(Prog* p, long pat, long len, long* pos, long* lastAtom, long* atomStart): long {
+  long bit = u8(pat + *pos * 8L);
+  if (bit == 42L || (p.ere == 1L && (bit == 43L || bit == 63L))) {
+    if (*lastAtom == 1L) {
+      long mn = 0L;
+      long mx = -1L;
+      if (bit == 43L) {
+        mn = 1L;
+      }
+      if (bit == 63L) {
+        mx = 1L;
+      }
+      *pos = *pos + 1L;
+      wrap(p, *atomStart, mn, mx);
+      *lastAtom = 0L;
+      return 1L;
+    }
+    if (bit == 42L && p.ere == 0L) {
+      *atomStart = p.count;
+      emit(p, opChar(), 42L, 0L, 0L, 0L, 0L);
+      *pos = *pos + 1L;
+      *lastAtom = 1L;
+      return 1L;
+    }
+    p.err = 1L;
+    return 1L;
+  }
+  if (p.ere == 1L && bit == 123L) {
+    long digit = 0L;
+    if (*pos + 1L < len) {
+      long n = u8(pat + (*pos + 1L) * 8L);
+      if (n >= 48L && n <= 57L) {
+        digit = 1L;
+      }
+    }
+    if (digit == 0L) {
+      *atomStart = p.count;
+      emit(p, opChar(), 123L, 0L, 0L, 0L, 0L);
+      *pos = *pos + 1L;
+      *lastAtom = 1L;
+      return 1L;
+    }
+    if (*lastAtom == 0L) {
+      p.err = 1L;
+      return 1L;
+    }
+    long mn = 0L;
+    long mx = 0L;
+    if (parseBrace(p, pat, len, pos, &mn, &mx) == 0L) {
+      return 1L;
+    }
+    wrap(p, *atomStart, mn, mx);
+    *lastAtom = 0L;
+    return 1L;
+  }
+  if (p.ere == 0L && bit == 92L && *pos + 1L < len && u8(pat + (*pos + 1L) * 8L) == 123L) {
+    if (*lastAtom == 0L) {
+      p.err = 1L;
+      return 1L;
+    }
+    long mn = 0L;
+    long mx = 0L;
+    if (parseBrace(p, pat, len, pos, &mn, &mx) == 0L) {
+      return 1L;
+    }
+    wrap(p, *atomStart, mn, mx);
+    *lastAtom = 0L;
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun compileBranch(Prog* p, long pat, long len, long* pos, long inGroup): void {
+  if (p.err != 0L) {
+    return;
+  }
+  long lastAtom = 0L;
+  long atomStart = 0L;
+  if (*pos < len && u8(pat + *pos * 8L) == 94L) {
+    atomStart = p.count;
+    emit(p, opBol(), 0L, 0L, 0L, 0L, 0L);
+    *pos = *pos + 1L;
+    if (p.ere == 1L) {
+      lastAtom = 1L;
+    }
+  }
+  while (p.err == 0L && stopped(p.ere, pat, len, *pos) == 0L) {
+    long bit = u8(pat + *pos * 8L);
+    if (bit == 36L) {
+      atomStart = p.count;
+      if (dollarAnchor(p.ere, pat, len, *pos) == 1L) {
+        emit(p, opEol(), 0L, 0L, 0L, 0L, 0L);
+        if (p.ere == 1L) {
+          lastAtom = 1L;
+        } else {
+          lastAtom = 0L;
+        }
+      } else {
+        emit(p, opChar(), 36L, 0L, 0L, 0L, 0L);
+        lastAtom = 1L;
+      }
+      *pos = *pos + 1L;
+    } else if (tryQuant(p, pat, len, pos, &lastAtom, &atomStart) == 1L) {
+      if (p.err != 0L) {
+        return;
+      }
+    } else {
+      atomStart = p.count;
+      compileAtom(p, pat, len, pos);
+      if (p.err != 0L) {
+        return;
+      }
+      lastAtom = 1L;
+    }
+  }
+}
+
+/* 竖线优先最低。没有竖线时，开头那条分裂改成跳转，避免空分支再试一次。 */
+deRfun compileExpr(Prog* p, long pat, long len, long* pos, long inGroup): void {
+  if (p.err != 0L) {
+    return;
+  }
+  long saved = p.jumpTop;
+  long saw = 0L;
+  long splitAt = emit(p, opSplit(), 0L, 0L, 0L, 0L, 0L);
+  long branchPc = p.count;
+  compileBranch(p, pat, len, pos, inGroup);
+  if (p.err != 0L) {
+    return;
+  }
+  while (*pos < len && atBar(p.ere, pat, len, *pos) == 1L && p.err == 0L) {
+    saw = 1L;
+    *pos = *pos + 1L;
+    long jumpAt = emit(p, opJump(), 0L, 0L, 0L, 0L, 0L);
+    pushJump(p, jumpAt);
+    if (p.err != 0L) {
+      return;
+    }
+    patch(p.code, splitAt, 1L, branchPc);
+    patch(p.code, splitAt, 2L, p.count);
+    splitAt = emit(p, opSplit(), 0L, 0L, 0L, 0L, 0L);
+    branchPc = p.count;
+    compileBranch(p, pat, len, pos, inGroup);
+    if (p.err != 0L) {
+      return;
+    }
+  }
+  putIns(p.code, splitAt, opJump(), branchPc, 0L, 0L, 0L, 0L);
+  if (saw == 1L) {
+    long endAt = p.count;
+    while (p.jumpTop > saved) {
+      p.jumpTop = p.jumpTop - 1L;
+      long hole = memory::load64(p.jumps + p.jumpTop * 64L);
+      patch(p.code, hole, 1L, endAt);
+    }
+  }
+  if (inGroup == 0L && *pos < len && atClose(p.ere, pat, len, *pos) == 1L) {
+    p.err = 1L;
+  }
+}
+
+deRfun compilePattern(Prog* p, long pat, long len): void {
+  long pos = 0L;
+  p.count = 0L;
+  p.classCount = 0L;
+  p.slotCount = 0L;
+  p.groups = 0L;
+  p.err = 0L;
+  p.jumpTop = 0L;
+  compileExpr(p, pat, len, &pos, 0L);
+  if (p.err != 0L) {
+    return;
+  }
+  if (pos != len) {
+    p.err = 1L;
+    return;
+  }
+  emit(p, opEnd(), 0L, 0L, 0L, 0L, 0L);
+}
+
+/* 重放直线原子。成功才把 trial 抄回 caps。失败不改 caps。返回新的位置，失败是 -1。 */
+deRfun replay(long code, long pc0, long n, long line, long lineLen, long sp0, long caps, long trial, long ignore): long {
+  copyWords(caps, trial, 18L);
+  long sp = sp0;
+  long index = 0L;
+  while (index < n) {
+    long pc = pc0 + index;
+    long op = word(code, pc, 0L);
+    if (op == opChar()) {
+      if (sp >= lineLen) {
+        return -1L;
+      }
+      if (sameByte(u8(line + sp * 8L), word(code, pc, 1L), ignore) == 0L) {
+        return -1L;
+      }
+      sp = sp + 1L;
+    } else if (op == opAny()) {
+      if (sp >= lineLen || u8(line + sp * 8L) == 0L) {
+        return -1L;
+      }
+      sp = sp + 1L;
+    } else if (op == opClass()) {
+      if (sp >= lineLen) {
+        return -1L;
+      }
+      long bit = u8(line + sp * 8L);
+      if (u8(word(code, pc, 1L) + bit * 8L) == 0L) {
+        return -1L;
+      }
+      sp = sp + 1L;
+    } else if (op == opBol()) {
+      if (sp != 0L) {
+        return -1L;
+      }
+    } else if (op == opEol()) {
+      if (sp != lineLen) {
+        return -1L;
+      }
+    } else if (op == opSave()) {
+      memory::store64(sp, capAddr(trial, word(code, pc, 1L), word(code, pc, 2L)));
+    } else if (op == opBack()) {
+      long group = word(code, pc, 1L);
+      long from = memory::load64(capAddr(trial, group, 0L));
+      long to = memory::load64(capAddr(trial, group, 1L));
+      if (from < 0L || to < from) {
+        return -1L;
+      }
+      long glen = to - from;
+      if (sp + glen > lineLen) {
+        return -1L;
+      }
+      long cursor = 0L;
+      while (cursor < glen) {
+        if (sameByte(u8(line + (from + cursor) * 8L), u8(line + (sp + cursor) * 8L), ignore) == 0L) {
+          return -1L;
+        }
+        cursor = cursor + 1L;
+      }
+      sp = sp + glen;
+    } else {
+      return -1L;
+    }
+    index = index + 1L;
+  }
+  copyWords(trial, caps, 18L);
+  return sp;
+}
+
+/* 从 entry 起尽量多吃。空成功只计一次，避免打转。caps 结束时恢复成进入时的样子。 */
+deRfun probe(Box* box, long code, long atom, long alen, long entry, long minv, long maxv, long line, long lineLen, long* kOut): long {
+  copyWords(box.caps, box.snap, 18L);
+  long k = 0L;
+  long cursor = entry;
+  long guard = 0L;
+  long stoppedRun = 0L;
+  while (stoppedRun == 0L && guard < 9000L) {
+    if (maxv >= 0L && k >= maxv) {
+      stoppedRun = 1L;
+    } else {
+      long nsp = replay(code, atom, alen, line, lineLen, cursor, box.caps, box.trial, box.ignore);
+      if (nsp < 0L) {
+        stoppedRun = 1L;
+      } else if (nsp == cursor) {
+        k = k + 1L;
+        stoppedRun = 1L;
+      } else {
+        k = k + 1L;
+        cursor = nsp;
+        guard = guard + 1L;
+      }
+    }
+  }
+  copyWords(box.snap, box.caps, 18L);
+  if (guard >= 9000L && stoppedRun == 0L) {
+    return -1L;
+  }
+  *kOut = k;
+  return 0L;
+}
+
+deRfun applyK(Box* box, long code, long atom, long alen, long entry, long k, long line, long lineLen): long {
+  if (k == 0L) {
+    return entry;
+  }
+  long cursor = entry;
+  long index = 0L;
+  while (index < k) {
+    long nsp = replay(code, atom, alen, line, lineLen, cursor, box.caps, box.trial, box.ignore);
+    if (nsp < 0L) {
+      return -1L;
+    }
+    cursor = nsp;
+    index = index + 1L;
+  }
+  return cursor;
+}
+
+deRfun pushSplit(Box* box, long* depth, long alt, long sp, long slotCount): long {
+  if (*depth >= frameMax()) {
+    return -1L;
+  }
+  long fr = frameAt(box.stack, *depth);
+  memory::store64(alt, fr);
+  memory::store64(sp, fr + 64L);
+  copyWords(box.caps, fr + 128L, 18L);
+  memory::store64(0L, fr + 1280L);
+  copyWords(box.slots, fr + 1792L, slotCount);
+  *depth = *depth + 1L;
+  return 0L;
+}
+
+/* 从 from 开始试这一条程序。needAll 为 1 时必须吃到行尾。
+   返回 1 匹配，0 不匹配，-1 回溯栈溢出或量词空转保护触发。 */
+deRfun run(Box* box, long code, long nins, long slotCount, long line, long lineLen, long from, long needAll): long {
+  long index = 0L;
+  while (index < 18L) {
+    memory::store64(-1L, box.caps + index * 64L);
+    index = index + 1L;
+  }
+  index = 0L;
+  while (index < slotCount) {
+    memory::store64(0L, box.slots + index * 64L);
+    index = index + 1L;
+  }
+  long pc = 0L;
+  long sp = from;
+  long depth = 0L;
+  long fail = 0L;
+  long live = 1L;
+  while (live == 1L) {
+    while (fail == 1L && live == 1L) {
+      if (depth == 0L) {
+        return 0L;
+      }
+      long fr = frameAt(box.stack, depth - 1L);
+      long kind = memory::load64(fr + 1280L);
+      if (kind == 0L) {
+        depth = depth - 1L;
+        pc = memory::load64(fr);
+        sp = memory::load64(fr + 64L);
+        copyWords(fr + 128L, box.caps, 18L);
+        copyWords(fr + 1792L, box.slots, slotCount);
+        fail = 0L;
+      } else {
+        long qpc = memory::load64(fr);
+        long k = memory::load64(fr + 1344L) - 1L;
+        long minv = word(code, qpc, 3L);
+        if (k < minv) {
+          depth = depth - 1L;
+        } else {
+          memory::store64(k, fr + 1344L);
+          copyWords(fr + 128L, box.caps, 18L);
+          copyWords(fr + 1792L, box.slots, slotCount);
+          long entry = memory::load64(fr + 64L);
+          long width = word(code, qpc, 5L);
+          long atom = word(code, qpc, 1L);
+          long alen = word(code, qpc, 2L);
+          if (width >= 0L) {
+            sp = entry + k * width;
+          } else {
+            sp = applyK(box, code, atom, alen, entry, k, line, lineLen);
+            if (sp < 0L) {
+              return -1L;
+            }
+          }
+          pc = atom + alen;
+          fail = 0L;
+        }
+      }
+    }
+    if (live == 1L) {
+      if (pc < 0L || pc >= nins) {
+        fail = 1L;
+      } else {
+        long op = word(code, pc, 0L);
+        if (op == opEnd()) {
+          if (needAll == 0L || sp == lineLen) {
+            return 1L;
+          }
+          fail = 1L;
+        } else if (op == opChar()) {
+          if (sp < lineLen && sameByte(u8(line + sp * 8L), word(code, pc, 1L), box.ignore) == 1L) {
+            sp = sp + 1L;
+            pc = pc + 1L;
+          } else {
+            fail = 1L;
+          }
+        } else if (op == opAny()) {
+          if (sp < lineLen && u8(line + sp * 8L) != 0L) {
+            sp = sp + 1L;
+            pc = pc + 1L;
+          } else {
+            fail = 1L;
+          }
+        } else if (op == opClass()) {
+          if (sp < lineLen && u8(word(code, pc, 1L) + u8(line + sp * 8L) * 8L) != 0L) {
+            sp = sp + 1L;
+            pc = pc + 1L;
+          } else {
+            fail = 1L;
+          }
+        } else if (op == opBol()) {
+          if (sp == 0L) {
+            pc = pc + 1L;
+          } else {
+            fail = 1L;
+          }
+        } else if (op == opEol()) {
+          if (sp == lineLen) {
+            pc = pc + 1L;
+          } else {
+            fail = 1L;
+          }
+        } else if (op == opSave()) {
+          memory::store64(sp, capAddr(box.caps, word(code, pc, 1L), word(code, pc, 2L)));
+          pc = pc + 1L;
+        } else if (op == opBack()) {
+          long group = word(code, pc, 1L);
+          long fromCap = memory::load64(capAddr(box.caps, group, 0L));
+          long toCap = memory::load64(capAddr(box.caps, group, 1L));
+          if (fromCap < 0L || toCap < fromCap) {
+            fail = 1L;
+          } else {
+            long glen = toCap - fromCap;
+            if (sp + glen > lineLen) {
+              fail = 1L;
+            } else {
+              long cursor = 0L;
+              long bad = 0L;
+              while (cursor < glen && bad == 0L) {
+                if (sameByte(u8(line + (fromCap + cursor) * 8L), u8(line + (sp + cursor) * 8L), box.ignore) == 0L) {
+                  bad = 1L;
+                }
+                cursor = cursor + 1L;
+              }
+              if (bad == 1L) {
+                fail = 1L;
+              } else {
+                sp = sp + glen;
+                pc = pc + 1L;
+              }
+            }
+          }
+        } else if (op == opJump()) {
+          pc = word(code, pc, 1L);
+        } else if (op == opSplit()) {
+          if (pushSplit(box, &depth, word(code, pc, 2L), sp, slotCount) != 0L) {
+            return -1L;
+          }
+          pc = word(code, pc, 1L);
+        } else if (op == opSet()) {
+          memory::store64(sp, box.slots + word(code, pc, 1L) * 64L);
+          pc = pc + 1L;
+        } else if (op == opSeti()) {
+          memory::store64(word(code, pc, 2L), box.slots + word(code, pc, 1L) * 64L);
+          pc = pc + 1L;
+        } else if (op == opAddi()) {
+          long at = box.slots + word(code, pc, 1L) * 64L;
+          memory::store64(memory::load64(at) + word(code, pc, 2L), at);
+          pc = pc + 1L;
+        } else if (op == opJlt()) {
+          long cur = memory::load64(box.slots + word(code, pc, 1L) * 64L);
+          if (cur < word(code, pc, 2L)) {
+            pc = word(code, pc, 3L);
+          } else {
+            pc = pc + 1L;
+          }
+        } else if (op == opJeq()) {
+          long cur = memory::load64(box.slots + word(code, pc, 1L) * 64L);
+          if (cur == word(code, pc, 2L)) {
+            pc = word(code, pc, 3L);
+          } else {
+            pc = pc + 1L;
+          }
+        } else if (op == opSame()) {
+          long saved = memory::load64(box.slots + word(code, pc, 1L) * 64L);
+          if (sp == saved) {
+            pc = word(code, pc, 2L);
+          } else {
+            pc = word(code, pc, 3L);
+          }
+        } else if (op == opQrun()) {
+          long atom = word(code, pc, 1L);
+          long alen = word(code, pc, 2L);
+          long minv = word(code, pc, 3L);
+          long maxv = word(code, pc, 4L);
+          long width = word(code, pc, 5L);
+          long k = 0L;
+          if (probe(box, code, atom, alen, sp, minv, maxv, line, lineLen, &k) != 0L) {
+            return -1L;
+          }
+          if (k < minv) {
+            fail = 1L;
+          } else if (depth >= frameMax()) {
+            return -1L;
+          } else {
+            long entry = sp;
+            long fr = frameAt(box.stack, depth);
+            memory::store64(pc, fr);
+            memory::store64(entry, fr + 64L);
+            copyWords(box.caps, fr + 128L, 18L);
+            memory::store64(1L, fr + 1280L);
+            memory::store64(k, fr + 1344L);
+            copyWords(box.slots, fr + 1792L, slotCount);
+            depth = depth + 1L;
+            if (width >= 0L) {
+              sp = entry + k * width;
+            } else {
+              sp = applyK(box, code, atom, alen, entry, k, line, lineLen);
+              if (sp < 0L) {
+                return -1L;
+              }
+            }
+            pc = atom + alen;
+          }
+        } else {
+          fail = 1L;
+        }
+      }
+    }
+  }
+  return 0L;
+}
+
+deRfun searchOne(Box* box, long code, long nins, long slotCount, long line, long lineLen): long {
+  if (box.whole == 1L) {
+    return run(box, code, nins, slotCount, line, lineLen, 0L, 1L);
+  }
+  long start = 0L;
+  while (start <= lineLen) {
+    long rel = run(box, code, nins, slotCount, line, lineLen, start, 0L);
+    if (rel != 0L) {
+      return rel;
+    }
+    start = start + 1L;
+  }
+  return 0L;
+}
+
+deRfun findFixed(long text, long tlen, long line, long llen, long ignore, long whole): long {
+  if (tlen == 0L) {
+    if (whole == 1L) {
+      if (llen == 0L) {
+        return 1L;
+      }
+      return 0L;
+    }
+    return 1L;
+  }
+  if (whole == 1L) {
+    if (tlen != llen) {
+      return 0L;
+    }
+    return eqSpan(text, line, tlen, ignore);
+  }
+  if (tlen > llen) {
+    return 0L;
+  }
+  long last = llen - tlen;
+  long start = 0L;
+  while (start <= last) {
+    if (eqSpan(text, line + start * 8L, tlen, ignore) == 1L) {
+      return 1L;
+    }
+    start = start + 1L;
+  }
+  return 0L;
+}
+
+/* 任一模式匹配上就是匹配。0 个模式时不匹配。-v 把结果反过来。
+   返回 1 选中，0 不选，-1 是模式太复杂。 */
+deRfun chosen(Box* box, long line, long len): long {
+  if (box.npat == 0L) {
+    if (box.invert == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  long index = 0L;
+  long any = 0L;
+  while (index < box.npat && any == 0L) {
+    long rel = 0L;
+    if (box.fixed == 1L) {
+      rel = findFixed(patTextAt(box.pats, index), memory::load64(patLenAt(box.pats, index)), line, len, box.ignore, box.whole);
+    } else {
+      long at = box.info + index * 192L;
+      rel = searchOne(box, memory::load64(at), memory::load64(at + 64L), memory::load64(at + 128L), line, len);
+    }
+    if (rel < 0L) {
+      return -1L;
+    }
+    if (rel == 1L) {
+      any = 1L;
+    }
+    index = index + 1L;
+  }
+  if (box.invert == 1L) {
+    if (any == 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  return any;
+}
+
+deRfun readChunk(Box* box, long fd, long stage, long* fileOff, long* got): long {
+  if (obr::proc::read(box.home, fd, *fileOff, chunkMax()) != 0L) {
+    if (box.silent == 0L) {
+      writeErr(box.home, "grep: read error\n");
+    }
+    return 1L;
+  }
+  long n = obr::proc::slot(box.home, 320L);
+  if (n < 0L) {
+    if (box.silent == 0L) {
+      writeErr(box.home, "grep: read error\n");
+    }
+    return 1L;
+  }
+  if (n > chunkMax()) {
+    n = chunkMax();
+  }
+  copySpan(obr::proc::bytes(box.home), stage, n);
+  *fileOff = *fileOff + n;
+  *got = n;
+  return 0L;
+}
+
+/* 正文写在 buf 开头，暂存从 8192 个八位组之后开始。
+   见到字节 10 就结束这一行。文件在换行之后结束，不会多出一行。
+   末尾没有换行时，已经收下的八位组仍是一行。没有行时 *has 是 0。 */
+deRfun nextLine(Box* box, long fd, long buf, long* fileOff, long* hold, long* cursor, long* lineLen, long* has): long {
+  long stage = buf + lineMax() * 8L;
+  *lineLen = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    if (*cursor >= *hold) {
+      long got = 0L;
+      if (readChunk(box, fd, stage, fileOff, &got) != 0L) {
+        return 1L;
+      }
+      *hold = got;
+      *cursor = 0L;
+      if (got == 0L) {
+        if (*lineLen > 0L) {
+          *has = 1L;
+        } else {
+          *has = 0L;
+        }
+        return 0L;
+      }
+    }
+    long bit = u8(stage + *cursor * 8L);
+    *cursor = *cursor + 1L;
+    if (bit == 10L) {
+      *has = 1L;
+      return 0L;
+    }
+    if (*lineLen >= lineMax()) {
+      writeErr(box.home, "grep: line too long\n");
+      return 1L;
+    }
+    memory::storeOctet(bit, buf + *lineLen * 8L);
+    *lineLen = *lineLen + 1L;
+  }
+  return 0L;
+}
+
+/* 返回 0 这一文件处理完，1 致命错误，2 是 -q 已经找到匹配。*any 记下有没有选中行。
+   *place 是标准输出已经写下的偏移，多个文件接着往下加。 */
+deRfun scan(Box* box, long fd, long isIn, long name, long nameLen, long buf, long* any, long* place): long {
+  long off = 0L;
+  long hold = 0L;
+  long at = 0L;
+  long len = 0L;
+  long has = 0L;
+  long lineNo = 0L;
+  long count = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (nextLine(box, fd, buf, &off, &hold, &at, &len, &has) != 0L) {
+      return 1L;
+    }
+    if (has == 0L) {
+      reading = 0L;
+    } else {
+      lineNo = lineNo + 1L;
+      long sel = chosen(box, buf, len);
+      if (sel < 0L) {
+        writeErr(box.home, "grep: pattern too complex\n");
+        return 1L;
+      }
+      if (sel == 1L) {
+        *any = 1L;
+        if (box.outMode == 3L) {
+          return 2L;
+        }
+        if (box.outMode == 2L) {
+          if (writeName(box.home, place, isIn, name, nameLen) != 0L) {
+            return 1L;
+          }
+          if (writeByte(box.home, place, 10L) != 0L) {
+            return 1L;
+          }
+          reading = 0L;
+        } else if (box.outMode == 1L) {
+          count = count + 1L;
+        } else {
+          if (box.many == 1L) {
+            if (writeName(box.home, place, isIn, name, nameLen) != 0L) {
+              return 1L;
+            }
+            if (writeByte(box.home, place, 58L) != 0L) {
+              return 1L;
+            }
+          }
+          if (box.number == 1L) {
+            if (writeDec(box.home, place, lineNo) != 0L) {
+              return 1L;
+            }
+            if (writeByte(box.home, place, 58L) != 0L) {
+              return 1L;
+            }
+          }
+          if (emitSpan(box.home, place, buf, len) != 0L) {
+            return 1L;
+          }
+          if (writeByte(box.home, place, 10L) != 0L) {
+            return 1L;
+          }
+        }
+      }
+    }
+  }
+  if (box.outMode == 1L) {
+    if (box.many == 1L) {
+      if (writeName(box.home, place, isIn, name, nameLen) != 0L) {
+        return 1L;
+      }
+      if (writeByte(box.home, place, 58L) != 0L) {
+        return 1L;
+      }
+    }
+    if (writeDec(box.home, place, count) != 0L) {
+      return 1L;
+    }
+    if (writeByte(box.home, place, 10L) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 这一簇里 e 或 f 后面还剩的字节就是参数。一个不剩就用下一个参数。 */
+deRfun takeOperand(long home, long* index, long count, long at, long len, long cursor, long* argAt, long* argLen): long {
+  if (cursor + 1L < len) {
+    *argAt = at + (cursor + 1L) * 8L;
+    *argLen = len - cursor - 1L;
+    *index = *index + 1L;
+    return 1L;
+  }
+  *index = *index + 1L;
+  if (*index >= count) {
+    writeErr(home, "grep: missing operand\n");
+    return 0L;
+  }
+  *argAt = argPtr(home, *index);
+  *argLen = argLen(home, *index);
+  *index = *index + 1L;
+  return 1L;
+}
+
+deRfun loadPatFile(Box* box, long addr, long count, long buf): long {
+  if (isDash(addr, count) == 1L) {
+    if (box.stdinUsed == 1L) {
+      writeErr(box.home, "grep: standard input used twice\n");
+      return 1L;
+    }
+    box.stdinUsed = 1L;
+    long got = 0L;
+    if (readAll(box, 0L, buf, &got) != 0L) {
+      return 1L;
+    }
+    return splitAdd(box, buf, got);
+  }
+  long fd = 0L;
+  if (openRead(box.home, addr, count, box.silent, &fd) != 0L) {
+    return 1L;
+  }
+  long got = 0L;
+  long status = readAll(box, fd, buf, &got);
+  shut(box.home, fd);
+  if (status != 0L) {
+    return 1L;
+  }
+  return splitAdd(box, buf, got);
+}
+
+/* apply 为 0 时只收标志，不读 -f，这样写在后面的 -s 和 -i 也能盖住前面的 -e、-f。
+   返回 1 表示已经写过诊断。 */
+deRfun walk(Box* box, long apply, long buf, long* fileAt, long* saw): long {
+  long index = 1L;
+  long count = argc(box.home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(box.home, index);
+    long len = argLen(box.home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      long ate = 0L;
+      while (cursor < len && ate == 0L) {
+        long flag = u8(at + cursor * 8L);
+        if (flag == 69L) {
+          box.ere = 1L;
+          box.fixed = 0L;
+          cursor = cursor + 1L;
+        } else if (flag == 70L) {
+          box.fixed = 1L;
+          box.ere = 0L;
+          cursor = cursor + 1L;
+        } else if (flag == 99L) {
+          box.outMode = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 108L) {
+          box.outMode = 2L;
+          cursor = cursor + 1L;
+        } else if (flag == 113L) {
+          box.outMode = 3L;
+          cursor = cursor + 1L;
+        } else if (flag == 105L) {
+          box.ignore = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 110L) {
+          box.number = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 115L) {
+          box.silent = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 118L) {
+          box.invert = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 120L) {
+          box.whole = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 101L || flag == 102L) {
+          long argAt = 0L;
+          long argLen = 0L;
+          if (takeOperand(box.home, &index, count, at, len, cursor, &argAt, &argLen) == 0L) {
+            return 1L;
+          }
+          *saw = 1L;
+          if (apply == 1L) {
+            if (flag == 101L) {
+              if (argLen == 0L) {
+                if (addOne(box, argAt, 0L) != 0L) {
+                  return 1L;
+                }
+              } else if (splitAdd(box, argAt, argLen) != 0L) {
+                return 1L;
+              }
+            } else if (loadPatFile(box, argAt, argLen, buf) != 0L) {
+              return 1L;
+            }
+          }
+          ate = 1L;
+        } else {
+          writeErr(box.home, "grep: invalid option\n");
+          return 1L;
+        }
+      }
+      if (ate == 0L) {
+        index = index + 1L;
+      }
+    } else {
+      ended = 1L;
+    }
+  }
+  *fileAt = index;
+  return 0L;
+}
+
+deRfun grab(long home, long bits, long* out): long {
+  long block = obr::proc::alloc(home, bits);
+  if (block == 0L) {
+    writeErr(home, "grep: out of memory\n");
+    return 1L;
+  }
+  *out = block;
+  return 0L;
+}
+
+deRfun compileAll(Box* box, long jumps, long scratch): long {
+  long index = 0L;
+  while (index < box.npat) {
+    long code = 0L;
+    long classes = 0L;
+    if (grab(box.home, insMax() * 8L * 64L, &code) != 0L) {
+      return 1L;
+    }
+    if (grab(box.home, classMax() * 256L * 8L, &classes) != 0L) {
+      return 1L;
+    }
+    Prog prog;
+    prog.code = code;
+    prog.classes = classes;
+    prog.ere = box.ere;
+    prog.ignore = box.ignore;
+    prog.jumps = jumps;
+    prog.scratch = scratch;
+    compilePattern(&prog, patTextAt(box.pats, index), memory::load64(patLenAt(box.pats, index)));
+    if (prog.err == 1L) {
+      writeErr(box.home, "grep: invalid pattern\n");
+      return 1L;
+    }
+    if (prog.err != 0L) {
+      writeErr(box.home, "grep: pattern too complex\n");
+      return 1L;
+    }
+    long at = box.info + index * 192L;
+    memory::store64(code, at);
+    memory::store64(prog.count, at + 64L);
+    memory::store64(prog.slotCount, at + 128L);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Box box;
+  box.home = home;
+  long fileAt = 0L;
+  long saw = 0L;
+  long buf = 0L;
+  if (grab(home, fileTextMax() * 8L, &buf) != 0L) {
+    return finish(home, 2L);
+  }
+  long pats = 0L;
+  if (grab(home, 32L * 64L + 32L * 512L * 8L, &pats) != 0L) {
+    return finish(home, 2L);
+  }
+  box.pats = pats;
+  if (walk(&box, 0L, buf, &fileAt, &saw) != 0L) {
+    return finish(home, 2L);
+  }
+  if (saw == 0L) {
+    if (fileAt >= argc(home)) {
+      writeErr(home, "grep: missing operand\n");
+      return finish(home, 2L);
+    }
+    long patAt = argPtr(home, fileAt);
+    long patLen = argLen(home, fileAt);
+    if (addOne(&box, patAt, patLen) != 0L) {
+      return finish(home, 2L);
+    }
+    fileAt = fileAt + 1L;
+  } else if (walk(&box, 1L, buf, &fileAt, &saw) != 0L) {
+    return finish(home, 2L);
+  }
+  long seen = box.stdinUsed;
+  long scanAt = fileAt;
+  long argcNow = argc(home);
+  while (scanAt < argcNow) {
+    long at = argPtr(home, scanAt);
+    long len = argLen(home, scanAt);
+    if (isDash(at, len) == 1L) {
+      if (seen == 1L) {
+        writeErr(home, "grep: standard input used twice\n");
+        return finish(home, 2L);
+      }
+      seen = 1L;
+    }
+    scanAt = scanAt + 1L;
+  }
+  if (fileAt >= argcNow && box.stdinUsed == 1L) {
+    writeErr(home, "grep: standard input used twice\n");
+    return finish(home, 2L);
+  }
+  long nfiles = argcNow - fileAt;
+  if (nfiles > 1L) {
+    box.many = 1L;
+  }
+  if (box.fixed == 0L && box.npat > 0L) {
+    long jumps = 0L;
+    long scratch = 0L;
+    if (grab(home, 512L * 64L, &jumps) != 0L) {
+      return finish(home, 2L);
+    }
+    if (grab(home, insMax() * 8L * 64L, &scratch) != 0L) {
+      return finish(home, 2L);
+    }
+    long info = 0L;
+    if (grab(home, 32L * 3L * 64L, &info) != 0L) {
+      return finish(home, 2L);
+    }
+    box.info = info;
+    if (compileAll(&box, jumps, scratch) != 0L) {
+      return finish(home, 2L);
+    }
+    long caps = 0L;
+    if (grab(home, 18L * 64L, &caps) != 0L) {
+      return finish(home, 2L);
+    }
+    box.caps = caps;
+    long slots = 0L;
+    if (grab(home, slotMax() * 64L, &slots) != 0L) {
+      return finish(home, 2L);
+    }
+    box.slots = slots;
+    long stack = 0L;
+    if (grab(home, frameMax() * frameWords() * 64L, &stack) != 0L) {
+      return finish(home, 2L);
+    }
+    box.stack = stack;
+    long trial = 0L;
+    if (grab(home, 18L * 64L, &trial) != 0L) {
+      return finish(home, 2L);
+    }
+    box.trial = trial;
+    long snap = 0L;
+    if (grab(home, 18L * 64L, &snap) != 0L) {
+      return finish(home, 2L);
+    }
+    box.snap = snap;
+  }
+  long line = 0L;
+  if (grab(home, (lineMax() + chunkMax()) * 8L, &line) != 0L) {
+    return finish(home, 2L);
+  }
+  long any = 0L;
+  long bad = 0L;
+  long place = 0L;
+  if (nfiles == 0L) {
+    long status = scan(&box, 0L, 1L, 0L, 0L, line, &any, &place);
+    if (status == 2L) {
+      return finish(home, 0L);
+    }
+    if (status != 0L) {
+      return finish(home, 2L);
+    }
+  } else {
+    long index = fileAt;
+    while (index < argcNow) {
+      long at = argPtr(home, index);
+      long len = argLen(home, index);
+      long fd = 0L;
+      if (openRead(home, at, len, box.silent, &fd) != 0L) {
+        bad = 1L;
+      } else {
+        long isIn = isDash(at, len);
+        long status = scan(&box, fd, isIn, at, len, line, &any, &place);
+        shut(home, fd);
+        if (status == 2L) {
+          return finish(home, 0L);
+        }
+        if (status != 0L) {
+          return finish(home, 2L);
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  if (bad == 1L) {
+    return finish(home, 2L);
+  }
+  if (any == 1L) {
+    return finish(home, 0L);
+  }
+  return finish(home, 1L);
+}

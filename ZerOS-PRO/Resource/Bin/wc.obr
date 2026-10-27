@@ -1,0 +1,565 @@
+/* POSIX.1-2017 wc（utilities/wc.html）。形式是 wc [-c|-m] [-lw] [file...]，本轮也做 -L。
+   不做 --files0-from。
+   行是字节 10 的个数。文件末尾没有换行的那一段不算一行。
+   字是不含空白的一段最长连续八位组。空白只有六个字节：32 空格、9 制表、10 换行、11 垂直制表、12 换页、13 回车。
+   -c 是读到的八位组个数。-m 按 UTF-8 标量计。非法序列里每一个字节算一个字符。
+   -L 是两个换行之间的字节数，换行本身不算。文件末尾没有换行也算一行。
+   一个选项都没有时，打印行数、字数、字节数。有选项时只打印选中的项。
+   顺序固定为行、字、字节、字符、最长行。-c 和 -m 同时出现就两个都打。
+   每个数是十进制，不补前导零，数与数之间一个空格。有文件名时，数字后再一个空格再写名字，然后换行。字段宽度不补到 7。
+   没有文件操作数时读标准输入，不写名字。单独一个 - 也读标准输入，不关闭描述符 0，名字就写这一个 -。
+   两个及以上文件时，每个文件一行，最后再一行合计，名字是 total。只有一个文件时不写 total。
+   合计里的最长行取各文件里的最大值。打开失败的文件不进合计。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面再出现的 -l 是文件名。
+   不认识的选项写 wc: invalid option，立刻退出 1。
+   打开失败写 wc: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败写 wc: read error，这一文件不打印、不进合计，继续后面的文件。
+   写失败写 wc: write error，立刻退出 1。
+   描述符 1 的文件偏移按已写字节累加。诊断写描述符 2。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 五个计数量。打印时也按这个次序。 */
+struct Count {
+  long lines;
+  long words;
+  long bytes;
+  long chars;
+  long longest;
+}
+
+/* 0 不打印，1 打印。解析完仍是全 0，才改成缺省的行、字、字节。 */
+struct Pick {
+  long lines;
+  long words;
+  long bytes;
+  long chars;
+  long longest;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断路径写到描述符 2。控制台不看偏移，所以这一路每次从 0 写。一次最多 4096。 */
+deRfun writeFd(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "wc: ");
+  writeFd(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 空白只有这六个八位组。换行既结束一行，也把字断开。 */
+deRfun white(long b): long {
+  if (b == 9L || b == 10L || b == 11L || b == 12L || b == 13L || b == 32L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 把一个八位组收进 UTF-8 标量个数。
+   need 是还缺几个后续字节，got 是这一段已经收下的字节数，lo 和 hi 是下一个字节的闭区间。
+   合法标量收齐时加 1。后续字节超出区间，就把已经收下的每个字节各算一个字符，再从这个字节重新开始。
+   单独的后续字节、C0、C1、F5 到 FF 各算一个字符。文件没读完时 need 和 got 留着，下一块接着看。 */
+deRfun utf8(long b, Count* one, long* need, long* got, long* lo, long* hi): void {
+  long again = 1L;
+  long ub = b;
+  while (again == 1L) {
+    again = 0L;
+    if (*need > 0L) {
+      if (ub >= *lo && ub <= *hi) {
+        *got = *got + 1L;
+        *need = *need - 1L;
+        if (*need == 0L) {
+          one.chars = one.chars + 1L;
+          *got = 0L;
+        } else {
+          /* 特殊区间只约束第二个字节。后面的后续字节都是 0x80 到 0xBF。 */
+          *lo = 128L;
+          *hi = 191L;
+        }
+      } else {
+        one.chars = one.chars + *got;
+        *got = 0L;
+        *need = 0L;
+        again = 1L;
+      }
+    } else if (ub < 128L) {
+      one.chars = one.chars + 1L;
+    } else if (ub < 194L) {
+      /* 0x80 到 0xC1：孤立的后续字节，或过短的两字节引导。 */
+      one.chars = one.chars + 1L;
+    } else if (ub < 224L) {
+      /* 0xC2 到 0xDF。 */
+      *need = 1L;
+      *got = 1L;
+      *lo = 128L;
+      *hi = 191L;
+    } else if (ub == 224L) {
+      /* 0xE0。第二字节至少 0xA0，避开过短的三字节。 */
+      *need = 2L;
+      *got = 1L;
+      *lo = 160L;
+      *hi = 191L;
+    } else if (ub < 237L) {
+      /* 0xE1 到 0xEC。 */
+      *need = 2L;
+      *got = 1L;
+      *lo = 128L;
+      *hi = 191L;
+    } else if (ub == 237L) {
+      /* 0xED。第二字节至多 0x9F，避开代理项。 */
+      *need = 2L;
+      *got = 1L;
+      *lo = 128L;
+      *hi = 159L;
+    } else if (ub < 240L) {
+      /* 0xEE 到 0xEF。 */
+      *need = 2L;
+      *got = 1L;
+      *lo = 128L;
+      *hi = 191L;
+    } else if (ub == 240L) {
+      /* 0xF0。第二字节至少 0x90。 */
+      *need = 3L;
+      *got = 1L;
+      *lo = 144L;
+      *hi = 191L;
+    } else if (ub < 244L) {
+      /* 0xF1 到 0xF3。 */
+      *need = 3L;
+      *got = 1L;
+      *lo = 128L;
+      *hi = 191L;
+    } else if (ub == 244L) {
+      /* 0xF4。第二字节至多 0x8F，标量不超过 U+10FFFF。 */
+      *need = 3L;
+      *got = 1L;
+      *lo = 128L;
+      *hi = 143L;
+    } else {
+      /* 0xF5 到 0xFF。 */
+      one.chars = one.chars + 1L;
+    }
+  }
+}
+
+/* 文件已经没有下一个字节。没写完的 UTF-8 按已有的每个字节各算一个字符。
+   末尾这段没有换行，长度仍要拿去比最长行。刚以换行结束时 cur 是 0，不会把最长行抬高。 */
+deRfun seal(Count* one, long got, long cur): void {
+  if (got > 0L) {
+    one.chars = one.chars + got;
+  }
+  if (cur > one.longest) {
+    one.longest = cur;
+  }
+}
+
+/* 把 fd 从头数到结束。偏移从 0 起，按 slot 320 的实际个数累加。0 个是结束。一次最多 4096。
+   换行只加行数，不计入 -L。字在离开空白的第一个字节加一，所以文件在字中间结束也已经计过。
+   返回 0 成功。返回 1 时诊断已经写过，调用方不要打印、也不要计入合计。 */
+deRfun tally(long home, long fd, Count* one): long {
+  one.lines = 0L;
+  one.words = 0L;
+  one.bytes = 0L;
+  one.chars = 0L;
+  one.longest = 0L;
+  long inWord = 0L;
+  long cur = 0L;
+  long need = 0L;
+  long got = 0L;
+  long lo = 0L;
+  long hi = 0L;
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    long n = 0L;
+    long bad = 0L;
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      bad = 1L;
+    } else {
+      n = obr::proc::slot(home, 320L);
+      if (n < 0L) {
+        bad = 1L;
+      }
+    }
+    if (bad == 1L) {
+      writeErr(home, "wc: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      /* -c 就是读到的八位组，和后面切成几个字、几个字符无关。 */
+      one.bytes = one.bytes + n;
+      long index = 0L;
+      long base = obr::proc::bytes(home);
+      while (index < n) {
+        long b = u8(base + index * 8L);
+        if (white(b) == 1L) {
+          inWord = 0L;
+        } else if (inWord == 0L) {
+          one.words = one.words + 1L;
+          inWord = 1L;
+        }
+        if (b == 10L) {
+          one.lines = one.lines + 1L;
+          if (cur > one.longest) {
+            one.longest = cur;
+          }
+          cur = 0L;
+        } else {
+          cur = cur + 1L;
+        }
+        utf8(b, one, &need, &got, &lo, &hi);
+        index = index + 1L;
+      }
+      offset = offset + n;
+    }
+  }
+  seal(one, got, cur);
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，必须在下一次 read 之前取走。描述符 0 不关。
+   打不开返回 1，并且不改 one。读失败也返回 1，one 里的半截数不要用。 */
+deRfun tallyFile(long home, long addr, long count, Count* one): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = tally(home, fd, one);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+/* 字节区开头的 count 个八位组写到描述符 1。
+   outAt 是已经写到标准输出的字节数，按 slot 320 的实际个数往下加，不要每次从 0 写。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。
+   失败已经写过诊断，返回 2。成功返回 0。 */
+deRfun writeOut(long home, long* outAt, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      writeErr(home, "wc: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "wc: write error\n");
+      return 2L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitByte(long home, long* outAt, long value): long {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  return writeOut(home, outAt, 1L);
+}
+
+/* 十进制，不补前导零。0 写成一个 0。从最高位除下来，中间的 0 仍要写。
+   有符号 64 位最大是 19 位，10^18 还放得下，所以不会再乘出 10^19。 */
+deRfun emitDec(long home, long* outAt, long value): long {
+  long div = 1L;
+  long temp = value;
+  while (temp >= 10L) {
+    temp = temp / 10L;
+    div = div * 10L;
+  }
+  long rest = value;
+  long count = 0L;
+  long base = obr::proc::bytes(home);
+  while (div > 0L) {
+    long digit = rest / div;
+    memory::storeOctet(48L + digit, base + count * 8L);
+    rest = rest % div;
+    div = div / 10L;
+    count = count + 1L;
+  }
+  return writeOut(home, outAt, count);
+}
+
+deRfun emitText(long home, long* outAt, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[offset + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeOut(home, outAt, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 参数八位组相邻隔 8 位。按 4096 搬进字节区再写到描述符 1。 */
+deRfun emitSpan(long home, long* outAt, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeOut(home, outAt, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 第一项前面不放空格，后面每一项先写一个空格。数本身不补到固定宽度。 */
+deRfun emitField(long home, long* outAt, long* started, long value): long {
+  if (*started == 1L) {
+    if (emitByte(home, outAt, 32L) != 0L) {
+      return 2L;
+    }
+  }
+  if (emitDec(home, outAt, value) != 0L) {
+    return 2L;
+  }
+  *started = 1L;
+  return 0L;
+}
+
+/* hasName 0 不写名字。1 把 nameAt 上的八位组原样写上。2 写 total。
+   名字前面一个空格，行尾一个换行。顺序只看 Pick，不看选项当初的写法。 */
+deRfun report(long home, long* outAt, Pick* pick, Count* one, long nameAt, long nameLen, long hasName): long {
+  long started = 0L;
+  if (pick.lines == 1L) {
+    if (emitField(home, outAt, &started, one.lines) != 0L) {
+      return 2L;
+    }
+  }
+  if (pick.words == 1L) {
+    if (emitField(home, outAt, &started, one.words) != 0L) {
+      return 2L;
+    }
+  }
+  if (pick.bytes == 1L) {
+    if (emitField(home, outAt, &started, one.bytes) != 0L) {
+      return 2L;
+    }
+  }
+  if (pick.chars == 1L) {
+    if (emitField(home, outAt, &started, one.chars) != 0L) {
+      return 2L;
+    }
+  }
+  if (pick.longest == 1L) {
+    if (emitField(home, outAt, &started, one.longest) != 0L) {
+      return 2L;
+    }
+  }
+  if (hasName == 1L) {
+    if (emitByte(home, outAt, 32L) != 0L) {
+      return 2L;
+    }
+    if (emitSpan(home, outAt, nameAt, nameLen) != 0L) {
+      return 2L;
+    }
+  } else if (hasName == 2L) {
+    if (emitByte(home, outAt, 32L) != 0L) {
+      return 2L;
+    }
+    if (emitText(home, outAt, "total") != 0L) {
+      return 2L;
+    }
+  }
+  if (emitByte(home, outAt, 10L) != 0L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+/* 行、字、字节、字符相加。最长行留下更大的那个：合计要的是这些文件里最长的一行。 */
+deRfun fold(Count* sum, Count* one): void {
+  sum.lines = sum.lines + one.lines;
+  sum.words = sum.words + one.words;
+  sum.bytes = sum.bytes + one.bytes;
+  sum.chars = sum.chars + one.chars;
+  if (one.longest > sum.longest) {
+    sum.longest = one.longest;
+  }
+}
+
+/* 写完这一行再计入合计。写失败返回 2，合计保持原样。 */
+deRfun keep(long home, long* outAt, Pick* pick, Count* one, Count* sum, long nameAt, long nameLen, long hasName): long {
+  if (report(home, outAt, pick, one, nameAt, nameLen, hasName) != 0L) {
+    return 2L;
+  }
+  fold(sum, one);
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Pick pick;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        /* 108 是 l，119 是 w，99 是 c，109 是 m，76 是 L。 */
+        long flag = u8(at + cursor * 8L);
+        if (flag == 108L) {
+          pick.lines = 1L;
+        } else if (flag == 119L) {
+          pick.words = 1L;
+        } else if (flag == 99L) {
+          pick.bytes = 1L;
+        } else if (flag == 109L) {
+          pick.chars = 1L;
+        } else if (flag == 76L) {
+          pick.longest = 1L;
+        } else {
+          writeErr(home, "wc: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  if (pick.lines == 0L && pick.words == 0L && pick.bytes == 0L && pick.chars == 0L && pick.longest == 0L) {
+    pick.lines = 1L;
+    pick.words = 1L;
+    pick.bytes = 1L;
+  }
+  Count one;
+  Count sum;
+  long failed = 0L;
+  long outAt = 0L;
+  long operands = count - index;
+  if (index >= count) {
+    long status = tally(home, 0L, &one);
+    if (status != 0L) {
+      failed = 1L;
+    } else if (keep(home, &outAt, &pick, &one, &sum, 0L, 0L, 0L) != 0L) {
+      return finish(home, 1L);
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = tally(home, 0L, &one);
+    } else {
+      status = tallyFile(home, at, len, &one);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    } else if (keep(home, &outAt, &pick, &one, &sum, at, len, 1L) != 0L) {
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  if (operands >= 2L) {
+    if (report(home, &outAt, &pick, &sum, 0L, 0L, 2L) != 0L) {
+      return finish(home, 1L);
+    }
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

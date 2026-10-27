@@ -1,0 +1,274 @@
+/* POSIX.1-2017 tee 的本系统选定。
+   形式是 tee [-ai] [文件...]。下标 0 是程序名，从 1 起扫。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -a 是文件名。
+   单独一个 - 结束选项，并且是标准输出，不打开名为 - 的文件，也不再写第二遍。
+   短选项只允许 a 和 i。-a 是追加（打开标志 3），没写则截断（标志 1）。
+   -i 接受，这条命令不处理信号，所以没有额外行为。
+   别的字母、以及 -h、--help，都写 tee: invalid option，立刻退出 1。
+
+   标准输入同时写到标准输出和每个成功打开的文件。
+   读描述符 0 时偏移一直累加，管道和控制台不看这个偏移。
+   一次最多 4096 个八位组。先抄进自己的缓冲，再逐个写出，避免后一次写盖住前一次。
+   某个文件打不开（含路径超过 8192、是目录、或描述符用尽）写
+   tee: 路径: cannot open，继续其余文件和标准输出，最终退出 1。
+   描述符只有 0 到 7，0、1、2 已被占用时最多再打开 5 个文件。
+   读失败写 tee: read error，写失败写 tee: write error，都立刻退出 1。
+   不调用 close，因此不会关掉描述符 0。
+   结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 2、4、6 是目录。目录不能当 tee 的输出文件。 */
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 把 hold 里的 count 个八位组写到 fd。文件偏移放在 place 指向的字里。
+   一次系统调用最多 4096。写不满就从 hold 再抄剩余的，不在字节区里挪。 */
+deRfun writeAll(long home, long fd, long* place, long hold, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(hold + done * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, *place, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    *place = *place + wrote;
+    done = done + wrote;
+  }
+  return 0L;
+}
+
+/* 追加时先 stat，大小在 +192，种类在 +128，都要立刻抄走。
+   不存在就从 0 写，打开标志 3 会创建。已经是目录则打不开。
+   截断时用标志 1，偏移从 0 起。成功的描述符立刻从 +192 抄走。 */
+deRfun openOut(long home, long addr, long count, long append, long* fd, long* at): long {
+  if (count < 1L || count > 8192L) {
+    writeErr(home, "tee: ");
+    writeSpan(home, addr, count);
+    writeErr(home, ": cannot open\n");
+    return 1L;
+  }
+  long flags = 1L;
+  long start = 0L;
+  if (append == 1L) {
+    plant(home, addr, count);
+    long status = obr::proc::stat(home);
+    if (status == 0L) {
+      long kind = obr::proc::slot(home, 128L);
+      start = obr::proc::slot(home, 192L);
+      if (isDir(kind) == 1L) {
+        writeErr(home, "tee: ");
+        writeSpan(home, addr, count);
+        writeErr(home, ": cannot open\n");
+        return 1L;
+      }
+      if (start < 0L) {
+        start = 0L;
+      }
+    } else if (status != 2L) {
+      writeErr(home, "tee: ");
+      writeSpan(home, addr, count);
+      writeErr(home, ": cannot open\n");
+      return 1L;
+    }
+    flags = 3L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, flags) != 0L) {
+    writeErr(home, "tee: ");
+    writeSpan(home, addr, count);
+    writeErr(home, ": cannot open\n");
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  *at = start;
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long append = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else {
+      /* 97 是 a，105 是 i。a 追加，i 只接受。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long mark = u8(at + cursor * 8L);
+        if (mark == 97L) {
+          append = 1L;
+        } else if (mark != 105L) {
+          writeErr(home, "tee: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  long files = 0L;
+  long scan = index;
+  while (scan < count) {
+    long at = argPtr(home, scan);
+    long len = argLen(home, scan);
+    if (len != 1L || u8(at) != 45L) {
+      files = files + 1L;
+    }
+    scan = scan + 1L;
+  }
+  /* 每个文件两个字：描述符、写出偏移。读入缓冲 4096 个八位组。分配单位是位。 */
+  long table = 0L;
+  if (files > 0L) {
+    table = obr::proc::alloc(home, files * 128L);
+  }
+  long hold = obr::proc::alloc(home, 4096L * 8L);
+  if (hold == 0L || (files > 0L && table == 0L)) {
+    writeErr(home, "tee: out of memory\n");
+    return finish(home, 1L);
+  }
+  long used = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 1L && u8(at) == 45L) {
+      index = index + 1L;
+    } else {
+      long fd = 0L;
+      long atOff = 0L;
+      if (openOut(home, at, len, append, &fd, &atOff) != 0L) {
+        failed = 1L;
+      } else {
+        memory::store64(fd, table + used * 128L);
+        memory::store64(atOff, table + used * 128L + 64L);
+        used = used + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  long inOff = 0L;
+  long outOff = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, 0L, inOff, 4096L) != 0L) {
+      writeErr(home, "tee: read error\n");
+      return finish(home, 1L);
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "tee: read error\n");
+      return finish(home, 1L);
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), hold, n);
+      inOff = inOff + n;
+      if (writeAll(home, 1L, &outOff, hold, n) != 0L) {
+        writeErr(home, "tee: write error\n");
+        return finish(home, 1L);
+      }
+      long file = 0L;
+      while (file < used) {
+        long fd = memory::load64(table + file * 128L);
+        long place = table + file * 128L + 64L;
+        if (writeAll(home, fd, (long*)place, hold, n) != 0L) {
+          writeErr(home, "tee: write error\n");
+          return finish(home, 1L);
+        }
+        file = file + 1L;
+      }
+    }
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

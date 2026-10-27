@@ -1,0 +1,198 @@
+{
+  "Import": {
+    "prefix": "import",
+    "body": [
+      "import ${1:module};"
+    ],
+    "description": "Import a module"
+  },
+  "Version Directive": {
+    "prefix": "#VERSION",
+    "body": [
+      "#VERSION ${1:1}"
+    ],
+    "description": "Insert #VERSION line (see docs/obr/preprocessor.md)"
+  },
+  "Link Directive": {
+    "prefix": "#LINK",
+    "body": [
+      "#LINK ${1:/}"
+    ],
+    "description": "Insert #LINK line (see docs/obr/preprocessor.md)"
+  },
+  "while": {
+    "prefix": "while",
+    "body": [
+      "while (${1:cond}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "while 循环"
+  },
+  "goto": {
+    "prefix": "goto",
+    "body": [
+      "goto ${1:label};"
+    ],
+    "description": "goto 标号"
+  },
+  "pointer": {
+    "prefix": "ptr",
+    "body": [
+      "${1:long}* ${2:p} = &${3:name};"
+    ],
+    "description": "指针声明并取址"
+  },
+  "if else": {
+    "prefix": "ifelse",
+    "body": [
+      "if (${1:cond}) {",
+      "\t${2}",
+      "} else {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "if / else block"
+  },
+  "else if": {
+    "prefix": "elif",
+    "body": [
+      "else if (${1:cond}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "else if block"
+  },
+  "ternary": {
+    "prefix": "tern",
+    "body": [
+      "${1:cond} ? ${2:then} : ${3:else}"
+    ],
+    "description": "Conditional expression ? :"
+  },
+  "deRfun Function": {
+    "prefix": "deRfun",
+    "body": [
+      "deRfun ${1:name}(${2:[int]arg}): ${3:void} {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Define a deRfun function"
+  },
+  "Namespaced deRfun Function": {
+    "prefix": "deRfun::",
+    "body": [
+      "deRfun ${1:ns}::${2:name}(${3:[int]arg}): ${4:void} {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Define a namespaced deRfun function"
+  },
+  "Main Function": {
+    "prefix": "main",
+    "body": [
+      "deRfun main():void {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Insert main entry function"
+  },
+  "var local": {
+    "prefix": "var",
+    "body": [
+      "var[${1:int}] ${2:x} = ${3:0};"
+    ],
+    "description": "Local variable declaration"
+  },
+  "static var": {
+    "prefix": "svar",
+    "body": [
+      "static var[${1:int}] ${2:n} = ${3:0};"
+    ],
+    "description": "Static variable (function scope)"
+  },
+  "static mark": {
+    "prefix": "smark",
+    "body": [
+      "static ${1:ident};"
+    ],
+    "description": "Mark local as static"
+  },
+  "return Statement": {
+    "prefix": "ret",
+    "body": [
+      "return ${0};"
+    ],
+    "description": "Insert return statement"
+  },
+  "std rout": {
+    "prefix": "rout",
+    "body": [
+      "std::rout(${1:\"message\"});"
+    ],
+    "description": "Print using std::rout"
+  },
+  "Primitive int": {
+    "prefix": "int",
+    "body": "int",
+    "description": "Primitive type int"
+  },
+  "Primitive string": {
+    "prefix": "string",
+    "body": "string",
+    "description": "Primitive type string"
+  },
+  "Primitive boolean": {
+    "prefix": "boolean",
+    "body": "boolean",
+    "description": "Primitive type boolean"
+  },
+  "Primitive void": {
+    "prefix": "void",
+    "body": "void",
+    "description": "Primitive type void"
+  },
+  "Keyword public": {
+    "prefix": "public",
+    "body": "public",
+    "description": "Keyword public"
+  },
+  "Keyword private": {
+    "prefix": "private",
+    "body": "private",
+    "description": "Keyword private"
+  },
+  "Keyword static": {
+    "prefix": "static",
+    "body": "static",
+    "description": "Keyword static"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t${2:long} ${3:field};",
+      "}"
+    ],
+    "description": "值类型结构体"
+  },
+  "enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:A},",
+      "\t${3:B}",
+      "}"
+    ],
+    "description": "整数枚举"
+  },
+  "for": {
+    "prefix": "for",
+    "body": [
+      "for (${1:long i = 0L}; ${2:i != n}; ${3:i = i + 1L}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "for 循环"
+  }
+}

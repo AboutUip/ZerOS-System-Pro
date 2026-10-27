@@ -2,7 +2,9 @@
    不读键盘，也不写屏幕。feed 的 unit 是一个八位组：可打印、控制、或方向键的 ESC 序列。
    一行最多 240 个八位组。历史 32 条，空行和与上一条相同的不记。
    字 0 长度，1 光标，2 历史条数，3 历史游标（-1 是正在打的新行），4 暂存长度，5 转义状态。
-   正文从 +4096 起。暂存从 +6144 起。历史从 +8192 起，每条 64 位长度加 256 个八位组。 */
+   字 6 为 1 时正在收 here-document 正文：换行不进历史，制表符写进行。
+   正文从 +4096 起。暂存从 +6144 起。历史从 +8192 起，每条 64 位长度加 256 个八位组。
+   << 与 <<- 的结束词放在命令区后面、暂存前面。这一轮正文不做参数展开、命令替换和算术展开。 */
 #LINK /sh.obr, /edit-check.obr
 import memory;
 
@@ -52,6 +54,16 @@ deRfun editInit(long state): void {
   memory::store64(-1L, state + 192L);
   memory::store64(0L, state + 256L);
   memory::store64(0L, state + 320L);
+  memory::store64(0L, state + 384L);
+}
+
+/* 1 表示后续行是 here-document 正文。editClear 不清这一字，收齐或取消时由壳自己写回 0。 */
+deRfun editBody(long state): long {
+  return memory::load64(state + 384L);
+}
+
+deRfun editBodySet(long state, long value): void {
+  memory::store64(value, state + 384L);
 }
 
 deRfun editClear(long state): void {
@@ -355,7 +367,9 @@ deRfun editFeed(long state, long unit): long {
     return 0L;
   }
   if (unit == 10L || unit == 13L) {
-    histRemember(state);
+    if (editBody(state) == 0L) {
+      histRemember(state);
+    }
     memory::store64(-1L, state + 192L);
     return 1L;
   }
@@ -401,6 +415,9 @@ deRfun editFeed(long state, long unit): long {
     return 0L;
   }
   if (unit == 9L) {
+    if (editBody(state) == 1L) {
+      editInsert(state, 9L);
+    }
     return 0L;
   }
   if (unit >= 32L && unit < 127L) {
@@ -429,14 +446,8 @@ deRfun bytesEq(long addr, long count, string text): long {
 }
 
 deRfun builtinId(long addr, long count): long {
-  if (bytesEq(addr, count, "echo") == 1L) {
-    return 1L;
-  }
   if (bytesEq(addr, count, "cd") == 1L) {
     return 2L;
-  }
-  if (bytesEq(addr, count, "pwd") == 1L) {
-    return 3L;
   }
   if (bytesEq(addr, count, "exit") == 1L) {
     return 4L;
@@ -502,8 +513,84 @@ deRfun scratchAt(long out): long {
   return out + 110592L;
 }
 
+/* 16 条命令占到 out+102400。暂存从 out+110592 起。中间 8192 位只放结束词。
+   个数在起点。随后最多四格，步长 1280：命令号、是否剥制表符、结束词长度、正文长度、128 个八位组。
+   正文本身不在这里，壳另外放进堆。壳和自检按这些偏移直接读，不经过头文件。 */
+deRfun hdBase(long out): long {
+  return out + 102400L;
+}
+
+deRfun hdStride(): long {
+  return 1280L;
+}
+
+deRfun hdCount(long out): long {
+  return memory::load64(hdBase(out));
+}
+
+deRfun hdSlot(long out, long index): long {
+  return hdBase(out) + 64L + index * hdStride();
+}
+
+deRfun hdCmd(long out, long index): long {
+  return memory::load64(hdSlot(out, index));
+}
+
+deRfun hdStrip(long out, long index): long {
+  return memory::load64(hdSlot(out, index) + 64L);
+}
+
+deRfun hdDelimLen(long out, long index): long {
+  return memory::load64(hdSlot(out, index) + 128L);
+}
+
+deRfun hdBodyLen(long out, long index): long {
+  return memory::load64(hdSlot(out, index) + 192L);
+}
+
+deRfun hdSetBody(long out, long index, long length): void {
+  memory::store64(length, hdSlot(out, index) + 192L);
+}
+
+deRfun hdDelimAt(long out, long index): long {
+  return hdSlot(out, index) + 256L;
+}
+
+deRfun hdFor(long out, long cmd, long total): long {
+  long count = 0L;
+  long index = 0L;
+  while (index < total) {
+    if (hdCmd(out, index) == cmd) {
+      count = count + 1L;
+    }
+    index = index + 1L;
+  }
+  return count;
+}
+
+/* 文件重定向仍是 < 时，here-document 不再占标准输入。否则这一命令最后一份才生效。 */
+deRfun hdLast(long out, long cmd): long {
+  if (cmd < 0L) {
+    return -1L;
+  }
+  if (cmdRedir(cmdOf(out, cmd)) == 3L) {
+    return -1L;
+  }
+  long total = hdCount(out);
+  long found = -1L;
+  long index = 0L;
+  while (index < total) {
+    if (hdCmd(out, index) == cmd) {
+      found = index;
+    }
+    index = index + 1L;
+  }
+  return found;
+}
+
 deRfun parseClear(long out): void {
   memory::store64(0L, out);
+  memory::store64(0L, hdBase(out));
   long index = 0L;
   while (index < 16L) {
     memory::store64(0L, cmdOf(out, index));
@@ -564,8 +651,47 @@ deRfun takeWord(long out, long cmdIndex, long wordLen, long status, long redir, 
   return 0L;
 }
 
+/* 结束词按剥引号后的字节原样收下，不把 $? 换成状态。空结束词合法。后写的 << 盖过先前的 <。 */
+deRfun takeHere(long out, long cmdIndex, long wordLen, long strip): long {
+  if (cmdIndex < 0L || cmdIndex >= 16L || wordLen < 0L || wordLen > 128L) {
+    return 1L;
+  }
+  long total = hdCount(out);
+  if (total < 0L || total >= 4L || hdFor(out, cmdIndex, total) >= 2L) {
+    return 1L;
+  }
+  long slot = hdSlot(out, total);
+  memory::store64(cmdIndex, slot);
+  memory::store64(strip, slot + 64L);
+  memory::store64(wordLen, slot + 128L);
+  memory::store64(0L, slot + 192L);
+  if (wordLen > 0L) {
+    copyBytes(scratchAt(out), slot + 256L, wordLen);
+  }
+  memory::store64(total + 1L, hdBase(out));
+  long cmd = cmdOf(out, cmdIndex);
+  if (cmdRedir(cmd) == 3L) {
+    memory::store64(0L, cmd + 64L);
+    memory::store64(0L, cmd + 128L);
+  }
+  return 0L;
+}
+
+/* hdWait 为 1 是 <<，为 2 是 <<-。其它词仍走原来的参数或文件重定向。 */
+deRfun putWord(long out, long cur, long wordLen, long status, long redir, long plain, long hdWait): long {
+  if (hdWait != 0L) {
+    long strip = 0L;
+    if (hdWait == 2L) {
+      strip = 1L;
+    }
+    return takeHere(out, cur, wordLen, strip);
+  }
+  return takeWord(out, cur, wordLen, status, redir, plain);
+}
+
 /* 0 成功，1 语法错误。out 至少要有 131072 位。
-   列表之间是 &&、|| 或 ;。列表里面是管道。重定向是 >、>>、<。 */
+   列表之间是 &&、|| 或 ;。列表里面是管道。文件重定向是 >、>>、<。
+   << 和 <<- 的下一个词是结束词，不进参数。一条简单命令最多两个，一行最多四个。 */
 deRfun parseLine(long src, long count, long out, long status): long {
   parseClear(out);
   long index = 0L;
@@ -579,6 +705,7 @@ deRfun parseLine(long src, long count, long out, long status): long {
   long quoting = 0L;
   long plain = 1L;
   long any = 0L;
+  long hdWait = 0L;
   while (index < count) {
     long value = u8(src + index * 8L);
     if (quoting == 0L && (value == 32L || value == 9L)) {
@@ -586,13 +713,14 @@ deRfun parseLine(long src, long count, long out, long status): long {
         if (cur < 0L) {
           return 1L;
         }
-        if (takeWord(out, cur, wordLen, status, redir, plain) != 0L) {
+        if (putWord(out, cur, wordLen, status, redir, plain, hdWait) != 0L) {
           return 1L;
         }
         wordLen = 0L;
         held = 0L;
         redir = 0L;
         plain = 1L;
+        hdWait = 0L;
         any = 1L;
       }
       index = index + 1L;
@@ -623,7 +751,11 @@ deRfun parseLine(long src, long count, long out, long status): long {
         quoting = 0L;
         held = 1L;
       } else {
-        if (wordLen >= 64L && redir == 0L) {
+        long limit = 64L;
+        if (redir != 0L || hdWait != 0L) {
+          limit = 128L;
+        }
+        if (wordLen >= limit) {
           return 1L;
         }
         putByte(scratchAt(out), wordLen, value);
@@ -666,7 +798,11 @@ deRfun parseLine(long src, long count, long out, long status): long {
         index = index + 1L;
         continue;
       }
-      if (wordLen >= 64L && redir == 0L) {
+      long limit = 64L;
+      if (redir != 0L || hdWait != 0L) {
+        limit = 128L;
+      }
+      if (wordLen >= limit) {
         return 1L;
       }
       putByte(scratchAt(out), wordLen, value);
@@ -689,6 +825,9 @@ deRfun parseLine(long src, long count, long out, long status): long {
         lists = lists + 1L;
         joiner = 0L;
       }
+      if (hdWait != 0L && wordLen >= 128L) {
+        return 1L;
+      }
       putByte(scratchAt(out), wordLen, value);
       wordLen = wordLen + 1L;
       index = index + 1L;
@@ -697,6 +836,7 @@ deRfun parseLine(long src, long count, long out, long status): long {
     long op = 0L;
     long opRedir = 0L;
     long opJoin = 0L;
+    long opStrip = 0L;
     if (value == 124L) {
       if (index + 1L < count && u8(src + (index + 1L) * 8L) == 124L) {
         op = 4L;
@@ -721,24 +861,58 @@ deRfun parseLine(long src, long count, long out, long status): long {
         index = index + 1L;
       }
     } else if (value == 60L) {
-      op = 6L;
-      opRedir = 3L;
+      if (index + 1L < count && u8(src + (index + 1L) * 8L) == 60L) {
+        op = 7L;
+        index = index + 1L;
+        if (index + 1L < count && u8(src + (index + 1L) * 8L) == 45L) {
+          opStrip = 1L;
+          index = index + 1L;
+        }
+      } else {
+        op = 6L;
+        opRedir = 3L;
+      }
     }
     if (op != 0L) {
       if (wordLen > 0L || held == 1L) {
         if (cur < 0L) {
           return 1L;
         }
-        if (takeWord(out, cur, wordLen, status, redir, plain) != 0L) {
+        if (putWord(out, cur, wordLen, status, redir, plain, hdWait) != 0L) {
           return 1L;
         }
         wordLen = 0L;
         held = 0L;
         redir = 0L;
         plain = 1L;
+        hdWait = 0L;
         any = 1L;
       }
-      if (op == 6L) {
+      if (hdWait != 0L || (op == 7L && redir != 0L)) {
+        return 1L;
+      }
+      if (op == 7L) {
+        if (cur < 0L) {
+          if (lists >= 4L || cmds >= 16L) {
+            return 1L;
+          }
+          memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+          memory::store64(1L, out + (2L + lists * 3L) * 64L);
+          memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+          cur = cmds;
+          cmds = cmds + 1L;
+          lists = lists + 1L;
+          joiner = 0L;
+        }
+        long total = hdCount(out);
+        if (total >= 4L || hdFor(out, cur, total) >= 2L) {
+          return 1L;
+        }
+        hdWait = 1L;
+        if (opStrip == 1L) {
+          hdWait = 2L;
+        }
+      } else if (op == 6L) {
         if (cur < 0L) {
           if (lists >= 4L || cmds >= 16L) {
             return 1L;
@@ -796,7 +970,11 @@ deRfun parseLine(long src, long count, long out, long status): long {
       lists = lists + 1L;
       joiner = 0L;
     }
-    if (wordLen >= 160L) {
+    long limit = 160L;
+    if (hdWait != 0L) {
+      limit = 128L;
+    }
+    if (wordLen >= limit) {
       return 1L;
     }
     putByte(scratchAt(out), wordLen, value);
@@ -804,21 +982,22 @@ deRfun parseLine(long src, long count, long out, long status): long {
     held = 1L;
     index = index + 1L;
   }
-  if (quoting != 0L || (redir != 0L && wordLen == 0L && held == 0L)) {
+  if (quoting != 0L || (redir != 0L && wordLen == 0L && held == 0L) || (hdWait != 0L && wordLen == 0L && held == 0L)) {
     return 1L;
   }
   if (wordLen > 0L || held == 1L) {
     if (cur < 0L) {
       return 1L;
     }
-    if (takeWord(out, cur, wordLen, status, redir, plain) != 0L) {
+    if (putWord(out, cur, wordLen, status, redir, plain, hdWait) != 0L) {
       return 1L;
     }
     any = 1L;
     redir = 0L;
     held = 0L;
+    hdWait = 0L;
   }
-  if (redir != 0L) {
+  if (redir != 0L || hdWait != 0L) {
     return 1L;
   }
   if (joiner != 0L && cur < 0L) {

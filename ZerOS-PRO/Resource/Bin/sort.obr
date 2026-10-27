@@ -1,0 +1,1234 @@
+/* POSIX.1-2017 sort（utilities/sort.html）这一轮。
+   形式是 sort [-cCmu] [-o output] [-bdfinr] [-t char] [-k keydef]... [file...]。
+   不做 GNU 长选项，不做 -s -z -S -V -h -M。以 + 开头的词是文件名，不认旧式 +pos1 -pos2。
+
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -r 是文件名。
+   单独一个 - 结束选项，并且读标准输入，不关闭描述符 0。
+   以 - 开头、长度至少 2、又不是 --，按一串短选项解。
+   只允许 b c C d f i k m n o r t u。别的字母写 sort: invalid option，立刻退出 1。
+   要参数的只有 o、t、k，并且必须是这一串的最后一个字母。
+   参数可以贴在字母后面（-oout、-t:、-k2,2n），也可以是下一个词。
+   没有参数写 sort: missing operand。-o 的空串同样算缺参数。空的 -k 解不开。
+   -t 必须正好一个八位组，空的或更长写 sort: invalid separator。可以是空格。
+
+   -m 收下，仍整段排序。-c 和 -C 后写的生效，不写排序结果，也不管 -o。
+   已经按同一套比较有序则退出 0。-c 在没排好时写 sort: not sorted；-C 不写这句。
+   同时有 -u 时，相邻且比较相等也算没排好。
+   检查时只能有一个文件，或者没有文件（标准输入）。更多写 sort: too many files，不读。
+
+   没有 -o 写描述符 1。-o 先把输入全部读进内存，排序后再按标志 1（只写并截断）打开。
+   这样输出路径可以和某个输入相同。-o - 是名字为 - 的文件，不是标准输出。
+   打不开写 sort: 路径: No such file or directory。
+   -u 在排完后，相邻且全部键都相等的行只留一行。留哪一行随排序结果，不要求稳定。
+
+   没有 -k 时，键就是整行（不含换行），全局 -b -d -f -i -n -r 都作用在这一键上。
+   有 -k 时只按写出的顺序比这些键，不再用整行打平。键相等则这两行相等，顺序不规定。
+   某个键自己写了 b d f i n r 里的任何一个，就只用键上的字母，不叠加全局。
+   键上的 b 只跳过起始字段里的前导空白。结束侧的 b 忽略，但仍然算这个键写过字母。
+
+   比较只看键，输出仍是原文。行以字节 10 切开，换行不进正文。
+   文件末尾没有换行的那一段仍是一行，输出时每一行都补上字节 10。
+   前一个文件末尾没有换行时，这一行到此结束，不和下一个文件拼起来。
+   -n 按有符号整数，数字超过 18 位写 sort: invalid number。加号不是符号。
+   排序是迭代堆排序，排的是行下标，不递归，也不做插入排序。不用移位。
+
+   输入合计超过 262144 个八位组（换行也算）写 sort: file too large。
+   单行不含换行超过 8192 写 sort: line too long。行数超过 4096 写 sort: too many lines。
+   读失败 sort: read error。写失败 sort: write error。都是立刻退出 1。
+   状态经 obr::proc::exit 交出，main 仍返回 0。long 的比较和初值用 0L。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 正文、行表、下标、键。sep 为 -1 时按空白分字段，否则是那一个分隔八位组。
+   check：0 不检查，1 是 -c，2 是 -C。global 的位是 b d f i n r。 */
+struct Bag {
+  long body;
+  long lines;
+  long order;
+  long keys;
+  long keyCount;
+  long sep;
+  long global;
+  long unique;
+  long check;
+  long outAddr;
+  long outLen;
+  long hasOut;
+  long bodyLen;
+  long lineCount;
+  long total;
+  long curAt;
+  long curLen;
+}
+
+/* 正文上限。换行不放进正文，但仍计入读到的字节。 */
+deRfun bodyMax(): long {
+  return 262144L;
+}
+
+/* 一行不含换行的上限。 */
+deRfun lineMax(): long {
+  return 8192L;
+}
+
+/* 行数上限。行表两字一行，下标表一字一行。 */
+deRfun rowMax(): long {
+  return 4096L;
+}
+
+/* 一次读或写的上限。 */
+deRfun chunkMax(): long {
+  return 4096L;
+}
+
+/* 参数最多 64 个，键不会更多。这里留一倍。 */
+deRfun keyMax(): long {
+  return 128L;
+}
+
+/* 一行两个 64 位字：起始偏移、长度。 */
+deRfun rowStride(): long {
+  return 128L;
+}
+
+/* 一个键六个 64 位字：起始字段、起始字符、结束字段、结束字符、起始侧字母、键上全部字母。
+   起始字段 0 表示没有 -k，键就是整行。结束字段 0 表示一直到行尾。结束字符 0 表示收到字段末尾。 */
+deRfun keyStride(): long {
+  return 384L;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun lineWord(long lines, long row, long word): long {
+  return memory::load64(lines + row * rowStride() + word * 64L);
+}
+
+deRfun keyWord(long keys, long index, long word): long {
+  return memory::load64(keys + index * keyStride() + word * 64L);
+}
+
+/* 诊断写描述符 2。控制台不看偏移，这一路每次从 0 写。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径按八位组抄到描述符 2。一次最多 4096。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "sort: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 字节区开头已经放好 count 个八位组，count 不超过 4096。
+   fd 的偏移从 *place 起，按 slot 320 的实际个数往下加。
+   写不满就把剩下的挪回字节区开头再写。失败返回 1。 */
+deRfun writeReady(long home, long fd, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    if (obr::proc::write(home, fd, *place, chunk) != 0L) {
+      writeErr(home, "sort: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "sort: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 源八位组相邻隔 8 位。按 4096 搬进字节区再写。 */
+deRfun writeSpan(long home, long fd, long* place, long addr, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    copySpan(addr + done * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, fd, place, chunk) != 0L) {
+      return 1L;
+    }
+    done = done + chunk;
+  }
+  return 0L;
+}
+
+deRfun writeOctet(long home, long fd, long* place, long value): long {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  return writeReady(home, fd, place, 1L);
+}
+
+/* 空白只有空格和制表。回车、换页都不算。 */
+deRfun isBlank(long octet): long {
+  if (octet == 32L || octet == 9L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 键上的字母。b=1 d=2 f=4 i=8 n=16 r=32。不是这些字母就返回 0。 */
+deRfun modBit(long flag): long {
+  if (flag == 98L) {
+    return 1L;
+  }
+  if (flag == 100L) {
+    return 2L;
+  }
+  if (flag == 102L) {
+    return 4L;
+  }
+  if (flag == 105L) {
+    return 8L;
+  }
+  if (flag == 110L) {
+    return 16L;
+  }
+  if (flag == 114L) {
+    return 32L;
+  }
+  return 0L;
+}
+
+/* 不带符号的十进制，至少一位，不能是 0，中间不能有空格。
+   放不进有符号 64 位也拒绝。成功时 *pos 停在数字后面。 */
+deRfun parseUnsigned(long at, long len, long* pos, long* out): long {
+  long cursor = *pos;
+  if (cursor >= len) {
+    return 0L;
+  }
+  long bit = u8(at + cursor * 8L);
+  if (bit < 48L || bit > 57L) {
+    return 0L;
+  }
+  long value = 0L;
+  while (cursor < len) {
+    bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      break;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L || (value == 922337203685477580L && digit > 7L)) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    cursor = cursor + 1L;
+  }
+  if (value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  *pos = cursor;
+  return 1L;
+}
+
+/* 连续的 b d f i n r。遇到别的字符就停，那个字符留给调用方。 */
+deRfun takeMods(long at, long len, long* pos): long {
+  long flags = 0L;
+  long cursor = *pos;
+  while (cursor < len) {
+    long bit = modBit(u8(at + cursor * 8L));
+    if (bit == 0L) {
+      break;
+    }
+    flags = flags | bit;
+    cursor = cursor + 1L;
+  }
+  *pos = cursor;
+  return flags;
+}
+
+/* field[.char][opts][,field[.char][opts]]。
+   没有点时，起始字符是 1，结束字符记 0，表示收到该字段末尾。
+   结束字段号小于起始字段号拒绝。成功返回 1。 */
+deRfun parseKey(long at, long len, long* sf, long* sc, long* ef, long* ec, long* side, long* own): long {
+  long pos = 0L;
+  long field = 0L;
+  if (parseUnsigned(at, len, &pos, &field) == 0L) {
+    return 0L;
+  }
+  long ch = 1L;
+  if (pos < len && u8(at + pos * 8L) == 46L) {
+    pos = pos + 1L;
+    if (parseUnsigned(at, len, &pos, &ch) == 0L) {
+      return 0L;
+    }
+  }
+  long flags = takeMods(at, len, &pos);
+  *sf = field;
+  *sc = ch;
+  *side = flags;
+  if (pos >= len) {
+    *ef = 0L;
+    *ec = 0L;
+    *own = flags;
+    return 1L;
+  }
+  if (u8(at + pos * 8L) != 44L) {
+    return 0L;
+  }
+  pos = pos + 1L;
+  long endField = 0L;
+  if (parseUnsigned(at, len, &pos, &endField) == 0L) {
+    return 0L;
+  }
+  if (endField < field) {
+    return 0L;
+  }
+  long endCh = 0L;
+  if (pos < len && u8(at + pos * 8L) == 46L) {
+    pos = pos + 1L;
+    if (parseUnsigned(at, len, &pos, &endCh) == 0L) {
+      return 0L;
+    }
+  }
+  long endFlags = takeMods(at, len, &pos);
+  if (pos != len) {
+    return 0L;
+  }
+  *ef = endField;
+  *ec = endCh;
+  *own = flags | endFlags;
+  return 1L;
+}
+
+deRfun putKey(long keys, long index, long sf, long sc, long ef, long ec, long side, long own): void {
+  long slot = keys + index * keyStride();
+  memory::store64(sf, slot);
+  memory::store64(sc, slot + 64L);
+  memory::store64(ef, slot + 128L);
+  memory::store64(ec, slot + 192L);
+  memory::store64(side, slot + 256L);
+  memory::store64(own, slot + 320L);
+}
+
+/* 选项参数贴在标志后面，或落在下一个参数里。成功时 *index 已经跳过用掉的参数。 */
+deRfun operand(long home, long* index, long count, long at, long len, long cursor, long* argAt, long* argLen): long {
+  if (cursor + 1L < len) {
+    *argAt = at + (cursor + 1L) * 8L;
+    *argLen = len - cursor - 1L;
+    *index = *index + 1L;
+    return 1L;
+  }
+  *index = *index + 1L;
+  if (*index >= count) {
+    return 0L;
+  }
+  *argAt = argPtr(home, *index);
+  *argLen = argLen(home, *index);
+  *index = *index + 1L;
+  return 1L;
+}
+
+/* 从下标 1 起。成功时 *fileAt 指着第一个文件；没有文件则等于 argc。失败已经写过诊断。 */
+deRfun parseArgs(long home, Bag* bag, long* fileAt): long {
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L && u8(at) == 45L) {
+      /* 单独一个减号结束选项，留给后面当标准输入。 */
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      long ate = 0L;
+      while (cursor < len && ate == 0L) {
+        long flag = u8(at + cursor * 8L);
+        long bit = modBit(flag);
+        if (bit != 0L) {
+          bag.global = bag.global | bit;
+          cursor = cursor + 1L;
+        } else if (flag == 109L) {
+          /* m。收下，不改整段排序。 */
+          cursor = cursor + 1L;
+        } else if (flag == 117L) {
+          bag.unique = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 99L) {
+          bag.check = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 67L) {
+          bag.check = 2L;
+          cursor = cursor + 1L;
+        } else if (flag == 111L || flag == 116L || flag == 107L) {
+          long argAt = 0L;
+          long argLen = 0L;
+          if (operand(home, &index, count, at, len, cursor, &argAt, &argLen) == 0L) {
+            writeErr(home, "sort: missing operand\n");
+            return 1L;
+          }
+          if (flag == 116L) {
+            if (argLen != 1L) {
+              writeErr(home, "sort: invalid separator\n");
+              return 1L;
+            }
+            bag.sep = u8(argAt);
+          } else if (flag == 111L) {
+            if (argLen < 1L) {
+              writeErr(home, "sort: missing operand\n");
+              return 1L;
+            }
+            bag.outAddr = argAt;
+            bag.outLen = argLen;
+            bag.hasOut = 1L;
+          } else {
+            if (argLen < 1L || bag.keyCount >= keyMax()) {
+              writeErr(home, "sort: invalid key\n");
+              return 1L;
+            }
+            long sf = 0L;
+            long sc = 0L;
+            long ef = 0L;
+            long ec = 0L;
+            long side = 0L;
+            long own = 0L;
+            if (parseKey(argAt, argLen, &sf, &sc, &ef, &ec, &side, &own) == 0L) {
+              writeErr(home, "sort: invalid key\n");
+              return 1L;
+            }
+            putKey(bag.keys, bag.keyCount, sf, sc, ef, ec, side, own);
+            bag.keyCount = bag.keyCount + 1L;
+          }
+          ate = 1L;
+        } else {
+          writeErr(home, "sort: invalid option\n");
+          return 1L;
+        }
+      }
+      if (ate == 0L) {
+        index = index + 1L;
+      }
+    } else {
+      ended = 1L;
+    }
+  }
+  *fileAt = index;
+  return 0L;
+}
+
+/* 从 from 起、长度 len 的这一段里，跳过前导空白。返回跳过的个数。 */
+deRfun skipBlank(long base, long from, long len): long {
+  long index = 0L;
+  while (index < len) {
+    if (isBlank(u8(base + (from + index) * 8L)) == 0L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return len;
+}
+
+/* -t 的字段。分隔字本身不属于字段。连续分隔字是空字段。行首就是分隔字则字段 1 为空。 */
+deRfun sepField(long base, long len, long field, long sep, long* start, long* span): long {
+  if (field < 1L) {
+    return 0L;
+  }
+  long pos = 0L;
+  long current = 1L;
+  long begin = 0L;
+  while (pos <= len) {
+    long boundary = 0L;
+    if (pos == len) {
+      boundary = 1L;
+    } else if (u8(base + pos * 8L) == sep) {
+      boundary = 1L;
+    }
+    if (boundary == 1L) {
+      if (current == field) {
+        *start = begin;
+        *span = pos - begin;
+        return 1L;
+      }
+      if (pos == len) {
+        return 0L;
+      }
+      pos = pos + 1L;
+      begin = pos;
+      current = current + 1L;
+    } else {
+      pos = pos + 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 没有 -t。字段 1 从行首开始，前导空白和紧接着的非空白都算它。
+   这段非空白后面的空白是分隔，不属于任何字段。下一个字段从其后第一个非空白开始。
+   整行都是空白时，字段 1 是整行，字段 2 是空，再往后没有。 */
+deRfun blankField(long base, long len, long field, long* start, long* span): long {
+  if (field < 1L) {
+    return 0L;
+  }
+  long saw = 0L;
+  long index = 0L;
+  while (index < len) {
+    if (isBlank(u8(base + index * 8L)) == 0L) {
+      saw = 1L;
+    }
+    index = index + 1L;
+  }
+  if (saw == 0L) {
+    if (field == 1L) {
+      *start = 0L;
+      *span = len;
+      return 1L;
+    }
+    if (field == 2L) {
+      *start = len;
+      *span = 0L;
+      return 1L;
+    }
+    return 0L;
+  }
+  long pos = 0L;
+  long current = 1L;
+  while (current < field) {
+    if (pos >= len) {
+      return 0L;
+    }
+    if (current == 1L) {
+      while (pos < len) {
+        if (isBlank(u8(base + pos * 8L)) == 0L) {
+          break;
+        }
+        pos = pos + 1L;
+      }
+      while (pos < len) {
+        if (isBlank(u8(base + pos * 8L)) == 1L) {
+          break;
+        }
+        pos = pos + 1L;
+      }
+      while (pos < len) {
+        if (isBlank(u8(base + pos * 8L)) == 0L) {
+          break;
+        }
+        pos = pos + 1L;
+      }
+      current = 2L;
+    } else {
+      while (pos < len) {
+        if (isBlank(u8(base + pos * 8L)) == 1L) {
+          break;
+        }
+        pos = pos + 1L;
+      }
+      while (pos < len) {
+        if (isBlank(u8(base + pos * 8L)) == 0L) {
+          break;
+        }
+        pos = pos + 1L;
+      }
+      current = current + 1L;
+    }
+  }
+  if (pos >= len) {
+    return 0L;
+  }
+  if (field == 1L) {
+    long end = 0L;
+    while (end < len) {
+      if (isBlank(u8(base + end * 8L)) == 0L) {
+        break;
+      }
+      end = end + 1L;
+    }
+    while (end < len) {
+      if (isBlank(u8(base + end * 8L)) == 1L) {
+        break;
+      }
+      end = end + 1L;
+    }
+    *start = 0L;
+    *span = end;
+    return 1L;
+  }
+  long end = pos;
+  while (end < len) {
+    if (isBlank(u8(base + end * 8L)) == 1L) {
+      break;
+    }
+    end = end + 1L;
+  }
+  *start = pos;
+  *span = end - pos;
+  return 1L;
+}
+
+deRfun fieldCut(long base, long len, long field, long sep, long* start, long* span): long {
+  if (sep < 0L) {
+    return blankField(base, len, field, start, span);
+  }
+  return sepField(base, len, field, sep, start, span);
+}
+
+/* 位运算的结果是 int。先收成 0 或 1，后面再和 long 比。 */
+deRfun flagged(long flags, long mask): long {
+  if ((flags & mask) != 0) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 键上没有自己的 bdfinr 时用全局。有的话只用键上的，并且 b 只看起始侧。 */
+deRfun keyFlags(Bag* bag, long index, long* skip, long* flags): void {
+  long own = keyWord(bag.keys, index, 5L);
+  long side = keyWord(bag.keys, index, 4L);
+  if (own == 0L) {
+    *flags = bag.global;
+    *skip = 0L;
+    if (flagged(bag.global, 1L) == 1L) {
+      *skip = 1L;
+    }
+  } else {
+    *flags = own;
+    *skip = 0L;
+    if (flagged(side, 1L) == 1L) {
+      *skip = 1L;
+    }
+  }
+}
+
+/* 这一行上这个键覆盖的原文区间，相对行首。空键则 *count 为 0。
+   起始字段不在，或起始字符超出字段（-b 先跳过字段里的前导空白），键是空的。
+   没有结束字段就收到行尾。结束字段不在这一行上，也收到行尾。
+   写了结束字符则该位置包含在内；超出该字段就收到字段末尾。结束侧不跳空白。 */
+deRfun keySlice(Bag* bag, long row, long key, long skip, long* from, long* count): void {
+  *from = 0L;
+  *count = 0L;
+  long origin = lineWord(bag.lines, row, 0L);
+  long len = lineWord(bag.lines, row, 1L);
+  long base = bag.body + origin * 8L;
+  long sf = keyWord(bag.keys, key, 0L);
+  long sc = keyWord(bag.keys, key, 1L);
+  long ef = keyWord(bag.keys, key, 2L);
+  long ec = keyWord(bag.keys, key, 3L);
+  if (sf == 0L) {
+    long hop = 0L;
+    if (skip == 1L) {
+      hop = skipBlank(base, 0L, len);
+    }
+    if (sc > len - hop) {
+      return;
+    }
+    *from = hop + sc - 1L;
+    *count = len - *from;
+    return;
+  }
+  long fs = 0L;
+  long fl = 0L;
+  if (fieldCut(base, len, sf, bag.sep, &fs, &fl) == 0L) {
+    return;
+  }
+  long hop = 0L;
+  if (skip == 1L) {
+    hop = skipBlank(base, fs, fl);
+  }
+  long avail = fl - hop;
+  if (sc > avail) {
+    return;
+  }
+  long rel = fs + hop + sc - 1L;
+  long endEx = len;
+  if (ef != 0L) {
+    long es = 0L;
+    long el = 0L;
+    if (fieldCut(base, len, ef, bag.sep, &es, &el) == 0L) {
+      endEx = len;
+    } else if (ec == 0L || ec > el) {
+      endEx = es + el;
+    } else {
+      endEx = es + ec;
+    }
+  }
+  if (endEx > len) {
+    endEx = len;
+  }
+  if (endEx < rel) {
+    return;
+  }
+  *from = rel;
+  *count = endEx - rel;
+}
+
+/* -d 只留空格、制表、数字和字母。-i 只留 32 到 126。两个都在时必须同时满足。 */
+deRfun kept(long octet, long flags): long {
+  long useD = 0L;
+  long useI = 0L;
+  if (flagged(flags, 2L) == 1L) {
+    useD = 1L;
+  }
+  if (flagged(flags, 8L) == 1L) {
+    useI = 1L;
+  }
+  if (useD == 0L && useI == 0L) {
+    return 1L;
+  }
+  if (useD == 1L) {
+    long ok = 0L;
+    if (octet == 32L || octet == 9L) {
+      ok = 1L;
+    }
+    if (octet >= 48L && octet <= 57L) {
+      ok = 1L;
+    }
+    if (octet >= 65L && octet <= 90L) {
+      ok = 1L;
+    }
+    if (octet >= 97L && octet <= 122L) {
+      ok = 1L;
+    }
+    if (ok == 0L) {
+      return 0L;
+    }
+  }
+  if (useI == 1L && (octet < 32L || octet > 126L)) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* -f 只在比较时把 A–Z 当成 a–z。不改已经收下的原文。 */
+deRfun foldByte(long octet, long flags): long {
+  if (flagged(flags, 4L) == 1L && octet >= 65L && octet <= 90L) {
+    return octet + 32L;
+  }
+  return octet;
+}
+
+deRfun nextKept(long base, long from, long len, long index, long flags): long {
+  while (index < len) {
+    if (kept(u8(base + (from + index) * 8L), flags) == 1L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return len;
+}
+
+/* 丢掉不算数的八位组后，按无符号 0–255 从左到右比。一边先尽则较短的小。 */
+deRfun cmpDict(long baseA, long fromA, long lenA, long baseB, long fromB, long lenB, long flags): long {
+  long ia = 0L;
+  long ib = 0L;
+  while (ia < lenA || ib < lenB) {
+    ia = nextKept(baseA, fromA, lenA, ia, flags);
+    ib = nextKept(baseB, fromB, lenB, ib, flags);
+    if (ia >= lenA && ib >= lenB) {
+      return 0L;
+    }
+    if (ia >= lenA) {
+      return -1L;
+    }
+    if (ib >= lenB) {
+      return 1L;
+    }
+    long ca = foldByte(u8(baseA + (fromA + ia) * 8L), flags);
+    long cb = foldByte(u8(baseB + (fromB + ib) * 8L), flags);
+    if (ca < cb) {
+      return -1L;
+    }
+    if (ca > cb) {
+      return 1L;
+    }
+    ia = ia + 1L;
+    ib = ib + 1L;
+  }
+  return 0L;
+}
+
+/* 先跳过前导空白，即使这个键没有 -b。可选一个减号。然后读数字。
+   没有数字就是 0。加号不是符号，+12 是 0。数字后面的字丢掉。
+   超过 18 位立刻退出。18 位以内放得进有符号 64 位，按整数比。 */
+deRfun readNum(long home, long base, long from, long len, long* out): void {
+  long index = skipBlank(base, from, len);
+  long neg = 0L;
+  if (index < len && u8(base + (from + index) * 8L) == 45L) {
+    neg = 1L;
+    index = index + 1L;
+  }
+  long value = 0L;
+  long digits = 0L;
+  while (index < len) {
+    long octet = u8(base + (from + index) * 8L);
+    if (octet < 48L || octet > 57L) {
+      break;
+    }
+    digits = digits + 1L;
+    if (digits > 18L) {
+      writeErr(home, "sort: invalid number\n");
+      obr::proc::exit(home, 1L);
+      return;
+    }
+    value = value * 10L + (octet - 48L);
+    index = index + 1L;
+  }
+  if (neg == 1L && digits > 0L) {
+    value = 0L - value;
+  }
+  *out = value;
+}
+
+deRfun cmpNum(long home, long baseA, long fromA, long lenA, long baseB, long fromB, long lenB): long {
+  long left = 0L;
+  long right = 0L;
+  readNum(home, baseA, fromA, lenA, &left);
+  readNum(home, baseB, fromB, lenB, &right);
+  if (left < right) {
+    return -1L;
+  }
+  if (left > right) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 键上的 r，或这个键在用的全局 -r。相等仍然相等。 */
+deRfun orient(long result, long flags): long {
+  if (flagged(flags, 32L) == 0L) {
+    return result;
+  }
+  if (result > 0L) {
+    return -1L;
+  }
+  if (result < 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 负数表示左行应排在前面。第一个不相等的键决定结果。全部相等就是 0，不再比整行。 */
+deRfun cmpLines(long home, Bag* bag, long left, long right): long {
+  long key = 0L;
+  while (key < bag.keyCount) {
+    long skip = 0L;
+    long flags = 0L;
+    keyFlags(bag, key, &skip, &flags);
+    long fromL = 0L;
+    long lenL = 0L;
+    long fromR = 0L;
+    long lenR = 0L;
+    keySlice(bag, left, key, skip, &fromL, &lenL);
+    keySlice(bag, right, key, skip, &fromR, &lenR);
+    long baseL = bag.body + lineWord(bag.lines, left, 0L) * 8L;
+    long baseR = bag.body + lineWord(bag.lines, right, 0L) * 8L;
+    long result = 0L;
+    if (flagged(flags, 16L) == 1L) {
+      result = cmpNum(home, baseL, fromL, lenL, baseR, fromR, lenR);
+    } else {
+      result = cmpDict(baseL, fromL, lenL, baseR, fromR, lenR, flags);
+    }
+    result = orient(result, flags);
+    if (result != 0L) {
+      return result;
+    }
+    key = key + 1L;
+  }
+  return 0L;
+}
+
+/* 每个用了 -n 的键都先读一遍。超过 18 位就退出，不依赖后面比较走到没有。 */
+deRfun vet(long home, Bag* bag): void {
+  long row = 0L;
+  while (row < bag.lineCount) {
+    long key = 0L;
+    while (key < bag.keyCount) {
+      long skip = 0L;
+      long flags = 0L;
+      keyFlags(bag, key, &skip, &flags);
+      if (flagged(flags, 16L) == 1L) {
+        long from = 0L;
+        long count = 0L;
+        keySlice(bag, row, key, skip, &from, &count);
+        long base = bag.body + lineWord(bag.lines, row, 0L) * 8L;
+        long value = 0L;
+        readNum(home, base, from, count, &value);
+      }
+      key = key + 1L;
+    }
+    row = row + 1L;
+  }
+}
+
+/* 记下当前这一行。行数已经到上限就返回 1，调用方写诊断。 */
+deRfun seal(Bag* bag): long {
+  if (bag.lineCount >= rowMax()) {
+    return 1L;
+  }
+  long slot = bag.lines + bag.lineCount * rowStride();
+  memory::store64(bag.curAt, slot);
+  memory::store64(bag.curLen, slot + 64L);
+  bag.lineCount = bag.lineCount + 1L;
+  bag.curAt = bag.bodyLen;
+  bag.curLen = 0L;
+  return 0L;
+}
+
+/* 从 *offset 接着读。0 是结束。返回非 0 或个数为负是读失败。
+   换行不进正文，但计入合计。文件结束时如果还有没换行的一段，它单独成行。 */
+deRfun pull(long home, Bag* bag, long fd, long* offset): long {
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, *offset, chunkMax()) != 0L) {
+      writeErr(home, "sort: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "sort: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > chunkMax()) {
+        n = chunkMax();
+      }
+      long index = 0L;
+      long base = obr::proc::bytes(home);
+      while (index < n) {
+        long octet = u8(base + index * 8L);
+        bag.total = bag.total + 1L;
+        if (bag.total > bodyMax()) {
+          writeErr(home, "sort: file too large\n");
+          return 1L;
+        }
+        if (octet == 10L) {
+          if (seal(bag) != 0L) {
+            writeErr(home, "sort: too many lines\n");
+            return 1L;
+          }
+        } else {
+          if (bag.curLen >= lineMax()) {
+            writeErr(home, "sort: line too long\n");
+            return 1L;
+          }
+          memory::storeOctet(octet, bag.body + bag.bodyLen * 8L);
+          bag.bodyLen = bag.bodyLen + 1L;
+          bag.curLen = bag.curLen + 1L;
+        }
+        index = index + 1L;
+      }
+      *offset = *offset + n;
+    }
+  }
+  if (bag.curLen > 0L) {
+    if (seal(bag) != 0L) {
+      writeErr(home, "sort: too many lines\n");
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，必须在下一次读写之前取走。描述符 0 不关。 */
+deRfun pullFile(long home, Bag* bag, long addr, long count): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long offset = 0L;
+  long status = pull(home, bag, fd, &offset);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+/* 按输入顺序看相邻行。有序返回 1。-u 时相等也算没有排好。 */
+deRfun inOrder(long home, Bag* bag): long {
+  long index = 1L;
+  while (index < bag.lineCount) {
+    long result = cmpLines(home, bag, index - 1L, index);
+    if (result > 0L) {
+      return 0L;
+    }
+    if (bag.unique == 1L && result == 0L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 大根堆。左孩子是 root+root+1，不用移位。比的是下标指着的行。 */
+deRfun sift(long home, Bag* bag, long root, long heapCount): void {
+  long live = 1L;
+  while (live == 1L) {
+    long left = root + root + 1L;
+    if (left >= heapCount) {
+      live = 0L;
+    } else {
+      long best = root;
+      long right = left + 1L;
+      long bestId = memory::load64(bag.order + best * 64L);
+      long leftId = memory::load64(bag.order + left * 64L);
+      if (cmpLines(home, bag, leftId, bestId) > 0L) {
+        best = left;
+      }
+      if (right < heapCount) {
+        bestId = memory::load64(bag.order + best * 64L);
+        long rightId = memory::load64(bag.order + right * 64L);
+        if (cmpLines(home, bag, rightId, bestId) > 0L) {
+          best = right;
+        }
+      }
+      if (best == root) {
+        live = 0L;
+      } else {
+        long from = memory::load64(bag.order + root * 64L);
+        long to = memory::load64(bag.order + best * 64L);
+        memory::store64(to, bag.order + root * 64L);
+        memory::store64(from, bag.order + best * 64L);
+        root = best;
+      }
+    }
+  }
+}
+
+/* 先把下标 0..n-1 放进下标表，再迭代建堆、取出。不递归，也不插入排序。不稳定。 */
+deRfun heapSort(long home, Bag* bag): void {
+  long count = bag.lineCount;
+  long cursor = 0L;
+  while (cursor < count) {
+    memory::store64(cursor, bag.order + cursor * 64L);
+    cursor = cursor + 1L;
+  }
+  long start = count / 2L;
+  while (start > 0L) {
+    start = start - 1L;
+    sift(home, bag, start, count);
+  }
+  long end = count;
+  while (end > 1L) {
+    end = end - 1L;
+    long top = memory::load64(bag.order);
+    long last = memory::load64(bag.order + end * 64L);
+    memory::store64(last, bag.order);
+    memory::store64(top, bag.order + end * 64L);
+    sift(home, bag, 0L, end);
+  }
+}
+
+deRfun emitRow(long home, long fd, long* place, Bag* bag, long row): long {
+  long origin = lineWord(bag.lines, row, 0L);
+  long len = lineWord(bag.lines, row, 1L);
+  if (writeSpan(home, fd, place, bag.body + origin * 8L, len) != 0L) {
+    return 1L;
+  }
+  if (writeOctet(home, fd, place, 10L) != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* -u 时和上一行留下的那行比。键全相等就跳过。输出仍是原文，每行补一个换行。 */
+deRfun emitAll(long home, long fd, long* place, Bag* bag): long {
+  if (bag.lineCount < 1L) {
+    return 0L;
+  }
+  long shown = memory::load64(bag.order);
+  if (emitRow(home, fd, place, bag, shown) != 0L) {
+    return 1L;
+  }
+  long index = 1L;
+  while (index < bag.lineCount) {
+    long row = memory::load64(bag.order + index * 64L);
+    long drop = 0L;
+    if (bag.unique == 1L && cmpLines(home, bag, shown, row) == 0L) {
+      drop = 1L;
+    }
+    if (drop == 0L) {
+      if (emitRow(home, fd, place, bag, row) != 0L) {
+        return 1L;
+      }
+      shown = row;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 没有 -o 就用描述符 1。有 -o 则标志 1，只写并截断。描述符马上从 +192 取走。 */
+deRfun openOut(long home, Bag* bag, long* fd): long {
+  if (bag.hasOut == 0L) {
+    *fd = 1L;
+    return 0L;
+  }
+  if (bag.outLen < 0L || bag.outLen > 8192L) {
+    miss(home, bag.outAddr, bag.outLen);
+    return 1L;
+  }
+  plant(home, bag.outAddr, bag.outLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    miss(home, bag.outAddr, bag.outLen);
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home, string text): int {
+  writeErr(home, text);
+  return finish(home, 1L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long body = obr::proc::alloc(home, bodyMax() * 8L);
+  long lines = obr::proc::alloc(home, rowMax() * 2L * 64L);
+  long order = obr::proc::alloc(home, rowMax() * 64L);
+  long keys = obr::proc::alloc(home, keyMax() * 6L * 64L);
+  if (body == 0L || lines == 0L || order == 0L || keys == 0L) {
+    return die(home, "sort: out of memory\n");
+  }
+  Bag bag;
+  bag.body = body;
+  bag.lines = lines;
+  bag.order = order;
+  bag.keys = keys;
+  bag.keyCount = 0L;
+  bag.sep = -1L;
+  bag.global = 0L;
+  bag.unique = 0L;
+  bag.check = 0L;
+  bag.outAddr = 0L;
+  bag.outLen = 0L;
+  bag.hasOut = 0L;
+  bag.bodyLen = 0L;
+  bag.lineCount = 0L;
+  bag.total = 0L;
+  bag.curAt = 0L;
+  bag.curLen = 0L;
+  long fileAt = 0L;
+  if (parseArgs(home, &bag, &fileAt) != 0L) {
+    return finish(home, 1L);
+  }
+  /* 没有 -k：造一个整行键。起始字段 0 表示不按字段切，全局字母照用。 */
+  if (bag.keyCount == 0L) {
+    putKey(bag.keys, 0L, 0L, 1L, 0L, 0L, 0L, 0L);
+    bag.keyCount = 1L;
+  }
+  long count = argc(home);
+  if (bag.check != 0L && count - fileAt > 1L) {
+    return die(home, "sort: too many files\n");
+  }
+  if (fileAt >= count) {
+    long offset = 0L;
+    if (pull(home, &bag, 0L, &offset) != 0L) {
+      return finish(home, 1L);
+    }
+  }
+  long stdinAt = 0L;
+  while (fileAt < count) {
+    long at = argPtr(home, fileAt);
+    long len = argLen(home, fileAt);
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = pull(home, &bag, 0L, &stdinAt);
+    } else {
+      status = pullFile(home, &bag, at, len);
+    }
+    if (status != 0L) {
+      return finish(home, 1L);
+    }
+    fileAt = fileAt + 1L;
+  }
+  vet(home, &bag);
+  if (bag.check != 0L) {
+    if (inOrder(home, &bag) == 0L) {
+      if (bag.check == 1L) {
+        writeErr(home, "sort: not sorted\n");
+      }
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  heapSort(home, &bag);
+  long fd = 1L;
+  if (openOut(home, &bag, &fd) != 0L) {
+    return finish(home, 1L);
+  }
+  long place = 0L;
+  if (emitAll(home, fd, &place, &bag) != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

@@ -1,0 +1,703 @@
+/* POSIX.1-2017 dd 的本系统选定。
+   操作数只接受 if of ibs obs bs count skip seek status，都是名字=值。
+   名字只认小写。没有等号、名字不认识、值空着、或者 conv，都写
+   dd: invalid operand，立刻退出 1。同一个名字以后写的为准。
+   bs 同时改读块和写块；写在后面的 ibs 或 obs 只改自己那一侧。
+   数字是十进制，可以有前导 0，不算八进制。后缀只认小写：
+   b 乘 512，k 乘 1024，m 乘 1048576。乘完必须放进有符号 64 位。
+   没有负号。ibs 和 obs 至少是 1，缺省都是 512。
+   count、skip、seek 可以是 0。没写 count 就一直读到结束。
+
+   没写 if 就读描述符 0，没写 of 就写描述符 1。
+   of 用标志 1 打开，因此会截断，哪怕 count 是 0。不实现 conv=notrunc。
+   if 与 of 折成同一条路径时不打开写出，写 dd: same file，退出 1。
+   相对路径会拼上当前目录再收掉 . 和 ..。拿不到当前目录时只收路径本身。
+   打不开写 dd: 路径: cannot open，退出 1。
+
+   一次读写最多 4096 个八位组。读块比这大时拆开读，短读结束这一条记录。
+   写块同样拆开。skip 丢掉那么多条输入记录，不算进汇总。
+   seek 是写出的起始偏移，单位是 obs 个八位组，不先补零。
+   控制台和管道不看偏移，所以对它们 seek 和 skip 的绝对位置不会生效，
+   skip 仍靠把字节读掉。
+
+   缺省在描述符 2 写两行：完整+零头 records in，以及完整+零头 records out。
+   status=none 和 status=noxfer 都不写这两行，也不写字节数。别的 status 是非法操作数。
+   读失败写 dd: read error，写失败写 dd: write error，立刻退出 1，不写汇总。
+   不调用 close，因此不会关掉描述符 0。结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home, string text): int {
+  writeErr(home, text);
+  return finish(home, 1L);
+}
+
+deRfun match(long addr, long count, string text): long {
+  int raw = length(text);
+  long n = raw;
+  if (count != n) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < n) {
+    long ch = text[index];
+    if (u8(addr + index * 8L) != ch) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun trimEnd(long addr, long count): long {
+  long end = count;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  return end;
+}
+
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (nameLen < 1L || total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 收掉重复斜杠、. 和能退掉的 ..。绝对路径不退过根。
+   相对路径开头的 .. 留着。结果最长 8192 个八位组。 */
+deRfun collapse(long src, long srcLen, long dest): long {
+  long absolute = 0L;
+  long out = 0L;
+  if (srcLen > 0L && u8(src) == 47L) {
+    absolute = 1L;
+    memory::storeOctet(47L, dest);
+    out = 1L;
+  }
+  long index = 0L;
+  while (index < srcLen) {
+    while (index < srcLen && u8(src + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index < srcLen) {
+      long start = index;
+      while (index < srcLen && u8(src + index * 8L) != 47L) {
+        index = index + 1L;
+      }
+      long n = index - start;
+      long kind = 0L;
+      if (n == 1L && u8(src + start * 8L) == 46L) {
+        kind = 1L;
+      }
+      if (n == 2L && u8(src + start * 8L) == 46L && u8(src + (start + 1L) * 8L) == 46L) {
+        kind = 2L;
+      }
+      if (kind == 2L && absolute == 1L) {
+        if (out > 1L) {
+          long p = out - 1L;
+          while (p > 0L && u8(dest + p * 8L) != 47L) {
+            p = p - 1L;
+          }
+          if (p == 0L) {
+            out = 1L;
+          } else {
+            out = p;
+          }
+        }
+      } else if (kind == 2L && out == 0L) {
+        memory::storeOctet(46L, dest);
+        memory::storeOctet(46L, dest + 8L);
+        out = 2L;
+      } else if (kind == 2L) {
+        long slash = -1L;
+        long p = out - 1L;
+        while (p > 0L) {
+          if (u8(dest + p * 8L) == 47L) {
+            slash = p;
+            p = 0L;
+          } else {
+            p = p - 1L;
+          }
+        }
+        long comp = 0L;
+        if (slash >= 0L) {
+          comp = slash + 1L;
+        }
+        long clen = out - comp;
+        long keep = 0L;
+        if (clen == 2L && u8(dest + comp * 8L) == 46L && u8(dest + (comp + 1L) * 8L) == 46L) {
+          keep = 1L;
+        }
+        if (keep == 1L) {
+          if (out + 3L > 8192L) {
+            return -1L;
+          }
+          memory::storeOctet(47L, dest + out * 8L);
+          memory::storeOctet(46L, dest + (out + 1L) * 8L);
+          memory::storeOctet(46L, dest + (out + 2L) * 8L);
+          out = out + 3L;
+        } else if (slash < 0L) {
+          out = 0L;
+        } else {
+          out = slash;
+        }
+      } else if (kind == 0L) {
+        long extra = n;
+        long lead = 0L;
+        if (out != 0L && (absolute != 1L || out != 1L)) {
+          lead = 1L;
+          extra = n + 1L;
+        }
+        if (n < 1L || out + extra > 8192L) {
+          return -1L;
+        }
+        if (lead == 1L) {
+          memory::storeOctet(47L, dest + out * 8L);
+          out = out + 1L;
+        }
+        copySpan(src + start * 8L, dest + out * 8L, n);
+        out = out + n;
+      }
+    }
+  }
+  if (out == 0L) {
+    memory::storeOctet(46L, dest);
+    return 1L;
+  }
+  return out;
+}
+
+deRfun resolve(long cwd, long cwdLen, long path, long pathLen, long scratch, long dest): long {
+  if (pathLen < 1L || pathLen > 8192L) {
+    return -1L;
+  }
+  long absLen = 0L;
+  if (cwdLen < 1L || u8(path) == 47L) {
+    copySpan(path, scratch, pathLen);
+    absLen = pathLen;
+  } else {
+    absLen = joinPath(cwd, cwdLen, path, pathLen, scratch);
+    if (absLen < 0L) {
+      return -1L;
+    }
+  }
+  return collapse(scratch, absLen, dest);
+}
+
+/* 有符号最大值。乘式拆开，避免 pie 把不小于 1048576 的立即数当成数据地址。 */
+deRfun maxInt(): long {
+  long hi = 65536L * 65536L * 65536L * 16384L;
+  return hi - 1L + hi;
+}
+
+/* 十进制。成功写成 *out 并返回 1。后缀 b、k、m 只认小写。 */
+deRfun parseNum(long addr, long count, long* out): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  long body = count;
+  long mult = 1L;
+  long last = u8(addr + (count - 1L) * 8L);
+  if (last == 98L) {
+    mult = 512L;
+    body = count - 1L;
+  } else if (last == 107L) {
+    mult = 1024L;
+    body = count - 1L;
+  } else if (last == 109L) {
+    mult = 65536L * 16L;
+    body = count - 1L;
+  }
+  if (body < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < body) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    long piece = digit - 48L;
+    long limit = maxInt() / 10L;
+    if (value > limit) {
+      return 0L;
+    }
+    if (value == limit && piece > 7L) {
+      return 0L;
+    }
+    value = value * 10L + piece;
+    index = index + 1L;
+  }
+  if (mult > 1L && value > maxInt() / mult) {
+    return 0L;
+  }
+  value = value * mult;
+  *out = value;
+  return 1L;
+}
+
+deRfun readCwd(long home, long dest): long {
+  if (obr::proc::getcwd(home) != 0L) {
+    return 0L;
+  }
+  long n = obr::proc::slot(home, 256L);
+  if (n < 1L || n > 8192L) {
+    return 0L;
+  }
+  copySpan(obr::proc::bytes(home), dest, n);
+  return n;
+}
+
+/* 两条路径折完相同就是同一个文件。折失败时退回去掉末尾斜杠的原文。 */
+deRfun sameFile(long cwd, long cwdLen, long scratch, long leftBuf, long rightBuf, long a, long aLen, long b, long bLen): long {
+  long na = resolve(cwd, cwdLen, a, aLen, scratch, leftBuf);
+  long nb = resolve(cwd, cwdLen, b, bLen, scratch, rightBuf);
+  if (na >= 0L && nb >= 0L) {
+    return sameSpan(leftBuf, na, rightBuf, nb);
+  }
+  return sameSpan(a, trimEnd(a, aLen), b, trimEnd(b, bLen));
+}
+
+deRfun miss(long home, long addr, long count): int {
+  writeErr(home, "dd: ");
+  if (count > 0L) {
+    writeSpan(home, addr, count);
+  }
+  writeErr(home, ": cannot open\n");
+  return finish(home, 1L);
+}
+
+/* 从偏移读，最多 want 个，并且不超过 4096。抄进 hold。0 是结束。失败返回 -1。 */
+deRfun take(long home, long fd, long* off, long want, long hold, long* got): long {
+  long ask = want;
+  if (ask > 4096L) {
+    ask = 4096L;
+  }
+  if (ask < 1L) {
+    *got = 0L;
+    return 0L;
+  }
+  if (obr::proc::read(home, fd, *off, ask) != 0L) {
+    return -1L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 0L) {
+    return -1L;
+  }
+  if (n > ask) {
+    n = ask;
+  }
+  if (n > 0L) {
+    copySpan(obr::proc::bytes(home), hold, n);
+  }
+  *off = *off + n;
+  *got = n;
+  return 0L;
+}
+
+/* 把 hold 写到输出。outFill 是当前写块里已经有的个数，满 obs 就记一条完整记录。 */
+deRfun emit(long home, long fd, long* outOff, long* outFill, long obs, long* outFull, long hold, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long room = obs - *outFill;
+    if (room < 1L) {
+      *outFill = 0L;
+      room = obs;
+    }
+    long chunk = count - done;
+    if (chunk > room) {
+      chunk = room;
+    }
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(hold + done * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, *outOff, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    *outOff = *outOff + wrote;
+    *outFill = *outFill + wrote;
+    done = done + wrote;
+    if (*outFill >= obs) {
+      *outFull = *outFull + 1L;
+      *outFill = 0L;
+    }
+  }
+  return 0L;
+}
+
+deRfun pushByte(long buf, long* used, long value): void {
+  memory::storeOctet(value, buf + (*used) * 8L);
+  *used = *used + 1L;
+}
+
+deRfun pushText(long buf, long* used, string text): void {
+  int raw = length(text);
+  long n = raw;
+  long index = 0L;
+  while (index < n) {
+    long ch = text[index];
+    pushByte(buf, used, ch);
+    index = index + 1L;
+  }
+}
+
+deRfun pushDec(long buf, long* used, long value): void {
+  if (value == 0L) {
+    pushByte(buf, used, 48L);
+    return;
+  }
+  long div = 1L;
+  long left = value;
+  while (left >= 10L) {
+    left = left / 10L;
+    div = div * 10L;
+  }
+  while (div > 0L) {
+    long digit = value / div;
+    pushByte(buf, used, 48L + digit);
+    value = value % div;
+    div = div / 10L;
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long ibs = 512L;
+  long obs = 512L;
+  long skip = 0L;
+  long seek = 0L;
+  long count = 0L;
+  long limited = 0L;
+  long quiet = 0L;
+  long hasIf = 0L;
+  long hasOf = 0L;
+  long ifAt = 0L;
+  long ifLen = 0L;
+  long ofAt = 0L;
+  long ofLen = 0L;
+  long index = 1L;
+  long argcN = argc(home);
+  while (index < argcN) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long eq = -1L;
+    long cursor = 0L;
+    while (cursor < len) {
+      if (u8(at + cursor * 8L) == 61L) {
+        eq = cursor;
+        cursor = len;
+      } else {
+        cursor = cursor + 1L;
+      }
+    }
+    if (eq < 1L) {
+      return die(home, "dd: invalid operand\n");
+    }
+    long val = at + (eq + 1L) * 8L;
+    long valLen = len - eq - 1L;
+    if (valLen < 1L) {
+      return die(home, "dd: invalid operand\n");
+    }
+    if (match(at, eq, "if") == 1L) {
+      hasIf = 1L;
+      ifAt = val;
+      ifLen = valLen;
+    } else if (match(at, eq, "of") == 1L) {
+      hasOf = 1L;
+      ofAt = val;
+      ofLen = valLen;
+    } else if (match(at, eq, "ibs") == 1L) {
+      long number = 0L;
+      if (parseNum(val, valLen, &number) == 0L) {
+        return die(home, "dd: invalid operand\n");
+      }
+      ibs = number;
+    } else if (match(at, eq, "obs") == 1L) {
+      long number = 0L;
+      if (parseNum(val, valLen, &number) == 0L) {
+        return die(home, "dd: invalid operand\n");
+      }
+      obs = number;
+    } else if (match(at, eq, "bs") == 1L) {
+      long number = 0L;
+      if (parseNum(val, valLen, &number) == 0L) {
+        return die(home, "dd: invalid operand\n");
+      }
+      ibs = number;
+      obs = number;
+    } else if (match(at, eq, "count") == 1L) {
+      long number = 0L;
+      if (parseNum(val, valLen, &number) == 0L) {
+        return die(home, "dd: invalid operand\n");
+      }
+      count = number;
+      limited = 1L;
+    } else if (match(at, eq, "skip") == 1L) {
+      long number = 0L;
+      if (parseNum(val, valLen, &number) == 0L) {
+        return die(home, "dd: invalid operand\n");
+      }
+      skip = number;
+    } else if (match(at, eq, "seek") == 1L) {
+      long number = 0L;
+      if (parseNum(val, valLen, &number) == 0L) {
+        return die(home, "dd: invalid operand\n");
+      }
+      seek = number;
+    } else if (match(at, eq, "status") == 1L) {
+      if (match(val, valLen, "none") == 1L || match(val, valLen, "noxfer") == 1L) {
+        quiet = 1L;
+      } else {
+        return die(home, "dd: invalid operand\n");
+      }
+    } else {
+      return die(home, "dd: invalid operand\n");
+    }
+    index = index + 1L;
+  }
+  if (ibs < 1L || obs < 1L) {
+    return die(home, "dd: invalid operand\n");
+  }
+  long outStart = 0L;
+  if (seek > 0L) {
+    if (obs > 1L && seek > maxInt() / obs) {
+      return die(home, "dd: invalid operand\n");
+    }
+    outStart = seek * obs;
+  }
+  long cwd = obr::proc::alloc(home, 65536L);
+  long scratch = obr::proc::alloc(home, 65536L);
+  long leftBuf = obr::proc::alloc(home, 65536L);
+  long rightBuf = obr::proc::alloc(home, 65536L);
+  long hold = obr::proc::alloc(home, 4096L * 8L);
+  if (cwd == 0L || scratch == 0L || leftBuf == 0L || rightBuf == 0L || hold == 0L) {
+    return die(home, "dd: out of memory\n");
+  }
+  long cwdLen = readCwd(home, cwd);
+  if (hasIf == 1L && hasOf == 1L) {
+    if (sameFile(cwd, cwdLen, scratch, leftBuf, rightBuf, ifAt, ifLen, ofAt, ofLen) == 1L) {
+      return die(home, "dd: same file\n");
+    }
+  }
+  long inFd = 0L;
+  if (hasIf == 1L) {
+    if (ifLen > 8192L) {
+      return miss(home, ifAt, ifLen);
+    }
+    plant(home, ifAt, ifLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      return miss(home, ifAt, ifLen);
+    }
+    inFd = obr::proc::slot(home, 192L);
+  }
+  long outFd = 1L;
+  if (hasOf == 1L) {
+    if (ofLen > 8192L) {
+      return miss(home, ofAt, ofLen);
+    }
+    plant(home, ofAt, ofLen);
+    if (obr::proc::open(home, 1L) != 0L) {
+      return miss(home, ofAt, ofLen);
+    }
+    outFd = obr::proc::slot(home, 192L);
+  }
+  long inOff = 0L;
+  long skipped = 0L;
+  long filled = 0L;
+  while (skipped < skip) {
+    long want = ibs - filled;
+    long got = 0L;
+    if (take(home, inFd, &inOff, want, hold, &got) != 0L) {
+      return die(home, "dd: read error\n");
+    }
+    if (got == 0L) {
+      skipped = skip;
+    } else {
+      filled = filled + got;
+      long ask = want;
+      if (ask > 4096L) {
+        ask = 4096L;
+      }
+      if (filled >= ibs || got < ask) {
+        skipped = skipped + 1L;
+        filled = 0L;
+      }
+    }
+  }
+  long outOff = outStart;
+  long outFill = 0L;
+  long inFull = 0L;
+  long inPart = 0L;
+  long outFull = 0L;
+  long copied = 0L;
+  filled = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (limited == 1L && copied >= count) {
+      reading = 0L;
+    } else {
+      long want = ibs - filled;
+      long got = 0L;
+      if (take(home, inFd, &inOff, want, hold, &got) != 0L) {
+        return die(home, "dd: read error\n");
+      }
+      if (got == 0L) {
+        if (filled > 0L) {
+          inPart = inPart + 1L;
+          copied = copied + 1L;
+          filled = 0L;
+        }
+        reading = 0L;
+      } else {
+        if (emit(home, outFd, &outOff, &outFill, obs, &outFull, hold, got) != 0L) {
+          return die(home, "dd: write error\n");
+        }
+        filled = filled + got;
+        long ask = want;
+        if (ask > 4096L) {
+          ask = 4096L;
+        }
+        long finishRec = 0L;
+        if (filled >= ibs) {
+          inFull = inFull + 1L;
+          finishRec = 1L;
+        } else if (got < ask) {
+          inPart = inPart + 1L;
+          finishRec = 1L;
+        }
+        if (finishRec == 1L) {
+          copied = copied + 1L;
+          filled = 0L;
+        }
+      }
+    }
+  }
+  long outPart = 0L;
+  if (outFill > 0L) {
+    outPart = 1L;
+  }
+  if (quiet == 0L) {
+    long used = 0L;
+    pushDec(hold, &used, inFull);
+    pushByte(hold, &used, 43L);
+    pushDec(hold, &used, inPart);
+    pushText(hold, &used, " records in\n");
+    pushDec(hold, &used, outFull);
+    pushByte(hold, &used, 43L);
+    pushDec(hold, &used, outPart);
+    pushText(hold, &used, " records out\n");
+    long done = 0L;
+    long fileAt = 0L;
+    while (done < used) {
+      long chunk = used - done;
+      if (chunk > 4096L) {
+        chunk = 4096L;
+      }
+      copySpan(hold + done * 8L, obr::proc::bytes(home), chunk);
+      if (obr::proc::write(home, 2L, fileAt, chunk) != 0L) {
+        return die(home, "dd: write error\n");
+      }
+      long wrote = obr::proc::slot(home, 320L);
+      if (wrote < 1L) {
+        return die(home, "dd: write error\n");
+      }
+      if (wrote > chunk) {
+        wrote = chunk;
+      }
+      done = done + wrote;
+      fileAt = fileAt + wrote;
+    }
+  }
+  return finish(home, 0L);
+}

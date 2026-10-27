@@ -1,0 +1,175 @@
+/* yes [字符串...]。下标 0 是程序名，从 1 起扫。
+   只有正好两个减号的 -- 结束选项，这个词本身不写出来。
+   结束之前，其它以减号开头的词都是非法选项，写 yes: invalid option，退出 1。
+   不把 -h 或 --help 当成帮助。结束之后，以减号开头的词是普通字符串。
+   没有可写的字符串（包括只有 --）就一直写 y 和换行。
+   有字符串就把它们用一个空格连起来，再加换行，同一行无限重复。
+   不自己限制次数。一次写出最多 4096 个八位组。
+   描述符 1 的偏移按已经写出的个数往下加，普通文件才不会每次盖住开头。
+   写出失败写 yes: write error，退出 1。不关闭描述符 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long bit = text[index];
+    memory::storeOctet(bit, obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 正好两个减号。更长的 --help 不是它。 */
+deRfun isEndOpt(long at, long len): long {
+  if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 字节在读写区开头。offset 是描述符上的文件位置，不是这块区里的位移。
+   一次最多 4096。写不满就把剩下的挪回开头再写。失败返回 1。 */
+deRfun flushOut(long home, long* filled, long* outAt): long {
+  while (*filled > 0L) {
+    long count = *filled;
+    if (count > 4096L) {
+      count = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, count) != 0L) {
+      writeErr(home, "yes: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "yes: write error\n");
+      return 1L;
+    }
+    if (wrote > count) {
+      wrote = count;
+    }
+    *outAt = *outAt + wrote;
+    long rest = count - wrote;
+    if (rest > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), rest);
+    }
+    *filled = rest;
+  }
+  return 0L;
+}
+
+deRfun putByte(long home, long* filled, long* outAt, long value): long {
+  if (*filled >= 4096L) {
+    if (flushOut(home, filled, outAt) != 0L) {
+      return 1L;
+    }
+  }
+  memory::storeOctet(value, obr::proc::bytes(home) + *filled * 8L);
+  *filled = *filled + 1L;
+  return 0L;
+}
+
+/* 先整段看完。非法选项出现在后面时，前面的词一个八位组也不写。 */
+deRfun reject(long home, long total): long {
+  long index = 1L;
+  long ended = 0L;
+  while (index < total) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && isEndOpt(at, len) == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 1L && u8(at) == 45L) {
+      writeErr(home, "yes: invalid option\n");
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 每一圈重新扫参数。-- 跳过。没有字符串就写 y。行末换行后立刻送出，不等满 4096。 */
+deRfun pump(long home, long total): long {
+  long filled = 0L;
+  long outAt = 0L;
+  while (1L == 1L) {
+    long index = 1L;
+    long ended = 0L;
+    long any = 0L;
+    while (index < total) {
+      long at = argPtr(home, index);
+      long len = argLen(home, index);
+      if (ended == 0L && isEndOpt(at, len) == 1L) {
+        ended = 1L;
+      } else {
+        if (any == 1L) {
+          if (putByte(home, &filled, &outAt, 32L) != 0L) {
+            return 1L;
+          }
+        }
+        any = 1L;
+        long cursor = 0L;
+        while (cursor < len) {
+          if (putByte(home, &filled, &outAt, u8(at + cursor * 8L)) != 0L) {
+            return 1L;
+          }
+          cursor = cursor + 1L;
+        }
+      }
+      index = index + 1L;
+    }
+    if (any == 0L) {
+      /* 121 是 y。没有操作数时每一行就是这一个八位组。 */
+      if (putByte(home, &filled, &outAt, 121L) != 0L) {
+        return 1L;
+      }
+    }
+    /* 10 是换行。32 是操作数之间的空格，写在上面。 */
+    if (putByte(home, &filled, &outAt, 10L) != 0L) {
+      return 1L;
+    }
+    if (flushOut(home, &filled, &outAt) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long total = argc(home);
+  if (reject(home, total) != 0L) {
+    return finish(home, 1L);
+  }
+  if (pump(home, total) != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

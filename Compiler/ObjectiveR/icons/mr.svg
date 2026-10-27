@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="mrBg" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1a1029"/>
+      <stop offset="1" stop-color="#312e81"/>
+    </linearGradient>
+    <linearGradient id="mrAccent" x1="28" y1="34" x2="98" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#f43f5e"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="8" width="104" height="112" rx="14" fill="url(#mrBg)"/>
+  <path d="M84 8v30h32" fill="#4338ca"/>
+  <path d="M28 92V40h12l14 18 14-18h12v52H68V62L54 80 40 62v30z" fill="url(#mrAccent)"/>
+  <text x="64" y="110" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#fbcfe8">MOD</text>
+</svg>

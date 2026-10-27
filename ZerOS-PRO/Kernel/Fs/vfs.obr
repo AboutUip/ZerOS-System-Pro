@@ -1727,6 +1727,31 @@ deRfun doChown(long caller, long home): long {
   return 0L;
 }
 
+/* 从当前目录项走到绝对路径，抄到调用者的字节区。长度在 +256。 */
+deRfun doGetcwd(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  if (taskIndex < 0L) {
+    return -1L;
+  }
+  long status = pathOf(taskAt(taskIndex).cwd);
+  if (status != 0L) {
+    return status;
+  }
+  long count = memory::load64(scratch());
+  if (count < 1L || count > scratchRoom()) {
+    return 7L;
+  }
+  memory::store64(count, home + 256L);
+  long index = 0L;
+  long from = scratch() + 64L;
+  long to = byteAt(home);
+  while (index < count) {
+    memory::storeOctet(memory::loadOctet(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
 deRfun doChdir(long caller, long home): long {
   long taskIndex = taskFind(caller);
   long dent = 0L;
@@ -2481,12 +2506,22 @@ deRfun conKey(long at): void {
     return;
   }
   long ctrl = (mods / 2L) % 2L;
+  /* 小写减 96、大写减 64。只有这一下会变成字节 3 的 Ctrl+C 才问进程层。
+     有人正在等子进程就不入队；没有则仍是字节 3，行编辑照旧。别的控制字节不走这条。 */
   if (ctrl == 1L && unit >= 97L && unit <= 122L) {
-    qPush(unit - 96L);
+    long value = unit - 96L;
+    if (value == 3L && procBreak() != 0L) {
+      return;
+    }
+    qPush(value);
     return;
   }
   if (ctrl == 1L && unit >= 65L && unit <= 90L) {
-    qPush(unit - 64L);
+    long value = unit - 64L;
+    if (value == 3L && procBreak() != 0L) {
+      return;
+    }
+    qPush(value);
     return;
   }
   if (ctrl == 1L) {
@@ -2695,6 +2730,9 @@ deRfun vfsCall(long caller, long service): long {
   }
   if (service == 25L) {
     return doDup2(caller, home);
+  }
+  if (service == 29L) {
+    return doGetcwd(caller, home);
   }
   return 13L;
 }

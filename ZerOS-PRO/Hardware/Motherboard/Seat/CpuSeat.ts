@@ -843,6 +843,38 @@ export namespace ZerOS {
           })();
           return;
         }
+        if (record?.["kind"] === "store-spans") {
+          const addresses = record["addresses"];
+          const parts = record["parts"];
+          if (!Array.isArray(addresses) || !Array.isArray(parts) || addresses.length !== parts.length || addresses.length < 2 || addresses.length > 128) {
+            port.postMessage({ kind: "store-spans-result", ok: false, message: `${seatPrefix} native store failed` });
+            return;
+          }
+          const runs: { readonly address: bigint; readonly bytes: Uint8Array }[] = [];
+          for (let index = 0; index < addresses.length; index += 1) {
+            const address = addresses[index];
+            const bytes = parts[index];
+            if (typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 262144 || address < 0n || address % 8n !== 0n) {
+              port.postMessage({ kind: "store-spans-result", ok: false, message: `${seatPrefix} native store failed` });
+              return;
+            }
+            runs.push({ address, bytes });
+          }
+          void (async (): Promise<void> => {
+            try {
+              for (const run of runs) {
+                await demandBytes(run.address, run.bytes.length);
+                sharedMemoryLink().writeSpan(run.address, run.bytes);
+                noteDebugSpan(run.address, run.bytes);
+              }
+              port.postMessage({ kind: "store-spans-result", ok: true, message: "" });
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : `${seatPrefix} native store failed`;
+              port.postMessage({ kind: "store-spans-result", ok: false, message });
+            }
+          })();
+          return;
+        }
         if (record?.["kind"] === "load-span") {
           const address = record["address"];
           const length = record["length"];

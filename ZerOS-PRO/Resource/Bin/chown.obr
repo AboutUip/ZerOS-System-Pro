@@ -1,0 +1,455 @@
+/* POSIX chown。形式是 chown [-hR] owner[:group] file...
+   -- 结束选项。-h 接受且不改变行为，本系统没有符号链接。
+   -R 可以写多次，-RR、-Rh、-hR 都算。不实现 -H -L -P；
+   选项簇里出现 H、L、P，或别的不是 h 和 R 的字母，
+   就诊断 chown: invalid option 并退出。单独一个 - 结束选项，
+   这个词当作属主操作数。
+
+   没有用户名数据库。属主和属组只接受十进制非负整数，允许前导 0。
+   数字就是编号本身。没有冒号时整段是属主，组保持这次 stat 读到的 gid（slot 384）。
+   按第一个冒号切开：左边是属主，右边是属组。左边空着（:group）时，
+   属主保持 uid（slot 320）。因此 chown 0:0 file、chown 0 file、chown :0 file 都合法。
+   0 是合法编号，所以“写了没有”另用标志，不用 0 当哨兵。
+   某一侧空着、有非数字、或放不进有符号 64 位，就按这一侧诊断
+   chown: invalid user 或 chown: invalid group。这个模式本身失败，不改文件，退出 1。
+
+   路径先写成计数字符串：长度在 path()，八位组从 +64 起隔 8 位。
+   改之前要 stat，再 obr::proc::chown(home, uid, gid)。
+
+   -R 先改这一项。种类 2、4、6 是目录，再 obr::proc::readdir。
+   返回 2 或名字长度 0 表示列完，不是错误。跳过 . 和 ..。
+   层数从操作数算第 1 层，超过 32 就停并诊断。
+   已经列过的路径记下来，避免同一条路径绕圈。
+
+   没有属主操作数或没有文件：chown: missing operand，退出 1。
+   某一项失败就记下来，继续后面的文件，最后退出 1。
+   诊断写描述符 2，以 chown: 开头。
+   结束用服务 28。main 的返回值仍是 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 的负数是补码，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 描述符上的八位组。一次最多 4096，和别的客程序一样切开写。 */
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 诊断是前缀、路径、后缀。路径按八位组抄，不经过字符串。 */
+deRfun writeNote(long home, string prefix, long addr, long count, string suffix): void {
+  writeErr(home, prefix);
+  if (count > 0L) {
+    writeSpan(home, 2L, addr, count);
+  }
+  writeErr(home, suffix);
+}
+
+/* 长度字在路径起点，八位组从 +64 起，相邻隔 8 位。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* readdir 会给出 . 和 ..。这两项不能再进去，否则会绕回自己或父目录。 */
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* stat 种类在 slot 128。2 是 NAS 目录，4 是核里的目录，6 是内存目录。 */
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 一条已走路径：64 位长度，八位组从后面隔 8 位排，再补到 64 位边界。 */
+deRfun spanStep(long count): long {
+  long step = 64L + count * 8L;
+  long rem = step % 64L;
+  if (rem != 0L) {
+    step = step + (64L - rem);
+  }
+  return step;
+}
+
+/* 缓冲头两个字是条数和下一条的位偏移。记录从 +128 起。 */
+deRfun seen(long base, long addr, long count): long {
+  long total = memory::load64(base);
+  long cursor = 128L;
+  long index = 0L;
+  while (index < total) {
+    long len = memory::load64(base + cursor);
+    if (sameSpan(base + cursor + 64L, len, addr, count) == 1L) {
+      return 1L;
+    }
+    cursor = cursor + spanStep(len);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 放得下返回 0。缓冲用完返回 1，调用方就不再往下走。 */
+deRfun remember(long base, long cap, long addr, long count): long {
+  long next = memory::load64(base + 64L);
+  long step = spanStep(count);
+  if (next < 128L || next + step > cap) {
+    return 1L;
+  }
+  memory::store64(count, base + next);
+  copySpan(addr, base + next + 64L, count);
+  memory::store64(next + step, base + 64L);
+  memory::store64(memory::load64(base) + 1L, base);
+  return 0L;
+}
+
+/* 父路径末尾已经是 / 就不再加。拼出来超过 8192 个八位组则失败。 */
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (nameLen < 1L || total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 十进制非负整数。空串、非数字、放不进有符号 64 位都返回 -1。
+   前导 0 仍按十进制累加，00 是 0。调用方不得把 -1 拿去 chown。 */
+deRfun readDecimal(long addr, long count): long {
+  if (count < 1L) {
+    return -1L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < count) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return -1L;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L || (value == 922337203685477580L && digit > 7L)) {
+      return -1L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  return value;
+}
+
+/* 成功返回 0。属主不合法返回 1，属组不合法返回 2。
+   没有冒号：整段是属主，hasGroup 留 0。
+   有冒号：左边空则 hasOwner 留 0，表示改的时候沿用 stat 的 uid。
+   右边必须有数字；0: 这种右边空着，返回 2。只看第一个冒号。 */
+deRfun parseOwner(long addr, long count, long* hasOwner, long* uid, long* hasGroup, long* gid): long {
+  *hasOwner = 0L;
+  *uid = 0L;
+  *hasGroup = 0L;
+  *gid = 0L;
+  long colon = -1L;
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) == 58L) {
+      colon = index;
+      break;
+    }
+    index = index + 1L;
+  }
+  long value = 0L;
+  if (colon < 0L) {
+    value = readDecimal(addr, count);
+    if (value < 0L) {
+      return 1L;
+    }
+    *hasOwner = 1L;
+    *uid = value;
+    return 0L;
+  }
+  if (colon > 0L) {
+    value = readDecimal(addr, colon);
+    if (value < 0L) {
+      return 1L;
+    }
+    *hasOwner = 1L;
+    *uid = value;
+  }
+  long groupLen = count - colon - 1L;
+  if (groupLen < 1L) {
+    return 2L;
+  }
+  value = readDecimal(addr + (colon + 1L) * 8L, groupLen);
+  if (value < 0L) {
+    return 2L;
+  }
+  *hasGroup = 1L;
+  *gid = value;
+  return 0L;
+}
+
+/* work 的字：+0 是否 -R，+64 是否写了属主，+128 属主，
+   +192 是否写了属组，+256 属组，+320 路径槽，+384 名字，
+   +448 已走路径，+512 那块缓冲的位数。
+   操作数是第 1 层，路径就在参数区里。子路径写到槽起点 + 父层号 * 65536。
+   第 32 层还改，再深的名字不再进去。同一条路径列过一次就不再列。 */
+deRfun walk(long home, long work, long addr, long len, long depth): long {
+  if (depth > 32L) {
+    writeNote(home, "chown: too deep: ", addr, len, "\n");
+    return 1L;
+  }
+  plant(home, addr, len);
+  if (obr::proc::stat(home) != 0L) {
+    writeNote(home, "chown: ", addr, len, ": cannot access\n");
+    return 1L;
+  }
+  /* chown 把 uid、gid 写进 +128 和 +192，会盖住种类和大小。三个字先抄出来。
+     没写的那一侧用 stat 的原值：属主 slot 320，属组 slot 384。 */
+  long kind = obr::proc::slot(home, 128L);
+  long uid = obr::proc::slot(home, 320L);
+  long gid = obr::proc::slot(home, 384L);
+  if (memory::load64(work + 64L) == 1L) {
+    uid = memory::load64(work + 128L);
+  }
+  if (memory::load64(work + 192L) == 1L) {
+    gid = memory::load64(work + 256L);
+  }
+  plant(home, addr, len);
+  long failed = 0L;
+  if (obr::proc::chown(home, uid, gid) != 0L) {
+    writeNote(home, "chown: ", addr, len, ": cannot change owner\n");
+    failed = 1L;
+  }
+  if (memory::load64(work) != 1L || isDir(kind) != 1L) {
+    return failed;
+  }
+  long visited = memory::load64(work + 448L);
+  if (seen(visited, addr, len) == 1L) {
+    return failed;
+  }
+  if (remember(visited, memory::load64(work + 512L), addr, len) != 0L) {
+    writeErr(home, "chown: out of memory\n");
+    return 1L;
+  }
+  long names = memory::load64(work + 384L);
+  long slots = memory::load64(work + 320L);
+  long index = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    plant(home, addr, len);
+    long listed = obr::proc::readdir(home, index, 512L);
+    /* 返回 2，或成功但名字长度 0，都是列完，不是读失败。 */
+    if (listed == 2L) {
+      more = 0L;
+    } else if (listed != 0L) {
+      writeNote(home, "chown: ", addr, len, ": cannot read\n");
+      failed = 1L;
+      more = 0L;
+    } else {
+      long nameLen = obr::proc::slot(home, 256L);
+      if (nameLen == 0L) {
+        more = 0L;
+      } else if (nameLen < 0L || nameLen > 512L) {
+        writeNote(home, "chown: ", addr, len, ": cannot read\n");
+        failed = 1L;
+        more = 0L;
+      } else {
+        /* readdir 把名字放在字节区，下一次调用会盖住，先抄走。 */
+        copySpan(obr::proc::bytes(home), names, nameLen);
+        index = index + 1L;
+        if (isDot(names, nameLen) == 0L) {
+          if (depth >= 32L) {
+            writeNote(home, "chown: too deep: ", addr, len, "\n");
+            failed = 1L;
+            more = 0L;
+          } else {
+            long child = slots + depth * 65536L;
+            long childLen = joinPath(addr, len, names, nameLen, child);
+            if (childLen < 0L) {
+              writeNote(home, "chown: ", addr, len, ": path too long\n");
+              failed = 1L;
+            } else if (walk(home, work, child, childLen, depth + 1L) != 0L) {
+              failed = 1L;
+            }
+          }
+        }
+      }
+    }
+  }
+  return failed;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long recursive = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      /* 82 是 R，104 是 h。h 接受，不记状态：没有符号链接，写不写都一样。
+         72 H、76 L、80 P 以及别的字母都不是可接受的选项。 */
+      long cursor = 1L;
+      long accept = 1L;
+      long sawR = 0L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 82L) {
+          sawR = 1L;
+        } else if (bit != 104L) {
+          accept = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (accept == 1L) {
+        if (sawR == 1L) {
+          recursive = 1L;
+        }
+        index = index + 1L;
+      } else {
+        writeErr(home, "chown: invalid option\n");
+        return finish(home, 1L);
+      }
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "chown: missing operand\n");
+    return finish(home, 1L);
+  }
+  long ownerAt = argPtr(home, index);
+  long ownerLen = argLen(home, index);
+  index = index + 1L;
+  if (index >= count) {
+    writeErr(home, "chown: missing operand\n");
+    return finish(home, 1L);
+  }
+  /* 模式不合法就停在这里。后面的文件一个都不 stat，也不 chown。 */
+  long hasOwner = 0L;
+  long uid = 0L;
+  long hasGroup = 0L;
+  long gid = 0L;
+  long parsed = parseOwner(ownerAt, ownerLen, &hasOwner, &uid, &hasGroup, &gid);
+  if (parsed == 1L) {
+    writeErr(home, "chown: invalid user\n");
+    return finish(home, 1L);
+  }
+  if (parsed == 2L) {
+    writeErr(home, "chown: invalid group\n");
+    return finish(home, 1L);
+  }
+  long visitBits = 8388608L;
+  long slots = obr::proc::alloc(home, 32L * 65536L);
+  long names = obr::proc::alloc(home, 512L * 8L);
+  long visited = obr::proc::alloc(home, visitBits);
+  long work = obr::proc::alloc(home, 1024L);
+  if (slots == 0L || names == 0L || visited == 0L || work == 0L) {
+    writeErr(home, "chown: out of memory\n");
+    return finish(home, 1L);
+  }
+  memory::store64(0L, visited);
+  memory::store64(128L, visited + 64L);
+  memory::store64(recursive, work);
+  memory::store64(hasOwner, work + 64L);
+  memory::store64(uid, work + 128L);
+  memory::store64(hasGroup, work + 192L);
+  memory::store64(gid, work + 256L);
+  memory::store64(slots, work + 320L);
+  memory::store64(names, work + 384L);
+  memory::store64(visited, work + 448L);
+  memory::store64(visitBits, work + 512L);
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (walk(home, work, at, len, 1L) != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

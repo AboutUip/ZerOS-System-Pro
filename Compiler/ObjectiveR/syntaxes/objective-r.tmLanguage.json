@@ -1,0 +1,274 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "ObjectiveR",
+  "scopeName": "source.objective-r",
+  "patterns": [
+    { "include": "#zap-region" },
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#preprocessor-line" },
+    { "include": "#annotations" },
+    { "include": "#keywords" },
+    { "include": "#var-decl" },
+    { "include": "#pointers" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#function-def" },
+    { "include": "#function-signature-parts" },
+    { "include": "#function-call" },
+    { "include": "#namespace-path" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "zap-region": {
+      "patterns": [
+        {
+          "name": "meta.embedded.zap.objective-r",
+          "begin": "\\b__zap__\\b",
+          "beginCaptures": {
+            "0": { "name": "keyword.control.zap.objective-r" }
+          },
+          "end": "^\\s*\\}",
+          "patterns": [
+            { "include": "source.zap" }
+          ]
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.objective-r",
+          "begin": "//",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.objective-r" }
+          },
+          "end": "$\\n?"
+        },
+        {
+          "name": "comment.block.objective-r",
+          "begin": "/\\*",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.begin.objective-r" }
+          },
+          "end": "\\*/",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.comment.end.objective-r" }
+          }
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.objective-r",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.objective-r" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.objective-r" }
+          },
+          "patterns": [
+            { "name": "constant.character.escape.objective-r", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "string.quoted.single.objective-r",
+          "begin": "'",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.objective-r" }
+          },
+          "end": "'",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.objective-r" }
+          },
+          "patterns": [
+            { "name": "constant.character.escape.objective-r", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+    "preprocessor-line": {
+      "patterns": [
+        {
+          "name": "meta.preprocessor.objective-r",
+          "match": "^\\s*(#.*)$",
+          "captures": {
+            "1": { "name": "keyword.control.directive.objective-r" }
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "patterns": [
+        {
+          "name": "storage.modifier.annotation.objective-r",
+          "match": "@\\s*(Overwrite|Callfun)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.objective-r",
+          "match": "\\b(import|export|namespace|return|if|else|while|for|break|continue|goto|async|await|new)\\b"
+        },
+        {
+          "name": "storage.type.function.objective-r",
+          "match": "\\bdeRfun\\b"
+        },
+        {
+          "name": "storage.type.struct.objective-r",
+          "match": "\\b(struct|enum|class)\\b"
+        },
+        {
+          "name": "storage.modifier.objective-r",
+          "match": "\\b(public|private|static)\\b"
+        },
+        {
+          "name": "storage.type.var.objective-r",
+          "match": "\\bvar\\b"
+        }
+      ]
+    },
+    "var-decl": {
+      "patterns": [
+        {
+          "name": "meta.var.declaration.objective-r",
+          "match": "\\b(static\\s+)?(var)\\s*(\\[)([A-Za-z_]\\w*)(\\])",
+          "captures": {
+            "1": { "name": "storage.modifier.objective-r" },
+            "2": { "name": "storage.type.var.objective-r" },
+            "3": { "name": "punctuation.definition.brackets.begin.objective-r" },
+            "4": { "name": "storage.type.primitive.objective-r" },
+            "5": { "name": "punctuation.definition.brackets.end.objective-r" }
+          }
+        }
+      ]
+    },
+    "pointers": {
+      "patterns": [
+        {
+          "name": "storage.type.pointer.objective-r",
+          "match": "\\b(void|boolean|byte|short|int|long|float|double|char|string)(\\s*\\*+)",
+          "captures": {
+            "1": { "name": "storage.type.primitive.objective-r" },
+            "2": { "name": "storage.modifier.pointer.objective-r" }
+          }
+        },
+        {
+          "name": "keyword.operator.pointer.objective-r",
+          "match": "(?<![\\w)])\\*(?=\\s*[A-Za-z_(])"
+        },
+        {
+          "name": "keyword.operator.address.objective-r",
+          "match": "(?<![\\w)])&(?=\\s*[A-Za-z_])"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.objective-r",
+          "match": "\\b(void|boolean|byte|short|int|long|float|double|char|string|array|list|set|map)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.objective-r",
+          "match": "\\b(true|false|null|undefined)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.objective-r",
+          "match": "\\b(?:0[xX][0-9a-fA-F]+|\\d+\\.\\d+[fFdD]?|\\d+[fFdDlL]?|\\d+)\\b"
+        }
+      ]
+    },
+    "function-def": {
+      "patterns": [
+        {
+          "name": "meta.function.definition.objective-r",
+          "match": "\\b(deRfun)\\s+([A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)*)\\b",
+          "captures": {
+            "1": { "name": "storage.type.function.objective-r" },
+            "2": { "name": "entity.name.function.objective-r" }
+          }
+        }
+      ]
+    },
+    "function-signature-parts": {
+      "patterns": [
+        {
+          "name": "meta.function.parameter.objective-r",
+          "match": "(\\[)([A-Za-z_]\\w*)(\\])\\s*([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.brackets.begin.objective-r" },
+            "2": { "name": "storage.type.primitive.objective-r" },
+            "3": { "name": "punctuation.definition.brackets.end.objective-r" },
+            "4": { "name": "variable.parameter.objective-r" }
+          }
+        },
+        {
+          "name": "storage.type.return.objective-r",
+          "match": "(?<=\\)\\s*:\\s*)([A-Za-z_]\\w*)"
+        },
+        {
+          "name": "entity.name.namespace.objective-r",
+          "match": "(?<=\\bimport\\s)([A-Za-z_]\\w*)"
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "name": "meta.function-call.objective-r",
+          "match": "\\b([A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.call.objective-r" }
+          }
+        }
+      ]
+    },
+    "namespace-path": {
+      "patterns": [
+        {
+          "name": "entity.name.namespace.objective-r",
+          "match": "\\b[A-Za-z_]\\w*(?=::)"
+        },
+        {
+          "name": "punctuation.accessor.namespace.objective-r",
+          "match": "::"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.increment.objective-r",
+          "match": "\\+\\+|--"
+        },
+        {
+          "name": "keyword.operator.assignment.compound.objective-r",
+          "match": "\\+=|-=|\\*=|/=|%="
+        },
+        {
+          "name": "keyword.operator.arithmetic.objective-r",
+          "match": "\\*\\*"
+        },
+        {
+          "name": "keyword.operator.objective-r",
+          "match": "(?:==|!=|<=|>=|&&|\\|\\||<<|>>>|>>|&=|\\|=|\\^=|\\+|-|\\*|/|%|=|<|>|!|&|\\||\\^|~|\\?|:)"
+        }
+      ]
+    }
+  }
+}

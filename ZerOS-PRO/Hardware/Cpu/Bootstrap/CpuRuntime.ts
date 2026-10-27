@@ -240,6 +240,17 @@ export namespace ZerOS {
 
       /** 正在跑一段指令的核心。固件和客程序共用，避免两段同时写同一组寄存器。 */
       const sequenceBusy = new Set<number>();
+      /**
+       * 监督核写在核心 2 窗口偏移 49152 的八个八位组。
+       * 0 还没发布，1 是后台，2 是前台。卸下核心时清回 0。
+       */
+      const coreRank = [0, 0, 0, 0, 0, 0, 0, 0];
+      /** 后台上次真正执行的时刻。前台还在等时，用来把空转挡在 8 毫秒以外。 */
+      const lastBackgroundAt = new Map<number, number>();
+      /* 固件把按键写进环。壳在等键盘时它仍是 30 Hz，一拍只有 1 条，写完一次按键要几百毫秒。
+         这里只放宽固件：8 毫秒内最多 128 条，然后仍让出。空转核继续 8 毫秒 1 条。 */
+      const firmwareBurstAt = new Map<number, number>();
+      const firmwareBurstUsed = new Map<number, number>();
 
       /** 连续执行 core 的次数。空转循环会一直涨，普通程序问一次编号就清零。 */
       const idleSpins = new Map<number, number>();
@@ -1325,18 +1336,112 @@ export namespace ZerOS {
         return sharePace(1000 / core.Hertz);
       }
 
+      /** 监督核降到 30 Hz 后，客程序正在等键盘时不要再合睡 8 毫秒。下一拍只让出一次。 */
+      export function nativeYieldPace(ordinal: number): void {
+        requireOrdinal(ordinal).paceYield = true;
+      }
+
       /**
-       * 有没有别的核心正在跑、并且频率至少 1000 Hz。
-       * 空转和停在系统调用里的核心是 30 Hz，不算。
-       * 壳程序在跑时监督核要让出定时器，它的访存回复才能插进来。
+       * 有前台停在系统调用里，且没有客程序正在取指。
+       * 壳等键盘是这种。有命令在跑时仍让监督核合睡，把这条线程留给命令。
        */
-      export function nativeGuestHot(self: number): boolean {
-        for (const ordinal of sequenceBusy) {
-          if (ordinal === self) {
+      export function nativeKeyWait(self: number): boolean {
+        for (const [ordinal, core] of cores) {
+          if (ordinal === self || ordinal < 3 || core.Hertz < 1000) {
             continue;
           }
-          const core = cores.get(ordinal);
-          if (core !== undefined && core.Hertz >= 1000) {
+          if (sequenceBusy.has(ordinal)) {
+            return false;
+          }
+        }
+        for (const [ordinal, core] of cores) {
+          if (ordinal === self || ordinal < 3 || core.Hertz < 1000) {
+            continue;
+          }
+          if (core.stopKind === StopReasonWaiting && rankOf(ordinal) !== 1) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      /** 监督核刚写下的档。下标是核心号，值是 0、1 或 2。 */
+      export function noteCoreRank(index: number, rank: number): void {
+        if (index < 0 || index > 7) {
+          return;
+        }
+        coreRank[index] = rank & 255;
+      }
+
+      function rankOf(ordinal: number): number {
+        return coreRank[ordinal] ?? 0;
+      }
+
+      /**
+       * 别的核心里有没有前台正在取指。
+       * 档是 2，或者还没发布但频率不低于 1000，都算前台。档是 1 的后台不算。
+       * 停在系统调用里的不算：壳在等键盘时并不要算力。
+       */
+      function foregroundBusy(except: number): boolean {
+        for (const [ordinal, core] of cores) {
+          /* 0 固件，1 沙盒，2 监督核。监督核会升到 100 MHz，不能算成前台，否则客程序每次只剩 1 条。 */
+          if (ordinal === except || ordinal < 3 || core.Hertz < 1000) {
+            continue;
+          }
+          if (!sequenceBusy.has(ordinal) || core.stopKind === StopReasonWaiting) {
+            continue;
+          }
+          if (rankOf(ordinal) === 1) {
+            continue;
+          }
+          return true;
+        }
+        return false;
+      }
+
+      /**
+       * 前台没在取指，但有一颗前台停在系统调用里。壳等键盘就是这种。
+       * 这时不能让空转连发突发，否则按键进不了监督核。后台只被限速，不会被拆掉。
+       */
+      function foregroundWaiting(except: number): boolean {
+        if (foregroundBusy(except)) {
+          return false;
+        }
+        for (const [ordinal, core] of cores) {
+          if (ordinal === except || ordinal < 3 || core.Hertz < 1000) {
+            continue;
+          }
+          if (core.stopKind !== StopReasonWaiting) {
+            continue;
+          }
+          if (rankOf(ordinal) === 1) {
+            continue;
+          }
+          return true;
+        }
+        return false;
+      }
+
+      /** 30 Hz 的空转和驱动，以及档是 1 的客程序。前台忙时它们让出。 */
+      function backgroundCore(ordinal: number, hertz: number): boolean {
+        if (hertz < 1000) {
+          return true;
+        }
+        return rankOf(ordinal) === 1;
+      }
+
+      /**
+       * 有没有别的核心需要宿主定时器，并且频率至少 1000 Hz。
+       * 正在取指（sequenceBusy）算。停在系统调用里也算：壳等键盘时 sequenceBusy 已经清掉，
+       * 停止原因仍是 2，频率仍是 1000000。监督核若只走消息通道，按键进不了环。
+       * 空转和驱动是 30 Hz，两种情况都不算。这里不改频率，也不把 30 Hz 的核心拿住。
+       */
+      export function nativeGuestHot(self: number): boolean {
+        for (const [ordinal, core] of cores) {
+          if (ordinal === self || core.Hertz < 1000) {
+            continue;
+          }
+          if (sequenceBusy.has(ordinal) || core.stopKind === StopReasonWaiting) {
             return true;
           }
         }
@@ -1721,7 +1826,7 @@ export namespace ZerOS {
       /** 批里失败时换成原来的语句。已完成条数由调用方先计入。 */
       function raiseAccessFault(hostFault: string, message: string): never {
         if (hostFault === "bound") {
-          fail("bound access is outside the window");
+          fail(message.length > 0 ? `bound access is outside the window at ${message}` : "bound access is outside the window");
         }
         if (hostFault === "fill-align") {
           fail("fill address is not aligned");
@@ -2134,6 +2239,39 @@ export namespace ZerOS {
         return writeSpan(ordinal, address, bytes);
       }
 
+      /** 一次写回多段。单段仍走原来的搬运，避免引导清表多绕一圈。 */
+      export function nativeWriteSpans(
+        ordinal: number,
+        addresses: readonly bigint[],
+        parts: readonly Uint8Array[],
+      ): Promise<void> {
+        if (addresses.length !== parts.length || addresses.length < 1) {
+          fail("native store is outside the window");
+        }
+        if (addresses.length === 1) {
+          const address = addresses[0];
+          const bytes = parts[0];
+          if (address === undefined || bytes === undefined) {
+            fail("native store is outside the window");
+          }
+          return nativeWriteSpan(ordinal, address, bytes);
+        }
+        for (let index = 0; index < addresses.length; index += 1) {
+          const address = addresses[index];
+          const bytes = parts[index];
+          if (
+            address === undefined
+            || bytes === undefined
+            || bytes.length < 1
+            || bytes.length > MailboxSpanBytes
+            || !boundOk(ordinal, address, bytes.length * 8)
+          ) {
+            fail("native store is outside the window");
+          }
+        }
+        return writeSpans(ordinal, addresses, parts);
+      }
+
       export function nativePaceBudget(ordinal: number): number {
         const core = requireOrdinal(ordinal);
         const budget = paceBudget(core.Hertz);
@@ -2265,10 +2403,26 @@ export namespace ZerOS {
         if (core.span !== null || core.deposited !== null || core.pending !== null) {
           installFail("memory access failed");
         }
-        return new Promise((resolve, reject): void => {
+        return new Promise<void>((resolve, reject): void => {
           core.deposited = resolve;
           core.depositReject = reject;
           core.port.postMessage({ kind: "store-span", address, bytes });
+        });
+      }
+
+      /**
+       * 多段互不相邻的字节一次交给核心。
+       * 每段仍单独落进内存，但只等一次应答。按键绘制若逐段来回，几十段就要一百多毫秒。
+       */
+      function writeSpans(ordinal: number, addresses: readonly bigint[], parts: readonly Uint8Array[]): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.span !== null || core.deposited !== null || core.pending !== null) {
+          installFail("memory access failed");
+        }
+        return new Promise<void>((resolve, reject): void => {
+          core.deposited = resolve;
+          core.depositReject = reject;
+          core.port.postMessage({ kind: "store-spans", addresses: addresses.slice(), parts: parts.slice() });
         });
       }
 
@@ -2278,7 +2432,7 @@ export namespace ZerOS {
         if (core.span !== null || core.deposited !== null || core.pending !== null) {
           installFail("memory access failed");
         }
-        return new Promise((resolve, reject): void => {
+        return new Promise<Uint8Array>((resolve, reject): void => {
           core.span = resolve;
           core.spanReject = reject;
           core.port.postMessage({ kind: "span", address, length });
@@ -2709,6 +2863,9 @@ export namespace ZerOS {
         chosen.svcDest = null;
         chosen.sliceQuota = 0;
         chosen.sliceLeft = 0;
+        if (to >= 0 && to < coreRank.length) {
+          coreRank[to] = 0;
+        }
         chosen.boundOrigin = 0n;
         chosen.boundLength = 0n;
         chosen.latch = null;
@@ -3428,7 +3585,52 @@ export namespace ZerOS {
             return;
           }
           const budget = paceBudget(started.Hertz);
-          const room = started.sliceQuota > 0 && started.sliceLeft < budget ? started.sliceLeft : budget;
+          let room = started.sliceQuota > 0 && started.sliceLeft < budget ? started.sliceLeft : budget;
+          /*
+           * 空转是 while core()。前台停在读键盘时若给它 paceYield，每颗空转核都会连着
+           * 向工作者发突发，宿主队列被占满，一个键要 2 到 3 秒才画出来。
+           * 前台正在算，或正停在系统调用里：后台 8 毫秒最多 1 条。这 8 毫秒用定时器让出，
+           * 不在这条线程上合睡。多个前台同时取指时，各自跑完这一轮再让出。
+           * 频率、paceBudget 和驱动的时间片数都不改。没有前台时，30 Hz 的小睡仍走原来的记账。
+           * 固件是核心 0，按键从它的收件箱写进环。壳等着键盘时若仍一拍 1 条，写完一次按键要几百毫秒。
+           * 只在这段等待里放宽固件：8 毫秒最多 128 条，写完就让出。空转和驱动仍是 8 毫秒 1 条。
+           */
+          let firmwarePace = false;
+          if (ordinal === 0 && foregroundWaiting(ordinal)) {
+            const now = performance.now();
+            const last = firmwareBurstAt.get(ordinal) ?? 0;
+            let used = firmwareBurstUsed.get(ordinal) ?? 0;
+            if (now - last >= 8) {
+              firmwareBurstAt.set(ordinal, now);
+              used = 0;
+              firmwareBurstUsed.set(ordinal, 0);
+            }
+            const left = 128 - used;
+            if (left < 1) {
+              await new Promise((resolve): void => {
+                setTimeout(resolve, Math.max(8 - (now - last), 0));
+              });
+              continue;
+            }
+            room = left;
+            started.paceYield = true;
+            firmwarePace = true;
+          } else if (backgroundCore(ordinal, started.Hertz) && (foregroundBusy(ordinal) || foregroundWaiting(ordinal))) {
+            const now = performance.now();
+            const last = lastBackgroundAt.get(ordinal) ?? 0;
+            const remain = 8 - (now - last);
+            if (remain > 0) {
+              await new Promise((resolve): void => {
+                setTimeout(resolve, remain);
+              });
+              continue;
+            }
+            lastBackgroundAt.set(ordinal, now);
+            room = Math.min(room, 1);
+            started.paceYield = true;
+          } else if (foregroundBusy(ordinal)) {
+            started.paceYield = true;
+          }
           /* 续跑时不重复送整段程序。核心里没有这段、或游标已经越过程序末尾时，第一次会原地不动。 */
           let span = await runBurst(ordinal, cursor, cursor === 0 ? steps : null, room);
           if (span.executed < 1 && span.cursor === cursor && cursor < steps.length) {
@@ -3440,6 +3642,9 @@ export namespace ZerOS {
           requireOrdinal(ordinal).Executed += span.executed;
           cursor = span.cursor;
           await chargePace(requireOrdinal(ordinal), span.executed);
+          if (firmwarePace) {
+            firmwareBurstUsed.set(ordinal, (firmwareBurstUsed.get(ordinal) ?? 0) + Math.max(span.executed, 1));
+          }
           if (consume(ordinal, cursor, span.executed)) {
             return;
           }
@@ -3509,12 +3714,22 @@ export namespace ZerOS {
             gateOrdinal = ordinal;
             requireOrdinal(ordinal).Executed += 1;
           } else if (step.Op === "core") {
-            /* 空转程序是 while core()。连续几次才算空转，驱动里偶尔问一次编号不停。
-               壳程序在跑时，这一拍只让出宏任务，不再睡满十几毫秒。核心仍回到循环，抢占照常生效。 */
+            /* 监督核每圈先 hertz(30)，再 core()，再 hertz(100000000)。core() 自己不记拍。
+               拉回频率的那条 hertz 会先 waitPace，那时 Hertz 仍是 30，等待走 chargePace，
+               睡进 sharePace（约 8 毫秒），客程序的系统调用堵在这一拍。
+               监督核每圈只调用一次 core()，连续三次永远够不到，所以不能再等这个计数。
+               前台需要定时器（nativeGuestHot：别的核 Hertz >= 1000，且正在 sequenceBusy 或停在系统调用）
+               并且当前 Hertz <= 100 时，只有已经 gate() 的监督核立刻把 paceYield 设上。
+               下一次 chargePace 因此只排一个 setTimeout(0)，把节拍起点拨到现在，不睡那 8 毫秒。
+               空转和驱动不在这条 core() 上设 paceYield。它们让不让，由这一轮开头的后台让法决定：
+               前台正在取指时只做 1 条再让出线程；前台在等键盘时立刻做一小块再让出。
+               前台既没取指也没在等时，30 Hz 小睡保留，引导不会被空转转满。
+               连续 core 的次数仍记着，让出不再看它。
+               30 Hz 核也不收进拿住不放的集合：前台还在系统调用里时那样会整机死锁。 */
             const spins = (idleSpins.get(ordinal) ?? 0) + 1;
             idleSpins.set(ordinal, spins);
             const spinning = requireOrdinal(ordinal);
-            if (spins >= 3 && spinning.Hertz <= 100 && nativeGuestHot(ordinal)) {
+            if (ordinal === gateOrdinal && spinning.Hertz <= 100 && nativeGuestHot(ordinal)) {
               spinning.paceYield = true;
             }
             await place(ordinal, step.Register, BigInt(ordinal));
@@ -4008,6 +4223,13 @@ export namespace ZerOS {
             }
             if (core.state === CoreStateRunning || userCore(ordinal)) {
               halt(ordinal);
+            }
+            /* 正在被装入抢占时，这一拍若先失败，监督核还停在 preempt 上。先叫醒它，目标已经停住。 */
+            core.preemptRequested = false;
+            const wake = core.preemptResolve;
+            core.preemptResolve = null;
+            if (wake !== null) {
+              wake();
             }
           }
           throw error;

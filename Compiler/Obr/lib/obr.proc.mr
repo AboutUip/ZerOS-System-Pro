@@ -57,6 +57,10 @@ deRfun kill(long home, long pid, long sig): long;
 deRfun sigtake(): long;
 /* 服务 21。pid 为 0 表示任意子任务。成功时返回值是 pid，退出码在 +192。没有子任务是 2。 */
 deRfun wait(long home, long pid): long;
+/* 服务 28。把 0 至 255 的状态交给父任务的 wait，然后不再返回。 */
+deRfun exit(long home, long code): long;
+/* 服务 29。当前目录的绝对路径写到字节区，长度在 +256。不含 . 和 ..。 */
+deRfun getcwd(long home): long;
 /* 服务 2。返回块地址。 */
 deRfun alloc(long home, long size): long;
 /* 服务 3。 */

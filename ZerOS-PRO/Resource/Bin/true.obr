@@ -1,0 +1,16 @@
+/* POSIX true。忽略全部操作数，包括 -- 和 -x。
+   不写标准输出，也不写诊断。退出状态是 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  return finish(home, 0L);
+}

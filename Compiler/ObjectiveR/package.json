@@ -1,0 +1,240 @@
+{
+	"name": "objective-r-file-support",
+	"displayName": "ObjectiveR File Support",
+	"description": "Obr / ModuleR / ZAP：着色、补全、悬停、键入检查，并用 obrc 做动态诊断。ZPB1 与 ZNB1 程序映像预览。",
+	"version": "0.6.1",
+	"activationEvents": [
+		"onStartupFinished",
+		"onCommand:objectiveR.openZapBinary"
+	],
+	"main": "./extension.js",
+	"publisher": "kitepromiss",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"contributes": {
+		"configuration": {
+			"title": "ObjectiveR",
+			"properties": {
+				"objectiveR.completion.enable": {
+					"type": "boolean",
+					"default": true,
+					"description": "启用自动补全（关键字、工作区函数、std::、片段）。"
+				},
+				"objectiveR.diagnostics.enable": {
+					"type": "boolean",
+					"default": true,
+					"description": "启用全部语法/语义诊断；关闭后不在编辑器中显示波浪线。"
+				},
+				"objectiveR.diagnostics.structural": {
+					"type": "boolean",
+					"default": true,
+					"description": "括号/引号/块注释匹配（不依赖工作区索引）。"
+				},
+				"objectiveR.diagnostics.workspace": {
+					"type": "boolean",
+					"default": true,
+					"description": "工作区级检查：import、deRfun 声明形式、重复签名等。"
+				},
+				"objectiveR.diagnostics.compiler": {
+					"type": "boolean",
+					"default": true,
+					"description": "停手约一秒后，用工作区里的 obrc 检查当前 .obr、#LINK 连到的文件，以及 import 同目录的同名实现。"
+				},
+				"objectiveR.compiler.path": {
+					"type": "string",
+					"default": "",
+					"description": "obrc 可执行文件。留空时查找工作区 Compiler/Obr/obrc.exe。"
+				},
+				"objectiveR.semanticHighlighting.enable": {
+					"type": "boolean",
+					"default": true,
+					"description": "语义高亮（参数、局部变量、函数名、std:: 命名空间段）；依赖主题支持 editor.semanticHighlighting。"
+				},
+				"objectiveR.project.scanMode": {
+					"type": "string",
+					"enum": [
+						"workspace",
+						"mainObrAndLink"
+					],
+					"default": "workspace",
+					"description": "workspace：索引全部工作区 *.obr/*.mr。mainObrAndLink：解析 main.obr 中 #LINK 路径项，在 projectRoot 下并集扫描（与 Blink 项目根一致）。"
+				}
+			}
+		},
+		"configurationDefaults": {
+			"[objective-r-obr]": {
+				"editor.semanticHighlighting.enabled": true
+			},
+			"[objective-r-mr]": {
+				"editor.semanticHighlighting.enabled": true
+			},
+			"[zap-binary]": {
+				"editor.wordWrap": "off"
+			},
+			"[zap-library]": {
+				"editor.wordWrap": "off"
+			},
+			"workbench.editorAssociations": {
+				"*.lib": "objective-r.libPreview"
+			}
+		},
+		"commands": [
+			{
+				"command": "objectiveR.openZapBinary",
+				"title": "查看程序映像",
+				"category": "ObjectiveR"
+			}
+		],
+		"menus": {
+			"explorer/context": [
+				{
+					"command": "objectiveR.openZapBinary",
+					"when": "resourceScheme == file",
+					"group": "navigation@20"
+				}
+			]
+		},
+		"customEditors": [
+			{
+				"viewType": "objective-r.zapBinary",
+				"displayName": "程序映像",
+				"selector": [
+					{
+						"filenamePattern": "*"
+					},
+					{
+						"filenamePattern": "*.lib"
+					}
+				],
+				"priority": "option"
+			},
+			{
+				"viewType": "objective-r.libPreview",
+				"displayName": "动态库",
+				"selector": [
+					{
+						"filenamePattern": "*.lib"
+					}
+				],
+				"priority": "default"
+			}
+		],
+		"languages": [
+			{
+				"id": "objective-r-obr",
+				"aliases": [
+					"ObjectiveR Obr",
+					"Obr"
+				],
+				"extensions": [
+					".obr"
+				],
+				"icon": {
+					"light": "./icons/obr.svg",
+					"dark": "./icons/obr.svg"
+				},
+				"configuration": "./language-configuration-obr.json"
+			},
+			{
+				"id": "objective-r-mr",
+				"aliases": [
+					"ObjectiveR ModuleR",
+					"ModuleR"
+				],
+				"extensions": [
+					".mr"
+				],
+				"icon": {
+					"light": "./icons/mr.svg",
+					"dark": "./icons/mr.svg"
+				},
+				"configuration": "./language-configuration-mr.json"
+			},
+			{
+				"id": "zap",
+				"aliases": [
+					"ZAP",
+					"zap"
+				],
+				"extensions": [
+					".zap"
+				],
+				"icon": {
+					"light": "./icons/zap.svg",
+					"dark": "./icons/zap.svg"
+				},
+				"configuration": "./language-configuration-zap.json"
+			},
+			{
+				"id": "zap-binary",
+				"aliases": [
+					"ZAP Binary",
+					"ZAP 二进制"
+				],
+				"icon": {
+					"light": "./icons/zap.svg",
+					"dark": "./icons/zap.svg"
+				},
+				"configuration": "./language-configuration-zap-binary.json"
+			},
+			{
+				"id": "zap-library",
+				"aliases": [
+					"ZAP Library",
+					"动态库"
+				],
+				"extensions": [
+					".lib"
+				],
+				"icon": {
+					"light": "./icons/zap.svg",
+					"dark": "./icons/zap.svg"
+				},
+				"configuration": "./language-configuration-zap-binary.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "objective-r-obr",
+				"scopeName": "source.objective-r",
+				"path": "./syntaxes/objective-r.tmLanguage.json"
+			},
+			{
+				"language": "objective-r-mr",
+				"scopeName": "source.objective-r",
+				"path": "./syntaxes/objective-r.tmLanguage.json"
+			},
+			{
+				"language": "zap",
+				"scopeName": "source.zap",
+				"path": "./syntaxes/zap.tmLanguage.json"
+			},
+			{
+				"language": "zap-binary",
+				"scopeName": "source.zap-binary",
+				"path": "./syntaxes/zap-binary.tmLanguage.json"
+			}
+		],
+		"iconThemes": [
+			{
+				"id": "objective-r-icons",
+				"label": "ObjectiveR Icons",
+				"path": "./objective-r-icon-theme.json"
+			}
+		],
+		"snippets": [
+			{
+				"language": "objective-r-obr",
+				"path": "./snippets/obr.code-snippets"
+			},
+			{
+				"language": "objective-r-mr",
+				"path": "./snippets/mr.code-snippets"
+			}
+		]
+	}
+}

@@ -1,6 +1,6 @@
-/* 调度。用户核上的任务数不再按核封顶。时间片用尽时，若另一份已经领到槽，就换上它。
-   监督核每次空转之前也看一眼：这颗核还在跑，且同一核上有一份在槽里的就绪任务，就在下一条指令边界抢占再换。
-   停在系统调用里的不换。停机的交给进程层。领不到槽的不换，等有槽空出来。跨核迁移要等每个任务自己的映射。 */
+/* 调度。用户核上的任务数不再按核封顶。同一核上前台优先：更高档立刻抢占，同一档轮转。
+   后台只有在没有更高档就绪时才换上。前台自己停住或时间片让出之后，后台马上可以上。
+   停在系统调用里的不换。停机的交给进程层。领不到槽的不换。跨核的让法在宿主，不在这一圈。 */
 #LINK /start.obr, /exec.obr, /vfs.obr, /task.obr
 import proc;
 import board;
@@ -13,6 +13,7 @@ export deRfun schedWake(long core): void {
   }
   Task* task = taskAt(index);
   task.state = TaskState::Running;
+  rankPublish(core);
   obr::os::schedule(core);
 }
 
@@ -34,7 +35,7 @@ deRfun schedStop(long core): void {
 
 /* 槽号由进程层分配，不必等于任务表下标。放回后仍要 schedule 才会跑。没有就绪的兄弟就什么也不做。 */
 deRfun schedResume(long core): void {
-  long next = taskReady(core, -1L);
+  long next = taskPrefer(core, -1L);
   if (next < 0L) {
     return;
   }
@@ -44,6 +45,7 @@ deRfun schedResume(long core): void {
   }
   obr::os::restore(core, slot);
   taskAt(next).state = TaskState::Running;
+  rankPublish(core);
   obr::os::schedule(core);
 }
 
@@ -68,7 +70,7 @@ deRfun schedSweep(): void {
       } else if (running == 0L && why == 1L && state != TaskState::Sleeping && state != TaskState::Zombie && state != TaskState::Empty) {
         long next = -1L;
         if (state == TaskState::Running) {
-          next = taskReady(core, index);
+          next = taskPrefer(core, index);
         }
         if (next >= 0L) {
           long from = slotHold(index);
@@ -78,12 +80,14 @@ deRfun schedSweep(): void {
             taskAt(index).state = TaskState::Ready;
             obr::os::restore(core, to);
             taskAt(next).state = TaskState::Running;
+            rankPublish(core);
             obr::os::schedule(core);
           }
         } else {
           taskAt(index).state = TaskState::Ready;
           obr::os::schedule(core);
           taskAt(index).state = TaskState::Running;
+          rankPublish(core);
         }
       }
     }
@@ -101,16 +105,22 @@ deRfun schedTick(): void {
       long why = query(1L, 11L, core);
       long state = taskAt(index).state;
       if (running == 1L && why != 2L && state == TaskState::Running) {
-        long next = taskReady(core, index);
-        if (next >= 0L) {
-          long from = slotHold(index);
-          long to = taskAt(next).held - 1L;
-          if (from >= 0L && to >= 0L) {
-            obr::os::capture(core, from);
-            taskAt(index).state = TaskState::Ready;
-            obr::os::restore(core, to);
-            taskAt(next).state = TaskState::Running;
-            obr::os::schedule(core);
+        long mine = rankGet(index);
+        long best = taskBestRank(core, index);
+        /* 更高档抢占。同一档轮转，多个前台分这颗核。更低档让着，等前台自己停。 */
+        if (best > mine || (best == mine && best > 0L)) {
+          long next = taskReadyRank(core, index, best);
+          if (next >= 0L) {
+            long from = slotHold(index);
+            long to = taskAt(next).held - 1L;
+            if (from >= 0L && to >= 0L) {
+              obr::os::capture(core, from);
+              taskAt(index).state = TaskState::Ready;
+              obr::os::restore(core, to);
+              taskAt(next).state = TaskState::Running;
+              rankPublish(core);
+              obr::os::schedule(core);
+            }
           }
         }
       }

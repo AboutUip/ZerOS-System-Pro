@@ -1,0 +1,617 @@
+/* POSIX rm。形式是 rm [-fiRr] file...
+   -- 结束选项。单独一个 - 是名字为减号的文件，不是选项。
+   第一个不是选项的参数也结束选项。短选项只允许 f、i、r、R。
+   别的字母立刻写 rm: invalid option，退出 1。不做 --help，不做 -h。
+
+   -r 与 -R 相同，都是删除目录树。没有符号链接，也不跟随。
+   -f 与 -i 互相盖掉，后写的生效；同一簇从左到右，所以 -fi 询问，-if 不询问。
+   只有 -i 生效才问。权限位不参加询问。当前是超级用户，没写权限也直接删。
+   没有 -f 又没有文件：rm: missing operand，退出 1。
+   有 -f 且没有文件：什么都不做，退出 0。
+
+   先看路径形状。整段都是斜杠，或最后一段是 . 或 ..（末尾斜杠先拿掉），
+   写 rm: 路径: cannot remove，不 stat，也不删。这样 -rf / 不会走进根。
+
+   其余先 stat。成功后立刻把种类从 slot 128 抄走，再 unlink 或 readdir。
+   1 和 5 是普通文件，3 是字符设备，2、4、6 是目录。
+   不是目录：-i 时向描述符 2 写 rm: remove 路径? 再一个空格，不换行。
+   目录且有 -R 或 -r：写 rm: remove directory 路径? 再一个空格。
+   然后从描述符 0 读一行，最多 512 个八位组，遇到换行（10）停。
+   读偏移一直累加，不从 0 重来，也不关闭描述符 0。
+   第一个八位组是 y 或 Y 才删。别的回答、空行、读到结尾，都跳过这一个，不算错误。
+   读失败写 rm: read error，不再处理后面的操作数，退出 1。
+
+   没有 -R 又遇到目录：rm: 路径: is a directory，不删，继续别的操作数，最终退出 1。
+   有 -R：先删里面，再 unlink 目录自己。种类 4 内核不允许删，unlink 失败，
+   同样写 rm: 路径: cannot remove。
+   readdir 下标从 0 起，容量 512。返回 2，或成功但 slot 256 的名字长度是 0，都是列完。
+   名字在字节区，先抄走。名字正好是 . 或 .. 就跳过。
+   别的非 0 写 rm: 路径: cannot read，不再进入。
+   删掉一项之后，后面的名字会挤到这个下标，所以成功删掉时下标不动；
+   这一项还在，下标才加一。
+
+   深度从操作数算第 1 层，最多 32 帧。再深写 rm: too deep，不再往下。
+   拼出的路径超过 8192 个八位组：rm: path too long，不再进入那一项。
+   已经走进去的目录按路径八位组记住，再遇到同一串字节写
+   rm: 路径: directory loop，不再进入。
+   这三种都不把父目录 unlink 掉，避免一路都报 cannot remove。
+
+   不存在：没有 -f 时写 rm: 路径: No such file or directory，最终退出 1。
+   有 -f 时不写诊断，也不因此改退出状态。
+   一个操作数失败仍然继续后面的。全部成功退出 0。
+   诊断和询问都写描述符 2，偏移每次从 0。
+   用自己的堆栈，不递归。分配单位是位。失败写 rm: out of memory，退出 1。
+   main 用服务 28 交出状态。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断和询问都进描述符 2。控制台不看偏移，每次从 0 写。一次最多 4096。 */
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 前缀固定是 rm: ，路径按八位组抄，后缀带着冒号或问号。 */
+deRfun writeDiag(long home, long addr, long count, string suffix): void {
+  writeErr(home, "rm: ");
+  if (count > 0L) {
+    writeSpan(home, addr, count);
+  }
+  writeErr(home, suffix);
+}
+
+/* 长度字在 path()，八位组从 +64 起、隔 8 位。每次 stat、readdir、unlink 前都重写。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 目录项名字正好是一个点或两个点。更长的名字，比如 ...，不当成这两项。 */
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 最后一段是 . 或 ..。末尾的斜杠先拿掉，foo/ 的最后一段仍是 foo。 */
+deRfun finalDot(long addr, long count): long {
+  long end = count;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  long start = end;
+  while (start > 0L && u8(addr + (start - 1L) * 8L) != 47L) {
+    start = start - 1L;
+  }
+  long span = end - start;
+  if (span == 1L && u8(addr + start * 8L) == 46L) {
+    return 1L;
+  }
+  if (span == 2L && u8(addr + start * 8L) == 46L && u8(addr + (start + 1L) * 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 整段都是斜杠就是根。/// 与 / 相同。 */
+deRfun rootPath(long addr, long count): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) != 47L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun refusePath(long addr, long count): long {
+  if (rootPath(addr, count) == 1L) {
+    return 1L;
+  }
+  if (finalDot(addr, count) == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 2 是 NAS 目录，4 是只在核里的目录，6 是内存目录。1、5 是文件，3 是字符设备。 */
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 一条已走路径：64 位长度，八位组从后面隔 8 位排，再补到 64 位边界。 */
+deRfun spanStep(long count): long {
+  long step = 64L + count * 8L;
+  long rem = step % 64L;
+  if (rem != 0L) {
+    step = step + (64L - rem);
+  }
+  return step;
+}
+
+/* 缓冲头两个字是条数和下一条的位偏移。记录从 +128 起。 */
+deRfun seen(long base, long addr, long count): long {
+  long total = memory::load64(base);
+  long cursor = 128L;
+  long index = 0L;
+  while (index < total) {
+    long len = memory::load64(base + cursor);
+    if (sameSpan(base + cursor + 64L, len, addr, count) == 1L) {
+      return 1L;
+    }
+    cursor = cursor + spanStep(len);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 放得下返回 0。缓冲用完返回 1，调用方就当内存不够。 */
+deRfun remember(long base, long cap, long addr, long count): long {
+  long next = memory::load64(base + 64L);
+  long step = spanStep(count);
+  if (next < 128L || next + step > cap) {
+    return 1L;
+  }
+  memory::store64(count, base + next);
+  copySpan(addr, base + next + 64L, count);
+  memory::store64(next + step, base + 64L);
+  memory::store64(memory::load64(base) + 1L, base);
+  return 0L;
+}
+
+/* 父路径末尾已经是 / 就不再加。拼出来超过 8192 个八位组则返回 -1。 */
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (nameLen < 1L || total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 问一句。返回 1 才删，0 是跳过，-1 是读失败（诊断已经写过）。
+   描述符 0 的偏移放在 offsetAt，成功读到的八位组都累加上去。 */
+deRfun ask(long home, long dir, long addr, long count, long offsetAt): long {
+  if (dir == 1L) {
+    writeErr(home, "rm: remove directory ");
+  } else {
+    writeErr(home, "rm: remove ");
+  }
+  if (count > 0L) {
+    writeSpan(home, addr, count);
+  }
+  writeErr(home, "? ");
+  long cursor = memory::load64(offsetAt);
+  long got = 0L;
+  long have = 0L;
+  long first = 0L;
+  long reading = 1L;
+  while (reading == 1L && got < 512L) {
+    if (obr::proc::read(home, 0L, cursor, 1L) != 0L) {
+      writeErr(home, "rm: read error\n");
+      return -1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "rm: read error\n");
+      return -1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      /* 一次只要 1 个八位组。多出来的不计入，普通文件下次仍从下一个偏移读。 */
+      long octet = u8(obr::proc::bytes(home));
+      if (have == 0L) {
+        first = octet;
+        have = 1L;
+      }
+      cursor = cursor + 1L;
+      got = got + 1L;
+      if (octet == 10L) {
+        reading = 0L;
+      }
+    }
+  }
+  memory::store64(cursor, offsetAt);
+  /* 121 是 y，89 是 Y。只看第一个八位组，后面是不是 es 都算同意。 */
+  if (have == 1L && (first == 121L || first == 89L)) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 一帧 512 位：状态、路径地址、路径长度、readdir 下标、深度、卡住、已删掉。
+   状态 0 还要 stat，1 正在列，2 准备 unlink，3 子项刚返回。
+   深度 1 是操作数。最多 32 帧。 */
+deRfun pushNode(long stack, long top, long addr, long nodeLen, long depth): long {
+  if (top >= 32L || depth > 32L) {
+    return -1L;
+  }
+  long at = stack + top * 512L;
+  memory::store64(0L, at);
+  memory::store64(addr, at + 64L);
+  memory::store64(nodeLen, at + 128L);
+  memory::store64(0L, at + 192L);
+  memory::store64(depth, at + 256L);
+  memory::store64(0L, at + 320L);
+  memory::store64(0L, at + 384L);
+  return top + 1L;
+}
+
+/* hold 为 1：这一支没清干净，父目录后来也不要 unlink。
+   removed 为 1：这一项已经不在目录里，父目录的下标保持不动。 */
+deRfun popFrame(long stack, long top, long hold, long removed): long {
+  long frame = stack + (top - 1L) * 512L;
+  memory::store64(removed, frame + 384L);
+  if (hold == 1L && top >= 2L) {
+    long parent = stack + (top - 2L) * 512L;
+    memory::store64(1L, parent + 320L);
+  }
+  return top - 1L;
+}
+
+/* 列完了。卡住就留下这个目录；否则改去 unlink。 */
+deRfun finishList(long stack, long top): long {
+  long frame = stack + (top - 1L) * 512L;
+  if (memory::load64(frame + 320L) == 1L) {
+    return popFrame(stack, top, 1L, 0L);
+  }
+  memory::store64(2L, frame);
+  return top;
+}
+
+/* 删掉一个操作数整棵树。返回 0 成功，1 这一项失败，-1 必须马上停（读失败或内存不够）。
+   work：+0 -f，+64 -i，+128 -R，+192 路径槽，+256 名字，+320 已走路径，
+   +384 那块缓冲的位数，+448 堆栈，+512 标准输入读偏移。 */
+deRfun descend(long home, long work, long operand, long operandLen): long {
+  long force = memory::load64(work);
+  long asking = memory::load64(work + 64L);
+  long recur = memory::load64(work + 128L);
+  long slots = memory::load64(work + 192L);
+  long names = memory::load64(work + 256L);
+  long visited = memory::load64(work + 320L);
+  long cap = memory::load64(work + 384L);
+  long stack = memory::load64(work + 448L);
+  memory::store64(0L, visited);
+  memory::store64(128L, visited + 64L);
+  long top = pushNode(stack, 0L, operand, operandLen, 1L);
+  if (top < 0L) {
+    writeErr(home, "rm: too deep\n");
+    return 1L;
+  }
+  long failed = 0L;
+  while (top > 0L) {
+    long frame = stack + (top - 1L) * 512L;
+    long state = memory::load64(frame);
+    long node = memory::load64(frame + 64L);
+    long nlen = memory::load64(frame + 128L);
+    if (state == 0L) {
+      if (nlen > 8192L || nlen < 0L) {
+        writeErr(home, "rm: path too long\n");
+        failed = 1L;
+        top = popFrame(stack, top, 0L, 0L);
+      } else if (nlen < 1L) {
+        if (force == 0L) {
+          writeDiag(home, node, nlen, ": No such file or directory\n");
+          failed = 1L;
+        }
+        top = popFrame(stack, top, 0L, 0L);
+      } else if (refusePath(node, nlen) == 1L) {
+        writeDiag(home, node, nlen, ": cannot remove\n");
+        failed = 1L;
+        top = popFrame(stack, top, 0L, 0L);
+      } else {
+        plant(home, node, nlen);
+        long status = obr::proc::stat(home);
+        if (status == 2L) {
+          if (force == 0L) {
+            writeDiag(home, node, nlen, ": No such file or directory\n");
+            failed = 1L;
+          }
+          /* 名字已经不在了。父目录若还停在这个下标，下一次会看到挤上来的下一项。 */
+          top = popFrame(stack, top, 0L, 1L);
+        } else if (status != 0L) {
+          writeDiag(home, node, nlen, ": cannot remove\n");
+          failed = 1L;
+          top = popFrame(stack, top, 0L, 0L);
+        } else {
+          /* 种类只在这一刻有效。后面的 write、read、readdir 都会盖住 slot 128。 */
+          long kind = obr::proc::slot(home, 128L);
+          if (isDir(kind) == 1L && recur == 0L) {
+            writeDiag(home, node, nlen, ": is a directory\n");
+            failed = 1L;
+            top = popFrame(stack, top, 0L, 0L);
+          } else if (isDir(kind) == 1L && seen(visited, node, nlen) == 1L) {
+            writeDiag(home, node, nlen, ": directory loop\n");
+            failed = 1L;
+            top = popFrame(stack, top, 0L, 0L);
+          } else if (asking == 1L) {
+            long answer = ask(home, isDir(kind), node, nlen, work + 512L);
+            if (answer < 0L) {
+              return -1L;
+            }
+            if (answer == 0L) {
+              top = popFrame(stack, top, 0L, 0L);
+            } else if (isDir(kind) == 0L) {
+              plant(home, node, nlen);
+              if (obr::proc::unlink(home) != 0L) {
+                writeDiag(home, node, nlen, ": cannot remove\n");
+                failed = 1L;
+                top = popFrame(stack, top, 0L, 0L);
+              } else {
+                top = popFrame(stack, top, 0L, 1L);
+              }
+            } else if (remember(visited, cap, node, nlen) != 0L) {
+              writeErr(home, "rm: out of memory\n");
+              return -1L;
+            } else {
+              memory::store64(1L, frame);
+              memory::store64(0L, frame + 192L);
+              memory::store64(0L, frame + 320L);
+            }
+          } else if (isDir(kind) == 0L) {
+            plant(home, node, nlen);
+            if (obr::proc::unlink(home) != 0L) {
+              writeDiag(home, node, nlen, ": cannot remove\n");
+              failed = 1L;
+              top = popFrame(stack, top, 0L, 0L);
+            } else {
+              top = popFrame(stack, top, 0L, 1L);
+            }
+          } else if (remember(visited, cap, node, nlen) != 0L) {
+            writeErr(home, "rm: out of memory\n");
+            return -1L;
+          } else {
+            memory::store64(1L, frame);
+            memory::store64(0L, frame + 192L);
+            memory::store64(0L, frame + 320L);
+          }
+        }
+      }
+    } else if (state == 3L) {
+      /* 子帧还留在 top 这一格，这里先读掉已删标记，下次 push 才会盖住它。 */
+      long removed = memory::load64(stack + top * 512L + 384L);
+      if (removed == 0L) {
+        long index = memory::load64(frame + 192L);
+        memory::store64(index + 1L, frame + 192L);
+      }
+      memory::store64(1L, frame);
+    } else if (state == 1L) {
+      long index = memory::load64(frame + 192L);
+      long depth = memory::load64(frame + 256L);
+      plant(home, node, nlen);
+      long listed = obr::proc::readdir(home, index, 512L);
+      if (listed == 2L) {
+        top = finishList(stack, top);
+      } else if (listed != 0L) {
+        writeDiag(home, node, nlen, ": cannot read\n");
+        failed = 1L;
+        top = popFrame(stack, top, 1L, 0L);
+      } else {
+        long nameLen = obr::proc::slot(home, 256L);
+        if (nameLen == 0L) {
+          top = finishList(stack, top);
+        } else if (nameLen < 0L || nameLen > 512L) {
+          writeDiag(home, node, nlen, ": cannot read\n");
+          failed = 1L;
+          top = popFrame(stack, top, 1L, 0L);
+        } else {
+          /* 下一次 readdir 或询问会盖住字节区，名字先抄走。 */
+          copySpan(obr::proc::bytes(home), names, nameLen);
+          if (isDot(names, nameLen) == 1L) {
+            memory::store64(index + 1L, frame + 192L);
+          } else if (depth >= 32L) {
+            writeErr(home, "rm: too deep\n");
+            failed = 1L;
+            top = popFrame(stack, top, 1L, 0L);
+          } else {
+            long child = slots + depth * 65536L;
+            long childLen = joinPath(node, nlen, names, nameLen, child);
+            if (childLen < 0L) {
+              writeErr(home, "rm: path too long\n");
+              failed = 1L;
+              memory::store64(1L, frame + 320L);
+              memory::store64(index + 1L, frame + 192L);
+            } else {
+              memory::store64(3L, frame);
+              long next = pushNode(stack, top, child, childLen, depth + 1L);
+              if (next < 0L) {
+                memory::store64(1L, frame);
+                writeErr(home, "rm: too deep\n");
+                failed = 1L;
+                memory::store64(1L, frame + 320L);
+                memory::store64(index + 1L, frame + 192L);
+              } else {
+                top = next;
+              }
+            }
+          }
+        }
+      }
+    } else {
+      plant(home, node, nlen);
+      if (obr::proc::unlink(home) != 0L) {
+        writeDiag(home, node, nlen, ": cannot remove\n");
+        failed = 1L;
+        top = popFrame(stack, top, 0L, 0L);
+      } else {
+        top = popFrame(stack, top, 0L, 1L);
+      }
+    }
+  }
+  return failed;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long force = 0L;
+  long asking = 0L;
+  long recur = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      /* 102 是 f，105 是 i，114 是 r，82 是 R。f 与 i 后写的把前一个清掉。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long mark = u8(at + cursor * 8L);
+        if (mark == 102L) {
+          force = 1L;
+          asking = 0L;
+        } else if (mark == 105L) {
+          asking = 1L;
+          force = 0L;
+        } else if (mark == 114L || mark == 82L) {
+          recur = 1L;
+        } else {
+          writeErr(home, "rm: invalid option\n");
+          obr::proc::exit(home, 1L);
+          return 0;
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  if (index >= count) {
+    if (force == 0L) {
+      writeErr(home, "rm: missing operand\n");
+      obr::proc::exit(home, 1L);
+      return 0;
+    }
+    obr::proc::exit(home, 0L);
+    return 0;
+  }
+  /* 32 条路径，每条 8192 个八位组、隔 8 位。名字 512 个八位组。
+     已走路径跟 chmod 一样留 8388608 位。32 帧，每帧 512 位。 */
+  long pathBits = 32L * 65536L;
+  long nameBits = 512L * 8L;
+  long visitBits = 8388608L;
+  long stackBits = 32L * 512L;
+  long slots = obr::proc::alloc(home, pathBits);
+  long names = obr::proc::alloc(home, nameBits);
+  long visited = obr::proc::alloc(home, visitBits);
+  long stack = obr::proc::alloc(home, stackBits);
+  long work = obr::proc::alloc(home, 640L);
+  if (slots == 0L || names == 0L || visited == 0L || stack == 0L || work == 0L) {
+    writeErr(home, "rm: out of memory\n");
+    obr::proc::exit(home, 1L);
+    return 0;
+  }
+  memory::store64(force, work);
+  memory::store64(asking, work + 64L);
+  memory::store64(recur, work + 128L);
+  memory::store64(slots, work + 192L);
+  memory::store64(names, work + 256L);
+  memory::store64(visited, work + 320L);
+  memory::store64(visitBits, work + 384L);
+  memory::store64(stack, work + 448L);
+  memory::store64(0L, work + 512L);
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long outcome = descend(home, work, at, len);
+    if (outcome < 0L) {
+      obr::proc::exit(home, 1L);
+      return 0;
+    }
+    if (outcome != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    obr::proc::exit(home, 1L);
+    return 0;
+  }
+  obr::proc::exit(home, 0L);
+  return 0;
+}

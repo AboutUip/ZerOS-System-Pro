@@ -1,0 +1,335 @@
+/* POSIX mkdir。形式是 mkdir [-p] [-m mode] dir...。
+   -p 和 -m 可以叠在同一个选项里。选项必须写在操作数前面，-- 结束选项。
+   服务 10 没有权限参数。没有 -m 时不再 chmod，目录保持内核创建时的权限。
+   -m 只接受 1 到 4 位八进制，可以有一个前导 0，只留下低 9 位。
+   符号模式这一轮不做：写诊断 mkdir: invalid mode，这个操作数失败。
+   -m 只套到这次新建的最后一层。已经存在的目录不改。
+   -p 把中间缺的目录从左到右逐段建出来，那些层不 chmod。最后一层已经是目录则成功。
+   没有 -p 时，目标已存在或父目录不在都失败。
+   没有操作数时写 mkdir: missing operand，退出状态 1。
+   别的失败写 mkdir: 路径: 原因 到描述符 2，然后继续后面的操作数。
+   有失败则最终退出 1，全部成功退出 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 的负数是补码，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeWhy(long home, long status): void {
+  if (status == -1L) {
+    writeErr(home, "Permission denied");
+    return;
+  }
+  if (status == 2L) {
+    writeErr(home, "No such file or directory");
+    return;
+  }
+  if (status == 3L) {
+    writeErr(home, "Not a directory");
+    return;
+  }
+  if (status == 6L) {
+    writeErr(home, "File name too long");
+    return;
+  }
+  if (status == 7L) {
+    writeErr(home, "No space left on device");
+    return;
+  }
+  if (status == 11L) {
+    writeErr(home, "File exists");
+    return;
+  }
+  if (status == 13L) {
+    writeErr(home, "Invalid argument");
+    return;
+  }
+  writeErr(home, "Unknown error");
+}
+
+deRfun complain(long home, long addr, long count, long status): void {
+  writeErr(home, "mkdir: ");
+  writeSpan(home, addr, count);
+  writeErr(home, ": ");
+  writeWhy(home, status);
+  writeErr(home, "\n");
+}
+
+/* 长度在路径字，八位组从 +64 起隔 8 位。相对路径原样交给内核。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 种类 2、4、6 是目录。 */
+deRfun directory(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun statKind(long home, long addr, long count, long* kind): long {
+  plant(home, addr, count);
+  long status = obr::proc::stat(home);
+  if (status == 0L) {
+    *kind = obr::proc::slot(home, 128L);
+  }
+  return status;
+}
+
+deRfun makeAt(long home, long addr, long count): long {
+  plant(home, addr, count);
+  return obr::proc::mkdir(home);
+}
+
+deRfun modeAt(long home, long addr, long count, long mode): long {
+  plant(home, addr, count);
+  return obr::proc::chmod(home, mode);
+}
+
+/* 成功返回 1，并把低 9 位写进 mode。符号模式和超长数字返回 0。 */
+deRfun octalMode(long addr, long count, long* mode): long {
+  if (count < 1L || count > 4L) {
+    return 0L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < count) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 55L) {
+      return 0L;
+    }
+    value = value * 8L + digit - 48L;
+    index = index + 1L;
+  }
+  *mode = value % 512L;
+  return 1L;
+}
+
+/* 处理路径的一个前缀。0 表示这一层已经是目录。非 0 是要报告的状态。
+   last 为 1 时才可能 chmod，而且只在这次 mkdir 成功之后。 */
+deRfun ensure(long home, long addr, long prefix, long last, long hasMode, long mode): long {
+  long kind = 0L;
+  long status = statKind(home, addr, prefix, &kind);
+  long created = 0L;
+  if (status == 0L) {
+    if (directory(kind) == 0L) {
+      if (last == 1L) {
+        return 11L;
+      }
+      return 3L;
+    }
+  } else if (status == 2L) {
+    status = makeAt(home, addr, prefix);
+    if (status == 11L) {
+      status = statKind(home, addr, prefix, &kind);
+      if (status != 0L) {
+        return status;
+      }
+      if (directory(kind) == 0L) {
+        return 11L;
+      }
+    } else if (status != 0L) {
+      return status;
+    } else {
+      created = 1L;
+    }
+  } else {
+    return status;
+  }
+  if (created == 1L && last == 1L && hasMode == 1L) {
+    status = modeAt(home, addr, prefix, mode);
+    if (status != 0L) {
+      return status;
+    }
+  }
+  return 0L;
+}
+
+deRfun makeOperand(long home, long addr, long count, long parents, long hasMode, long mode): long {
+  if (count < 1L) {
+    complain(home, addr, count, 2L);
+    return 1L;
+  }
+  if (parents == 0L) {
+    long status = makeAt(home, addr, count);
+    if (status != 0L) {
+      complain(home, addr, count, status);
+      return 1L;
+    }
+    if (hasMode == 1L) {
+      status = modeAt(home, addr, count, mode);
+      if (status != 0L) {
+        complain(home, addr, count, status);
+        return 1L;
+      }
+    }
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    while (index < count && u8(addr + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index >= count) {
+      break;
+    }
+    while (index < count && u8(addr + index * 8L) != 47L) {
+      index = index + 1L;
+    }
+    long prefix = index;
+    long look = index;
+    while (look < count && u8(addr + look * 8L) == 47L) {
+      look = look + 1L;
+    }
+    long last = 0L;
+    if (look >= count) {
+      last = 1L;
+    }
+    long status = ensure(home, addr, prefix, last, hasMode, mode);
+    if (status != 0L) {
+      complain(home, addr, count, status);
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long parents = 0L;
+  long hasMode = 0L;
+  long mode = 0L;
+  long index = 1L;
+  long ended = 0L;
+  long count = argc(home);
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 112L) {
+          parents = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 109L) {
+          long modeAt = 0L;
+          long modeLen = 0L;
+          if (cursor + 1L < len) {
+            modeAt = at + (cursor + 1L) * 8L;
+            modeLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "mkdir: invalid mode\n");
+              return finish(home, 1L);
+            }
+            modeAt = argPtr(home, index);
+            modeLen = argLen(home, index);
+            cursor = len;
+          }
+          if (octalMode(modeAt, modeLen, &mode) == 0L) {
+            writeErr(home, "mkdir: invalid mode\n");
+            return finish(home, 1L);
+          }
+          hasMode = 1L;
+        } else {
+          writeErr(home, "mkdir: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "mkdir: missing operand\n");
+    return finish(home, 1L);
+  }
+  /* 8192 个八位组。分配单位是位，所以是 65536。 */
+  long hold = obr::proc::alloc(home, 65536L);
+  if (hold == 0L) {
+    writeErr(home, "mkdir: out of memory\n");
+    return finish(home, 1L);
+  }
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len > 8192L) {
+      complain(home, at, len, 6L);
+      failed = 1L;
+    } else {
+      copySpan(at, hold, len);
+      if (makeOperand(home, hold, len, parents, hasMode, mode) != 0L) {
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  long code = 0L;
+  if (failed == 1L) {
+    code = 1L;
+  }
+  return finish(home, code);
+}

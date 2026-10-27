@@ -475,6 +475,7 @@ deRfun bootInit(): void {
   }
   obr::os::install(core, imageAt(), size);
   obr::os::bound(core, kArena(core), kSlot());
+  clearArgs(query(1L, 8L, core));
   long pid = taskSpawn(core, 1L, 0L, 0L, 0L, TaskState::Ready);
   if (pid == 0L) {
     return;
@@ -484,6 +485,32 @@ deRfun bootInit(): void {
   /* 30 太慢，写一行要等好几秒。这里拉高，字马上出来。 */
   obr::os::hertz(core, 1000000L);
   schedWake(core);
+}
+
+/* /os/sh 是交互壳，起来就是前台。子任务默认继承父任务的档。 */
+deRfun isShell(long path): long {
+  if (memory::load64(path) != 6L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 64L) != 47L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 72L) != 111L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 80L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 88L) != 47L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 96L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 104L) != 104L) {
+    return 0L;
+  }
+  return 1L;
 }
 
 deRfun isSession(long path): long {
@@ -643,10 +670,60 @@ deRfun bootPump(): void {
   }
 }
 
+/* 参数和环境放在界限起点 +4194304。壳和 Resource/Bin/arg.obr 用同一张布局。
+   字 0 个数，字 1 环境条数，字 2 参数八位组数，字 3 环境八位组数。
+   +256 起 64 个参数长度，+4352 起 64 个环境长度。
+   参数八位组从 +8448 起，环境从 +73984 起，相邻隔 8 位。整段 139520 位。 */
+deRfun argAt(long home): long {
+  return home + 4194304L;
+}
+
+deRfun argSpan(): long {
+  return 139520L;
+}
+
+deRfun argOk(long home): long {
+  long base = argAt(home);
+  long argc = memory::load64(base);
+  long envc = memory::load64(base + 64L);
+  long argBytes = memory::load64(base + 128L);
+  long envBytes = memory::load64(base + 192L);
+  if (argc < 0L || argc > 64L || envc < 0L || envc > 64L) {
+    return 0L;
+  }
+  if (argBytes < 0L || argBytes > 8192L || envBytes < 0L || envBytes > 8192L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun clearArgs(long home): void {
+  long at = argAt(home);
+  long index = 0L;
+  while (index < argSpan()) {
+    memory::store64(0L, at + index);
+    index = index + 64L;
+  }
+}
+
+/* 父任务窗口里的参数抄进子任务。调用前要先 argOk。 */
+deRfun handArgs(long from, long to): void {
+  long src = argAt(from);
+  long dst = argAt(to);
+  long index = 0L;
+  while (index < argSpan()) {
+    memory::store64(memory::load64(src + index), dst + index);
+    index = index + 64L;
+  }
+}
+
 deRfun execSpawn(long caller, long home): long {
   long taskIndex = taskFind(caller);
   if (taskIndex < 0L) {
     return -1L;
+  }
+  if (argOk(home) == 0L) {
+    return 13L;
   }
   long status = vfsPrepare(caller, home + 16384L);
   if (status != 0L) {
@@ -741,7 +818,15 @@ deRfun execSpawn(long caller, long home): long {
   child.cred.euid = parent.cred.euid;
   child.cred.egid = parent.cred.egid;
   child.cap = parent.cap;
+  child.cwd = parent.cwd;
+  long rank = rankGet(taskIndex);
+  if (isShell(home + 16384L) == 1L) {
+    rank = 2L;
+  }
+  rankSet(taskByPid(pid), rank);
   vfsHand(taskIndex, taskByPid(pid));
+  clearArgs(query(1L, 8L, core));
+  handArgs(home, query(1L, 8L, core));
   /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。
      再拉到 100000000 测过，按键仍是大约一秒，时间不在客程序的节拍上。 */
   if (isSession(home + 16384L) == 1L) {

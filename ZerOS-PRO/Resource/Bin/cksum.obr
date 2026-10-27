@@ -1,0 +1,351 @@
+/* POSIX.1-2017 cksum（utilities/cksum.html）。形式是 cksum [file...]。
+   不做 -o。-- 结束选项。第一个不是选项的参数也结束选项，后面的 -x 是文件名。
+   以 - 开头、长度至少 2、又不是单独的 --，都是不认识的选项：
+   写 cksum: invalid option，立刻退出 1，后面的文件不再读。
+   没有文件就读标准输入，这一行不写名字。
+   单独一个 - 也读标准输入，不关闭描述符 0，名字就写这一个 -。
+   每个文件一行，写到描述符 1：十进制校验和、空格、十进制字节数，
+   有名字再空格和名字，然后换行。不补前导零。不写 total。
+   打开失败写 cksum: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败写 cksum: read error，这个文件不写结果，继续后面的文件。
+   写失败写 cksum: write error，立刻退出 1。
+   全部成功退出 0。状态经 obr::proc::exit 交出，main 仍返回 0。
+   描述符 1 的文件偏移按已写字节累加。诊断写描述符 2。
+
+   校验是 POSIX 这一套，不是 zip 的 CRC-32。
+   多项式是 79764919，也就是 0x04C11DB7。
+   Obr 没有数组，不能放 256 项的表，每个下标现算。
+   从下标左移 24 位开始，做 8 次。
+   最高位（和 2147483648 相与）是 1，就左移 1 再异或 79764919，否则只左移 1。
+   移位先把值收成低 32 位，计数对 32 取模。
+   每次左移或异或之后都和 4294967295 相与，只留低 32 位。
+   初始 crc 是 0。每个输入字节：
+   crc = ((crc << 8) 异或 上面对 (crc >> 24) 异或 这个字节 算出来的项) 再和 4294967295 相与。
+   同时数字节个数。打出来的个数只算文件里的字节，不算后面补进 crc 的长度。
+   文件读完后，把字节个数按低字节到高字节喂进去，直到个数变成 0：
+   取出低 8 位，再把整个个数降 8 位，用和输入字节相同的公式喂给 crc。
+   右移只动低 32 位，个数可以超过 32 位，所以降 8 位用除以 256。
+   对非负数，这就是逻辑右移 8 位，高位不会被切掉。
+   然后 crc = (4294967295 异或 crc) 再和 4294967295 相与。
+   按位取反用这个异或，不用取反运算符。long 的比较和初值用 0L。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断路径写到描述符 2。控制台不看偏移，所以这一路每次从 0 写。一次最多 4096。 */
+deRfun writeFd(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "cksum: ");
+  writeFd(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 下标 0 到 255 的那一项。没有表，从 index << 24 起做 8 轮。
+   2147483648 是 32 位里的最高位。左移会把这一位推出低 32 位，所以先看再移。
+   移位如果按 64 位留下第 32 位，后面的最高位判断会看错，所以每一步都和 4294967295 相与。 */
+deRfun term(long index): long {
+  long step = (index << 24) & 4294967295L;
+  long round = 0L;
+  while (round < 8L) {
+    long high = step & 2147483648L;
+    step = (step << 1) & 4294967295L;
+    if (high != 0L) {
+      step = (step ^ 79764919L) & 4294967295L;
+    }
+    round = round + 1L;
+  }
+  return step;
+}
+
+/* 喂一个 0 到 255 的字节。下标是 crc 的高 8 位异或这个字节，项现算。
+   (crc << 8) 异或该项之后再收成低 32 位。 */
+deRfun roll(long crc, long octet): long {
+  long top = (crc >> 24) & 4294967295L;
+  long low = octet & 255L;
+  long index = (top ^ low) & 4294967295L;
+  long piece = term(index);
+  long shifted = (crc << 8) & 4294967295L;
+  return (shifted ^ piece) & 4294967295L;
+}
+
+/* 文件字节已经喂完。个数从低字节到高字节再喂，直到变成 0。
+   除以 256 拿掉低 8 位。右移只收低 32 位，这里不能用 >>，否则 2^32 以上的个数会丢掉高半。
+   最后用 4294967295 异或，得到 32 位按位取反。 */
+deRfun seal(long crc, long count): long {
+  long left = count;
+  while (left != 0L) {
+    long octet = left & 255L;
+    left = left / 256L;
+    crc = roll(crc, octet);
+  }
+  return (4294967295L ^ crc) & 4294967295L;
+}
+
+/* 从 fd 头上读到结束。偏移从 0 起，按 slot 320 的实际个数往下加。0 是结束。一次最多 4096。
+   成功时校验和写进 *sum，文件字节数写进 *size。返回 0。
+   读失败已经写过诊断，返回 1，两个指针都不改。不关闭 fd。 */
+deRfun sumFd(long home, long fd, long* sum, long* size): long {
+  long crc = 0L;
+  long total = 0L;
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      writeErr(home, "cksum: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "cksum: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long index = 0L;
+      long base = obr::proc::bytes(home);
+      while (index < n) {
+        crc = roll(crc, u8(base + index * 8L));
+        index = index + 1L;
+      }
+      total = total + n;
+      offset = offset + n;
+    }
+  }
+  *sum = seal(crc, total);
+  *size = total;
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，必须在下一次 read 之前取走。描述符 0 不关。
+   打不开返回 1，并且不改 *sum 和 *size。 */
+deRfun sumFile(long home, long addr, long count, long* sum, long* size): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = sumFd(home, fd, sum, size);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+/* 字节区开头的 count 个八位组写到描述符 1。
+   outAt 是已经写到标准输出的字节数，按 slot 320 的实际个数往下加，不要每次从 0 写。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。
+   失败已经写过诊断，返回 2。成功返回 0。 */
+deRfun writeOut(long home, long* outAt, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      writeErr(home, "cksum: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "cksum: write error\n");
+      return 2L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitByte(long home, long* outAt, long value): long {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  return writeOut(home, outAt, 1L);
+}
+
+/* 十进制，不补前导零。0 写成一个 0。从最高位除下来，中间的 0 仍要写。 */
+deRfun emitDec(long home, long* outAt, long value): long {
+  long div = 1L;
+  long temp = value;
+  while (temp >= 10L) {
+    temp = temp / 10L;
+    div = div * 10L;
+  }
+  long rest = value;
+  long count = 0L;
+  long base = obr::proc::bytes(home);
+  while (div > 0L) {
+    long digit = rest / div;
+    memory::storeOctet(48L + digit, base + count * 8L);
+    rest = rest % div;
+    div = div / 10L;
+    count = count + 1L;
+  }
+  return writeOut(home, outAt, count);
+}
+
+/* 参数八位组相邻隔 8 位。按 4096 搬进字节区再写到描述符 1。 */
+deRfun emitSpan(long home, long* outAt, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeOut(home, outAt, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 一行是校验和、空格、字节数。hasName 为 1 时再空格和名字。为 0 时到字节数就换行，不多写空格。 */
+deRfun report(long home, long* outAt, long sum, long size, long nameAt, long nameLen, long hasName): long {
+  if (emitDec(home, outAt, sum) != 0L) {
+    return 2L;
+  }
+  if (emitByte(home, outAt, 32L) != 0L) {
+    return 2L;
+  }
+  if (emitDec(home, outAt, size) != 0L) {
+    return 2L;
+  }
+  if (hasName == 1L) {
+    if (emitByte(home, outAt, 32L) != 0L) {
+      return 2L;
+    }
+    if (emitSpan(home, outAt, nameAt, nameLen) != 0L) {
+      return 2L;
+    }
+  }
+  if (emitByte(home, outAt, 10L) != 0L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      writeErr(home, "cksum: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      ended = 1L;
+    }
+  }
+  long failed = 0L;
+  long outAt = 0L;
+  long sum = 0L;
+  long size = 0L;
+  if (index >= count) {
+    long status = sumFd(home, 0L, &sum, &size);
+    if (status != 0L) {
+      failed = 1L;
+    } else if (report(home, &outAt, sum, size, 0L, 0L, 0L) != 0L) {
+      return finish(home, 1L);
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = sumFd(home, 0L, &sum, &size);
+    } else {
+      status = sumFile(home, at, len, &sum, &size);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    } else if (report(home, &outAt, sum, size, at, len, 1L) != 0L) {
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

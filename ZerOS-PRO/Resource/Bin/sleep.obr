@@ -1,0 +1,157 @@
+/* POSIX sleep。一个操作数：非负十进制秒，可以有一个小数点，不要指数。
+   没有操作数、多于一个、空串、负数或非数字，都在标准错误写诊断并退出 1。
+   -- 结束选项。没有短选项。以 - 开头、又不是十进制数的词是非法选项。
+   纯数字的 -1 带减号，按负数拒绝。整秒循环 dwell(1000)，余下毫秒再等一次。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 参数八位组在位元线上相隔 8 位。loadOctet 的负数是补码，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 从 start 起是十进制数：至多一个小数点，至少一个数字，其余都必须是数字。 */
+deRfun decimal(long at, long len, long start): long {
+  if (start >= len) {
+    return 0L;
+  }
+  long cursor = start;
+  long digits = 0L;
+  long dots = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit == 46L) {
+      dots = dots + 1L;
+      if (dots > 1L) {
+        return 0L;
+      }
+    } else if (bit >= 48L && bit <= 57L) {
+      digits = digits + 1L;
+    } else {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  if (digits < 1L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 小数收成毫秒：只留小数点后前四位，再往后的截掉。不足四位就在右边补 0。
+   (这四位 + 5) / 10 用整数除法向零取整，即四舍五入到毫秒。满 1000 进到秒。
+   1.5 补成 5000，(5000 + 5) / 10 = 500。整数部分放不进有符号 64 位则失败。 */
+deRfun scale(long at, long len, long* seconds, long* millis): long {
+  if (decimal(at, len, 0L) == 0L) {
+    return 0L;
+  }
+  long whole = 0L;
+  long frac = 0L;
+  long fracCount = 0L;
+  long seenDot = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit == 46L) {
+      seenDot = 1L;
+    } else {
+      long digit = bit - 48L;
+      if (seenDot == 0L) {
+        if (whole > 922337203685477580L || (whole == 922337203685477580L && digit > 7L)) {
+          return 0L;
+        }
+        whole = whole * 10L + digit;
+      } else if (fracCount < 4L) {
+        frac = frac * 10L + digit;
+        fracCount = fracCount + 1L;
+      }
+    }
+    cursor = cursor + 1L;
+  }
+  while (fracCount < 4L) {
+    frac = frac * 10L;
+    fracCount = fracCount + 1L;
+  }
+  long milli = (frac + 5L) / 10L;
+  if (milli == 1000L) {
+    if (whole == 9223372036854775807L) {
+      return 0L;
+    }
+    whole = whole + 1L;
+    milli = 0L;
+  }
+  *seconds = whole;
+  *millis = milli;
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long found = 0L;
+  long at = 0L;
+  long len = 0L;
+  while (index < count) {
+    long word = argPtr(home, index);
+    long wordLen = argLen(home, index);
+    if (ended == 0L && wordLen == 2L && u8(word) == 45L && u8(word + 8L) == 45L) {
+      ended = 1L;
+    } else if (ended == 0L && wordLen >= 1L && u8(word) == 45L && decimal(word, wordLen, 1L) == 0L) {
+      writeErr(home, "sleep: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      found = found + 1L;
+      at = word;
+      len = wordLen;
+    }
+    index = index + 1L;
+  }
+  if (found == 0L) {
+    writeErr(home, "sleep: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (found > 1L) {
+    writeErr(home, "sleep: too many arguments\n");
+    return finish(home, 1L);
+  }
+  long seconds = 0L;
+  long millis = 0L;
+  if (scale(at, len, &seconds, &millis) == 0L) {
+    writeErr(home, "sleep: invalid time interval\n");
+    return finish(home, 1L);
+  }
+  while (seconds > 0L) {
+    obr::os::dwell(1000L);
+    seconds = seconds - 1L;
+  }
+  if (millis > 0L) {
+    obr::os::dwell(millis);
+  }
+  return finish(home, 0L);
+}

@@ -1,0 +1,24 @@
+{
+  "scopeName": "source.zap-binary",
+  "patterns": [
+    {
+      "match": "^;.*$",
+      "name": "comment.line.zap-binary"
+    },
+    {
+      "match": "^([0-9A-Fa-f]{8})\\s+([A-Za-z.][\\w.]*)",
+      "captures": {
+        "1": { "name": "constant.numeric.offset.zap-binary" },
+        "2": { "name": "keyword.control.zap" }
+      }
+    },
+    {
+      "match": "^([0-9A-F]{8})  ((?:[0-9A-F]{2}|  )(?: (?:[0-9A-F]{2}|  )){15})  (\\|.*\\|)",
+      "captures": {
+        "1": { "name": "constant.numeric.offset.zap-binary" },
+        "2": { "name": "constant.numeric.hex.zap-binary" },
+        "3": { "name": "comment.ascii.zap-binary" }
+      }
+    }
+  ]
+}

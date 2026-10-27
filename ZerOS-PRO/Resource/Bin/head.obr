@@ -1,0 +1,350 @@
+/* POSIX.1-2017 head（utilities/head.html）。形式是 head [-n number] [file...]。
+   缺省打印每个文件的前 10 行。行以字节 10 结束。
+   文件末尾没有换行的那一段也算一行。
+   -n 后面是正十进制整数，写成 -n 10 或 -n10。数字必须大于 0。
+   0、负数、空缺都写 head: invalid number，退出 1。
+   不做旧写法 head -10。那是非法选项，写 head: invalid option，立刻退出 1。
+   -- 结束选项。其后的 -n 是文件名。第一个不是选项的参数也结束选项。
+   没有文件就读标准输入。单独一个 - 也读标准输入，并且不关闭描述符 0。
+   两个及以上文件时，每个文件前写一行标题 ==> 名字 <== 再换行。
+   第一个文件前不多写空行，后面的文件在标题前多一个换行。
+   只有一个文件或只有标准输入时不写标题。
+   打开失败写 head: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败写 head: read error，继续后面的文件。写失败写 head: write error，立刻退出 1。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断路径写到描述符 2。控制台不看偏移，所以这一路每次从 0 写。一次最多 4096。 */
+deRfun writeFd(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "head: ");
+  writeFd(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 从第一个字节起都必须是 0 到 9。前导 0 可以，值必须大于 0。
+   减号、正号、空串和别的字符都拒绝。有符号 64 位放不下也拒绝。
+   成功写成 *out 并返回 1，否则返回 0，不改 *out。 */
+deRfun positive(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L || (value == 922337203685477580L && digit > 7L)) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    cursor = cursor + 1L;
+  }
+  if (value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 字节区开头的 count 个八位组写到描述符 1。
+   place 是已经写到标准输出的字节数，按 slot 320 的实际个数往下加，不要每次从 0 写。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。
+   失败已经写过诊断，返回 2。成功返回 0。 */
+deRfun emitReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "head: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "head: write error\n");
+      return 2L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitText(long home, long* place, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[offset + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (emitReady(home, place, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 参数八位组相邻隔 8 位。按 4096 搬进字节区再写到描述符 1。 */
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (emitReady(home, place, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 字节 10 结束一行，写出时带上这个 10。数满 lines 就停。
+   同一块里这个 10 后面的字节不写，也不再读下一块。
+   实际个数在 +320。0 是文件结束：末尾没有 10 的那一段已经按读到的字节写过，也算一行，不再补 10。
+   读偏移从本次文件的 0 起，按实际读到的个数累加。描述符 1 的位置在 place 里累加。
+   一次最多 4096。返回 0 成功，1 读失败，2 写失败。 */
+deRfun pour(long home, long fd, long lines, long* place): long {
+  long offset = 0L;
+  long seen = 0L;
+  while (seen < lines) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      writeErr(home, "head: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "head: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      return 0L;
+    }
+    if (n > 4096L) {
+      n = 4096L;
+    }
+    long keep = 0L;
+    long index = 0L;
+    while (index < n && seen < lines) {
+      keep = index + 1L;
+      if (u8(obr::proc::bytes(home) + index * 8L) == 10L) {
+        seen = seen + 1L;
+      }
+      index = index + 1L;
+    }
+    if (emitReady(home, place, keep) != 0L) {
+      return 2L;
+    }
+    offset = offset + n;
+  }
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，必须在下一次 read 之前取走。描述符 0 不关。 */
+deRfun pourFile(long home, long addr, long count, long lines, long* place): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = pour(home, fd, lines, place);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+/* lead 不是 0 时，标题前多一个换行。名字按参数八位组原样写出。
+   标题先写完才读文件，读和写共用字节区。 */
+deRfun title(long home, long* place, long addr, long len, long lead): long {
+  long mark = 0L;
+  if (lead != 0L) {
+    mark = emitText(home, place, "\n==> ");
+  } else {
+    mark = emitText(home, place, "==> ");
+  }
+  if (mark != 0L) {
+    return 2L;
+  }
+  if (emitSpan(home, place, addr, len) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, place, " <==\n") != 0L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long lines = 10L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 110 是 n。只有 -n；-10 这种旧写法不是 n，按非法选项拒绝。 */
+      if (u8(at + 8L) != 110L) {
+        writeErr(home, "head: invalid option\n");
+        return finish(home, 1L);
+      }
+      if (len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "head: invalid number\n");
+          return finish(home, 1L);
+        }
+        long numAt = argPtr(home, index);
+        long numLen = argLen(home, index);
+        if (positive(numAt, numLen, &lines) == 0L) {
+          writeErr(home, "head: invalid number\n");
+          return finish(home, 1L);
+        }
+        index = index + 1L;
+      } else {
+        /* 前两个字节是 - 和 n，数字从 +16 位起。后面的 -n 覆盖前面的行数。 */
+        if (positive(at + 16L, len - 2L, &lines) == 0L) {
+          writeErr(home, "head: invalid number\n");
+          return finish(home, 1L);
+        }
+        index = index + 1L;
+      }
+    } else {
+      ended = 1L;
+    }
+  }
+  long failed = 0L;
+  long outAt = 0L;
+  if (index >= count) {
+    long status = pour(home, 0L, lines, &outAt);
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+  }
+  long files = count - index;
+  long begin = index;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (files >= 2L) {
+      long lead = 0L;
+      if (index > begin) {
+        lead = 1L;
+      }
+      if (title(home, &outAt, at, len, lead) != 0L) {
+        return finish(home, 1L);
+      }
+    }
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = pour(home, 0L, lines, &outAt);
+    } else {
+      status = pourFile(home, at, len, lines, &outAt);
+    }
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

@@ -99,7 +99,10 @@ int Generator::spill() {
     return slot;
   }
 
-void Generator::hold() { temp_ += 1; }
+void Generator::hold() {
+  temp_ += 1;
+  if (temp_ > kTemps) fail("表达式临时槽不够");
+}
 
 void Generator::release() { temp_ -= 1; }
 

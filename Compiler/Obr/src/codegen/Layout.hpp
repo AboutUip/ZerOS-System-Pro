@@ -13,7 +13,9 @@ inline int kHeapPtr = 70795264;
 inline int kHeap = 71843840;
 // 界面库的原点栈、按键边沿和运行时参数。每个槽 64 位。
 inline int kUi = 70680576;
-constexpr int kTemps = 8;
+/* 一次调用会把每个参数都停在临时槽里。九个参数时第八个槽正好压住栈顶，
+   随后第一次压栈会盖掉最后一个参数，被调用方读到 0。槽要比最长的参数表多。 */
+constexpr int kTemps = 32;
 constexpr int kWordStride = 64;
 constexpr int kStackStride = 524288;
 constexpr int kHeapStride = 67108864;

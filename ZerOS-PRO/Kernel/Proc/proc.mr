@@ -50,6 +50,13 @@ deRfun taskAt(long index): Task*;
 deRfun taskFind(long core): long;
 deRfun taskCount(long core): long;
 deRfun taskReady(long core, long except): long;
+/* 同一档从 except 的下一格绕圈。best 是这一核上就绪任务的最高档。 */
+deRfun taskReadyRank(long core, long except, long rank): long;
+deRfun taskBestRank(long core, long except): long;
+deRfun taskPrefer(long core, long except): long;
+deRfun rankGet(long index): long;
+deRfun rankSet(long index, long rank): void;
+deRfun rankPublish(long core): void;
 deRfun taskClear(): void;
 deRfun reserveOne(): void;
 deRfun taskDrop(long core): void;
@@ -62,4 +69,8 @@ deRfun sigTake(long caller): long;
 deRfun sigPendingKill(long core): long;
 deRfun procExit(long core, long code): void;
 deRfun procWait(long caller, long home): long;
+/* 有人正等子进程时停掉那个子进程并返回 1，否则返回 0。退出码 130。 */
+deRfun procBreak(): long;
 deRfun procCollect(): void;
+/* 没有正在跑、也没有在槽里等着上的任务时返回 1。调度可以先不向宿主询问。 */
+deRfun schedIdle(): long;

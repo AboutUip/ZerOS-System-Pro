@@ -1,0 +1,87 @@
+/* 读子任务窗口里的参数和环境。不发系统调用。 */
+import memory;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+/* 和壳的参数块同一处。65536*64 才是 4194304。
+   写成一个不小于 1048576 的立即数时，pie 会把它当成数据地址再加一槽。 */
+deRfun argBase(long home): long {
+  return home + 65536L * 64L;
+}
+
+deRfun argc(long home): long {
+  return memory::load64(argBase(home));
+}
+
+deRfun envc(long home): long {
+  return memory::load64(argBase(home) + 64L);
+}
+
+deRfun argLen(long home, long index): long {
+  if (index < 0L || index >= argc(home)) {
+    return 0L;
+  }
+  return memory::load64(argBase(home) + 256L + index * 64L);
+}
+
+deRfun envLen(long home, long index): long {
+  if (index < 0L || index >= envc(home)) {
+    return 0L;
+  }
+  return memory::load64(argBase(home) + 4352L + index * 64L);
+}
+
+deRfun argPtr(long home, long index): long {
+  long base = argBase(home) + 8448L;
+  long cursor = 0L;
+  long filled = 0L;
+  while (cursor < index && cursor < argc(home)) {
+    filled = filled + argLen(home, cursor);
+    cursor = cursor + 1L;
+  }
+  return base + filled * 8L;
+}
+
+deRfun envPtr(long home, long index): long {
+  long base = argBase(home) + 73984L;
+  long cursor = 0L;
+  long filled = 0L;
+  while (cursor < index && cursor < envc(home)) {
+    filled = filled + envLen(home, cursor);
+    cursor = cursor + 1L;
+  }
+  return base + filled * 8L;
+}
+
+deRfun envLookup(long home, long name, long nameLen, long* value, long* valueLen): long {
+  long index = 0L;
+  long count = envc(home);
+  while (index < count) {
+    long at = envPtr(home, index);
+    long len = envLen(home, index);
+    long same = 1L;
+    long cursor = 0L;
+    if (len < nameLen + 1L) {
+      same = 0L;
+    }
+    while (same == 1L && cursor < nameLen) {
+      if (u8(at + cursor * 8L) != u8(name + cursor * 8L)) {
+        same = 0L;
+      }
+      cursor = cursor + 1L;
+    }
+    if (same == 1L && u8(at + nameLen * 8L) == 61L) {
+      *value = at + (nameLen + 1L) * 8L;
+      *valueLen = len - nameLen - 1L;
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}

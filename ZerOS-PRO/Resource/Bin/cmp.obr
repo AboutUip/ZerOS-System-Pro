@@ -1,0 +1,483 @@
+/* POSIX.1-2017 cmp（utilities/cmp.html）。形式是 cmp [-l|-s] file1 file2。
+   必须正好两个文件。少了写 cmp: missing operand，多了写 cmp: too many arguments，都立刻退出 2。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -l、-s 是文件名。
+   不认识的选项写 cmp: invalid option，立刻退出 2。
+   -l 和 -s 不能同时出现，-ls 这种写在一簇里也算，同样是这句并退出 2。
+   同一个字母可以重复，-ll 仍是列出每一处不同。
+
+   单独一个 - 读标准输入，并且不关闭描述符 0。
+   两个都是 - 时写 cmp: standard input used twice，立刻退出 2，不去打开、也不去读。
+   描述符 0 只有一条流，先被一边读走的字节，另一边就看不到了。
+
+   相同退出 0，有差异或一边先结束退出 1，打开或读失败退出 2。
+   结束用服务 28。main 的返回值仍是 0。
+
+   缺省只报第一处不同，一行写到描述符 1：
+   名字1 空格 名字2 空格 differ: char 字节号, line 行号，再换行。
+   字节号和行号都从 1 起。行号是已经相同的前缀里，字节 10 的个数再加 1。
+   当前这一对还没算进去，所以差异本身就是换行时，行号仍是这一行。
+
+   一边先读完、另一边还有字节：诊断写描述符 2，
+   cmp: EOF on 较短的那个名字，再换行，退出 1。标准输入的名字就写 -。
+
+   -l：每一处不同都写一行到描述符 1。十进制字节号、空格、文件 1 的字节八进制、
+   空格、文件 2 的字节八进制、换行。八进制不补前导零，0 就写 0。
+   有差异就是 1，差异再多也不中途停。若最后一边更长，再写上面的 EOF，退出 1。
+
+   -s：比较结果什么都不写，EOF 那句也不写。相同是 0，不同或一边先结束是 1。
+   打开失败仍写 cmp: 路径: No such file or directory，并退出 2。
+   读失败写 cmp: read error，退出 2。
+
+   读之前把路径写成计数字符串：长度在 path(home)，字节从 +64 起、隔 8 位，再 open(home, 0)。
+   描述符在 slot 192，必须在下一次读写之前取走。
+   文件偏移按实际读到的个数累加。实际个数在 slot 320，0 个是这一边结束。一次最多 4096。
+   两边各用一块 alloc 出来的缓冲。读写窗口只有一块，不能同时留着两边的字节。
+   写到描述符 1 时，偏移按已经写下的字节累加，不要每次从 0 写。诊断写描述符 2。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断写描述符 2。控制台和管道不看偏移，这一路每次从 0 写。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径按八位组抄到描述符 2，不经过字符串。一次最多 4096。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "cmp: ");
+  if (count > 0L) {
+    writeErrSpan(home, addr, count);
+  }
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 字节区开头的 count 个八位组写到描述符 1。
+   outAt 是已经写到标准输出的字节数，按 slot 320 的实际个数往下加。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。
+   失败已经写过诊断，返回 2。成功返回 0。 */
+deRfun writeOut(long home, long* outAt, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      writeErr(home, "cmp: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "cmp: write error\n");
+      return 2L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 按 base 从最高位除下来，不补前导零。0 写成一个 0。base 只用 10 或 8。
+   十进制的字节号放得进有符号 64 位时，10^18 还乘得动，不会再乘出 10^19。
+   八进制只拿 0 到 255 的八位组，最多三位，377 是 255。 */
+deRfun emitRadix(long home, long* outAt, long value, long base): long {
+  long div = 1L;
+  long temp = value;
+  while (temp >= base) {
+    temp = temp / base;
+    div = div * base;
+  }
+  long rest = value;
+  long count = 0L;
+  long at = obr::proc::bytes(home);
+  while (div > 0L) {
+    long digit = rest / div;
+    memory::storeOctet(48L + digit, at + count * 8L);
+    rest = rest % div;
+    div = div / base;
+    count = count + 1L;
+  }
+  return writeOut(home, outAt, count);
+}
+
+deRfun emitText(long home, long* outAt, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[offset + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeOut(home, outAt, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 参数八位组相邻隔 8 位。按 4096 搬进字节区再写到描述符 1。 */
+deRfun emitSpan(long home, long* outAt, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeOut(home, outAt, chunk) != 0L) {
+      return 2L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 单独一个减号（字节 45）才是标准输入。更长的名字只是路径。 */
+deRfun isDash(long addr, long count): long {
+  if (count == 1L && u8(addr) == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 只读打开。成功时描述符在 +192，立刻抄进 *fd。描述符 0 留给标准输入，这里不关。 */
+deRfun openRead(long home, long addr, long count, long* fd): long {
+  if (isDash(addr, count) == 1L) {
+    *fd = 0L;
+    return 0L;
+  }
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, 0L);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  return 0L;
+}
+
+/* 从 fileOff 读，最多 4096，马上抄进这一边自己的缓冲。
+   下一次读会盖住字节区，所以不能把两边都留在那里。
+   实际个数在 +320。0 是这一边结束。偏移按抄走的个数累加。
+   返回 0 成功，2 读失败（诊断已经写过）。 */
+deRfun pull(long home, long fd, long buf, long* fileOff, long* got): long {
+  if (obr::proc::read(home, fd, *fileOff, 4096L) != 0L) {
+    writeErr(home, "cmp: read error\n");
+    return 2L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 0L) {
+    writeErr(home, "cmp: read error\n");
+    return 2L;
+  }
+  if (n > 4096L) {
+    n = 4096L;
+  }
+  copySpan(obr::proc::bytes(home), buf, n);
+  *fileOff = *fileOff + n;
+  *got = n;
+  return 0L;
+}
+
+/* 十进制字节号、空格、文件 1 的八进制、空格、文件 2 的八进制、换行。 */
+deRfun showBytes(long home, long* outAt, long byteNo, long left, long right): long {
+  if (emitRadix(home, outAt, byteNo, 10L) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, outAt, " ") != 0L) {
+    return 2L;
+  }
+  if (emitRadix(home, outAt, left, 8L) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, outAt, " ") != 0L) {
+    return 2L;
+  }
+  if (emitRadix(home, outAt, right, 8L) != 0L) {
+    return 2L;
+  }
+  return emitText(home, outAt, "\n");
+}
+
+/* 名字按参数八位组原样写。标准输入的那一边名字就是一个减号。 */
+deRfun showDiffer(long home, long* outAt, long name1, long len1, long name2, long len2, long byteNo, long lineNo): long {
+  if (emitSpan(home, outAt, name1, len1) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, outAt, " ") != 0L) {
+    return 2L;
+  }
+  if (emitSpan(home, outAt, name2, len2) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, outAt, " differ: char ") != 0L) {
+    return 2L;
+  }
+  if (emitRadix(home, outAt, byteNo, 10L) != 0L) {
+    return 2L;
+  }
+  if (emitText(home, outAt, ", line ") != 0L) {
+    return 2L;
+  }
+  if (emitRadix(home, outAt, lineNo, 10L) != 0L) {
+    return 2L;
+  }
+  return emitText(home, outAt, "\n");
+}
+
+deRfun showEof(long home, long addr, long count): void {
+  writeErr(home, "cmp: EOF on ");
+  if (count > 0L) {
+    writeErrSpan(home, addr, count);
+  }
+  writeErr(home, "\n");
+}
+
+/* mode 0 只报第一处，1 是 -l，2 是 -s。
+   返回 0 相同，1 有差异或一边更短，2 读或写失败。
+   行号只数已经相同的字节 10。当前这对若不相同，先报再决定停不停，这个 10 不算进行号。 */
+deRfun compare(long home, long mode, long fd1, long fd2, long buf1, long buf2, long name1, long len1, long name2, long len2): long {
+  long off1 = 0L;
+  long off2 = 0L;
+  long n1 = 0L;
+  long n2 = 0L;
+  long cur1 = 0L;
+  long cur2 = 0L;
+  long live1 = 1L;
+  long live2 = 1L;
+  long pos = 0L;
+  long newlines = 0L;
+  long differed = 0L;
+  long outAt = 0L;
+  while (live1 == 1L || live2 == 1L) {
+    if (live1 == 1L && cur1 >= n1) {
+      long got = 0L;
+      if (pull(home, fd1, buf1, &off1, &got) != 0L) {
+        return 2L;
+      }
+      if (got == 0L) {
+        live1 = 0L;
+      } else {
+        n1 = got;
+        cur1 = 0L;
+      }
+    }
+    if (live2 == 1L && cur2 >= n2) {
+      long got = 0L;
+      if (pull(home, fd2, buf2, &off2, &got) != 0L) {
+        return 2L;
+      }
+      if (got == 0L) {
+        live2 = 0L;
+      } else {
+        n2 = got;
+        cur2 = 0L;
+      }
+    }
+    if (live1 == 0L && live2 == 0L) {
+      break;
+    }
+    /* 先结束的那一边名字写进 EOF。-s 不写这句，退出码仍是 1。 */
+    if (live1 == 0L || live2 == 0L) {
+      if (mode != 2L) {
+        if (live1 == 0L) {
+          showEof(home, name1, len1);
+        } else {
+          showEof(home, name2, len2);
+        }
+      }
+      return 1L;
+    }
+    long b1 = u8(buf1 + cur1 * 8L);
+    long b2 = u8(buf2 + cur2 * 8L);
+    if (b1 != b2) {
+      long byteNo = pos + 1L;
+      if (mode == 2L) {
+        return 1L;
+      }
+      if (mode == 1L) {
+        if (showBytes(home, &outAt, byteNo, b1, b2) != 0L) {
+          return 2L;
+        }
+        differed = 1L;
+      } else {
+        if (showDiffer(home, &outAt, name1, len1, name2, len2, byteNo, newlines + 1L) != 0L) {
+          return 2L;
+        }
+        return 1L;
+      }
+    } else if (b1 == 10L) {
+      newlines = newlines + 1L;
+    }
+    cur1 = cur1 + 1L;
+    cur2 = cur2 + 1L;
+    pos = pos + 1L;
+  }
+  if (differed == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  /* 0 缺省，1 是 -l，2 是 -s。 */
+  long mode = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 108 是 l，115 是 s。别的字母都是非法选项。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 108L) {
+          if (mode == 2L) {
+            writeErr(home, "cmp: invalid option\n");
+            return finish(home, 2L);
+          }
+          mode = 1L;
+        } else if (bit == 115L) {
+          if (mode == 1L) {
+            writeErr(home, "cmp: invalid option\n");
+            return finish(home, 2L);
+          }
+          mode = 2L;
+        } else {
+          writeErr(home, "cmp: invalid option\n");
+          return finish(home, 2L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long files = count - index;
+  if (files < 2L) {
+    writeErr(home, "cmp: missing operand\n");
+    return finish(home, 2L);
+  }
+  if (files > 2L) {
+    writeErr(home, "cmp: too many arguments\n");
+    return finish(home, 2L);
+  }
+  long at1 = argPtr(home, index);
+  long len1 = argLen(home, index);
+  long at2 = argPtr(home, index + 1L);
+  long len2 = argLen(home, index + 1L);
+  if (isDash(at1, len1) == 1L && isDash(at2, len2) == 1L) {
+    writeErr(home, "cmp: standard input used twice\n");
+    return finish(home, 2L);
+  }
+  long fd1 = 0L;
+  long fd2 = 0L;
+  if (openRead(home, at1, len1, &fd1) != 0L) {
+    return finish(home, 2L);
+  }
+  if (openRead(home, at2, len2, &fd2) != 0L) {
+    if (fd1 != 0L) {
+      obr::proc::close(home, fd1);
+    }
+    return finish(home, 2L);
+  }
+  /* 分配单位是位。4096 个八位组，相邻隔 8 位。两边各一块，互不覆盖。 */
+  long buf1 = obr::proc::alloc(home, 4096L * 8L);
+  long buf2 = obr::proc::alloc(home, 4096L * 8L);
+  if (buf1 == 0L || buf2 == 0L) {
+    writeErr(home, "cmp: out of memory\n");
+    if (fd1 != 0L) {
+      obr::proc::close(home, fd1);
+    }
+    if (fd2 != 0L) {
+      obr::proc::close(home, fd2);
+    }
+    return finish(home, 2L);
+  }
+  long status = compare(home, mode, fd1, fd2, buf1, buf2, at1, len1, at2, len2);
+  if (fd1 != 0L) {
+    obr::proc::close(home, fd1);
+  }
+  if (fd2 != 0L) {
+    obr::proc::close(home, fd2);
+  }
+  return finish(home, status);
+}

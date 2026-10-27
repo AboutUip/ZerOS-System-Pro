@@ -14,7 +14,7 @@ node ZerOS-PRO/Hardware/Nas/Server/serve.mjs
 
 它只使用 Node 自带模块，监听 `ws://127.0.0.1:8765/fs`。这个地址写在 `NasConfig.ServiceUrl` 里，两边必须一致。每条文本帧是一笔 JSON，服务按收到的顺序答复。进程没启动时，引导仍然成功，第一次交换返回状态 `1`（未就绪）。
 
-客路径 `/` 是 `ZerOS-PRO/Hardware/Nas/Root`。目录不存在时，进程会创建它。这不是宿主操作系统的根目录。整棵客树都不进版本库：内核和用户态映像、字体副本、固件设置都算运行时产物。源码仍在 `Kernel/`、`System/` 和 `Resource/Font`。
+客路径 `/` 是 `ZerOS-PRO/Hardware/Nas/Root`。目录不存在时，进程会创建它。这不是宿主操作系统的根目录。整棵客树都不进版本库：内核和用户态映像、字体副本、固件设置都算运行时产物。源码仍在 `Kernel/`、`System/`、`Resource/Font` 和 `Resource/Bin`。
 
 客路径 `/boot` 是固件设置的存放处，保持可写。`/boot/display` 是四个八位组：小端 16 位宽，接着小端 16 位高。默认宽高在显示器驱动 `panel::defaultWidth`、`panel::defaultHeight`，和宿主的 `DefaultWidth`、`DefaultHeight` 是同一档。编译内核时若文件还不存在，按这一档写成文件；进程启动时缺文件也补这一份。已经存在的不覆盖。面板换尺寸时页面再写，不占用客机会话。固件读不回来就留在驱动默认档。`/boot/debug` 是一个八位组，0 关，1 开。缺文件时写成 0，已有的不覆盖。固件把同一位写进位地址 8128，页面看见之后再写这个文件。内核映像不放在这里，引导也不把 `/boot` 装进核心。
 

@@ -32,6 +32,28 @@ deRfun taskLimit(): long {
   return 512L;
 }
 
+/* 优先级不进 Task 的 19 个字。每个任务一个八位组，落在兼容描述之后、任务表 65536 之前。
+   0 是空，1 是后台，2 是前台。前台同一档轮转；后台只在没有更高档就绪时才上核。
+   49152 起再留 8 个八位组，一核一个，给宿主看这颗核上正在跑的是哪一档。 */
+deRfun rankAt(long index): long {
+  return kArena(2L) + 45056L + index * 8L;
+}
+
+deRfun rankGet(long index): long {
+  long value = memory::loadOctet(rankAt(index));
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun rankSet(long index, long rank): void {
+  if (index < 0L || index >= taskLimit()) {
+    return;
+  }
+  memory::storeOctet(rank, rankAt(index));
+}
+
 /* 已占用下标的上界，不含这一格。放在控制台暂存清零区之后、字体表 +20480 之前。
    调度每一圈都要扫表。空槽一直扫到 512 时，按一个键要等十几秒。
    新任务从低位往上占，扫到这里就够。释放后不把上界往回缩，中间的空槽仍算在里面。 */
@@ -115,6 +137,19 @@ deRfun taskFind(long core): long {
   return other;
 }
 
+/* 监督核把这颗核心上正在跑的档写出去。宿主按这一档决定让不让、给多大一块。 */
+deRfun rankPublish(long core): void {
+  if (core < 0L || core > 7L) {
+    return;
+  }
+  long rank = 0L;
+  long index = taskFind(core);
+  if (index >= 0L) {
+    rank = rankGet(index);
+  }
+  memory::storeOctet(rank, kArena(2L) + 49152L + core * 8L);
+}
+
 deRfun taskCount(long core): long {
   long count = 0L;
   long index = 0L;
@@ -154,6 +189,78 @@ deRfun taskReady(long core, long except): long {
   return -1L;
 }
 
+/* 只在指定的一档里绕圈。同一档的前台这样分一颗核，不总是表里最靠前的那一格。 */
+deRfun taskReadyRank(long core, long except, long rank): long {
+  long end = taskScanEnd();
+  long start = 0L;
+  if (except >= 0L) {
+    start = except + 1L;
+  }
+  long step = 0L;
+  while (step < end) {
+    long index = start + step;
+    if (index >= end) {
+      index = index - end;
+    }
+    if (index != except) {
+      Task* task = taskAt(index);
+      if (task.pid != 0L && task.core == core && task.state == TaskState::Ready && task.held > 0L && rankGet(index) == rank) {
+        return index;
+      }
+    }
+    step = step + 1L;
+  }
+  return -1L;
+}
+
+/* 就绪且已经进槽的任务里，最高的那一档。没有就返回 -1。正在跑的那一格不算。 */
+deRfun taskBestRank(long core, long except): long {
+  long best = 0L;
+  long found = 0L;
+  long end = taskScanEnd();
+  long index = 0L;
+  while (index < end) {
+    if (index != except) {
+      Task* task = taskAt(index);
+      if (task.pid != 0L && task.core == core && task.state == TaskState::Ready && task.held > 0L) {
+        long rank = rankGet(index);
+        if (found == 0L || rank > best) {
+          best = rank;
+          found = 1L;
+        }
+      }
+    }
+    index = index + 1L;
+  }
+  if (found == 0L) {
+    return -1L;
+  }
+  return best;
+}
+
+/* 壳停在读键盘时，任务都在睡。这时候不必每圈都问宿主谁还在跑。 */
+deRfun schedIdle(): long {
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    long state = taskAt(index).state;
+    if (state == TaskState::Running || state == TaskState::Ready) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 有档就只在最高档里挑。没有分档的旧任务仍走原来的绕圈。 */
+deRfun taskPrefer(long core, long except): long {
+  long best = taskBestRank(core, except);
+  if (best < 1L) {
+    return taskReady(core, except);
+  }
+  return taskReadyRank(core, except, best);
+}
+
 deRfun taskClear(): void {
   memory::store64(0L, taskSpan());
   long index = 0L;
@@ -178,7 +285,13 @@ deRfun taskClear(): void {
     task.code = 0L;
     task.waitFor = 0L;
     task.held = 0L;
+    rankSet(index, 0L);
     index = index + 1L;
+  }
+  long core = 0L;
+  while (core < 8L) {
+    memory::storeOctet(0L, kArena(2L) + 49152L + core * 8L);
+    core = core + 1L;
   }
   memory::store64(1L, pidWord());
 }
@@ -218,6 +331,7 @@ deRfun taskRelease(long index): void {
   task.held = 0L;
   task.mm.freeHead = 0L;
   task.sig = 0L;
+  rankSet(index, 0L);
 }
 
 deRfun taskDrop(long core): void {
@@ -495,6 +609,8 @@ deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state):
   task.code = 0L;
   task.waitFor = 0L;
   task.held = 0L;
+  /* 新任务先当后台。交互壳和它等着的子任务再升到前台。 */
+  rankSet(index, 1L);
   taskNote(index);
   return pid;
 }
@@ -692,6 +808,92 @@ deRfun procWait(long caller, long home): long {
   }
   schedSleep(caller);
   return -2L;
+}
+
+/* 监督核的保持位里如果正是这颗核刚交上的调用，丢掉。
+   正停在系统调用里时，调用可能还没被 take。先卸核心再派，会打到已经收掉的任务上。
+   空保持位取不到。不是这颗核的调用原样放回去，高 32 位仍是原来的核心号。 */
+deRfun dropOwnCall(long core): void {
+  long value = 0L;
+  if (obr::os::take(&value) != 1L) {
+    return;
+  }
+  if (value / 4294967296L != core) {
+    obr::os::pass(obr::os::core(), value);
+  }
+}
+
+/* Ctrl+C 要停掉正在被等的子进程。只认一个 Sleeping 且 waitFor 不是 0 的任务。
+   没有，或者没能停掉，返回 0，键盘仍入队字节 3。真正停掉才返回 1，这次不要入队。
+   1 号自己一直在 wait，行编辑时壳的 waitFor 仍是 0。把 1 号算成等待者的话，字节 3 永远进不了队列。
+   所以 1 号不作这次的等待者，也不杀 pid 1。
+   waitFor 大于 0 就是那个 pid。等于 -1 时，找 ppid 是这个等待者、还没成僵尸的子进程，只停第一个。
+   子进程若在等待者自己那颗核上，或就在监督核上，不停。
+   退出码是 130，即 128 加中断信号 2。不另设信号 9，免得同一圈 schedSweep 再按 9 收一次。
+   不把子进程改成就绪，也不再 schedule。
+   停止原因 2 是正停在系统调用里。空转把执行位留成 1，原因仍是 2，所以先看原因。
+   这条不 capture。正在跑才先拿槽再 capture，停在下一条。已经停着的直接收。
+   拿不到槽就不停。父任务正在等时，procExit 会把 130 回复过去。
+   procExit 收的是这颗核上 taskFind 的那一格。对不上这个子进程就不动。 */
+deRfun procBreak(): long {
+  long index = 0L;
+  long end = taskScanEnd();
+  long waiter = -1L;
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (task.pid > 1L && task.state == TaskState::Sleeping && task.waitFor != 0L) {
+      waiter = index;
+      break;
+    }
+    index = index + 1L;
+  }
+  if (waiter < 0L) {
+    return 0L;
+  }
+  Task* parent = taskAt(waiter);
+  long parentPid = parent.pid;
+  long parentCore = parent.core;
+  long want = parent.waitFor;
+  long child = -1L;
+  if (want > 0L) {
+    child = taskByPid(want);
+  } else if (want == -1L) {
+    long scan = 0L;
+    while (scan < end) {
+      Task* task = taskAt(scan);
+      if (task.pid > 1L && task.ppid == parentPid && task.state != TaskState::Zombie) {
+        child = scan;
+        break;
+      }
+      scan = scan + 1L;
+    }
+  }
+  if (child < 0L) {
+    return 0L;
+  }
+  Task* who = taskAt(child);
+  if (who.pid <= 1L || who.state == TaskState::Zombie || who.state == TaskState::Empty) {
+    return 0L;
+  }
+  long core = who.core;
+  if (core == parentCore || core == obr::os::core()) {
+    return 0L;
+  }
+  if (taskFind(core) != child) {
+    return 0L;
+  }
+  long running = query(1L, 5L, core);
+  long why = query(1L, 11L, core);
+  if (why != 2L && running != 0L) {
+    long slot = slotHold(child);
+    if (slot < 0L) {
+      return 0L;
+    }
+    obr::os::capture(core, slot);
+  }
+  dropOwnCall(core);
+  procExit(core, 130L);
+  return 1L;
 }
 
 /* 父任务已经不在的僵尸，能挂到 1 号就挂过去，留给它的 wait。1 号也不在才收掉。 */

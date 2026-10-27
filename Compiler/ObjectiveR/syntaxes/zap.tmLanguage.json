@@ -1,0 +1,61 @@
+{
+  "name": "ZAP",
+  "scopeName": "source.zap",
+  "patterns": [
+    { "include": "#label" },
+    { "include": "#string" },
+    { "include": "#mnemonic" },
+    { "include": "#register" },
+    { "include": "#number" }
+  ],
+  "repository": {
+    "label": {
+      "patterns": [
+        {
+          "name": "entity.name.label.zap",
+          "match": "^[A-Za-z][A-Za-z0-9]*:"
+        }
+      ]
+    },
+    "string": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.zap",
+          "match": "\"[^\"]*\""
+        }
+      ]
+    },
+    "mnemonic": {
+      "patterns": [
+        {
+          "name": "keyword.control.zap",
+          "match": "\\b(?:place|add|eq|sub|udiv|umod|mul|div|mod|and|or|xor|shl|shr|lt|le|gt|ge|not|itof|fadd|fsub|fmul|fdiv|fpow|fmod|feq|jz|jnz|jmp|ret|link|call|icall|iret|halt|inbox|xchg|query|hertz|metric|chars|dwell|mmap|munmap|admit|install|schedule|slice|pass|take|svc|bound|gate|release|yield|core|fill|carry|capture|restore|attach|lea)\\b"
+        },
+        {
+          "name": "keyword.control.memory.zap",
+          "match": "\\b(?:load|store|ldi|sti)\\.(?:bit|octet|16|32|64|f32|f64)\\b"
+        },
+        {
+          "name": "keyword.control.device.zap",
+          "match": "\\b(?:gpu\\.(?:accel|clear|plot|character|box|text|align|paint|glyph|drop|compose|present|hertz|metric|load|store)|port\\.(?:state|char|byte)|mem\\.(?:hertz|metric)|load\\.scale|store\\.scale|rsp\\.(?:bias|restore))\\b"
+        }
+      ]
+    },
+    "register": {
+      "patterns": [
+        {
+          "name": "variable.register.zap",
+          "match": "\\br[0-7]\\b"
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.zap",
+          "match": "\\b(?:0[xX][0-9a-fA-F]+|-?\\d+)\\b"
+        }
+      ]
+    }
+  }
+}

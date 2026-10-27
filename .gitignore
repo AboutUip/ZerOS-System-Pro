@@ -12,6 +12,20 @@ Compiler/**/*.exe
 Compiler/**/*.o
 Compiler/**/*.obj
 Compiler/**/*.zap
+# Compiler build system and ISO installer.
+# Source stays in Compiler/BuildSystem; only generated trees are ignored.
+Compiler/BuildSystem/build/
+Compiler/BuildSystem/out/
+Compiler/BuildSystem/CMakeUserPresets.json
+Compiler/BuildSystem/Installer/work/
+Compiler/BuildSystem/Installer/out/
+Compiler/BuildSystem/Installer/*.iso
+Compiler/BuildSystem/Installer/*.sha256
+Compiler/**/*.pdb
+Compiler/**/*.ilk
+Compiler/**/*.exp
+# Packaged editor plugin. Source stays in Compiler/ObjectiveR; rebuild with vsce.
+Compiler/ObjectiveR/*.vsix
 # g++ -o obrc on Linux. The source file is obrc.cpp and stays tracked.
 Compiler/**/obrc
 # obrc -o beside an example. The .obr and .mr sources stay tracked.
@@ -25,7 +39,7 @@ Compiler/Obr/examples/*
 Toolchain/Zap/
 
 # Guest tree of the reference NAS. None of it is source.
-# obrc writes /kernel and /os. provision.mjs copies Resource/Font into /font
+# obrc writes /kernel, /os, and /bin. provision.mjs copies Resource/Font into /font
 # and marks those copies read-only. It seeds /boot/display and /boot/debug
 # only when the file is missing. Those two stay writable.
 # Wiping this directory and compiling again recreates it.

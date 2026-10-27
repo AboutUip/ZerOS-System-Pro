@@ -1,0 +1,466 @@
+/* POSIX du 的一个定死子集。形式是 du [-aks] [文件...]。
+   选项只在操作数前面。-- 结束选项；第一个不是选项的参数也结束选项，
+   后面的 -a 是路径。单独一个 - 不是选项，也不读标准输入，就去 stat 这个名字。
+   不提供 -h 和 --help，也不提供别的字母。不认识的选项写 du: invalid option，
+   立刻退出 1，还没开始走。
+
+   没有操作数就从 . 开始。不为多个操作数再加一行总计。
+   块大小缺省 512。出现过 -k 就用 1024，没有改回 512 的选项。
+   块数按 stat 的大小换算：(大小 + 块 - 1) / 块。大小小于等于 0 是 0 块。
+   实现用除法和余数，不先把大小和块加在一起，靠近有符号上限时不会加溢出；
+   正数上和那个式子相同。没有磁盘容量接口，不读已分配块。没有符号链接。
+
+   目录自己先按它的 stat 大小计块，再把每个子项的块数加进去。
+   子目录贡献的是它的合计，不是再把它的大小加第二次。
+   只有种类 2、4、6 才往下走：2 是目录，4 是设备目录，6 是内存目录。
+   1 和 5 是文件，3 是字符设备。别的种类也只计自己的大小，不读内容。
+
+   打印在这一层走完之后，所以目录行在它的内容之后。
+   缺省只打印操作数本身，以及它的直接子目录。直接子目录的块数含下面整棵树。
+   文件和再深的目录不打印，块数已经加进上面两行。
+   -a 取消这道限制，走过的每个文件和每个目录都打印。
+   -s 只打印每个操作数的合计，子项仍然要走，只是不写出来。
+   -a 和 -s 同时出现时，后写的整段换成另一种，不叠在一起。
+   同一簇从左到右看，-ask 是 -s，-sak 是 -a。
+
+   每行是十进制块数、一个制表符、路径、换行。不补前导零，0 就写 0。
+   子路径的接法和 find 一样：父路径末尾已经是 / 就直接接名字，否则中间加一个 /。
+   不排序，也不把 ./ 换成别的写法。
+
+   遍历用自己的堆栈，最多 32 帧，不用递归。操作数算第 1 层。
+   第 32 层还统计，它的子项不再进入，写 du: too deep，最后退出 1。
+   路径超过 8192 个八位组写 du: path too long，这一项不加进父目录，别的继续。
+   stat 失败写 du: 路径: No such file or directory，不打印这一项，继续后面的，最终 1。
+   readdir 返回 2，或成功但名字长度是 0，都是列完。跳过 . 和 ..。
+   别的非 0，或长度不在 1 到 512，写 du: 路径: cannot read，这一层到此为止。
+   标准输出的偏移从 0 累加，一次最多 4096。写失败写 du: write error，马上退出 1。
+   诊断写描述符 2，偏移每次从 0。alloc 的单位是位。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。负值加上 256 才是 0 到 255 的八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径可能有 8192 个八位组，诊断按 4096 切开。每一刀的偏移仍是 0。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  if (count < 0L) {
+    return;
+  }
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (done + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    done = done + chunk;
+  }
+}
+
+deRfun note(long home, string prefix, long addr, long count, string suffix): void {
+  writeErr(home, prefix);
+  writeErrSpan(home, addr, count);
+  writeErr(home, suffix);
+}
+
+/* 描述符 1 的位置由调用方累加。数据已经在字节区开头。写不满就按实际个数重抄。 */
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "du: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "du: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 十进制，不补前导零。0 写成一个 0。调用方只传入非负的块数。 */
+deRfun emitNum(long home, long* place, long value): long {
+  long div = 1L;
+  long temp = value;
+  while (temp >= 10L) {
+    temp = temp / 10L;
+    div = div * 10L;
+  }
+  long rest = value;
+  long count = 0L;
+  long at = obr::proc::bytes(home);
+  while (div > 0L) {
+    long digit = rest / div;
+    memory::storeOctet(48L + digit, at + count * 8L);
+    rest = rest % div;
+    div = div / 10L;
+    count = count + 1L;
+  }
+  return writeReady(home, place, count);
+}
+
+deRfun emitText(long home, long* place, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[offset + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+/* 块数、制表符、路径、换行。路径按八位组原样写。 */
+deRfun showLine(long home, long* place, long total, long path, long pathLen): long {
+  if (emitNum(home, place, total) != 0L) {
+    return 1L;
+  }
+  if (emitText(home, place, "\t") != 0L) {
+    return 1L;
+  }
+  if (emitSpan(home, place, path, pathLen) != 0L) {
+    return 1L;
+  }
+  return emitText(home, place, "\n");
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 长度字在 path()，八位组从 +64 起、隔 8 位。下一次 stat 或 readdir 会盖住。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 目录项里的 . 和 .. 不能再进去。操作数即使是 . 也不在这里丢。 */
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 种类 2 是目录，4 是设备目录，6 是内存目录。 */
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 父路径正好以 / 结尾就不再加。拼出来超过 8192 个八位组则失败。 */
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  if (nameLen < 1L) {
+    return -1L;
+  }
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 正数向上取整。除数由调用方保证不是 0。 */
+deRfun blocksOf(long size, long block): long {
+  if (size <= 0L || block <= 0L) {
+    return 0L;
+  }
+  long whole = size / block;
+  long rem = size % block;
+  if (rem != 0L) {
+    whole = whole + 1L;
+  }
+  return whole;
+}
+
+/* detail 0 是缺省，1 是 -a，2 是 -s。操作数的深度是 1，直接子目录是 2。 */
+deRfun wanted(long detail, long depth, long dir): long {
+  if (detail == 2L) {
+    if (depth == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (detail == 1L) {
+    return 1L;
+  }
+  if (depth == 1L) {
+    return 1L;
+  }
+  if (depth == 2L && dir == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 一帧 16 个字。0 长度，1 阶段，2 目录下标，3 种类，4 自己的块数，
+   5 子项块数，6 深度，7 是不是目录，8 合计。阶段 0 刚到达，1 正在列孩子。 */
+deRfun boot(long frame, long len, long depth): void {
+  memory::store64(len, frame);
+  memory::store64(0L, frame + 64L);
+  memory::store64(0L, frame + 128L);
+  memory::store64(0L, frame + 320L);
+  memory::store64(depth, frame + 384L);
+  memory::store64(0L, frame + 448L);
+}
+
+/* 合计写回这一帧，按需要打印，再加到父帧。返回新的栈顶。写失败不再返回到走树。 */
+deRfun settle(long home, long paths, long frames, long sp, long detail, long* outAt): long {
+  long frame = frames + sp * 1024L;
+  long path = paths + sp * 65536L;
+  long pathLen = memory::load64(frame);
+  long own = memory::load64(frame + 256L);
+  long kids = memory::load64(frame + 320L);
+  long depth = memory::load64(frame + 384L);
+  long dir = memory::load64(frame + 448L);
+  long total = own + kids;
+  memory::store64(total, frame + 512L);
+  if (wanted(detail, depth, dir) == 1L) {
+    if (showLine(home, outAt, total, path, pathLen) != 0L) {
+      finish(home, 1L);
+      return sp - 1L;
+    }
+  }
+  if (sp > 0L) {
+    long parent = frames + (sp - 1L) * 1024L;
+    long sum = memory::load64(parent + 320L);
+    memory::store64(sum + total, parent + 320L);
+  }
+  return sp - 1L;
+}
+
+/* 一个起点。路径槽每帧 65536 位，即 8192 个八位组。帧距 1024 位。
+   栈顶从 0 起，最深下标 31，是第 32 层。再深的名字不压栈。 */
+deRfun visit(long home, long paths, long frames, long names, long addr, long len, long detail, long block, long* outAt, long* failed): void {
+  if (len < 0L || len > 8192L) {
+    writeErr(home, "du: path too long\n");
+    *failed = 1L;
+    return;
+  }
+  copySpan(addr, paths, len);
+  boot(frames, len, 1L);
+  long sp = 0L;
+  while (sp >= 0L) {
+    long frame = frames + sp * 1024L;
+    long path = paths + sp * 65536L;
+    long pathLen = memory::load64(frame);
+    long phase = memory::load64(frame + 64L);
+    long depth = memory::load64(frame + 384L);
+    if (phase == 0L) {
+      plant(home, path, pathLen);
+      if (obr::proc::stat(home) != 0L) {
+        note(home, "du: ", path, pathLen, ": No such file or directory\n");
+        *failed = 1L;
+        sp = sp - 1L;
+      } else {
+        long kind = obr::proc::slot(home, 128L);
+        long size = obr::proc::slot(home, 192L);
+        long dir = isDir(kind);
+        memory::store64(kind, frame + 192L);
+        memory::store64(blocksOf(size, block), frame + 256L);
+        memory::store64(dir, frame + 448L);
+        if (dir == 1L) {
+          memory::store64(1L, frame + 64L);
+          memory::store64(0L, frame + 128L);
+          memory::store64(0L, frame + 320L);
+        } else {
+          sp = settle(home, paths, frames, sp, detail, outAt);
+        }
+      }
+    } else if (phase == 1L) {
+      plant(home, path, pathLen);
+      long dent = memory::load64(frame + 128L);
+      long listed = obr::proc::readdir(home, dent, 512L);
+      if (listed == 2L) {
+        sp = settle(home, paths, frames, sp, detail, outAt);
+      } else if (listed != 0L) {
+        note(home, "du: ", path, pathLen, ": cannot read\n");
+        *failed = 1L;
+        sp = settle(home, paths, frames, sp, detail, outAt);
+      } else {
+        long nameLen = obr::proc::slot(home, 256L);
+        if (nameLen == 0L) {
+          sp = settle(home, paths, frames, sp, detail, outAt);
+        } else if (nameLen < 0L || nameLen > 512L) {
+          note(home, "du: ", path, pathLen, ": cannot read\n");
+          *failed = 1L;
+          sp = settle(home, paths, frames, sp, detail, outAt);
+        } else {
+          copySpan(obr::proc::bytes(home), names, nameLen);
+          memory::store64(dent + 1L, frame + 128L);
+          if (isDot(names, nameLen) == 0L) {
+            if (depth >= 32L) {
+              writeErr(home, "du: too deep\n");
+              *failed = 1L;
+              sp = settle(home, paths, frames, sp, detail, outAt);
+            } else {
+              long child = sp + 1L;
+              long childPath = paths + child * 65536L;
+              long childLen = joinPath(path, pathLen, names, nameLen, childPath);
+              if (childLen < 0L) {
+                writeErr(home, "du: path too long\n");
+                *failed = 1L;
+              } else {
+                boot(frames + child * 1024L, childLen, depth + 1L);
+                sp = child;
+              }
+            }
+          }
+        }
+      }
+    } else {
+      sp = sp - 1L;
+    }
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long detail = 0L;
+  long block = 512L;
+  long index = 1L;
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 97 是 a，107 是 k，115 是 s。后写的 a 或 s 盖住先写的。 */
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 97L) {
+          detail = 1L;
+        } else if (bit == 107L) {
+          block = 1024L;
+        } else if (bit == 115L) {
+          detail = 2L;
+        } else {
+          writeErr(home, "du: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  /* 32 条路径，每条 8192 个八位组。帧 32 个。名字缓冲 512 个八位组。
+     alloc 的长度是位。 */
+  long paths = obr::proc::alloc(home, 32L * 65536L);
+  long frames = obr::proc::alloc(home, 32L * 1024L);
+  long names = obr::proc::alloc(home, 512L * 8L);
+  if (paths == 0L || frames == 0L || names == 0L) {
+    writeErr(home, "du: out of memory\n");
+    return finish(home, 1L);
+  }
+  long outAt = 0L;
+  long failed = 0L;
+  if (index >= count) {
+    memory::storeOctet(46L, names);
+    visit(home, paths, frames, names, names, 1L, detail, block, &outAt, &failed);
+  } else {
+    while (index < count) {
+      visit(home, paths, frames, names, argPtr(home, index), argLen(home, index), detail, block, &outAt, &failed);
+      index = index + 1L;
+    }
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

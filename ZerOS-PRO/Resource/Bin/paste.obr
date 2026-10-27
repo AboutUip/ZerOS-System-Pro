@@ -1,0 +1,680 @@
+/* POSIX.1-2017 paste（utilities/paste.html）。
+   形式是 paste [-s] [-d list] [file...]。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -s 是文件名。
+   单独一个 - 是标准输入，不关闭描述符 0。一次命令里只能出现一次。
+   再出现写 paste: standard input used twice，退出 1，不打开、不写结果。
+   以 - 开头、长度至少 2、又不是单独的 --，按短选项簇解。只允许 s 和 d。
+   d 必须是这一串的最后一个选项字母：它后面紧跟的字节就是分隔串，不再当选项。
+   没有紧跟的字节就用下一个参数。所以 -d, 和 -d , 一样，-sd, 是串行且分隔串是逗号。
+   缺参数写 paste: missing operand。空串、末尾落单的反斜杠、展开后超过 64 项，
+   都写 paste: invalid delimiter。别的字母写 paste: invalid option，立刻退出 1。
+   -s 可以重复。后写的 -d 覆盖先写的。没有 -d 时，分隔项只有一个制表，字节 9。
+
+   分隔串里的转义只认这四个：\\ 是反斜杠，\n 是 10，\t 是 9，\0 是空项。
+   空项不写任何字节，也不是字节 0。别的 \x 是字节 x 本身。
+   每一项要么一个字节，要么空项。项按顺序循环，用完回到第 0 项。
+
+   没有 -s 是并列。没有文件就只有标准输入这一列。
+   每一轮每个文件读一行，换行字节不进正文。已经到尾的那一格是空的。
+   这一轮全都到尾就停，不写。格与格之间用分隔项。
+   下标从 0 起，跨轮接着数，不在每一轮清零。
+   最后一格后面不再用分隔项，改写一个字节 10。
+   分隔项本身是 10 时，就在那里断行，后面的格接在下一行。
+   先把全部文件打开再读。描述符一共 8 个，0、1、2 已经占着。
+   除标准输入外最多再打开 5 个文件。再多写 paste: too many files，退出 1，不写结果。
+   标准输入不占这 5 个名额。
+
+   有 -s 是串行。一次只打开一个文件，读完关上再开下一个，不受 5 个的限制。
+   没有文件就串标准输入。一个文件里的各行用循环分隔项接起来。
+   最后一行后面不再放分隔项，改写字节 10。空文件什么都不写。
+   只有一行时，这一行加上字节 10。每个文件的分隔下标从 0 重新开始。
+
+   行以字节 10 分割。文件末尾没有换行的那一段仍是一行。
+   输出按上面的规则补字节 10，不把输入里已经有的换行再写一遍。
+   一行不含换行超过 8192 个八位组，写 paste: line too long，退出 1。
+   打开失败写 paste: 路径: No such file or directory，立刻退出 1。
+   并列时还没写任何结果。串行时前面的文件可能已经写出，仍然立刻停。
+   读失败写 paste: read error。写失败写 paste: write error。都是立刻退出 1。
+   全部成功退出 0。状态经 obr::proc::exit 交出，main 仍返回 0。
+   描述符 1 的偏移按已写字节累加。诊断写描述符 2，偏移写 0。
+   不用移位。long 的比较和初值用 0L。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* 并列时一份输入一份状态。buf 里前 8192 个八位组是当前行，后面 4096 个是还没拆的读入。
+   描述符 0 的 owned 是 0，不关。 */
+struct Col {
+  long buf;
+  long fd;
+  long fileOff;
+  long carryPos;
+  long carryLen;
+  long lineLen;
+  long eof;
+  long owned;
+}
+
+/* 不含换行的正文上限。 */
+deRfun lineMax(): long {
+  return 8192L;
+}
+
+/* 一次 read 或 write 的上限。 */
+deRfun chunkMax(): long {
+  return 4096L;
+}
+
+/* 展开后的分隔项上限。再多就拒绝。 */
+deRfun delimMax(): long {
+  return 64L;
+}
+
+/* 并列时除标准输入以外还能打开的文件数。0、1、2 已经占着，一共 8 个描述符。 */
+deRfun fileCap(): long {
+  return 5L;
+}
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 行正文在块的开头。相邻八位组隔 8 位。 */
+deRfun bodyAt(long buf): long {
+  return buf;
+}
+
+/* 刚 read 进来、还没拆进行的那一段。写结果会盖住字节区，所以不能留在那里。 */
+deRfun carryAt(long buf): long {
+  return buf + lineMax() * 8L;
+}
+
+/* alloc 的单位是位。一行 8192 个八位组，再加一次读的 4096。 */
+deRfun blockBits(): long {
+  return (lineMax() + chunkMax()) * 8L;
+}
+
+/* 诊断写描述符 2。控制台不看偏移，这一路每次从 0 写。 */
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径按八位组抄到描述符 2，不经过字符串。一次最多 4096。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "paste: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 单独一个减号才是标准输入。更长的名字只是路径。 */
+deRfun isDash(long addr, long count): long {
+  if (count == 1L && u8(addr) == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 成功时描述符抄进 *fd。必须在下一次读写之前从 slot 192 取走。打不开返回 1。 */
+deRfun openPath(long home, long at, long len, long* fd): long {
+  if (len < 0L || len > 8192L) {
+    miss(home, at, len);
+    return 1L;
+  }
+  plant(home, at, len);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, at, len);
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  return 0L;
+}
+
+/* 每项两个字：空项标志，以及要写的那个字节。空项不看字节。一项占 128 位。 */
+deRfun putDelim(long base, long index, long empty, long byte): void {
+  long at = base + index * (2L * 64L);
+  memory::store64(empty, at);
+  memory::store64(byte, at + 64L);
+}
+
+deRfun delimEmpty(long base, long index): long {
+  return memory::load64(base + index * (2L * 64L));
+}
+
+deRfun delimByte(long base, long index): long {
+  return memory::load64(base + index * (2L * 64L) + 64L);
+}
+
+/* 把分隔串展开进 base。成功写成 *outCount 并返回 1。
+   末尾落单的反斜杠、超过 64 项、展开后一项都没有，都返回 0，不改 *outCount。 */
+deRfun compileDelim(long base, long at, long len, long* outCount): long {
+  long items = 0L;
+  long i = 0L;
+  while (i < len) {
+    if (items >= delimMax()) {
+      return 0L;
+    }
+    long b = u8(at + i * 8L);
+    if (b == 92L) {
+      if (i + 1L >= len) {
+        return 0L;
+      }
+      long n = u8(at + (i + 1L) * 8L);
+      /* 48 是 0，110 是 n，116 是 t，92 是反斜杠。只有 \0 变成空项。 */
+      if (n == 48L) {
+        putDelim(base, items, 1L, 0L);
+      } else if (n == 110L) {
+        putDelim(base, items, 0L, 10L);
+      } else if (n == 116L) {
+        putDelim(base, items, 0L, 9L);
+      } else if (n == 92L) {
+        putDelim(base, items, 0L, 92L);
+      } else {
+        putDelim(base, items, 0L, n);
+      }
+      i = i + 2L;
+    } else {
+      putDelim(base, items, 0L, b);
+      i = i + 1L;
+    }
+    items = items + 1L;
+  }
+  if (items < 1L) {
+    return 0L;
+  }
+  *outCount = items;
+  return 1L;
+}
+
+/* d 的参数：这一簇里 d 后面还剩的字节，或者下一个参数。
+   成功时 *index 已经跨过用掉的参数，返回 1。缺参数已经写过诊断，返回 0。 */
+deRfun takeList(long home, long at, long len, long cursor, long* index, long count, long* listAt, long* listLen): long {
+  if (cursor + 1L < len) {
+    *listAt = at + (cursor + 1L) * 8L;
+    *listLen = len - (cursor + 1L);
+    *index = *index + 1L;
+    return 1L;
+  }
+  *index = *index + 1L;
+  if (*index >= count) {
+    writeErr(home, "paste: missing operand\n");
+    return 0L;
+  }
+  *listAt = argPtr(home, *index);
+  *listLen = argLen(home, *index);
+  *index = *index + 1L;
+  return 1L;
+}
+
+/* 从下标 1 起扫选项。文件从 *index 留下来，调用方接着用。
+   出错已经写过诊断，返回 1。 */
+deRfun parseOpts(long home, long delim, long* serial, long* delimCount, long* index, long count): long {
+  long ended = 0L;
+  while (*index < count && ended == 0L) {
+    long at = argPtr(home, *index);
+    long len = argLen(home, *index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      *index = *index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 115 是 s，100 是 d。s 可以连写。d 吃掉本参数里剩下的字节。 */
+      long cursor = 1L;
+      long ate = 0L;
+      while (cursor < len && ate == 0L) {
+        long flag = u8(at + cursor * 8L);
+        if (flag == 115L) {
+          *serial = 1L;
+          cursor = cursor + 1L;
+        } else if (flag == 100L) {
+          long listAt = 0L;
+          long listLen = 0L;
+          if (takeList(home, at, len, cursor, index, count, &listAt, &listLen) == 0L) {
+            return 1L;
+          }
+          if (listLen == 0L || compileDelim(delim, listAt, listLen, delimCount) == 0L) {
+            writeErr(home, "paste: invalid delimiter\n");
+            return 1L;
+          }
+          ate = 1L;
+        } else {
+          writeErr(home, "paste: invalid option\n");
+          return 1L;
+        }
+      }
+      if (ate == 0L) {
+        *index = *index + 1L;
+      }
+    } else {
+      ended = 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 文件名阶段。第二个 - 立刻拒绝。并列时路径超过 5 个也拒绝。还没打开，也没写结果。 */
+deRfun screen(long home, long index, long count, long serial): long {
+  long dashes = 0L;
+  long names = 0L;
+  long scan = index;
+  while (scan < count) {
+    long at = argPtr(home, scan);
+    long len = argLen(home, scan);
+    if (isDash(at, len) == 1L) {
+      dashes = dashes + 1L;
+      if (dashes > 1L) {
+        writeErr(home, "paste: standard input used twice\n");
+        return 1L;
+      }
+    } else {
+      names = names + 1L;
+    }
+    scan = scan + 1L;
+  }
+  if (serial == 0L && names > fileCap()) {
+    writeErr(home, "paste: too many files\n");
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 字节区开头已经放好 count 个八位组。描述符 1 的偏移从 *outAt 起。
+   一次最多 4096。写不满就把剩下的挪回字节区开头再写。失败返回 1。 */
+deRfun writeReady(long home, long* outAt, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      writeErr(home, "paste: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "paste: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitByte(long home, long* outAt, long value): long {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  return writeReady(home, outAt, 1L);
+}
+
+/* addr 上的八位组相邻隔 8 位。按 4096 搬进字节区再写到描述符 1。 */
+deRfun emitSpan(long home, long* outAt, long addr, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > chunkMax()) {
+      chunk = chunkMax();
+    }
+    copySpan(addr + done * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, outAt, chunk) != 0L) {
+      return 1L;
+    }
+    done = done + chunk;
+  }
+  return 0L;
+}
+
+/* 用掉 *cursor 指向的那一项，然后往下走，到末尾回到 0。空项什么都不写。 */
+deRfun emitDelim(long home, long* outAt, long base, long count, long* cursor): long {
+  long which = *cursor;
+  *cursor = which + 1L;
+  if (*cursor >= count) {
+    *cursor = 0L;
+  }
+  if (delimEmpty(base, which) != 0L) {
+    return 0L;
+  }
+  return emitByte(home, outAt, delimByte(base, which));
+}
+
+deRfun prep(Col* col, long buf, long fd, long owned): void {
+  col.buf = buf;
+  col.fd = fd;
+  col.fileOff = 0L;
+  col.carryPos = 0L;
+  col.carryLen = 0L;
+  col.lineLen = 0L;
+  col.eof = 0L;
+  col.owned = owned;
+}
+
+deRfun shutOwned(long home, Col* col): void {
+  if (col.owned == 1L && col.fd != 0L) {
+    obr::proc::close(home, col.fd);
+  }
+}
+
+/* 没有数组。并列最多 6 列：5 个路径再加标准输入。按编号拿那一列。 */
+deRfun pick(long index, Col* c0, Col* c1, Col* c2, Col* c3, Col* c4, Col* c5): Col* {
+  if (index == 0L) {
+    return c0;
+  }
+  if (index == 1L) {
+    return c1;
+  }
+  if (index == 2L) {
+    return c2;
+  }
+  if (index == 3L) {
+    return c3;
+  }
+  if (index == 4L) {
+    return c4;
+  }
+  return c5;
+}
+
+/* 从 fileOff 读，最多 4096，马上抄进暂存。实际个数在 slot 320。0 是结束。
+   偏移按抄走的个数累加，不要每次从 0 读。失败返回 1。 */
+deRfun fillCarry(long home, Col* col): long {
+  if (obr::proc::read(home, col.fd, col.fileOff, chunkMax()) != 0L) {
+    writeErr(home, "paste: read error\n");
+    return 1L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 0L) {
+    writeErr(home, "paste: read error\n");
+    return 1L;
+  }
+  if (n > chunkMax()) {
+    n = chunkMax();
+  }
+  copySpan(obr::proc::bytes(home), carryAt(col.buf), n);
+  col.fileOff = col.fileOff + n;
+  col.carryPos = 0L;
+  col.carryLen = n;
+  return 0L;
+}
+
+/* 读一行进正文，换行本身不收。返回 0 是有这一行（可以是空行）。
+   返回 1 是这一列已经到尾，没有新行。返回 2 是读失败或行太长，诊断已经写过。 */
+deRfun takeLine(long home, Col* col): long {
+  col.lineLen = 0L;
+  if (col.eof == 1L) {
+    return 1L;
+  }
+  long pulling = 1L;
+  while (pulling == 1L) {
+    if (col.carryPos >= col.carryLen) {
+      if (fillCarry(home, col) != 0L) {
+        return 2L;
+      }
+      if (col.carryLen == 0L) {
+        col.eof = 1L;
+        if (col.lineLen == 0L) {
+          return 1L;
+        }
+        return 0L;
+      }
+    }
+    long bit = u8(carryAt(col.buf) + col.carryPos * 8L);
+    col.carryPos = col.carryPos + 1L;
+    if (bit == 10L) {
+      return 0L;
+    }
+    if (col.lineLen >= lineMax()) {
+      writeErr(home, "paste: line too long\n");
+      return 2L;
+    }
+    memory::storeOctet(bit, bodyAt(col.buf) + col.lineLen * 8L);
+    col.lineLen = col.lineLen + 1L;
+  }
+  return 2L;
+}
+
+/* 一个文件内部把各行接起来。下标从 0 起，由调用方每换一个文件重新进来。
+   空文件直接返回。最后一行后面写字节 10，不再放分隔项。失败返回 1。 */
+deRfun serialOne(long home, Col* col, long delim, long delimCount, long* outAt): long {
+  long mark = 0L;
+  long status = takeLine(home, col);
+  if (status == 2L) {
+    return 1L;
+  }
+  if (status == 1L) {
+    return 0L;
+  }
+  while (status == 0L) {
+    if (emitSpan(home, outAt, bodyAt(col.buf), col.lineLen) != 0L) {
+      return 1L;
+    }
+    status = takeLine(home, col);
+    if (status == 2L) {
+      return 1L;
+    }
+    if (status == 1L) {
+      if (emitByte(home, outAt, 10L) != 0L) {
+        return 1L;
+      }
+      return 0L;
+    }
+    if (emitDelim(home, outAt, delim, delimCount, &mark) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 没有文件就串标准输入。有文件就开一个、接完、关上，再开下一个。 */
+deRfun runSerial(long home, long index, long count, long delim, long delimCount): long {
+  long buf = obr::proc::alloc(home, blockBits());
+  if (buf == 0L) {
+    writeErr(home, "paste: out of memory\n");
+    return 1L;
+  }
+  Col col;
+  long outAt = 0L;
+  if (index >= count) {
+    prep(&col, buf, 0L, 0L);
+    if (serialOne(home, &col, delim, delimCount, &outAt) != 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (isDash(at, len) == 1L) {
+      prep(&col, buf, 0L, 0L);
+    } else {
+      long fd = 0L;
+      if (openPath(home, at, len, &fd) != 0L) {
+        return 1L;
+      }
+      prep(&col, buf, fd, 1L);
+    }
+    if (serialOne(home, &col, delim, delimCount, &outAt) != 0L) {
+      return 1L;
+    }
+    shutOwned(home, &col);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 先占好每一列的块，再打开路径。打开失败时结果还没写。下标跨轮保留。 */
+deRfun runParallel(long home, long index, long count, long delim, long delimCount): long {
+  Col c0;
+  Col c1;
+  Col c2;
+  Col c3;
+  Col c4;
+  Col c5;
+  long cols = 1L;
+  long bare = 1L;
+  if (index < count) {
+    cols = count - index;
+    bare = 0L;
+  }
+  if (cols > fileCap() + 1L) {
+    writeErr(home, "paste: too many files\n");
+    return 1L;
+  }
+  long n = 0L;
+  while (n < cols) {
+    long buf = obr::proc::alloc(home, blockBits());
+    if (buf == 0L) {
+      writeErr(home, "paste: out of memory\n");
+      return 1L;
+    }
+    Col* col = pick(n, &c0, &c1, &c2, &c3, &c4, &c5);
+    prep(col, buf, 0L, 0L);
+    n = n + 1L;
+  }
+  if (bare == 0L) {
+    long cursor = index;
+    n = 0L;
+    while (cursor < count) {
+      Col* col = pick(n, &c0, &c1, &c2, &c3, &c4, &c5);
+      long at = argPtr(home, cursor);
+      long len = argLen(home, cursor);
+      if (isDash(at, len) == 0L) {
+        long fd = 0L;
+        if (openPath(home, at, len, &fd) != 0L) {
+          return 1L;
+        }
+        prep(col, col.buf, fd, 1L);
+      }
+      n = n + 1L;
+      cursor = cursor + 1L;
+    }
+  }
+  long outAt = 0L;
+  long mark = 0L;
+  long going = 1L;
+  while (going == 1L) {
+    long any = 0L;
+    n = 0L;
+    while (n < cols) {
+      Col* col = pick(n, &c0, &c1, &c2, &c3, &c4, &c5);
+      long status = takeLine(home, col);
+      if (status == 2L) {
+        return 1L;
+      }
+      if (status == 0L) {
+        any = 1L;
+      }
+      n = n + 1L;
+    }
+    if (any == 0L) {
+      going = 0L;
+    } else {
+      n = 0L;
+      while (n < cols) {
+        Col* col = pick(n, &c0, &c1, &c2, &c3, &c4, &c5);
+        if (emitSpan(home, &outAt, bodyAt(col.buf), col.lineLen) != 0L) {
+          return 1L;
+        }
+        if (n + 1L < cols) {
+          if (emitDelim(home, &outAt, delim, delimCount, &mark) != 0L) {
+            return 1L;
+          }
+        } else if (emitByte(home, &outAt, 10L) != 0L) {
+          return 1L;
+        }
+        n = n + 1L;
+      }
+    }
+  }
+  n = 0L;
+  while (n < cols) {
+    shutOwned(home, pick(n, &c0, &c1, &c2, &c3, &c4, &c5));
+    n = n + 1L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  /* 64 项，每项两个字。没有 -d 时先放一个制表。 */
+  long delim = obr::proc::alloc(home, delimMax() * 2L * 64L);
+  if (delim == 0L) {
+    writeErr(home, "paste: out of memory\n");
+    return finish(home, 1L);
+  }
+  putDelim(delim, 0L, 0L, 9L);
+  long delimCount = 1L;
+  long serial = 0L;
+  long index = 1L;
+  long count = argc(home);
+  if (parseOpts(home, delim, &serial, &delimCount, &index, count) != 0L) {
+    return finish(home, 1L);
+  }
+  if (screen(home, index, count, serial) != 0L) {
+    return finish(home, 1L);
+  }
+  long status = 0L;
+  if (serial == 1L) {
+    status = runSerial(home, index, count, delim, delimCount);
+  } else {
+    status = runParallel(home, index, count, delim, delimCount);
+  }
+  if (status != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

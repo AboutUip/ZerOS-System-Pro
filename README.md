@@ -2,7 +2,7 @@
 
 浏览器里的教学向虚拟机。分层可以拆开看，兼容性以协议为准，实现代码不是规范。
 
-与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件。用户态在 `ZerOS-PRO/System/`：1 号任务和会话。内核映像放在 NAS 的 `/kernel/`，由固件在倒计时结束时装到核心 2。
+与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件。1 号任务和 shell 在 `ZerOS-PRO/System/`，命令源码在 `ZerOS-PRO/Resource/Bin/`，客路径是 `/bin`。内核映像放在 NAS 的 `/kernel/`，由固件在倒计时结束时装到核心 2。
 
 许可证：[GNU Affero GPL v3](./LICENSE)（AGPLv3）。
 
@@ -13,8 +13,9 @@ ZerOS-System-Pro/
 ├── ZerOS-PRO/
 │   ├── Boot/                 # 固件源码：Logo、Bios、Load。上电在主板
 │   ├── Kernel/               # 内核 .obr，编译进 NAS 的 /kernel/
-│   ├── System/               # 用户态。Init 是 1 号，Session 是 /os/session
+│   ├── System/               # 用户态。Init 是 1 号，Shell 是 /os/sh
 │   ├── Resource/Font/        # 字体源。编译时拷到 NAS 的 /font，副本只读
+│   ├── Resource/Bin/         # 命令源。编译时写成 NAS 的 /bin
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板、插座、上电入口
 │       ├── Cpu/  Gpu/  Memory/
@@ -55,7 +56,7 @@ cmake --build Compiler/Obr/build
 
 开发服的根是 `ZerOS-PRO/Hardware/Display`。引导在页面里给主板通电，再把启动画面和固件交给 CPU。浏览器包里没有内核映像，也没有 `System/` 里的用户态映像。这两份都在 NAS 上。
 
-`ZerOS-PRO/Hardware/Nas/Root` 是客路径 `/`，整目录不进版本库。编译写出 `/kernel` 和 `/os`。`node ZerOS-PRO/Hardware/Nas/Server/provision.mjs` 把 `Resource/Font` 拷到 `/font` 并标成只读。`/boot/display` 和 `/boot/debug` 只在缺文件时写下驱动默认值，之后保持可写：BIOS 和驱动可以改，重编不覆盖。
+`ZerOS-PRO/Hardware/Nas/Root` 是客路径 `/`，整目录不进版本库。`node ZerOS-PRO/Hardware/Nas/Server/build-guest.mjs` 编译并写出 `/kernel`、`/os` 和 `/bin`，再调用 `provision.mjs` 把 `Resource/Font` 拷到 `/font` 并标成只读。`/boot/display` 和 `/boot/debug` 只在缺文件时写下驱动默认值，之后保持可写：BIOS 和驱动可以改，重编不覆盖。
 
 `Toolchain/Zap` 是上电固件，不进版本库，也不进 NAS。`Logo` 在探针之前跑完并停机。`Bios` 留在核心 0。`Load` 按核心 3 的槽编译，倒计时结束后才读 `/kernel/start`。三份要同时在，不能合成一个文件。旁边只留 `.debug` 给失败帧，不写 `.zap`。
 
@@ -87,7 +88,7 @@ cmake --build Compiler/Obr/build
 | 驱动 | `Driver/` | 显示器默认宽高在 `Display/panel`。`Gpu/` 是固件调用的 OpenGL 切片 |
 | 语言 | `Compiler/Obr/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。语法见 [编译器说明](./Compiler/Obr/README.md) |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
-| 系统 | `System/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`Session/session.obr` 客路径 `/os/session` |
+| 系统 | `System/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`Shell/sh.obr` 客路径 `/os/sh`。`Bin/` 编成 `/bin`，第一条是 `pwd` |
 
 设置画面可以改显示器宽高和调试开关，分别写进 `/boot/display` 和 `/boot/debug`。其余行只展示查询得到的状态。内核由固件在倒计时结束时装入，不从设置画面进入。
 

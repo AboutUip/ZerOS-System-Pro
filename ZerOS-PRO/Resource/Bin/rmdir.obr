@@ -1,0 +1,361 @@
+/* POSIX.1-2017 rmdir（utilities/rmdir.html）。形式是 rmdir [-p] dir...
+   -- 结束选项。-p 可以写多次，-pp 也算。单独一个 - 是目录名，不是选项。
+   第一个不是选项的参数也结束选项。不认识的选项立刻写
+   rmdir: invalid option，退出 1。没有操作数写 rmdir: missing operand，退出 1。
+
+   只删除空目录。先 stat，种类在 slot 128：2、4、6 才是目录。
+   不是目录就失败，不调用 unlink。空不空用 readdir 自己看。
+   返回 2，或成功且 slot 256 的名字长度是 0，表示没有更多项。
+   这是列完，不是「没有这个路径」。跳过名字 . 和 ..。
+   还有别的名字就是非空，诊断 Directory not empty，不调用 unlink。
+   readdir 把名字放在字节区，下一次调用会盖住，先抄走。
+
+   空目录再 unlink。路径是计数字符串：长度在 path，八位组从 +64 起隔 8 位。
+   -p 在这一层删掉之后，父目录若变空就继续删，直到删不掉，或父目录已经是根。
+   不删除 /。中间某一层失败就停，已经删掉的不恢复。
+   失败写到描述符 2，形式是 rmdir: 路径: 原因，然后继续后面的操作数。
+   有失败最终退出 1，全部成功退出 0。结束用服务 28，main 仍返回 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 诊断里的路径按八位组抄到描述符 2。一次最多 4096。 */
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeWhy(long home, long status): void {
+  if (status == -1L) {
+    writeErr(home, "Permission denied");
+    return;
+  }
+  if (status == 2L) {
+    writeErr(home, "No such file or directory");
+    return;
+  }
+  if (status == 3L) {
+    writeErr(home, "Not a directory");
+    return;
+  }
+  if (status == 4L) {
+    writeErr(home, "Is a directory");
+    return;
+  }
+  if (status == 5L) {
+    writeErr(home, "Bad file descriptor");
+    return;
+  }
+  if (status == 6L) {
+    writeErr(home, "File name too long");
+    return;
+  }
+  if (status == 7L) {
+    writeErr(home, "No space left on device");
+    return;
+  }
+  if (status == 8L) {
+    writeErr(home, "Input/output error");
+    return;
+  }
+  if (status == 11L) {
+    writeErr(home, "File exists");
+    return;
+  }
+  if (status == 12L) {
+    writeErr(home, "Directory not empty");
+    return;
+  }
+  if (status == 13L) {
+    writeErr(home, "Invalid argument");
+    return;
+  }
+  writeErr(home, "Unknown error");
+}
+
+deRfun complain(long home, long addr, long count, long status): void {
+  writeErr(home, "rmdir: ");
+  writeSpan(home, addr, count);
+  writeErr(home, ": ");
+  writeWhy(home, status);
+  writeErr(home, "\n");
+}
+
+/* 长度在路径字，八位组从 +64 起隔 8 位。相对路径原样交给内核。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 2 是 NAS 目录，4 是只在核里的目录，6 是内存目录。 */
+deRfun directory(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* . 和 .. 留在目录里，不当成还有内容。 */
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 最后一段是 . 或 .. 就不能删。先拿掉末尾斜杠，foo/ 的最后一段仍是 foo。 */
+deRfun finalDot(long addr, long count): long {
+  long end = count;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  long start = end;
+  while (start > 0L && u8(addr + (start - 1L) * 8L) != 47L) {
+    start = start - 1L;
+  }
+  long span = end - start;
+  if (span == 1L && u8(addr + start * 8L) == 46L) {
+    return 1L;
+  }
+  if (span == 2L && u8(addr + start * 8L) == 46L && u8(addr + (start + 1L) * 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 整段都是斜杠就是根。/// 与 / 相同，都不能删。 */
+deRfun rootPath(long addr, long count): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) != 47L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 去掉末尾斜杠，再砍掉最后一段。没有斜杠，或剩下的只是根，返回 -1。
+   调用方见到 -1 就停，不会去删 /。 */
+deRfun parentLen(long addr, long count): long {
+  long end = count;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  long slash = -1L;
+  long index = 0L;
+  while (index < end) {
+    if (u8(addr + index * 8L) == 47L) {
+      slash = index;
+    }
+    index = index + 1L;
+  }
+  if (slash <= 0L) {
+    return -1L;
+  }
+  long parent = slash;
+  while (parent > 1L && u8(addr + (parent - 1L) * 8L) == 47L) {
+    parent = parent - 1L;
+  }
+  if (rootPath(addr, parent) == 1L) {
+    return -1L;
+  }
+  return parent;
+}
+
+/* 0 是空目录，12 是非空，别的是读失败。
+   下标越过末尾时返回 2，空目录的第一项也是 2。成功且名字长度为 0 同样列完。
+   名字先从字节区抄走，再决定要不要继续。 */
+deRfun emptyStatus(long home, long names, long addr, long count): long {
+  long index = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    plant(home, addr, count);
+    long listed = obr::proc::readdir(home, index, 512L);
+    if (listed == 2L) {
+      return 0L;
+    }
+    if (listed != 0L) {
+      return listed;
+    }
+    long nameLen = obr::proc::slot(home, 256L);
+    if (nameLen == 0L) {
+      return 0L;
+    }
+    if (nameLen < 0L || nameLen > 512L) {
+      return 13L;
+    }
+    copySpan(obr::proc::bytes(home), names, nameLen);
+    if (isDot(names, nameLen) == 0L) {
+      return 12L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 不是目录、非空、或路径是根时，都不调用 unlink。根按非法参数失败。 */
+deRfun removeEmpty(long home, long names, long addr, long count): long {
+  plant(home, addr, count);
+  long status = obr::proc::stat(home);
+  if (status != 0L) {
+    return status;
+  }
+  if (directory(obr::proc::slot(home, 128L)) == 0L) {
+    return 3L;
+  }
+  if (rootPath(addr, count) == 1L || finalDot(addr, count) == 1L) {
+    return 13L;
+  }
+  status = emptyStatus(home, names, addr, count);
+  if (status != 0L) {
+    return status;
+  }
+  plant(home, addr, count);
+  return obr::proc::unlink(home);
+}
+
+/* -p 时删掉一层就换成父目录再试。某一层失败立刻停，不往上，也不恢复。 */
+deRfun removeOperand(long home, long names, long addr, long count, long parents): long {
+  if (count < 1L) {
+    complain(home, addr, count, 2L);
+    return 1L;
+  }
+  long len = count;
+  long going = 1L;
+  while (going == 1L) {
+    long status = removeEmpty(home, names, addr, len);
+    if (status != 0L) {
+      complain(home, addr, len, status);
+      return 1L;
+    }
+    if (parents == 0L) {
+      going = 0L;
+    } else {
+      long up = parentLen(addr, len);
+      if (up < 0L) {
+        going = 0L;
+      } else {
+        len = up;
+      }
+    }
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long parents = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        if (u8(at + cursor * 8L) != 112L) {
+          writeErr(home, "rmdir: invalid option\n");
+          return finish(home, 1L);
+        }
+        parents = 1L;
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "rmdir: missing operand\n");
+    return finish(home, 1L);
+  }
+  /* 路径最长 8192 个八位组，分配单位是位，所以是 65536。
+     名字最长 512，隔 8 位，占 4096 位。readdir 会盖住字节区，名字放这里。 */
+  long hold = obr::proc::alloc(home, 65536L);
+  long names = obr::proc::alloc(home, 512L * 8L);
+  if (hold == 0L || names == 0L) {
+    writeErr(home, "rmdir: out of memory\n");
+    return finish(home, 1L);
+  }
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len > 8192L) {
+      complain(home, at, len, 6L);
+      failed = 1L;
+    } else {
+      copySpan(at, hold, len);
+      if (removeOperand(home, names, hold, len, parents) != 0L) {
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  long code = 0L;
+  if (failed == 1L) {
+    code = 1L;
+  }
+  return finish(home, code);
+}

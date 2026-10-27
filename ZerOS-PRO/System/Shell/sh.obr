@@ -1,8 +1,11 @@
 /* 交互式 shell。用 -pie -slot 0 编译，和 edit.obr 一起放到 /os/sh。
    提示符是 root@zeros:、当前目录、再加 # 。行编辑在用户态，内核只交原始按键。
-   内置 echo、cd、pwd、exit、history、clear。$? 只在整词、且这个词没有单引号字节时换成上一条状态。
-   管道和重定向由这里改描述符。外部程序仍只按路径派生，参数留在拆词里，不另造调用栈。
-   名字里没有 / 时先找 /os，再找 /kernel。打不开控制台就停在让出上，监督核才认得出这份任务。 */
+   内置 cd、exit、history、clear。echo 和 pwd 在 /bin。cd 认 -L、-P、HOME、OLDPWD 和 CDPATH。
+   $? 只在整词、且这个词没有单引号字节时换成上一条状态。
+   管道和重定向由这里改描述符。没有斜杠的名字按 PATH 找，缺省是 /bin:/os:/kernel。
+   << 和 <<- 的正文在命令行换行之后逐行读入。这一轮正文不做参数展开、命令替换和算术展开。
+   参数和环境写进界限起点 +4194304，布局和内核的 argAt 相同。命令前的 NAME=value 只交给这一次派生。
+   打不开控制台就停在让出上，监督核才认得出这份任务。 */
 import memory;
 import obr.os;
 import obr.proc;
@@ -18,6 +21,15 @@ deRfun u8(long addr): long {
 
 deRfun lineBytes(long state): long {
   return state + 4096L;
+}
+
+/* 字 6，和 edit.obr 的 editFeed 看同一格。1 表示正在收 here-document 正文。头文件没有这对函数。 */
+deRfun editBody(long state): long {
+  return memory::load64(state + 384L);
+}
+
+deRfun editBodySet(long state, long value): void {
+  memory::store64(value, state + 384L);
 }
 
 deRfun linger(): void {
@@ -61,6 +73,11 @@ deRfun pipeReadAt(long work, long index): long {
 
 deRfun pipeWriteAt(long work, long index): long {
   return work + 30848L + index * 64L;
+}
+
+/* 这一行最多四份 here-document。读端记在这里，-1 表示还没有或已经关掉。 */
+deRfun hereFdAt(long work, long index): long {
+  return work + 60000L + index * 64L;
 }
 
 deRfun putText(long addr, long at, string text): long {
@@ -180,17 +197,207 @@ deRfun setCwd(long work, long addr, long count): void {
   memory::store64(count, cwdLenAt(work));
 }
 
+/* 壳自己的环境。最多 32 条，名字 64 个八位组，值 512 个八位组。步长固定。 */
+deRfun envStride(): long {
+  return 4736L;
+}
+
+deRfun envSpan(): long {
+  return 64L + 32L * 4736L;
+}
+
+deRfun envSlot(long env, long index): long {
+  return env + 64L + index * envStride();
+}
+
+deRfun envCount(long env): long {
+  return memory::load64(env);
+}
+
+deRfun envFind(long env, long name, long nameLen): long {
+  long index = 0L;
+  long count = envCount(env);
+  while (index < count) {
+    long slot = envSlot(env, index);
+    if (memory::load64(slot) == nameLen) {
+      long same = 1L;
+      long cursor = 0L;
+      while (same == 1L && cursor < nameLen) {
+        if (u8(slot + 128L + cursor * 8L) != u8(name + cursor * 8L)) {
+          same = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (same == 1L) {
+        return index;
+      }
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun envGet(long env, long name, long nameLen, long* value, long* valueLen): long {
+  long index = envFind(env, name, nameLen);
+  if (index < 0L) {
+    return 0L;
+  }
+  long slot = envSlot(env, index);
+  *valueLen = memory::load64(slot + 64L);
+  *value = slot + 640L;
+  return 1L;
+}
+
+deRfun envSet(long env, long name, long nameLen, long value, long valueLen): long {
+  if (nameLen < 1L || nameLen > 64L || valueLen < 0L || valueLen > 512L) {
+    return 1L;
+  }
+  long index = envFind(env, name, nameLen);
+  if (index < 0L) {
+    index = envCount(env);
+    if (index >= 32L) {
+      return 1L;
+    }
+    memory::store64(index + 1L, env);
+  }
+  long slot = envSlot(env, index);
+  memory::store64(nameLen, slot);
+  memory::store64(valueLen, slot + 64L);
+  copySpan(name, slot + 128L, nameLen);
+  if (valueLen > 0L) {
+    copySpan(value, slot + 640L, valueLen);
+  }
+  return 0L;
+}
+
+deRfun copyEnv(long from, long to): void {
+  long index = 0L;
+  while (index < envSpan()) {
+    memory::store64(memory::load64(from + index), to + index);
+    index = index + 64L;
+  }
+}
+
+/* 名字=值。名字是字母或下划线开头。成功时 *nameLen 是等号前的长度。 */
+deRfun isAssign(long addr, long count, long* nameLen): long {
+  if (count < 2L) {
+    return 0L;
+  }
+  long head = u8(addr);
+  long nameOk = 0L;
+  if ((head >= 65L && head <= 90L) || (head >= 97L && head <= 122L) || head == 95L) {
+    nameOk = 1L;
+  }
+  if (nameOk == 0L) {
+    return 0L;
+  }
+  long index = 1L;
+  while (index < count && u8(addr + index * 8L) != 61L) {
+    long bit = u8(addr + index * 8L);
+    long rest = 0L;
+    if ((bit >= 65L && bit <= 90L) || (bit >= 97L && bit <= 122L) || bit == 95L || (bit >= 48L && bit <= 57L)) {
+      rest = 1L;
+    }
+    if (rest == 0L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  if (index >= count || index > 64L) {
+    return 0L;
+  }
+  *nameLen = index;
+  return 1L;
+}
+
+/* 参数块在界限起点之后 512 KiB。4194304 拆成 65536*64。
+   pie 会把不小于 1048576 的 place 立即数当成数据地址，装入时再加一槽，写参数就会越出窗口。 */
+deRfun argHome(long home): long {
+  return home + 65536L * 64L;
+}
+
+deRfun packArgs(long home, long cmd, long begin): long {
+  long base = argHome(home);
+  long argc = cmdArgc(cmd) - begin;
+  if (argc < 0L || argc > 64L) {
+    return 1L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < argc) {
+    total = total + cmdArgLen(cmd, begin + index);
+    if (total > 8192L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  memory::store64(argc, base);
+  memory::store64(total, base + 128L);
+  index = 0L;
+  long filled = 0L;
+  while (index < argc) {
+    long count = cmdArgLen(cmd, begin + index);
+    memory::store64(count, base + 256L + index * 64L);
+    copySpan(cmdArgAt(cmd, begin + index), base + 8448L + filled * 8L, count);
+    filled = filled + count;
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun packEnv(long home, long env): long {
+  long base = argHome(home);
+  long count = envCount(env);
+  if (count < 0L || count > 64L) {
+    return 1L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < count) {
+    long slot = envSlot(env, index);
+    total = total + memory::load64(slot) + 1L + memory::load64(slot + 64L);
+    if (total > 8192L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  memory::store64(count, base + 64L);
+  memory::store64(total, base + 192L);
+  index = 0L;
+  long filled = 0L;
+  while (index < count) {
+    long slot = envSlot(env, index);
+    long nameLen = memory::load64(slot);
+    long valueLen = memory::load64(slot + 64L);
+    long len = nameLen + 1L + valueLen;
+    memory::store64(len, base + 4352L + index * 64L);
+    long at = base + 73984L + filled * 8L;
+    copySpan(slot + 128L, at, nameLen);
+    memory::storeOctet(61L, at + nameLen * 8L);
+    if (valueLen > 0L) {
+      copySpan(slot + 640L, at + (nameLen + 1L) * 8L, valueLen);
+    }
+    filled = filled + len;
+    index = index + 1L;
+  }
+  return 0L;
+}
+
 /* 提示符加当前行，再抹掉变短的尾巴，光标退回到插入点。一次写完。 */
 deRfun paintEdit(long home, long state, long work): void {
   long paint = paintAt(work);
   long at = 0L;
   memory::storeOctet(13L, paint);
   at = 1L;
-  at = putText(paint, at, "root@zeros:");
-  long cwdLen = memory::load64(cwdLenAt(work));
-  copySpan(cwdAt(work), paint + at * 8L, cwdLen);
-  at = at + cwdLen;
-  at = putText(paint, at, "# ");
+  if (editBody(state) == 1L) {
+    at = putText(paint, at, "> ");
+  } else {
+    at = putText(paint, at, "root@zeros:");
+    long cwdLen = memory::load64(cwdLenAt(work));
+    copySpan(cwdAt(work), paint + at * 8L, cwdLen);
+    at = at + cwdLen;
+    at = putText(paint, at, "# ");
+  }
   long promptCols = columns(paint + 8L, at - 1L);
   long lineLen = editLen(state);
   copySpan(lineBytes(state), paint + at * 8L, lineLen);
@@ -249,6 +456,12 @@ deRfun paintStep(long home, long state, long work, long beforeLen, long beforeCu
   paintEdit(home, state, work);
 }
 
+/* 收 here-document 时不画正常提示符，只写 > 和一个空格。 */
+deRfun paintMark(long home, long work): void {
+  writeText(home, "> ");
+  memory::store64(2L, prevAt(work));
+}
+
 deRfun paintPrompt(long home, long work): void {
   long paint = paintAt(work);
   long at = putText(paint, 0L, "root@zeros:");
@@ -266,77 +479,250 @@ deRfun writeMissing(long home, string lead, long addr, long count, string tail):
   writeText(home, tail);
 }
 
-deRfun doEcho(long home, long work, long cmd): long {
-  long argc = cmdArgc(cmd);
-  long index = 1L;
-  long newline = 1L;
-  while (index < argc && bytesEq(cmdArgAt(cmd, index), cmdArgLen(cmd, index), "-n") == 1L) {
-    newline = 0L;
-    index = index + 1L;
+/* 当前目录先抄出来。normalize 会占用 scratch，不能把旧路径放在那里。 */
+deRfun oldCwdAt(long work): long {
+  return work + 36000L;
+}
+
+deRfun envByName(long env, long work, string name, long* value, long* valueLen): long {
+  long at = work + 34000L;
+  long count = putText(at, 0L, name);
+  return envGet(env, at, count, value, valueLen);
+}
+
+/* 绝对路径，或以 . 或 .. 开头，不查 CDPATH。 */
+deRfun skipsCdpath(long addr, long count): long {
+  if (count < 1L) {
+    return 1L;
   }
-  long paint = paintAt(work);
-  long at = 0L;
-  long first = 1L;
-  while (index < argc) {
-    if (first == 0L) {
-      memory::storeOctet(32L, paint + at * 8L);
-      at = at + 1L;
-    }
-    first = 0L;
-    long count = cmdArgLen(cmd, index);
-    copySpan(cmdArgAt(cmd, index), paint + at * 8L, count);
-    at = at + count;
-    index = index + 1L;
+  if (u8(addr) == 47L) {
+    return 1L;
   }
-  if (newline == 1L) {
-    memory::storeOctet(10L, paint + at * 8L);
-    at = at + 1L;
+  long end = 0L;
+  while (end < count && u8(addr + end * 8L) != 47L) {
+    end = end + 1L;
   }
-  if (at > 0L) {
-    writeSpan(home, paint, at);
+  if (end == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (end == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
   }
   return 0L;
 }
 
-deRfun doCd(long home, long work, long cmd): long {
+/* 收成绝对路径后看是不是目录。成功时长度留在 dest，返回这个长度。
+   找不到返回 -1，找到了但不是目录返回 -2。 */
+deRfun lookDir(long home, long work, long rel, long relLen): long {
+  long got = normalize(work, rel, relLen);
+  if (got < 1L) {
+    return -1L;
+  }
+  plantRaw(home, destAt(work), got);
+  long kind = fileKind(home);
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return got;
+  }
+  if (kind < 0L) {
+    return -1L;
+  }
+  return -2L;
+}
+
+deRfun pullCwd(long home, long dest): long {
+  if (obr::proc::getcwd(home) != 0L) {
+    return -1L;
+  }
+  long count = obr::proc::slot(home, 256L);
+  if (count < 1L || count > 512L) {
+    return -1L;
+  }
+  copySpan(obr::proc::bytes(home), dest, count);
+  return count;
+}
+
+/* 内核已经换成新目录。失败时再走回旧目录，壳上的 PWD 不动。 */
+deRfun applyCd(long home, long work, long env, long pathLen, long logical, long printPath): long {
+  long oldLen = memory::load64(cwdLenAt(work));
+  copySpan(cwdAt(work), oldCwdAt(work), oldLen);
+  plantRaw(home, destAt(work), pathLen);
+  if (obr::proc::chdir(home) != 0L) {
+    writeMissing(home, "sh: cd: ", destAt(work), pathLen, ": No such file or directory\n");
+    return 1L;
+  }
+  long got = pathLen;
+  if (logical == 0L) {
+    got = pullCwd(home, destAt(work));
+    if (got < 1L) {
+      plantRaw(home, oldCwdAt(work), oldLen);
+      obr::proc::chdir(home);
+      writeText(home, "sh: cd: cannot get current directory\n");
+      return 1L;
+    }
+  }
+  setCwd(work, destAt(work), got);
+  long name = paintAt(work);
+  long nameLen = putText(name, 0L, "OLDPWD");
+  envSet(env, name, nameLen, oldCwdAt(work), oldLen);
+  nameLen = putText(name, 0L, "PWD");
+  envSet(env, name, nameLen, destAt(work), got);
+  if (printPath == 1L) {
+    writeSpan(home, destAt(work), got);
+    writeByte(home, 10L);
+  }
+  return 0L;
+}
+
+/* 把 CDPATH 的一段和目录名拼到 join。空段或单独一个点就是目录名本身。 */
+deRfun joinCd(long work, long comp, long compLen, long rel, long relLen): long {
+  long at = work + 42000L;
+  long filled = 0L;
+  long bare = 0L;
+  if (compLen == 0L) {
+    bare = 1L;
+  }
+  if (compLen == 1L && u8(comp) == 46L) {
+    bare = 1L;
+  }
+  if (bare == 0L) {
+    if (compLen + 1L + relLen > 1024L) {
+      return -1L;
+    }
+    copySpan(comp, at, compLen);
+    filled = compLen;
+    if (u8(at + (filled - 1L) * 8L) != 47L) {
+      memory::storeOctet(47L, at + filled * 8L);
+      filled = filled + 1L;
+    }
+    copySpan(rel, at + filled * 8L, relLen);
+    return filled + relLen;
+  }
+  if (relLen > 1024L) {
+    return -1L;
+  }
+  copySpan(rel, at, relLen);
+  return relLen;
+}
+
+deRfun doCd(long home, long work, long cmd, long env, long begin): long {
+  long logical = 1L;
+  long index = begin + 1L;
   long argc = cmdArgc(cmd);
-  if (argc > 2L) {
+  while (index < argc) {
+    long word = cmdArgAt(cmd, index);
+    long len = cmdArgLen(cmd, index);
+    if (len == 2L && u8(word) == 45L && u8(word + 8L) == 45L) {
+      index = index + 1L;
+      break;
+    }
+    if (len > 1L && u8(word) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long flag = u8(word + cursor * 8L);
+        if (flag == 76L) {
+          logical = 1L;
+        } else {
+          if (flag == 80L) {
+            logical = 0L;
+          } else {
+            writeText(home, "sh: cd: invalid option\n");
+            return 1L;
+          }
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (argc - index > 1L) {
     writeText(home, "sh: cd: too many arguments\n");
     return 1L;
   }
   long rel = paintAt(work);
-  long relLen = 1L;
-  memory::storeOctet(47L, rel);
-  if (argc == 2L) {
-    rel = cmdArgAt(cmd, 1L);
-    relLen = cmdArgLen(cmd, 1L);
+  long relLen = 0L;
+  long printPath = 0L;
+  if (argc == index) {
+    long homeVal = 0L;
+    long homeLen = 0L;
+    if (envByName(env, work, "HOME", &homeVal, &homeLen) == 0L || homeLen < 1L) {
+      writeText(home, "sh: cd: HOME not set\n");
+      return 1L;
+    }
+    rel = homeVal;
+    relLen = homeLen;
+  } else {
+    rel = cmdArgAt(cmd, index);
+    relLen = cmdArgLen(cmd, index);
+    if (relLen == 1L && u8(rel) == 45L) {
+      long oldVal = 0L;
+      long oldLen = 0L;
+      if (envByName(env, work, "OLDPWD", &oldVal, &oldLen) == 0L || oldLen < 1L) {
+        writeText(home, "sh: cd: OLDPWD not set\n");
+        return 1L;
+      }
+      rel = oldVal;
+      relLen = oldLen;
+      printPath = 1L;
+    }
   }
-  long got = normalize(work, rel, relLen);
+  if (relLen < 1L) {
+    writeText(home, "sh: cd: No such file or directory\n");
+    return 1L;
+  }
+  long got = 0L;
+  if (skipsCdpath(rel, relLen) == 1L) {
+    got = lookDir(home, work, rel, relLen);
+  } else {
+    long cdVal = 0L;
+    long cdLen = 0L;
+    if (envByName(env, work, "CDPATH", &cdVal, &cdLen) == 0L) {
+      got = lookDir(home, work, rel, relLen);
+    } else {
+      long cursor = 0L;
+      long found = 0L;
+      while (found == 0L) {
+        long start = cursor;
+        while (cursor < cdLen && u8(cdVal + cursor * 8L) != 58L) {
+          cursor = cursor + 1L;
+        }
+        long compLen = cursor - start;
+        long joined = joinCd(work, cdVal + start * 8L, compLen, rel, relLen);
+        if (joined > 0L) {
+          got = lookDir(home, work, work + 42000L, joined);
+          if (got > 0L) {
+            found = 1L;
+            if (compLen > 0L && (compLen != 1L || u8(cdVal + start * 8L) != 46L)) {
+              printPath = 1L;
+            }
+          }
+        }
+        if (found == 0L) {
+          if (cursor >= cdLen) {
+            if (got == 0L) {
+              got = -1L;
+            }
+            break;
+          }
+          cursor = cursor + 1L;
+        }
+      }
+    }
+  }
+  if (got == -2L) {
+    writeText(home, "sh: cd: ");
+    writeSpan(home, rel, relLen);
+    writeText(home, ": Not a directory\n");
+    return 1L;
+  }
   if (got < 1L) {
     writeText(home, "sh: cd: ");
     writeSpan(home, rel, relLen);
     writeText(home, ": No such file or directory\n");
     return 1L;
   }
-  plantRaw(home, destAt(work), got);
-  long kind = fileKind(home);
-  if (kind != 2L && kind != 4L && kind != 6L) {
-    writeMissing(home, "sh: cd: ", destAt(work), got, ": No such file or directory\n");
-    return 1L;
-  }
-  plantRaw(home, destAt(work), got);
-  if (obr::proc::chdir(home) != 0L) {
-    writeMissing(home, "sh: cd: ", destAt(work), got, ": No such file or directory\n");
-    return 1L;
-  }
-  setCwd(work, destAt(work), got);
-  return 0L;
-}
-
-deRfun doPwd(long home, long work): long {
-  writeSpan(home, cwdAt(work), memory::load64(cwdLenAt(work)));
-  writeByte(home, 10L);
-  return 0L;
+  return applyCd(home, work, env, got, logical, printPath);
 }
 
 deRfun readNum(long addr, long count, long* value): long {
@@ -380,21 +766,15 @@ deRfun doHistory(long home, long state, long work): long {
   return 0L;
 }
 
-deRfun doBuiltin(long home, long state, long work, long cmd, long* leaving): long {
-  long id = builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L));
-  if (id == 1L) {
-    return doEcho(home, work, cmd);
-  }
+deRfun doBuiltin(long home, long state, long work, long cmd, long begin, long env, long* leaving): long {
+  long id = builtinId(cmdArgAt(cmd, begin), cmdArgLen(cmd, begin));
   if (id == 2L) {
-    return doCd(home, work, cmd);
-  }
-  if (id == 3L) {
-    return doPwd(home, work);
+    return doCd(home, work, cmd, env, begin);
   }
   if (id == 4L) {
     long code = 0L;
-    if (cmdArgc(cmd) > 1L) {
-      if (readNum(cmdArgAt(cmd, 1L), cmdArgLen(cmd, 1L), &code) != 0L) {
+    if (cmdArgc(cmd) > begin + 1L) {
+      if (readNum(cmdArgAt(cmd, begin + 1L), cmdArgLen(cmd, begin + 1L), &code) != 0L) {
         writeText(home, "sh: exit: numeric argument required\n");
       }
     }
@@ -411,8 +791,8 @@ deRfun doBuiltin(long home, long state, long work, long cmd, long* leaving): lon
   return 127L;
 }
 
-/* 没有斜杠时先 /os 再 /kernel。找到就写进 dest，返回长度。没有返回 -1。 */
-deRfun resolve(long home, long work, long name, long nameLen): long {
+/* 没有斜杠时按 PATH 找。缺省是 /bin:/os:/kernel。找到普通文件就写进 dest，返回长度。 */
+deRfun resolve(long home, long work, long env, long name, long nameLen): long {
   if (hasSlash(name, nameLen) == 1L) {
     long got = normalize(work, name, nameLen);
     if (got < 1L) {
@@ -425,25 +805,51 @@ deRfun resolve(long home, long work, long name, long nameLen): long {
     }
     return got;
   }
-  long prefix = 0L;
-  while (prefix < 2L) {
-    long at = destAt(work);
-    long filled = 0L;
-    if (prefix == 0L) {
-      filled = putText(at, 0L, "/os/");
-    } else {
-      filled = putText(at, 0L, "/kernel/");
+  long path = 0L;
+  long pathLen = 0L;
+  long pathName = scratchAt(work);
+  long pathNameLen = putText(pathName, 0L, "PATH");
+  if (envGet(env, pathName, pathNameLen, &path, &pathLen) == 0L) {
+    path = work + 52000L;
+    pathLen = putText(path, 0L, "/bin:/os:/kernel");
+  }
+  long cursor = 0L;
+  while (cursor <= pathLen) {
+    long start = cursor;
+    while (cursor < pathLen && u8(path + cursor * 8L) != 58L) {
+      cursor = cursor + 1L;
     }
-    if (filled + nameLen <= 512L) {
-      copySpan(name, at + filled * 8L, nameLen);
-      filled = filled + nameLen;
-      plantRaw(home, at, filled);
-      long kind = fileKind(home);
-      if (kind == 1L || kind == 5L) {
-        return filled;
+    long compLen = cursor - start;
+    long join = work + 42000L;
+    long joined = 0L;
+    if (compLen == 0L) {
+      joined = normalize(work, name, nameLen);
+    } else {
+      copySpan(path + start * 8L, join, compLen);
+      joined = compLen;
+      if (u8(join + (joined - 1L) * 8L) != 47L) {
+        memory::storeOctet(47L, join + joined * 8L);
+        joined = joined + 1L;
+      }
+      if (joined + nameLen <= 1024L) {
+        copySpan(name, join + joined * 8L, nameLen);
+        joined = joined + nameLen;
+        joined = normalize(work, join, joined);
+      } else {
+        joined = -1L;
       }
     }
-    prefix = prefix + 1L;
+    if (joined > 0L) {
+      plantRaw(home, destAt(work), joined);
+      long kind = fileKind(home);
+      if (kind == 1L || kind == 5L) {
+        return joined;
+      }
+    }
+    if (cursor >= pathLen) {
+      return -1L;
+    }
+    cursor = cursor + 1L;
   }
   return -1L;
 }
@@ -487,6 +893,18 @@ deRfun openOnto(long home, long addr, long count, long flags): long {
   return obr::proc::slot(home, 192L);
 }
 
+/* 1 是 >，2 是 >>，3 是 <。打不开返回 -1。 */
+deRfun openRedir(long home, long cmd, long redir): long {
+  long flags = 0L;
+  if (redir == 1L) {
+    flags = 1L;
+  }
+  if (redir == 2L) {
+    flags = 3L;
+  }
+  return openOnto(home, cmdRedirAt(cmd), cmdRedirLen(cmd), flags);
+}
+
 deRfun waitCode(long home, long pid): long {
   long waited = obr::proc::wait(home, pid);
   if (waited < 1L) {
@@ -502,30 +920,233 @@ deRfun waitCode(long home, long pid): long {
   return code;
 }
 
-/* 一条列表。外部程序先全部派生，内置命令再在本进程里跑，最后才关掉管道。 */
-deRfun runList(long home, long state, long work, long out, long list, long* leaving): long {
+/* 结束词在命令区后面。布局和 edit.obr 一致，头文件不导出。 */
+deRfun hdBase(long out): long {
+  return out + 102400L;
+}
+
+deRfun hdSlot(long out, long index): long {
+  return hdBase(out) + 64L + index * 1280L;
+}
+
+deRfun hdCount(long out): long {
+  return memory::load64(hdBase(out));
+}
+
+deRfun hdCmd(long out, long index): long {
+  return memory::load64(hdSlot(out, index));
+}
+
+deRfun hdStrip(long out, long index): long {
+  return memory::load64(hdSlot(out, index) + 64L);
+}
+
+deRfun hdDelimLen(long out, long index): long {
+  return memory::load64(hdSlot(out, index) + 128L);
+}
+
+deRfun hdBodyLen(long out, long index): long {
+  return memory::load64(hdSlot(out, index) + 192L);
+}
+
+deRfun hdSetBody(long out, long index, long length): void {
+  memory::store64(length, hdSlot(out, index) + 192L);
+}
+
+deRfun hdDelimAt(long out, long index): long {
+  return hdSlot(out, index) + 256L;
+}
+
+/* 这一命令的标准输入若已被 < 占上，here-document 只读掉并丢掉。否则最后一份才接到描述符 0。 */
+deRfun hdLast(long out, long cmd): long {
+  if (cmd < 0L) {
+    return -1L;
+  }
+  if (cmdRedir(cmdOf(out, cmd)) == 3L) {
+    return -1L;
+  }
+  long total = hdCount(out);
+  long found = -1L;
+  long index = 0L;
+  while (index < total) {
+    if (hdCmd(out, index) == cmd) {
+      found = index;
+    }
+    index = index + 1L;
+  }
+  return found;
+}
+
+deRfun sameBytes(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 一份正文最多 4096 个八位组，含每行末尾的换行。四份并排，互不覆盖。 */
+deRfun bodyAt(long body, long index): long {
+  return body + index * 32768L;
+}
+
+deRfun appendBody(long dest, long have, long src, long count): long {
+  if (have < 0L || count < 0L || have + count + 1L > 4096L) {
+    return -1L;
+  }
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(src + index * 8L), dest + (have + index) * 8L);
+    index = index + 1L;
+  }
+  memory::storeOctet(10L, dest + (have + count) * 8L);
+  return have + count + 1L;
+}
+
+/* 结束行返回 1，正文行返回 0。<<- 先去掉行首制表符再比、再收下。 */
+deRfun absorbLine(long state, long out, long body, long index, long* tooBig): long {
+  long line = lineBytes(state);
+  long lineLen = editLen(state);
+  long skip = 0L;
+  if (hdStrip(out, index) == 1L) {
+    while (skip < lineLen && u8(line + skip * 8L) == 9L) {
+      skip = skip + 1L;
+    }
+  }
+  long from = line + skip * 8L;
+  long count = lineLen - skip;
+  if (sameBytes(from, count, hdDelimAt(out, index), hdDelimLen(out, index)) == 1L) {
+    return 1L;
+  }
+  if (*tooBig == 0L && hdLast(out, hdCmd(out, index)) == index) {
+    long next = appendBody(bodyAt(body, index), hdBodyLen(out, index), from, count);
+    if (next < 0L) {
+      *tooBig = 1L;
+    } else {
+      hdSetBody(out, index, next);
+    }
+  }
+  return 0L;
+}
+
+/* 控制台写不看文件偏移，管道一满又会把写的人睡下。正文先放在堆里，不超过 4096 才一次写进管道。
+   成功返回读端。超过 4096 或没写完返回 -1。建不出管道返回 -2。 */
+deRfun attachHere(long home, long addr, long count): long {
+  if (count < 0L || count > 4096L) {
+    return -1L;
+  }
+  if (obr::proc::pipe(home) != 0L) {
+    return -2L;
+  }
+  long reading = obr::proc::slot(home, 128L);
+  long writing = obr::proc::slot(home, 192L);
+  if (count > 0L) {
+    long index = 0L;
+    long bytes = obr::proc::bytes(home);
+    while (index < count) {
+      memory::storeOctet(u8(addr + index * 8L), bytes + index * 8L);
+      index = index + 1L;
+    }
+    if (obr::proc::write(home, writing, 0L, count) != 0L || obr::proc::slot(home, 320L) != count) {
+      closeFd(home, reading);
+      closeFd(home, writing);
+      return -1L;
+    }
+  }
+  closeFd(home, writing);
+  return reading;
+}
+
+/* 生产者已经结束。父进程松开这条管道的写端，后面的 dup 才有空位。子任务自己的那一端还在。 */
+deRfun dropWrite(long home, long work, long index, long pipes): void {
+  if (index < 0L || index >= pipes) {
+    return;
+  }
+  long wr = memory::load64(pipeWriteAt(work, index));
+  if (wr >= 0L) {
+    closeFd(home, wr);
+    memory::store64(-1L, pipeWriteAt(work, index));
+  }
+}
+
+deRfun closeHere(long home, long work): void {
+  long index = 0L;
+  while (index < 4L) {
+    long fd = memory::load64(hereFdAt(work, index));
+    if (fd >= 0L) {
+      closeFd(home, fd);
+      memory::store64(-1L, hereFdAt(work, index));
+    }
+    index = index + 1L;
+  }
+}
+
+deRfun hereFail(long home, long got): void {
+  if (got == -2L) {
+    writeText(home, "sh: pipe failed\n");
+  } else {
+    writeText(home, "sh: here-document too large\n");
+  }
+}
+
+/* 这条列表里有没有还要接到标准输入的 here-document。有的话管道改成用到再开，给 dup 留位置。 */
+deRfun listHere(long out, long first, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (hdLast(out, first + index) >= 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 一条列表。外部程序先全部派生，内置命令再在本进程里跑，最后才关掉管道。
+   还生效的 here-document 把读端 dup2 到描述符 0，比管道更后。 */
+deRfun runList(long home, long state, long work, long out, long list, long env, long envTmp, long body, long* leaving): long {
   long first = listCmd(out, list);
   long count = listCmdCount(out, list);
   if (count < 1L || count > 3L) {
     writeText(home, "sh: too many pipeline stages\n");
     return 1L;
   }
+  long slot = 0L;
+  while (slot < 4L) {
+    memory::store64(-1L, hereFdAt(work, slot));
+    slot = slot + 1L;
+  }
   long pipes = count - 1L;
   long index = 0L;
-  while (index < pipes) {
-    if (obr::proc::pipe(home) != 0L) {
-      long back = 0L;
-      while (back < index) {
-        closeFd(home, memory::load64(pipeReadAt(work, back)));
-        closeFd(home, memory::load64(pipeWriteAt(work, back)));
-        back = back + 1L;
+  long lazy = listHere(out, first, count);
+  if (lazy == 0L) {
+    while (index < pipes) {
+      if (obr::proc::pipe(home) != 0L) {
+        long back = 0L;
+        while (back < index) {
+          closeFd(home, memory::load64(pipeReadAt(work, back)));
+          closeFd(home, memory::load64(pipeWriteAt(work, back)));
+          back = back + 1L;
+        }
+        closeHere(home, work);
+        writeText(home, "sh: pipe failed\n");
+        return 1L;
       }
-      writeText(home, "sh: pipe failed\n");
-      return 1L;
+      memory::store64(obr::proc::slot(home, 128L), pipeReadAt(work, index));
+      memory::store64(obr::proc::slot(home, 192L), pipeWriteAt(work, index));
+      index = index + 1L;
     }
-    memory::store64(obr::proc::slot(home, 128L), pipeReadAt(work, index));
-    memory::store64(obr::proc::slot(home, 192L), pipeWriteAt(work, index));
-    index = index + 1L;
+  } else {
+    while (index < pipes) {
+      memory::store64(-1L, pipeReadAt(work, index));
+      memory::store64(-1L, pipeWriteAt(work, index));
+      index = index + 1L;
+    }
   }
   long lastStatus = 0L;
   long lastPid = 0L;
@@ -533,28 +1154,101 @@ deRfun runList(long home, long state, long work, long out, long list, long* leav
   long pids = 0L;
   index = 0L;
   while (index < count) {
+    if (lazy == 1L && index < pipes && memory::load64(pipeReadAt(work, index)) < 0L) {
+      if (obr::proc::pipe(home) != 0L) {
+        writeText(home, "sh: pipe failed\n");
+        lastStatus = 1L;
+        lastExternal = 0L;
+        index = count;
+        continue;
+      }
+      memory::store64(obr::proc::slot(home, 128L), pipeReadAt(work, index));
+      memory::store64(obr::proc::slot(home, 192L), pipeWriteAt(work, index));
+    }
     long cmd = cmdOf(out, first + index);
     long argc = cmdArgc(cmd);
     long redir = cmdRedir(cmd);
     long inFd = -1L;
     long outFd = -1L;
     long extra = -1L;
+    long hereFd = -1L;
+    long live = -1L;
     if (index > 0L) {
       inFd = memory::load64(pipeReadAt(work, index - 1L));
     }
     if (index + 1L < count) {
       outFd = memory::load64(pipeWriteAt(work, index));
     }
-    if (redir == 3L || redir == 1L || redir == 2L) {
-      long flags = 0L;
-      if (redir == 1L) {
-        flags = 1L;
+    live = hdLast(out, first + index);
+    if (live >= 0L) {
+      hereFd = memory::load64(hereFdAt(work, live));
+      if (hereFd < 0L) {
+        if (index > 0L && inFd >= 0L && inFd == memory::load64(pipeReadAt(work, index - 1L))) {
+          closeFd(home, inFd);
+          memory::store64(-1L, pipeReadAt(work, index - 1L));
+          inFd = -1L;
+        }
+        hereFd = attachHere(home, bodyAt(body, live), hdBodyLen(out, live));
+        if (hereFd < 0L) {
+          hereFail(home, hereFd);
+          lastStatus = 1L;
+          lastExternal = 0L;
+          index = count;
+          continue;
+        }
+        memory::store64(hereFd, hereFdAt(work, live));
       }
-      if (redir == 2L) {
-        flags = 3L;
+      inFd = hereFd;
+    }
+    /* 没有程序名时，文件重定向仍然打开再关上。here-document 没有读者，读端直接关掉。 */
+    if (argc == 0L) {
+      if (redir == 3L || redir == 1L || redir == 2L) {
+        long opened = openRedir(home, cmd, redir);
+        if (opened < 0L) {
+          if (hereFd >= 0L) {
+            closeFd(home, hereFd);
+            memory::store64(-1L, hereFdAt(work, live));
+          }
+          writeMissing(home, "sh: ", cmdRedirAt(cmd), cmdRedirLen(cmd), ": No such file or directory\n");
+          lastStatus = 1L;
+          lastExternal = 0L;
+          index = count;
+          continue;
+        }
+        closeFd(home, opened);
       }
-      long opened = openOnto(home, cmdRedirAt(cmd), cmdRedirLen(cmd), flags);
+      if (hereFd >= 0L) {
+        closeFd(home, hereFd);
+        memory::store64(-1L, hereFdAt(work, live));
+        hereFd = -1L;
+      }
+      if (lazy == 1L) {
+        dropWrite(home, work, index, pipes);
+      }
+      lastStatus = 0L;
+      lastExternal = 0L;
+      index = index + 1L;
+      continue;
+    }
+    long saveIn = -1L;
+    long saveOut = -1L;
+    long steered = 1L;
+    /* 先把 here-document 接到描述符 0，并放开原来的读端，再打开 > 或 >>。描述符一共只有 8 个。 */
+    if (hereFd >= 0L && hereFd != 0L) {
+      saveIn = steer(home, hereFd, 0L);
+      if (saveIn < 0L) {
+        steered = 0L;
+      } else {
+        closeFd(home, hereFd);
+        memory::store64(-1L, hereFdAt(work, live));
+        hereFd = -1L;
+        inFd = 0L;
+      }
+    }
+    if (steered == 1L && (redir == 3L || redir == 1L || redir == 2L)) {
+      long opened = openRedir(home, cmd, redir);
       if (opened < 0L) {
+        restore(home, saveIn, 0L);
         writeMissing(home, "sh: ", cmdRedirAt(cmd), cmdRedirLen(cmd), ": No such file or directory\n");
         lastStatus = 1L;
         lastExternal = 0L;
@@ -568,17 +1262,7 @@ deRfun runList(long home, long state, long work, long out, long list, long* leav
         outFd = opened;
       }
     }
-    if (argc == 0L) {
-      closeFd(home, extra);
-      lastStatus = 0L;
-      lastExternal = 0L;
-      index = index + 1L;
-      continue;
-    }
-    long saveIn = -1L;
-    long saveOut = -1L;
-    long steered = 1L;
-    if (inFd >= 0L && inFd != 0L) {
+    if (steered == 1L && inFd >= 0L && inFd != 0L) {
       saveIn = steer(home, inFd, 0L);
       if (saveIn < 0L) {
         steered = 0L;
@@ -593,6 +1277,11 @@ deRfun runList(long home, long state, long work, long out, long list, long* leav
     if (extra >= 0L && extra != 0L && extra != 1L) {
       closeFd(home, extra);
     }
+    if (hereFd >= 0L && hereFd != 0L && hereFd != 1L) {
+      closeFd(home, hereFd);
+      memory::store64(-1L, hereFdAt(work, live));
+      hereFd = -1L;
+    }
     if (steered == 0L) {
       restore(home, saveIn, 0L);
       restore(home, saveOut, 1L);
@@ -602,34 +1291,65 @@ deRfun runList(long home, long state, long work, long out, long list, long* leav
       index = count;
       continue;
     }
-    long id = builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L));
-    if (id != 0L) {
-      lastStatus = doBuiltin(home, state, work, cmd, leaving);
+    long command = 0L;
+    while (command < argc) {
+      long nameLen = 0L;
+      if (isAssign(cmdArgAt(cmd, command), cmdArgLen(cmd, command), &nameLen) == 0L) {
+        break;
+      }
+      command = command + 1L;
+    }
+    if (command >= argc) {
+      lastStatus = 0L;
       lastExternal = 0L;
     } else {
-      long got = resolve(home, work, cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L));
-      if (got < 1L) {
-        writeMissing(home, "sh: ", cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L), ": command not found\n");
-        lastStatus = 127L;
+      long id = builtinId(cmdArgAt(cmd, command), cmdArgLen(cmd, command));
+      if (id != 0L) {
+        lastStatus = doBuiltin(home, state, work, cmd, command, env, leaving);
         lastExternal = 0L;
       } else {
-        plantRaw(home, destAt(work), got);
-        if (obr::proc::spawn(home, 0L) != 0L) {
-          writeMissing(home, "sh: ", cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L), ": command not found\n");
+        copyEnv(env, envTmp);
+        long cursor = 0L;
+        while (cursor < command) {
+          long word = cmdArgAt(cmd, cursor);
+          long wordLen = cmdArgLen(cmd, cursor);
+          long nameLen = 0L;
+          if (isAssign(word, wordLen, &nameLen) == 1L) {
+            envSet(envTmp, word, nameLen, word + (nameLen + 1L) * 8L, wordLen - nameLen - 1L);
+          }
+          cursor = cursor + 1L;
+        }
+        long got = resolve(home, work, envTmp, cmdArgAt(cmd, command), cmdArgLen(cmd, command));
+        if (got < 1L) {
+          writeMissing(home, "sh: ", cmdArgAt(cmd, command), cmdArgLen(cmd, command), ": command not found\n");
           lastStatus = 127L;
           lastExternal = 0L;
+        } else if (packArgs(home, cmd, command) != 0L || packEnv(home, envTmp) != 0L) {
+          writeText(home, "sh: argument list too long\n");
+          lastStatus = 1L;
+          lastExternal = 0L;
         } else {
-          long pid = obr::proc::slot(home, 192L);
-          memory::store64(pid, pidAt(work, pids));
-          pids = pids + 1L;
-          lastPid = pid;
-          lastExternal = 1L;
-          lastStatus = 0L;
+          plantRaw(home, destAt(work), got);
+          if (obr::proc::spawn(home, 0L) != 0L) {
+            writeMissing(home, "sh: ", cmdArgAt(cmd, command), cmdArgLen(cmd, command), ": command not found\n");
+            lastStatus = 127L;
+            lastExternal = 0L;
+          } else {
+            long pid = obr::proc::slot(home, 192L);
+            memory::store64(pid, pidAt(work, pids));
+            pids = pids + 1L;
+            lastPid = pid;
+            lastExternal = 1L;
+            lastStatus = 0L;
+          }
         }
       }
     }
     restore(home, saveIn, 0L);
     restore(home, saveOut, 1L);
+    if (lazy == 1L) {
+      dropWrite(home, work, index, pipes);
+    }
     if (*leaving == 1L) {
       index = count;
     } else {
@@ -642,6 +1362,7 @@ deRfun runList(long home, long state, long work, long out, long list, long* leav
     closeFd(home, memory::load64(pipeWriteAt(work, index)));
     index = index + 1L;
   }
+  closeHere(home, work);
   index = 0L;
   while (index < pids) {
     long pid = memory::load64(pidAt(work, index));
@@ -654,12 +1375,9 @@ deRfun runList(long home, long state, long work, long out, long list, long* leav
   return lastStatus;
 }
 
-deRfun execute(long home, long state, long work, long out, long previous, long* leaving): long {
+/* out 里已经是拆好的命令。here-document 的正文在 body，一份 4096 个八位组。 */
+deRfun runParsed(long home, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long {
   long status = previous;
-  if (parseLine(lineBytes(state), editLen(state), out, previous) != 0L) {
-    writeText(home, "sh: syntax error\n");
-    return 2L;
-  }
   long lists = listCount(out);
   long index = 0L;
   while (index < lists) {
@@ -672,7 +1390,7 @@ deRfun execute(long home, long state, long work, long out, long previous, long* 
       run = 0L;
     }
     if (run == 1L) {
-      status = runList(home, state, work, out, index, leaving);
+      status = runList(home, state, work, out, index, env, envTmp, body, leaving);
       if (*leaving == 1L) {
         return status;
       }
@@ -716,16 +1434,32 @@ deRfun main(): int {
   long state = obr::proc::alloc(home, 131072L);
   long out = obr::proc::alloc(home, 131072L);
   long work = obr::proc::alloc(home, 65536L);
-  if (state == 0L || out == 0L || work == 0L) {
+  long env = obr::proc::alloc(home, envSpan());
+  long envTmp = obr::proc::alloc(home, envSpan());
+  long body = obr::proc::alloc(home, 131072L);
+  if (state == 0L || out == 0L || work == 0L || env == 0L || envTmp == 0L || body == 0L) {
     linger();
     return 0;
   }
   editInit(state);
+  memory::store64(0L, env);
+  memory::store64(0L, envTmp);
   memory::storeOctet(47L, cwdAt(work));
   memory::store64(1L, cwdLenAt(work));
   memory::store64(0L, prevAt(work));
+  long name = paintAt(work);
+  long nameLen = putText(name, 0L, "PATH");
+  long value = scratchAt(work);
+  long valueLen = putText(value, 0L, "/bin:/os:/kernel");
+  envSet(env, name, nameLen, value, valueLen);
+  nameLen = putText(name, 0L, "PWD");
+  memory::storeOctet(47L, value);
+  envSet(env, name, nameLen, value, 1L);
   paintPrompt(home, work);
   long code = 0L;
+  long gathering = 0L;
+  long hdCursor = 0L;
+  long tooBig = 0L;
   while (1) {
     long status = obr::proc::read(home, 0L, 0L, 1L);
     if (status != 0L) {
@@ -741,16 +1475,67 @@ deRfun main(): int {
     long action = editFeed(state, unit);
     if (action == 1L) {
       writeByte(home, 10L);
-      long leaving = 0L;
-      code = execute(home, state, work, out, code, &leaving);
-      editClear(state);
-      if (leaving == 1L) {
+      if (gathering == 1L) {
+        long closed = absorbLine(state, out, body, hdCursor, &tooBig);
+        editClear(state);
+        if (closed == 1L) {
+          hdCursor = hdCursor + 1L;
+          if (hdCursor >= hdCount(out)) {
+            gathering = 0L;
+            editBodySet(state, 0L);
+            if (tooBig == 1L) {
+              writeText(home, "sh: here-document too large\n");
+              code = 1L;
+              paintPrompt(home, work);
+            } else {
+              long leaving = 0L;
+              code = runParsed(home, state, work, out, env, envTmp, code, body, &leaving);
+              if (leaving == 1L) {
+                return 0;
+              }
+              paintPrompt(home, work);
+            }
+          } else {
+            paintMark(home, work);
+          }
+        } else {
+          paintMark(home, work);
+        }
+      } else if (parseLine(lineBytes(state), editLen(state), out, code) != 0L) {
+        writeText(home, "sh: syntax error\n");
+        code = 2L;
+        editClear(state);
+        paintPrompt(home, work);
+      } else if (hdCount(out) > 0L) {
+        editBodySet(state, 1L);
+        editClear(state);
+        gathering = 1L;
+        hdCursor = 0L;
+        tooBig = 0L;
+        paintMark(home, work);
+      } else {
+        long leaving = 0L;
+        code = runParsed(home, state, work, out, env, envTmp, code, body, &leaving);
+        editClear(state);
+        if (leaving == 1L) {
+          return 0;
+        }
+        paintPrompt(home, work);
+      }
+    } else if (action == 2L) {
+      if (gathering == 1L) {
+        gathering = 0L;
+        editBodySet(state, 0L);
+        editClear(state);
+        writeText(home, "sh: here-document not terminated\n");
+        code = 1L;
+        paintPrompt(home, work);
+      } else {
         return 0;
       }
-      paintPrompt(home, work);
-    } else if (action == 2L) {
-      return 0;
     } else if (action == 3L) {
+      gathering = 0L;
+      editBodySet(state, 0L);
       writeText(home, "^C\n");
       paintPrompt(home, work);
     } else if (action == 4L) {

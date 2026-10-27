@@ -1,0 +1,518 @@
+/* POSIX chmod。形式是 chmod [-R] mode file...
+   -- 结束选项。-R 可以写多次，-RR 也算。没有符号链接，不实现 -H -L -P；
+   选项簇里只要出现这几个字母，就诊断 chmod: invalid option 并退出。
+   以 - 开头、又不是纯 R、也不是 H/L/P 选项簇的词，当成 mode。
+   因此 chmod -x file 与 chmod -- -x file 都是符号模式。
+
+   八进制是绝对模式：整段 1 到 4 个 0–7，可以有一个前导 0（0755 与 755 相同）。
+   只留低 9 位，直接换掉权限。第 4 位上的 s/t 位丢掉。超过 4 位不是八进制。
+
+   符号模式用逗号分成多段，从左到右作用在当前权限上。
+   每段是 [ugoa]*，接着一个 +、- 或 =，再接着 [rwx]*。一段只有一个运算符。
+   u+r-w 这种要写成 u+r,u-w。没写 who 当成 a。本系统没有 umask，
+   + 和 = 也不按 umask 收位。+ 加上这些位，- 拿掉，= 先清掉该 who 的 rwx 再置上。
+   空的 [rwx] 配 + 或 - 不改变权限，配 = 只清掉该 who。
+
+   不做 setuid/setgid/sticky（s、t），不做条件执行位 X，
+   也不做 u/g/o 互相复制（像 u=g、g+o）。遇到这些，以及别的不合法模式，
+   诊断 chmod: invalid mode，跳过这个文件，后面的文件继续。
+
+   权限：u 是 256/128/64，g 是 32/16/8，o 是 4/2/1，对应 rwx。
+   先 stat，权限在 slot(home, 256)，再算出新值，再 chmod。传进去的就是这 9 位。
+   -R 先改目录自己，再用 readdir 走内容。跳过 . 和 ..。目录再进去。
+   已经列过的路径记下来，避免同一条路径绕圈。层数从操作数算第 1 层，
+   超过 32 就停并诊断。没有符号链接。
+
+   没有 mode 或没有文件：chmod: missing operand，退出 1。
+   某一项失败就记下来，继续后面的文件，最后退出 1。诊断写描述符 2，以 chmod: 开头。
+   结束用服务 28。main 的返回值仍是 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 描述符上的八位组。一次最多 4096，和别的客程序一样切开写。 */
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 诊断是前缀、路径、后缀。路径按八位组抄，不经过字符串。 */
+deRfun writeNote(long home, string prefix, long addr, long count, string suffix): void {
+  writeErr(home, prefix);
+  if (count > 0L) {
+    writeSpan(home, 2L, addr, count);
+  }
+  writeErr(home, suffix);
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* readdir 会给出 . 和 ..。这两项不能再进去，否则会绕回自己或父目录。 */
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* stat 种类在 slot 128。2 是 NAS 目录，4 是设备目录，6 是内存目录。 */
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 一条已走路径：64 位长度，八位组从后面隔 8 位排，再补到 64 位边界。 */
+deRfun spanStep(long count): long {
+  long step = 64L + count * 8L;
+  long rem = step % 64L;
+  if (rem != 0L) {
+    step = step + (64L - rem);
+  }
+  return step;
+}
+
+/* 缓冲头两个字是条数和下一条的位偏移。记录从 +128 起。 */
+deRfun seen(long base, long addr, long count): long {
+  long total = memory::load64(base);
+  long cursor = 128L;
+  long index = 0L;
+  while (index < total) {
+    long len = memory::load64(base + cursor);
+    if (sameSpan(base + cursor + 64L, len, addr, count) == 1L) {
+      return 1L;
+    }
+    cursor = cursor + spanStep(len);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 放得下返回 0。缓冲用完返回 1，调用方就不再往下走。 */
+deRfun remember(long base, long cap, long addr, long count): long {
+  long next = memory::load64(base + 64L);
+  long step = spanStep(count);
+  if (next < 128L || next + step > cap) {
+    return 1L;
+  }
+  memory::store64(count, base + next);
+  copySpan(addr, base + next + 64L, count);
+  memory::store64(next + step, base + 64L);
+  memory::store64(memory::load64(base) + 1L, base);
+  return 0L;
+}
+
+/* 父路径末尾已经是 / 就不再加。拼出来超过 8192 个八位组则失败。 */
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (nameLen < 1L || total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 1 到 4 位八进制。不是这种写法就返回 -1，交给符号模式。低 9 位才是权限。 */
+deRfun readOctal(long addr, long count): long {
+  if (count < 1L || count > 4L) {
+    return -1L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < count) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 55L) {
+      return -1L;
+    }
+    value = value * 8L + (digit - 48L);
+    index = index + 1L;
+  }
+  long masked = value & 511L;
+  return masked;
+}
+
+/* 合法时返回 0 到 511。不合法返回 -1，调用方不得把 -1 拿去 chmod。
+   谁的位：u 清 448，g 清 56，o 清 7。r/w/x 再按这个 who 落到 9 位上。 */
+deRfun applyMode(long current, long addr, long count): long {
+  long octal = readOctal(addr, count);
+  if (octal >= 0L) {
+    return octal;
+  }
+  if (count < 1L) {
+    return -1L;
+  }
+  long mode = current & 511L;
+  long index = 0L;
+  while (index < count) {
+    long whoU = 0L;
+    long whoG = 0L;
+    long whoO = 0L;
+    long whoAny = 0L;
+    while (index < count) {
+      long bit = u8(addr + index * 8L);
+      if (bit == 117L) {
+        whoU = 1L;
+        whoAny = 1L;
+      } else if (bit == 103L) {
+        whoG = 1L;
+        whoAny = 1L;
+      } else if (bit == 111L) {
+        whoO = 1L;
+        whoAny = 1L;
+      } else if (bit == 97L) {
+        whoU = 1L;
+        whoG = 1L;
+        whoO = 1L;
+        whoAny = 1L;
+      } else {
+        break;
+      }
+      index = index + 1L;
+    }
+    if (index >= count) {
+      return -1L;
+    }
+    long op = u8(addr + index * 8L);
+    if (op != 43L && op != 45L && op != 61L) {
+      return -1L;
+    }
+    index = index + 1L;
+    long permR = 0L;
+    long permW = 0L;
+    long permX = 0L;
+    while (index < count) {
+      long bit = u8(addr + index * 8L);
+      if (bit == 44L) {
+        break;
+      }
+      if (bit == 114L) {
+        permR = 1L;
+      } else if (bit == 119L) {
+        permW = 1L;
+      } else if (bit == 120L) {
+        permX = 1L;
+      } else {
+        return -1L;
+      }
+      index = index + 1L;
+    }
+    if (whoAny == 0L) {
+      whoU = 1L;
+      whoG = 1L;
+      whoO = 1L;
+    }
+    long bits = 0L;
+    long clear = 0L;
+    if (whoU == 1L) {
+      clear = clear | 448L;
+      if (permR == 1L) {
+        bits = bits | 256L;
+      }
+      if (permW == 1L) {
+        bits = bits | 128L;
+      }
+      if (permX == 1L) {
+        bits = bits | 64L;
+      }
+    }
+    if (whoG == 1L) {
+      clear = clear | 56L;
+      if (permR == 1L) {
+        bits = bits | 32L;
+      }
+      if (permW == 1L) {
+        bits = bits | 16L;
+      }
+      if (permX == 1L) {
+        bits = bits | 8L;
+      }
+    }
+    if (whoO == 1L) {
+      clear = clear | 7L;
+      if (permR == 1L) {
+        bits = bits | 4L;
+      }
+      if (permW == 1L) {
+        bits = bits | 2L;
+      }
+      if (permX == 1L) {
+        bits = bits | 1L;
+      }
+    }
+    long masked = mode & 511L;
+    if (op == 43L) {
+      mode = masked | bits;
+    } else if (op == 45L) {
+      mode = masked & (511L ^ bits);
+    } else {
+      mode = (masked & (511L ^ clear)) | bits;
+    }
+    if (index < count) {
+      if (u8(addr + index * 8L) != 44L) {
+        return -1L;
+      }
+      index = index + 1L;
+      if (index >= count) {
+        return -1L;
+      }
+    }
+  }
+  long kept = mode & 511L;
+  return kept;
+}
+
+/* work 的字：+0 是否 -R，+64/+128 是 mode 的地址和长度，
+   +192 路径槽，+256 名字，+320 已走路径，+384 那块缓冲的位数。
+   操作数是第 1 层，路径就在参数区里。子路径写到槽起点 + 父层号 * 65536。
+   第 32 层还改，再深的名字不再进去。同一条路径列过一次就不再列。 */
+deRfun walk(long home, long work, long addr, long len, long depth): long {
+  if (depth > 32L) {
+    writeNote(home, "chmod: too deep: ", addr, len, "\n");
+    return 1L;
+  }
+  plant(home, addr, len);
+  if (obr::proc::stat(home) != 0L) {
+    writeNote(home, "chmod: ", addr, len, ": cannot access\n");
+    return 1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  long oldMode = obr::proc::slot(home, 256L);
+  long fresh = applyMode(oldMode, memory::load64(work + 64L), memory::load64(work + 128L));
+  if (fresh < 0L) {
+    writeErr(home, "chmod: invalid mode\n");
+    return 1L;
+  }
+  plant(home, addr, len);
+  long failed = 0L;
+  if (obr::proc::chmod(home, fresh) != 0L) {
+    writeNote(home, "chmod: ", addr, len, ": cannot change mode\n");
+    failed = 1L;
+  }
+  if (memory::load64(work) != 1L || isDir(kind) != 1L) {
+    return failed;
+  }
+  long visited = memory::load64(work + 320L);
+  if (seen(visited, addr, len) == 1L) {
+    return failed;
+  }
+  if (remember(visited, memory::load64(work + 384L), addr, len) != 0L) {
+    writeErr(home, "chmod: out of memory\n");
+    return 1L;
+  }
+  long names = memory::load64(work + 256L);
+  long slots = memory::load64(work + 192L);
+  long index = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    plant(home, addr, len);
+    long listed = obr::proc::readdir(home, index, 512L);
+    /* NAS 在下标越过末尾时返回 2，空目录的第一项也是 2。这是列完，不是读失败。 */
+    if (listed == 2L) {
+      more = 0L;
+    } else if (listed != 0L) {
+      writeNote(home, "chmod: ", addr, len, ": cannot read\n");
+      failed = 1L;
+      more = 0L;
+    } else {
+      long nameLen = obr::proc::slot(home, 256L);
+      if (nameLen == 0L) {
+        more = 0L;
+      } else if (nameLen < 0L || nameLen > 512L) {
+        writeNote(home, "chmod: ", addr, len, ": cannot read\n");
+        failed = 1L;
+        more = 0L;
+      } else {
+        /* readdir 把名字放在字节区，下一次调用会盖住，先抄走。 */
+        copySpan(obr::proc::bytes(home), names, nameLen);
+        index = index + 1L;
+        if (isDot(names, nameLen) == 0L) {
+          if (depth >= 32L) {
+            writeNote(home, "chmod: too deep: ", addr, len, "\n");
+            failed = 1L;
+            more = 0L;
+          } else {
+            long child = slots + depth * 65536L;
+            long childLen = joinPath(addr, len, names, nameLen, child);
+            if (childLen < 0L) {
+              writeNote(home, "chmod: ", addr, len, ": path too long\n");
+              failed = 1L;
+            } else if (walk(home, work, child, childLen, depth + 1L) != 0L) {
+              failed = 1L;
+            }
+          }
+        }
+      }
+    }
+  }
+  return failed;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long recursive = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      /* 72 H，76 L，80 P，82 R。纯 R 是递归。混进 H/L/P 是不实现的选项。 */
+      long cursor = 1L;
+      long onlyR = 1L;
+      long cluster = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit != 82L) {
+          onlyR = 0L;
+        }
+        if (bit != 72L && bit != 76L && bit != 80L && bit != 82L) {
+          cluster = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (onlyR == 1L) {
+        recursive = 1L;
+        index = index + 1L;
+      } else if (cluster == 1L) {
+        writeErr(home, "chmod: invalid option\n");
+        return finish(home, 1L);
+      } else {
+        ended = 1L;
+      }
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "chmod: missing operand\n");
+    return finish(home, 1L);
+  }
+  long modeAt = argPtr(home, index);
+  long modeLen = argLen(home, index);
+  index = index + 1L;
+  if (index >= count) {
+    writeErr(home, "chmod: missing operand\n");
+    return finish(home, 1L);
+  }
+  /* 模式合不合法与当前权限无关。先判一次，不合法就逐个文件跳过，不去 stat。 */
+  if (applyMode(0L, modeAt, modeLen) < 0L) {
+    while (index < count) {
+      writeErr(home, "chmod: invalid mode\n");
+      index = index + 1L;
+    }
+    return finish(home, 1L);
+  }
+  long visitBits = 8388608L;
+  long slots = obr::proc::alloc(home, 32L * 65536L);
+  long names = obr::proc::alloc(home, 512L * 8L);
+  long visited = obr::proc::alloc(home, visitBits);
+  long work = obr::proc::alloc(home, 512L);
+  if (slots == 0L || names == 0L || visited == 0L || work == 0L) {
+    writeErr(home, "chmod: out of memory\n");
+    return finish(home, 1L);
+  }
+  memory::store64(0L, visited);
+  memory::store64(128L, visited + 64L);
+  memory::store64(recursive, work);
+  memory::store64(modeAt, work + 64L);
+  memory::store64(modeLen, work + 128L);
+  memory::store64(slots, work + 192L);
+  memory::store64(names, work + 256L);
+  memory::store64(visited, work + 320L);
+  memory::store64(visitBits, work + 384L);
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (walk(home, work, at, len, 1L) != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

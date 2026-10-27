@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="zapBg" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#052e16"/>
+      <stop offset="1" stop-color="#14532d"/>
+    </linearGradient>
+    <linearGradient id="zapAccent" x1="28" y1="36" x2="100" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#86efac"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="8" width="104" height="112" rx="14" fill="url(#zapBg)"/>
+  <path d="M84 8v30h32" fill="#166534"/>
+  <rect x="28" y="40" width="56" height="6" rx="3" fill="url(#zapAccent)"/>
+  <rect x="28" y="54" width="40" height="6" rx="3" fill="#4ade80" opacity="0.75"/>
+  <rect x="28" y="68" width="64" height="6" rx="3" fill="#bbf7d0" opacity="0.9"/>
+  <rect x="28" y="82" width="32" height="6" rx="3" fill="#86efac" opacity="0.6"/>
+  <text x="64" y="110" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="800" fill="#bbf7d0">ZAP</text>
+</svg>

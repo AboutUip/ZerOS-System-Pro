@@ -1,0 +1,531 @@
+/* POSIX install 的一个定死子集。两种形式：
+   install [-m 模式] 源 目标
+   install -d [-m 模式] 目录...
+   选项只在操作数前面。-- 结束选项。第一个不是选项的参数也结束选项。
+   -m 和 -d 可以叠在同一个选项里。-m 若同一簇后面还有字节，那些字节就是模式，
+   所以要同时写 -d，把 d 放在 m 前面，例如 -dm755，或分成 -d -m 755。
+   多次 -m 以后写的为准。-d 重复只是再记一次。
+   不提供 -s、-o、-g，也不提供 -h 和 --help。不认识的选项写 install: invalid option。
+   不接受符号模式。-m 只接受 1 到 4 位八进制，可以有前导 0，只留下低 9 位。
+   写错或没给模式参数，写 install: invalid mode。
+   缺省文件和目录都是八进制 755。没有操作数，或没有 -d 时少了一边，
+   写 install: missing operand。没有 -d 时多于两个操作数，写 install: too many arguments。
+   不支持把多个源装进一个目录。这些用法错误都退出 1。
+
+   没有 -d 时只复制一个普通文件。种类 1 和 5 可以复制。目录、字符设备和其他种类
+   写 install: 源: cannot install。没有符号链接。
+   目标已是目录时，写进该目录，文件名用源的最后一段。末尾的斜杠先剥掉，
+   父路径末尾已经是 / 就不再加。拼出来超过 8192 个八位组则失败。
+   目标不存在、且不以 / 结尾，就新建这个文件。以 / 结尾却不存在，当成要目录，失败。
+   目标已是普通文件就截断后重写。目标是别的种类则失败。
+   没有 -d 时不创建中间目录，父目录必须已经在。
+   源和算出来的目标，去掉末尾斜杠后八位组一样时直接失败，免得先把源截成空文件。
+   打开用标志 1，只写并截断，不存在就新建。然后按 4096 个八位组搬运，再 chmod。
+   内核新建文件不是 755，所以复制成功后一定 chmod。缺省就是 755。
+   写到一半失败时，目标上已经留下的字节不删。
+
+   -d 只建目录，不复制文件。中间缺的层从左到右建出来。
+   那些层用内核新建目录的权限，不改已经存在的父目录。
+   命令写出来的那一层，不论新建还是本来就在，都 chmod 成 -m，缺省 755。
+   路径只有斜杠时，不去建根，只对它 chmod。某一层不是目录，或建不出来，失败。
+   某一项目录失败就写诊断并退出 1，后面的目录不再建。
+
+   失败的路径用当时正在处理的那条：源打不开用源，目标或建目录失败用那条路径。
+   诊断都是 install: 路径: cannot install，退出 1。没有改时间或属主的调用，
+   不保留时间戳，也不 chown。成功时标准输出什么都不写。
+   诊断写描述符 2。描述符 0 不关。alloc 的单位是位。结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。负值加上 256 才是 0 到 255 的八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  if (count < 0L) {
+    return;
+  }
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun cannot(long home, long addr, long count): void {
+  writeErr(home, "install: ");
+  writeSpan(home, addr, count);
+  writeErr(home, ": cannot install\n");
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun shut(long home, long fd): void {
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+/* 种类 2、4、6 是目录。4 是设备目录，6 是内存目录。 */
+deRfun directory(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 种类 1 是文件，5 是内存文件。只有这两种能复制。 */
+deRfun regular(long kind): long {
+  if (kind == 1L || kind == 5L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun endsSlash(long addr, long count): long {
+  if (count > 0L && u8(addr + (count - 1L) * 8L) == 47L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 末尾连续的斜杠不参加比较，至少留下一个字节。`file/` 和 `file` 算同一条。 */
+deRfun pathEnd(long addr, long count): long {
+  long end = count;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  return end;
+}
+
+deRfun samePath(long left, long leftLen, long right, long rightLen): long {
+  long leftEnd = pathEnd(left, leftLen);
+  long rightEnd = pathEnd(right, rightLen);
+  if (leftEnd != rightEnd) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftEnd) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 最后一段。末尾的斜杠先剥掉。整段都是斜杠时留下一个。 */
+deRfun leaf(long addr, long len, long* outLen): long {
+  long end = len;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  if (end < 1L) {
+    *outLen = 0L;
+    return addr;
+  }
+  long start = end;
+  while (start > 0L && u8(addr + (start - 1L) * 8L) != 47L) {
+    start = start - 1L;
+  }
+  *outLen = end - start;
+  return addr + start * 8L;
+}
+
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  if (nameLen < 1L) {
+    return -1L;
+  }
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 成功返回 1，并把低 9 位写进 mode。超过 4 位、空串和非八进制返回 0。 */
+deRfun octalMode(long addr, long count, long* mode): long {
+  if (count < 1L || count > 4L) {
+    return 0L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < count) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 55L) {
+      return 0L;
+    }
+    value = value * 8L + digit - 48L;
+    index = index + 1L;
+  }
+  *mode = value % 512L;
+  return 1L;
+}
+
+/* 让这一截前缀成为目录。已是目录则成功。不是目录，或建不出来，返回非 0。不 chmod。 */
+deRfun ensure(long home, long addr, long prefix): long {
+  plant(home, addr, prefix);
+  long status = obr::proc::stat(home);
+  if (status == 0L) {
+    long kind = obr::proc::slot(home, 128L);
+    if (directory(kind) == 0L) {
+      return 3L;
+    }
+    return 0L;
+  }
+  if (status != 2L) {
+    return status;
+  }
+  plant(home, addr, prefix);
+  status = obr::proc::mkdir(home);
+  if (status == 0L) {
+    return 0L;
+  }
+  if (status != 11L) {
+    return status;
+  }
+  plant(home, addr, prefix);
+  status = obr::proc::stat(home);
+  if (status != 0L) {
+    return status;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  if (directory(kind) == 0L) {
+    return 11L;
+  }
+  return 0L;
+}
+
+/* 中间层只建，不改权限。最后对调用方给出的整条路径 chmod，已存在的目录也改。 */
+deRfun makeDir(long home, long addr, long count, long mode): long {
+  if (count < 1L || count > 8192L) {
+    long shown = count;
+    if (shown < 0L) {
+      shown = 0L;
+    }
+    cannot(home, addr, shown);
+    return 1L;
+  }
+  long index = 0L;
+  while (index < count) {
+    while (index < count && u8(addr + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index >= count) {
+      break;
+    }
+    while (index < count && u8(addr + index * 8L) != 47L) {
+      index = index + 1L;
+    }
+    long status = ensure(home, addr, index);
+    if (status != 0L) {
+      cannot(home, addr, count);
+      return 1L;
+    }
+  }
+  plant(home, addr, count);
+  if (obr::proc::stat(home) != 0L) {
+    cannot(home, addr, count);
+    return 1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  if (directory(kind) == 0L) {
+    cannot(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::chmod(home, mode) != 0L) {
+    cannot(home, addr, count);
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 读到 0 个八位组是源结束。一次最多 4096。返回 0 成功，1 失败。诊断由调用方写。 */
+deRfun copyBytes(long home, long srcFd, long dstFd, long chunk): long {
+  long offset = 0L;
+  long going = 1L;
+  while (going == 1L) {
+    if (obr::proc::read(home, srcFd, offset, 4096L) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      return 1L;
+    }
+    if (n == 0L) {
+      going = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), chunk, n);
+      long pending = n;
+      long at = 0L;
+      while (pending > 0L) {
+        long part = pending;
+        if (part > 4096L) {
+          part = 4096L;
+        }
+        copySpan(chunk + at * 8L, obr::proc::bytes(home), part);
+        if (obr::proc::write(home, dstFd, offset, part) != 0L) {
+          return 1L;
+        }
+        long wrote = obr::proc::slot(home, 320L);
+        if (wrote < 1L) {
+          return 1L;
+        }
+        if (wrote > part) {
+          wrote = part;
+        }
+        pending = pending - wrote;
+        at = at + wrote;
+        offset = offset + wrote;
+      }
+    }
+  }
+  return 0L;
+}
+
+/* 先确认源是普通文件，再决定目标路径，然后才打开。描述符马上从 +192 取走。 */
+deRfun place(long home, long src, long srcLen, long dst, long dstLen, long target, long chunk, long mode): long {
+  if (srcLen < 1L || srcLen > 8192L) {
+    long shown = srcLen;
+    if (shown < 0L) {
+      shown = 0L;
+    }
+    cannot(home, src, shown);
+    return 1L;
+  }
+  if (dstLen < 1L || dstLen > 8192L) {
+    long shown = dstLen;
+    if (shown < 0L) {
+      shown = 0L;
+    }
+    cannot(home, dst, shown);
+    return 1L;
+  }
+  plant(home, src, srcLen);
+  if (obr::proc::stat(home) != 0L) {
+    cannot(home, src, srcLen);
+    return 1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  if (regular(kind) == 0L) {
+    cannot(home, src, srcLen);
+    return 1L;
+  }
+  plant(home, dst, dstLen);
+  long status = obr::proc::stat(home);
+  long targetLen = 0L;
+  if (status == 0L) {
+    kind = obr::proc::slot(home, 128L);
+    if (directory(kind) == 1L) {
+      long leafLen = 0L;
+      long leafAt = leaf(src, srcLen, &leafLen);
+      if (leafLen < 1L) {
+        cannot(home, dst, dstLen);
+        return 1L;
+      }
+      targetLen = joinPath(dst, dstLen, leafAt, leafLen, target);
+      if (targetLen < 0L) {
+        cannot(home, dst, dstLen);
+        return 1L;
+      }
+    } else if (regular(kind) == 1L) {
+      copySpan(dst, target, dstLen);
+      targetLen = dstLen;
+    } else {
+      cannot(home, dst, dstLen);
+      return 1L;
+    }
+  } else if (status == 2L) {
+    if (endsSlash(dst, dstLen) == 1L) {
+      cannot(home, dst, dstLen);
+      return 1L;
+    }
+    copySpan(dst, target, dstLen);
+    targetLen = dstLen;
+  } else {
+    cannot(home, dst, dstLen);
+    return 1L;
+  }
+  if (samePath(src, srcLen, target, targetLen) == 1L) {
+    cannot(home, target, targetLen);
+    return 1L;
+  }
+  plant(home, src, srcLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    cannot(home, src, srcLen);
+    return 1L;
+  }
+  long srcFd = obr::proc::slot(home, 192L);
+  plant(home, target, targetLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    shut(home, srcFd);
+    cannot(home, target, targetLen);
+    return 1L;
+  }
+  long dstFd = obr::proc::slot(home, 192L);
+  long copied = copyBytes(home, srcFd, dstFd, chunk);
+  shut(home, srcFd);
+  shut(home, dstFd);
+  if (copied != 0L) {
+    cannot(home, target, targetLen);
+    return 1L;
+  }
+  plant(home, target, targetLen);
+  if (obr::proc::chmod(home, mode) != 0L) {
+    cannot(home, target, targetLen);
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  /* 493 是八进制 755。没写 -m 时文件和目录都用它。 */
+  long mode = 493L;
+  long makeDirs = 0L;
+  long index = 1L;
+  long ended = 0L;
+  long count = argc(home);
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        /* 100 是 d，109 是 m。 */
+        if (bit == 100L) {
+          makeDirs = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 109L) {
+          long modeAt = 0L;
+          long modeLen = 0L;
+          if (cursor + 1L < len) {
+            modeAt = at + (cursor + 1L) * 8L;
+            modeLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "install: invalid mode\n");
+              return finish(home, 1L);
+            }
+            modeAt = argPtr(home, index);
+            modeLen = argLen(home, index);
+            cursor = len;
+          }
+          if (octalMode(modeAt, modeLen, &mode) == 0L) {
+            writeErr(home, "install: invalid mode\n");
+            return finish(home, 1L);
+          }
+        } else {
+          writeErr(home, "install: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  long files = count - index;
+  if (makeDirs == 1L) {
+    if (files < 1L) {
+      writeErr(home, "install: missing operand\n");
+      return finish(home, 1L);
+    }
+    while (index < count) {
+      if (makeDir(home, argPtr(home, index), argLen(home, index), mode) != 0L) {
+        return finish(home, 1L);
+      }
+      index = index + 1L;
+    }
+    return finish(home, 0L);
+  }
+  if (files < 2L) {
+    writeErr(home, "install: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (files > 2L) {
+    writeErr(home, "install: too many arguments\n");
+    return finish(home, 1L);
+  }
+  /* 目标路径最多 8192 个八位组。搬运缓冲 4096 个八位组。长度按位分配。 */
+  long target = obr::proc::alloc(home, 8192L * 8L);
+  long chunk = obr::proc::alloc(home, 4096L * 8L);
+  if (target == 0L || chunk == 0L) {
+    writeErr(home, "install: out of memory\n");
+    return finish(home, 1L);
+  }
+  long srcAt = argPtr(home, index);
+  long srcLen = argLen(home, index);
+  long dstAt = argPtr(home, index + 1L);
+  long dstLen = argLen(home, index + 1L);
+  if (place(home, srcAt, srcLen, dstAt, dstLen, target, chunk, mode) != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

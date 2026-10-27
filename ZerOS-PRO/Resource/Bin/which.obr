@@ -1,0 +1,342 @@
+/* which 的选定行为。不是 POSIX。形式是 which 名字...，从下标 1 起。
+   没有名字写 which: missing operand，退出 1。
+   没有开关。长度至少为 2 且以减号开头的参数都是 which: invalid option，退出 1，
+   一个名字都不查。这包括 -a、-h 和 --help。单独一个减号是要找的名字。
+   名字里有斜杠就只 stat 这条路径，不搜 PATH。没有斜杠时按 PATH 的冒号分段。
+   PATH 没有这一条时用 /bin:/os:/kernel。空段表示当前目录，路径就是名字本身。
+   段末不是斜杠就补一个再接名字。种类必须是 1 或 5，目录和其他种类跳过，继续下一段。
+   第一个符合的就是结果。已经以斜杠开头的路径原样打印。
+   相对路径前面接上当前目录的绝对路径，目录末尾已有斜杠就不再加。
+   打印这条绝对路径和一个换行。全部找到退出 0。
+   某个名字找不到就写 which: 名字: not found 到标准错误，继续后面的名字，最后退出 1。
+   当前目录拿不到写 which: cannot get current directory，路径超过 8192 个八位组写
+   which: path too long，写失败写 which: write error，这三种立刻退出 1。
+   alloc 的单位是位。失败写 which: out of memory，退出 1。
+   诊断写描述符 2，偏移从 0。标准输出的偏移从 0 累加，一次最多 4096 个八位组。
+   描述符 0 不关闭。main 经 finish 调 exit。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+/* 数据先放到读写区开头。*place 是描述符 1 上的文件偏移，写不满就挪回开头再写。 */
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "which: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "which: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitLine(long home, long* place, long addr, long count): long {
+  if (emitSpan(home, place, addr, count) != 0L) {
+    return 1L;
+  }
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  return writeReady(home, place, 1L);
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 种类在 slot 128。必须在这次 stat 之后、下一次系统调用之前抄出来。 */
+deRfun fileKind(long home): long {
+  if (obr::proc::stat(home) != 0L) {
+    return -1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  return kind;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun hasSlash(long addr, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) == 47L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 父路径正好是 /，或已经以 / 结尾，就直接接名字。拼出来超过 8192 个八位组就失败。 */
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  if (nameLen < 1L || parentLen < 1L) {
+    return -1L;
+  }
+  long slash = 1L;
+  if (u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* scratch 前 8192 个八位组拼路径。缺省 PATH 在 +65536，名字 PATH 在 +65664。
+   找到时路径留在 scratch 开头。种类不是 1 或 5 就继续下一段。 */
+deRfun resolve(long home, long scratch, long name, long nameLen, long* outLen): long {
+  if (hasSlash(name, nameLen) == 1L) {
+    if (nameLen < 1L || nameLen > 8192L) {
+      return 0L;
+    }
+    copySpan(name, scratch, nameLen);
+    plant(home, scratch, nameLen);
+    long kind = fileKind(home);
+    if (kind == 1L || kind == 5L) {
+      *outLen = nameLen;
+      return 1L;
+    }
+    return 0L;
+  }
+  long path = 0L;
+  long pathLen = 0L;
+  long value = 0L;
+  long valueLen = 0L;
+  if (envLookup(home, scratch + 65664L, 4L, &value, &valueLen) == 1L) {
+    path = value;
+    pathLen = valueLen;
+  } else {
+    path = scratch + 65536L;
+    pathLen = putText(path, 0L, "/bin:/os:/kernel");
+  }
+  long cursor = 0L;
+  while (cursor <= pathLen) {
+    long start = cursor;
+    while (cursor < pathLen && u8(path + cursor * 8L) != 58L) {
+      cursor = cursor + 1L;
+    }
+    long compLen = cursor - start;
+    long joined = 0L;
+    long ok = 1L;
+    if (compLen == 0L) {
+      if (nameLen < 0L || nameLen > 8192L) {
+        ok = 0L;
+      } else {
+        if (nameLen > 0L) {
+          copySpan(name, scratch, nameLen);
+        }
+        joined = nameLen;
+      }
+    } else {
+      long extra = 0L;
+      if (u8(path + (start + compLen - 1L) * 8L) != 47L) {
+        extra = 1L;
+      }
+      joined = compLen + extra + nameLen;
+      if (nameLen < 0L || joined > 8192L) {
+        ok = 0L;
+      } else {
+        copySpan(path + start * 8L, scratch, compLen);
+        if (extra == 1L) {
+          memory::storeOctet(47L, scratch + compLen * 8L);
+        }
+        if (nameLen > 0L) {
+          copySpan(name, scratch + (compLen + extra) * 8L, nameLen);
+        }
+      }
+    }
+    if (ok == 1L && joined > 0L) {
+      plant(home, scratch, joined);
+      long kind = fileKind(home);
+      if (kind == 1L || kind == 5L) {
+        *outLen = joined;
+        return 1L;
+      }
+    }
+    if (cursor >= pathLen) {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  return 0L;
+}
+
+/* 成功返回 1，绝对路径在 out。当前目录失败返回 0，拼出来太长返回 -1。
+   getcwd 的长度在 slot 256，要在下一次系统调用之前抄走。 */
+deRfun makeAbsolute(long home, long scratch, long pathLen, long cwd, long out, long* outLen): long {
+  if (pathLen < 1L || pathLen > 8192L) {
+    return -1L;
+  }
+  if (u8(scratch) == 47L) {
+    copySpan(scratch, out, pathLen);
+    *outLen = pathLen;
+    return 1L;
+  }
+  if (obr::proc::getcwd(home) != 0L) {
+    return 0L;
+  }
+  long n = obr::proc::slot(home, 256L);
+  if (n < 1L || n > 8192L) {
+    return 0L;
+  }
+  copySpan(obr::proc::bytes(home), cwd, n);
+  long joined = joinPath(cwd, n, scratch, pathLen, out);
+  if (joined < 0L) {
+    return -1L;
+  }
+  *outLen = joined;
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count < 2L) {
+    writeErr(home, "which: missing operand\n");
+    return finish(home, 1L);
+  }
+  long index = 1L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len >= 2L && u8(at) == 45L) {
+      writeErr(home, "which: invalid option\n");
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  /* 65728 是路径拼接。两个 65536 分别是当前目录和最终绝对路径，各 8192 个八位组。 */
+  long scratch = obr::proc::alloc(home, 65728L);
+  long cwd = obr::proc::alloc(home, 65536L);
+  long out = obr::proc::alloc(home, 65536L);
+  if (scratch == 0L || cwd == 0L || out == 0L) {
+    writeErr(home, "which: out of memory\n");
+    return finish(home, 1L);
+  }
+  putText(scratch + 65664L, 0L, "PATH");
+  long missing = 0L;
+  long place = 0L;
+  index = 1L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long pathLen = 0L;
+    if (resolve(home, scratch, at, len, &pathLen) == 0L) {
+      writeErr(home, "which: ");
+      writeErrSpan(home, at, len);
+      writeErr(home, ": not found\n");
+      missing = 1L;
+    } else {
+      long outLen = 0L;
+      long made = makeAbsolute(home, scratch, pathLen, cwd, out, &outLen);
+      if (made == 0L) {
+        writeErr(home, "which: cannot get current directory\n");
+        return finish(home, 1L);
+      }
+      if (made < 0L) {
+        writeErr(home, "which: path too long\n");
+        return finish(home, 1L);
+      }
+      if (emitLine(home, &place, out, outLen) != 0L) {
+        return finish(home, 1L);
+      }
+    }
+    index = index + 1L;
+  }
+  return finish(home, missing);
+}

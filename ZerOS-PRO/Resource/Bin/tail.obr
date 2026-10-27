@@ -1,0 +1,543 @@
+/* POSIX.1-2017 tail（utilities/tail.html）。
+   形式是 tail [-c number|-n number] [file...]。
+   缺省等于 -n 10，打印最后 10 行。行以字节 10 结束。
+   文件末尾没有换行的那一段也算一行。
+   number 是十进制整数，可以带 + 或 -。没有符号或带 -，从末尾数。
+   带 +，从开头第这一行或这一个字节起，一直打到结尾。下标从 1 起。
+   -n +1 是全文。-n 0 和 -c 0 是空输出且成功，并且不读正文。
+   带 + 的 0 没有这一行、这一个字节，算数字不合法。
+   -c 按字节，-n 按行。两个都写了，后写的生效。
+   -n10 和 -n 10 都可以，-c 一样。
+   不做 -f。出现 -f 就写 tail: follow not supported，立刻退出 1。
+   -- 结束选项。第一个不是选项的参数也结束选项，后面的 -n、-c 是文件名。
+   没有文件就读标准输入。单独一个 - 也读标准输入，不关闭描述符 0。
+   两个及以上文件时，每个文件前写 ==> 名字 <== 再换行。
+   第一个写出的文件前不多写空行，后面的文件在标题前多一个换行。
+   只有一个文件或只有标准输入时不写标题。
+   打开失败写 tail: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   不认识的选项写 tail: invalid option，立刻退出 1。
+   数字不合法写 tail: invalid number，立刻退出 1。
+   从末尾取时，已经看到的尾部放在 obr::proc::alloc 得到的块里，不用数组。
+   带 + 时整段正文也放在这块里，再从起始下标打到结尾。
+   正文超过 262144 个八位组就写 tail: file too large，这个文件失败，后面的继续。
+   正好 262144 个八位组仍然成功。
+   读偏移按实际读到的字节累加。写到描述符 1 时，文件偏移按已写字节累加。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 路径八位组写到标准错误。一次最多 4096。控制台不看偏移。 */
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "tail: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+/* 字节区里已经放好 chunk 个八位组。描述符 1 的偏移按实际写下的个数往前走。 */
+deRfun flushOut(long home, long* outAt, long chunk, long* wrote): long {
+  if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+    writeErr(home, "tail: write error\n");
+    return 2L;
+  }
+  long got = obr::proc::slot(home, 320L);
+  if (got < 1L) {
+    writeErr(home, "tail: write error\n");
+    return 2L;
+  }
+  if (got > chunk) {
+    got = chunk;
+  }
+  *outAt = *outAt + got;
+  *wrote = got;
+  return 0L;
+}
+
+deRfun writeOut(long home, long* outAt, long addr, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (done + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    long wrote = 0L;
+    if (flushOut(home, outAt, chunk, &wrote) != 0L) {
+      return 2L;
+    }
+    done = done + wrote;
+  }
+  return 0L;
+}
+
+deRfun writeText(long home, long* outAt, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    long cursor = done;
+    while (index < chunk) {
+      memory::storeOctet(text[cursor], obr::proc::bytes(home) + index * 8L);
+      cursor = cursor + 1L;
+      index = index + 1L;
+    }
+    long wrote = 0L;
+    if (flushOut(home, outAt, chunk, &wrote) != 0L) {
+      return 2L;
+    }
+    done = done + wrote;
+  }
+  return 0L;
+}
+
+/* 长度字在路径起点，八位组从 +64 起、隔 8 位。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* 描述符 0 是标准输入，不关。 */
+deRfun release(long home, long fd): void {
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+/* 成功返回 1。magnitude 是不带符号的个数，fromEnd 为 1 表示从末尾数。
+   43 是 +，45 是 -。带 + 的 0 拒绝。放不进有符号 64 位也拒绝。 */
+deRfun parseNum(long addr, long len, long* magnitude, long* fromEnd): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long endSide = 1L;
+  long lead = u8(addr);
+  if (lead == 43L) {
+    endSide = 0L;
+    index = 1L;
+  } else if (lead == 45L) {
+    endSide = 1L;
+    index = 1L;
+  }
+  if (index >= len) {
+    return 0L;
+  }
+  long value = 0L;
+  while (index < len) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    digit = digit - 48L;
+    if (value > 922337203685477580L) {
+      return 0L;
+    }
+    if (value == 922337203685477580L && digit > 7L) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  if (endSide == 0L && value == 0L) {
+    return 0L;
+  }
+  *magnitude = value;
+  *fromEnd = endSide;
+  return 1L;
+}
+
+/* 字节 10 是一行的结尾。末尾那段没有换行时再加一行。空文件是 0 行。 */
+deRfun countLines(long buf, long size): long {
+  long lines = 0L;
+  long index = 0L;
+  while (index < size) {
+    if (u8(buf + index * 8L) == 10L) {
+      lines = lines + 1L;
+    }
+    index = index + 1L;
+  }
+  if (size > 0L) {
+    if (u8(buf + (size - 1L) * 8L) != 10L) {
+      lines = lines + 1L;
+    }
+  }
+  return lines;
+}
+
+/* 跳过 skip 个换行，返回下一行的下标。换行不够就返回 size。 */
+deRfun skipLines(long buf, long size, long skip): long {
+  long index = 0L;
+  long seen = 0L;
+  while (index < size && seen < skip) {
+    if (u8(buf + index * 8L) == 10L) {
+      seen = seen + 1L;
+    }
+    index = index + 1L;
+  }
+  return index;
+}
+
+/* 块里只留到目前为止的最后 room 个八位组。room 不小于 1。 */
+deRfun takeTail(long buf, long* kept, long chunk, long count, long room): void {
+  long have = *kept;
+  if (have + count <= room) {
+    copySpan(chunk, buf + have * 8L, count);
+    *kept = have + count;
+    return;
+  }
+  if (count >= room) {
+    copySpan(chunk + (count - room) * 8L, buf, room);
+    *kept = room;
+    return;
+  }
+  long drop = have + count - room;
+  long stay = have - drop;
+  copySpan(buf + drop * 8L, buf, stay);
+  copySpan(chunk, buf + stay * 8L, count);
+  *kept = room;
+}
+
+/* 块里只留到目前为止的最后 need 行。前面的整行丢掉。 */
+deRfun trimLines(long buf, long* kept, long need): void {
+  long have = *kept;
+  long lines = countLines(buf, have);
+  if (lines <= need) {
+    return;
+  }
+  long start = skipLines(buf, have, lines - need);
+  if (start >= have) {
+    *kept = 0L;
+    return;
+  }
+  if (start > 0L) {
+    copySpan(buf + start * 8L, buf, have - start);
+    *kept = have - start;
+  }
+}
+
+/* 带 + 时正文已经在块里。字节下标从 1 起，所以减 1。行则跳过前 magnitude-1 个换行。 */
+deRfun startAt(long buf, long size, long byLine, long magnitude): long {
+  if (byLine == 0L) {
+    if (magnitude > size) {
+      return size;
+    }
+    return magnitude - 1L;
+  }
+  return skipLines(buf, size, magnitude - 1L);
+}
+
+deRfun bodyMax(): long {
+  return 262144L;
+}
+
+/* 从末尾数 0 行或 0 个字节时，结果是空的，不必把正文读进来。 */
+deRfun needBody(long fromEnd, long magnitude): long {
+  if (fromEnd == 1L && magnitude == 0L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 返回 0 成功，1 读失败，2 正文超过上限。
+   从末尾按字节或按行时，每读一块就把块里收成已经看到的尾部。
+   带 + 时整段留下，调用方再切起始下标。cursor 是这一路读的文件偏移。 */
+deRfun readBody(long home, long fd, long buf, long byLine, long fromEnd, long magnitude, long* kept, long* cursor): long {
+  long offset = *cursor;
+  long total = 0L;
+  long have = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      *cursor = offset;
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      *cursor = offset;
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      if (total + n > bodyMax()) {
+        *cursor = offset + n;
+        return 2L;
+      }
+      if (fromEnd == 1L && byLine == 0L) {
+        takeTail(buf, &have, obr::proc::bytes(home), n, magnitude);
+      } else {
+        copySpan(obr::proc::bytes(home), buf + have * 8L, n);
+        have = have + n;
+        if (fromEnd == 1L) {
+          trimLines(buf, &have, magnitude);
+        }
+      }
+      total = total + n;
+      offset = offset + n;
+    }
+  }
+  *cursor = offset;
+  *kept = have;
+  return 0L;
+}
+
+/* 后面的文件先多写一个换行，再写 ==> 名字 <==。 */
+deRfun banner(long home, long* outAt, long addr, long len, long lead): long {
+  if (lead == 1L) {
+    if (writeText(home, outAt, "\n") != 0L) {
+      return 2L;
+    }
+  }
+  if (writeText(home, outAt, "==> ") != 0L) {
+    return 2L;
+  }
+  if (len > 0L) {
+    if (writeOut(home, outAt, addr, len) != 0L) {
+      return 2L;
+    }
+  }
+  if (writeText(home, outAt, " <==\n") != 0L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+/* 返回 0 成功，1 这个文件失败，2 标准输出写失败。
+   useStdin 为 1 时读描述符 0，并且不关闭它。stdinAt 只给这一路累加。 */
+deRfun emitFile(long home, long buf, long addr, long len, long useStdin, long byLine, long fromEnd, long magnitude, long* outAt, long* shown, long* stdinAt, long titles): long {
+  long fd = 0L;
+  if (useStdin == 0L) {
+    if (len < 0L || len > 8192L) {
+      miss(home, addr, len);
+      return 1L;
+    }
+    plant(home, addr, len);
+    if (obr::proc::open(home, 0L) != 0L) {
+      miss(home, addr, len);
+      return 1L;
+    }
+    fd = obr::proc::slot(home, 192L);
+  }
+  long kept = 0L;
+  if (needBody(fromEnd, magnitude) == 1L) {
+    long cursor = 0L;
+    if (useStdin == 1L) {
+      cursor = *stdinAt;
+    }
+    long readStatus = readBody(home, fd, buf, byLine, fromEnd, magnitude, &kept, &cursor);
+    if (useStdin == 1L) {
+      *stdinAt = cursor;
+    }
+    if (readStatus == 2L) {
+      writeErr(home, "tail: file too large\n");
+      release(home, fd);
+      return 1L;
+    }
+    if (readStatus != 0L) {
+      writeErr(home, "tail: read error\n");
+      release(home, fd);
+      return 1L;
+    }
+  }
+  if (titles == 1L) {
+    long lead = 0L;
+    if (*shown != 0L) {
+      lead = 1L;
+    }
+    if (banner(home, outAt, addr, len, lead) != 0L) {
+      release(home, fd);
+      return 2L;
+    }
+    *shown = 1L;
+  }
+  if (needBody(fromEnd, magnitude) == 1L && kept > 0L) {
+    long start = 0L;
+    long span = kept;
+    if (fromEnd == 0L) {
+      start = startAt(buf, kept, byLine, magnitude);
+      span = kept - start;
+    }
+    if (span > 0L) {
+      if (writeOut(home, outAt, buf + start * 8L, span) != 0L) {
+        release(home, fd);
+        return 2L;
+      }
+    }
+  }
+  release(home, fd);
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long byLine = 1L;
+  long fromEnd = 1L;
+  long magnitude = 10L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      /* 102 是 f，110 是 n，99 是 c。f 不接受跟随。n 和 c 吃掉剩下的数字。 */
+      long flag = u8(at + 8L);
+      if (flag == 102L) {
+        writeErr(home, "tail: follow not supported\n");
+        return finish(home, 1L);
+      }
+      if (flag != 110L && flag != 99L) {
+        writeErr(home, "tail: invalid option\n");
+        return finish(home, 1L);
+      }
+      long numAt = 0L;
+      long numLen = 0L;
+      if (len > 2L) {
+        numAt = at + 16L;
+        numLen = len - 2L;
+        index = index + 1L;
+      } else {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "tail: invalid number\n");
+          return finish(home, 1L);
+        }
+        numAt = argPtr(home, index);
+        numLen = argLen(home, index);
+        index = index + 1L;
+      }
+      long mag = 0L;
+      long endSide = 1L;
+      if (parseNum(numAt, numLen, &mag, &endSide) == 0L) {
+        writeErr(home, "tail: invalid number\n");
+        return finish(home, 1L);
+      }
+      magnitude = mag;
+      fromEnd = endSide;
+      if (flag == 110L) {
+        byLine = 1L;
+      } else {
+        byLine = 0L;
+      }
+    } else {
+      ended = 1L;
+    }
+  }
+  long buf = 0L;
+  if (needBody(fromEnd, magnitude) == 1L) {
+    /* 分配单位是位。262144 个八位组隔 8 位。 */
+    buf = obr::proc::alloc(home, bodyMax() * 8L);
+    if (buf == 0L) {
+      writeErr(home, "tail: out of memory\n");
+      return finish(home, 1L);
+    }
+  }
+  long outAt = 0L;
+  long shown = 0L;
+  long stdinAt = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  if (index < count) {
+    operands = count - index;
+  }
+  long titles = 0L;
+  if (operands >= 2L) {
+    titles = 1L;
+  }
+  if (operands == 0L) {
+    long status = emitFile(home, buf, 0L, 0L, 1L, byLine, fromEnd, magnitude, &outAt, &shown, &stdinAt, titles);
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long useStdin = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      useStdin = 1L;
+    }
+    long status = emitFile(home, buf, at, len, useStdin, byLine, fromEnd, magnitude, &outAt, &shown, &stdinAt, titles);
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

@@ -1,0 +1,348 @@
+/* 这不是 POSIX 实用程序。常用整数形式：seq [起点 [步长]] 终点。
+   从下标 1 起扫。一个数：起点是 1，步长是 1，这个数是终点。
+   两个数：步长是 1。三个数：起点、步长、终点。
+   只接受十进制整数，可以有一个前导负号，前导 0 仍是十进制。
+   不接受正号、空白、小数和指数。放不进有符号 64 位也拒绝。
+   形状像整数但放不下，写 seq: invalid number。
+   以减号开头、又不是这种整数的词，写 seq: invalid option。
+   --、-f、-w、-s 都走这条，不把 -- 当成选项结束，也不做等宽或分隔符。
+   没有操作数写 seq: missing operand。第四个整数写 seq: too many arguments。
+   写明的步长是 0 时写 seq: invalid increment。以上都退出 1。
+   步长为正就从小往大，为负就从大往小。起点已经在终点外侧，或者再走一步
+   会越过终点或溢出有符号 64 位，就不写那个数。一个都走不到则什么都不写，退出 0。
+   每个数占一行，不补前导 0。一次最多写 4096 个八位组。
+   各位先倒放在读写区偏移 8192 处，离 4096 的写出窗口远远的，不必 alloc。
+   写出失败写 seq: write error，退出 1。不关闭描述符 0。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long bit = text[index];
+    memory::storeOctet(bit, obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 2 的 62 次方。每一项都小于 1048576，pie 才不会把立即数当成数据地址再加一槽。 */
+deRfun two62(): long {
+  return 65536L * 65536L * 65536L * 16384L;
+}
+
+deRfun highestLong(): long {
+  long hi = two62();
+  return hi - 1L + hi;
+}
+
+deRfun lowestLong(): long {
+  long hi = two62();
+  return -hi - hi;
+}
+
+deRfun maxTen(): long {
+  return highestLong() / 10L;
+}
+
+/* 可选一个减号，后面至少一位数字，其余必须全是数字。溢出不算这个形状。 */
+deRfun integerShape(long addr, long len): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  if (u8(addr) == 45L) {
+    index = 1L;
+  }
+  if (index >= len) {
+    return 0L;
+  }
+  while (index < len) {
+    long octet = u8(addr + index * 8L);
+    if (octet < 48L || octet > 57L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 成功返回 1。负数往下减，这样有符号最小值不用先变成正数。 */
+deRfun parseInt(long addr, long len, long* out): long {
+  if (integerShape(addr, len) == 0L) {
+    return 0L;
+  }
+  long index = 0L;
+  long neg = 0L;
+  if (u8(addr) == 45L) {
+    neg = 1L;
+    index = 1L;
+  }
+  long value = 0L;
+  while (index < len) {
+    long digit = u8(addr + index * 8L) - 48L;
+    if (neg == 0L) {
+      if (value > maxTen()) {
+        return 0L;
+      }
+      if (value == maxTen() && digit > 7L) {
+        return 0L;
+      }
+      value = value * 10L + digit;
+    } else {
+      if (value < -maxTen()) {
+        return 0L;
+      }
+      if (value == -maxTen() && digit > 8L) {
+        return 0L;
+      }
+      value = value * 10L - digit;
+    }
+    index = index + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun flushOut(long home, long* filled, long* outAt): long {
+  while (*filled > 0L) {
+    long count = *filled;
+    if (count > 4096L) {
+      count = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, count) != 0L) {
+      writeErr(home, "seq: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "seq: write error\n");
+      return 1L;
+    }
+    if (wrote > count) {
+      wrote = count;
+    }
+    *outAt = *outAt + wrote;
+    long rest = count - wrote;
+    if (rest > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), rest);
+    }
+    *filled = rest;
+  }
+  return 0L;
+}
+
+deRfun appendOctet(long home, long* filled, long* outAt, long value): long {
+  if (*filled >= 4096L) {
+    if (flushOut(home, filled, outAt) != 0L) {
+      return 1L;
+    }
+  }
+  memory::storeOctet(value, obr::proc::bytes(home) + *filled * 8L);
+  *filled = *filled + 1L;
+  return 0L;
+}
+
+deRfun appendText(long home, long* filled, long* outAt, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long bit = text[index];
+    if (appendOctet(home, filled, outAt, bit) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 一行最长是负的有符号最小值再加换行，21 个八位组。装不下先送走上一截。 */
+deRfun appendValue(long home, long* filled, long* outAt, long value): long {
+  if (value == lowestLong()) {
+    return appendText(home, filled, outAt, "-9223372036854775808");
+  }
+  long scratch = obr::proc::bytes(home) + 8192L * 8L;
+  long neg = 0L;
+  long mag = value;
+  if (value < 0L) {
+    neg = 1L;
+    mag = 0L - value;
+  }
+  long count = 0L;
+  if (mag == 0L) {
+    memory::storeOctet(48L, scratch);
+    count = 1L;
+  } else {
+    while (mag > 0L) {
+      long digit = mag % 10L;
+      mag = mag / 10L;
+      memory::storeOctet(48L + digit, scratch + count * 8L);
+      count = count + 1L;
+    }
+  }
+  if (neg == 1L) {
+    if (appendOctet(home, filled, outAt, 45L) != 0L) {
+      return 1L;
+    }
+  }
+  while (count > 0L) {
+    count = count - 1L;
+    if (appendOctet(home, filled, outAt, u8(scratch + count * 8L)) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun appendLine(long home, long* filled, long* outAt, long value): long {
+  if (*filled + 21L > 4096L) {
+    if (flushOut(home, filled, outAt) != 0L) {
+      return 1L;
+    }
+  }
+  if (appendValue(home, filled, outAt, value) != 0L) {
+    return 1L;
+  }
+  return appendOctet(home, filled, outAt, 10L);
+}
+
+/* 步长已经不是 0。越过终点或再加会溢出，就停，当前这个数已经写过。 */
+deRfun emitSeq(long home, long start, long step, long last): long {
+  if (step > 0L) {
+    if (start > last) {
+      return 0L;
+    }
+  } else if (start < last) {
+    return 0L;
+  }
+  long filled = 0L;
+  long outAt = 0L;
+  long lowest = lowestLong();
+  long current = start;
+  while (1L == 1L) {
+    if (appendLine(home, &filled, &outAt, current) != 0L) {
+      return 1L;
+    }
+    if (step > 0L) {
+      if (current > highestLong() - step) {
+        break;
+      }
+      long next = current + step;
+      if (next > last) {
+        break;
+      }
+      current = next;
+    } else if (step == lowest) {
+      if (current < 0L) {
+        break;
+      }
+      long next = current + step;
+      if (next < last) {
+        break;
+      }
+      current = next;
+    } else {
+      long mag = 0L - step;
+      if (current < lowest + mag) {
+        break;
+      }
+      long next = current + step;
+      if (next < last) {
+        break;
+      }
+      current = next;
+    }
+  }
+  return flushOut(home, &filled, &outAt);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long total = argc(home);
+  long found = 0L;
+  long v0 = 0L;
+  long v1 = 0L;
+  long v2 = 0L;
+  long index = 1L;
+  while (index < total) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long value = 0L;
+    if (integerShape(at, len) == 0L) {
+      if (len >= 1L && u8(at) == 45L) {
+        writeErr(home, "seq: invalid option\n");
+      } else {
+        writeErr(home, "seq: invalid number\n");
+      }
+      return finish(home, 1L);
+    }
+    if (parseInt(at, len, &value) == 0L) {
+      writeErr(home, "seq: invalid number\n");
+      return finish(home, 1L);
+    }
+    if (found == 0L) {
+      v0 = value;
+    } else if (found == 1L) {
+      v1 = value;
+    } else if (found == 2L) {
+      v2 = value;
+    } else {
+      writeErr(home, "seq: too many arguments\n");
+      return finish(home, 1L);
+    }
+    found = found + 1L;
+    index = index + 1L;
+  }
+  if (found == 0L) {
+    writeErr(home, "seq: missing operand\n");
+    return finish(home, 1L);
+  }
+  long start = 1L;
+  long step = 1L;
+  long last = v0;
+  if (found == 2L) {
+    start = v0;
+    last = v1;
+  } else if (found == 3L) {
+    start = v0;
+    step = v1;
+    last = v2;
+  }
+  if (found == 3L && step == 0L) {
+    writeErr(home, "seq: invalid increment\n");
+    return finish(home, 1L);
+  }
+  if (emitSeq(home, start, step, last) != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

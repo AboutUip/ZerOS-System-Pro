@@ -1,0 +1,131 @@
+/* POSIX.1-2017 dirname（utilities/dirname.html）。
+   形式只有 dirname string。没有短选项。
+   以 - 开头的词也是路径，单独的 -- 也是路径，都不当成选项。
+   参数从下标 1。下标 0 是程序名。
+   零个操作数写 dirname: missing operand，多于一个写 dirname: too many arguments。
+   诊断写到描述符 2，退出 1。
+   结果写到描述符 1，末尾一个换行。成功退出 0。
+   空串得到 . 。整串都是斜杠（字节 47）得到一个 / 。
+   其余先拿掉末尾斜杠；拿完变空则是 / 。
+   剩下的没有斜杠则是 . 。
+   否则删掉最后一个分量，再拿掉新的末尾斜杠；变空则是 / 。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 一个结果字节再加换行，写到描述符 1。点是 46，斜杠是 47。 */
+deRfun writeMark(long home, long value): void {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  memory::storeOctet(10L, obr::proc::bytes(home) + 8L);
+  obr::proc::write(home, 1L, 0L, 2L);
+}
+
+/* kind：0 写出点，1 写出一个斜杠，2 写出原串从开头数出的前缀，长度在 outLen。
+   只读路径，不改参数里的八位组。 */
+deRfun dirOf(long addr, long count, long* kind, long* outLen): void {
+  *kind = 0L;
+  *outLen = 0L;
+  if (count < 1L) {
+    return;
+  }
+  long index = 0L;
+  long slashes = 1L;
+  while (index < count) {
+    if (u8(addr + index * 8L) != 47L) {
+      slashes = 0L;
+    }
+    index = index + 1L;
+  }
+  if (slashes == 1L) {
+    *kind = 1L;
+    return;
+  }
+  long end = count;
+  while (end > 0L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  if (end < 1L) {
+    *kind = 1L;
+    return;
+  }
+  long seen = 0L;
+  long last = 0L;
+  index = 0L;
+  while (index < end) {
+    if (u8(addr + index * 8L) == 47L) {
+      seen = 1L;
+      last = index;
+    }
+    index = index + 1L;
+  }
+  if (seen == 0L) {
+    return;
+  }
+  long prefix = last;
+  while (prefix > 0L && u8(addr + (prefix - 1L) * 8L) == 47L) {
+    prefix = prefix - 1L;
+  }
+  if (prefix < 1L) {
+    *kind = 1L;
+    return;
+  }
+  *kind = 2L;
+  *outLen = prefix;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long code = 0L;
+  long total = argc(home);
+  if (total < 2L) {
+    writeErr(home, "dirname: missing operand\n");
+    code = 1L;
+  } else if (total > 2L) {
+    writeErr(home, "dirname: too many arguments\n");
+    code = 1L;
+  } else {
+    long at = argPtr(home, 1L);
+    long len = argLen(home, 1L);
+    long kind = 0L;
+    long outLen = 0L;
+    dirOf(at, len, &kind, &outLen);
+    if (kind == 0L) {
+      writeMark(home, 46L);
+    } else if (kind == 1L) {
+      writeMark(home, 47L);
+    } else {
+      long index = 0L;
+      while (index < outLen) {
+        memory::storeOctet(u8(at + index * 8L), obr::proc::bytes(home) + index * 8L);
+        index = index + 1L;
+      }
+      memory::storeOctet(10L, obr::proc::bytes(home) + outLen * 8L);
+      obr::proc::write(home, 1L, 0L, outLen + 1L);
+    }
+  }
+  obr::proc::exit(home, code);
+  return 0;
+}
