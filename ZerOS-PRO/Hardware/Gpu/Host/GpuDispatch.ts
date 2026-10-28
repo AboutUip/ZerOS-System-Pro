@@ -22,6 +22,7 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as ActiveRoot } from "../ActiveProvider/Provider";
+import { ZerOS as AccelRoot } from "../Bootstrap/WebGpuAccel";
 import { ZerOS as FontBytesRoot } from "../Font/FontBytes";
 import { ZerOS as ClockRoot } from "../Bootstrap/GpuClock";
 import { ZerOS as GpuSlotRoot } from "../../Motherboard/Slot/Gpu/GpuSlot";
@@ -31,6 +32,7 @@ export namespace ZerOS {
   export namespace Hardware {
     export namespace Gpu {
       const provider = ActiveRoot.Hardware.Gpu.ActiveGpuProvider;
+      const viewOrigin = AccelRoot.Hardware.Gpu.viewOrigin;
       const stageFontBytes = FontBytesRoot.Hardware.Gpu.stageFontBytes;
       const adoptOrigin = ClockRoot.Hardware.Gpu.adoptOrigin;
       const GpuSlot = GpuSlotRoot.Hardware.Motherboard.Slot.GpuSlot;
@@ -130,8 +132,18 @@ export namespace ZerOS {
         const hertz = provider.Hertz();
         const executed = provider.Executed();
         if (view instanceof ImageBitmap) {
+          const origin = viewOrigin();
           globalThis.postMessage(
-            { kind: "frame", frameWidth, frameHeight, hertz, executed, bitmap: view },
+            {
+              kind: "frame",
+              frameWidth,
+              frameHeight,
+              originX: origin.x,
+              originY: origin.y,
+              hertz,
+              executed,
+              bitmap: view,
+            },
             { transfer: [view] },
           );
           return;
@@ -527,6 +539,8 @@ export namespace ZerOS {
           return;
         }
         const kind = record["kind"];
+        if (typeof kind === "string") {
+        }
         if (kind === "bind") {
           onBind(record);
           return;

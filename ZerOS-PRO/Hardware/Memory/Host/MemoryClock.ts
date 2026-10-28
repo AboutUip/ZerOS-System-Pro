@@ -5,8 +5,8 @@
  * ---------------------------------------------------------------------------
  * 文件职责
  * ---------------------------------------------------------------------------
- * 一次通道访问按字宽推进绝对时间，并且只等待一次。
- * 等待短于 1 毫秒时不挂起，单次 8 字节访问不会把引导切碎。
+ * 一次通道访问按字宽推进频率账。账还在，线程不再为这段账睡觉。
+ * 访问本身该等多久，由通道把结果送回来决定。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -32,13 +32,9 @@ export namespace ZerOS {
 
       const clockPrefix = "[ZerOS.Hardware.Memory.MemoryClock]";
       const adoptClock = ClockRoot.Hardware.Clock.adoptClock;
-      const clockOrigin = ClockRoot.Hardware.Clock.clockOrigin;
-      const waitSpan = ClockRoot.Hardware.Clock.waitSpan;
 
       let hertz = OfficialHertz;
       let executed = 0;
-      let cycleIndex = 0;
-      let origin = clockOrigin();
 
       function fail(message: string): never {
         throw new Error(`${clockPrefix} ${message}`);
@@ -58,42 +54,31 @@ export namespace ZerOS {
           fail("Hz 不在 1 到 1000000000");
         }
         hertz = value;
-        cycleIndex = 0;
-        origin = performance.now();
       }
 
-      /** 改用主板上电记下的起点，并重新从第 0 拍计。 */
+      /** 改用主板上电记下的起点。 */
       export function adoptOrigin(value: number): void {
         adoptClock(value);
-        origin = clockOrigin();
-        cycleIndex = 0;
       }
 
       /**
-       * 成功的访问走这里。拍数至少 1。
-       * 到期时刻 = 起点 + 累计拍数 × 1000 / Hz 毫秒。
+       * 成功的访问走这里。记一条已完成。
+       * metric 读到的频率和条数不变。
+       * 不再按到期时刻睡觉。睡觉时没有指令在跑，调用方只是被定时器按住。
        */
-      export function spend(cycles: number): Promise<void> {
-        const count = cycles < 1 ? 1 : cycles;
+      export function spend(_cycles: number): Promise<void> {
         executed += 1;
-        cycleIndex += count;
-        const deadline = origin + (cycleIndex * 1000) / hertz;
-        const delay = deadline - performance.now();
-        return waitSpan(delay);
+        return Promise.resolve();
       }
 
       /**
-       * 一段连续访问只等待一次。
-       * accesses 记入已完成条数，cycles 推进绝对时间。短于 1 毫秒的等待仍然不挂起。
+       * 一段连续访问记一次账。
+       * accesses 记入已完成条数。同样不挂起。
        */
-      export function spendBulk(accesses: number, cycles: number): Promise<void> {
+      export function spendBulk(accesses: number, _cycles: number): Promise<void> {
         const steps = accesses < 1 ? 1 : accesses;
-        const count = cycles < 1 ? 1 : cycles;
         executed += steps;
-        cycleIndex += count;
-        const deadline = origin + (cycleIndex * 1000) / hertz;
-        const delay = deadline - performance.now();
-        return waitSpan(delay);
+        return Promise.resolve();
       }
 
       /** 给信箱文本用的两行：当前 Hz，已完成条数。 */

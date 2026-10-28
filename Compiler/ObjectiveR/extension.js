@@ -1,6 +1,6 @@
 const vscode = require("vscode");
 const path = require("path");
-const { collectAnalysisUris } = require("./projectScan");
+const { ANALYSIS_EXCLUDE, collectAnalysisUris, isInstallerCopy } = require("./projectScan");
 const { registerSemanticTokensProvider } = require("./semanticTokens");
 const { registerZapBinary } = require("./zapBinary");
 const { parseDocumentSymbols, collectCalls, callMatchesSymbol } = require("./symbols");
@@ -544,10 +544,10 @@ function getImportModuleAtPosition(document, position) {
 async function findModuleUrisByName(moduleName) {
   if (!moduleName) return [];
   const [mrUris, obrUris] = await Promise.all([
-    vscode.workspace.findFiles(`**/${moduleName}.mr`, "**/node_modules/**"),
-    vscode.workspace.findFiles(`**/${moduleName}.obr`, "**/node_modules/**")
+    vscode.workspace.findFiles(`**/${moduleName}.mr`, ANALYSIS_EXCLUDE),
+    vscode.workspace.findFiles(`**/${moduleName}.obr`, ANALYSIS_EXCLUDE)
   ]);
-  return [...mrUris, ...obrUris];
+  return [...mrUris, ...obrUris].filter((uri) => !isInstallerCopy(uri.fsPath));
 }
 
 function collectDiagnosticsForDocument(document, index) {

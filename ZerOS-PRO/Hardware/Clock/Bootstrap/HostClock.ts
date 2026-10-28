@@ -15,6 +15,7 @@
  *   1. 时钟
  */
 
+
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Clock {
@@ -66,7 +67,9 @@ export namespace ZerOS {
           return Promise.resolve();
         }
         return new Promise((resolve): void => {
-          setTimeout(resolve, delay);
+          setTimeout((): void => {
+            resolve();
+          }, delay);
         });
       }
     }

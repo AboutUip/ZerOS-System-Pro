@@ -10,6 +10,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { spawn } = require("child_process");
+const { ANALYSIS_EXCLUDE, isInstallerCopy } = require("./projectScan");
 
 const SOURCE = "Obr";
 
@@ -159,6 +160,12 @@ function registerCompilerLint(context, status) {
       collection.delete(document.uri);
       return;
     }
+    if (isInstallerCopy(document.uri.fsPath)) {
+      collection.delete(document.uri);
+      status.text = "";
+      status.hide();
+      return;
+    }
     const folders = vscode.workspace.workspaceFolders || [];
     const exe = findCompiler(folders);
     if (!exe) {
@@ -168,11 +175,12 @@ function registerCompilerLint(context, status) {
     }
     status.text = "Obr 检查中";
     status.show();
-    const obrs = await vscode.workspace.findFiles("**/*.obr", "{**/node_modules/**,**/.git/**}");
+    const obrs = await vscode.workspace.findFiles("**/*.obr", ANALYSIS_EXCLUDE);
     if (current !== generation) return;
     const texts = new Map();
     const byBase = new Map();
     for (const uri of obrs) {
+      if (isInstallerCopy(uri.fsPath)) continue;
       let text = "";
       if (uri.toString() === document.uri.toString()) text = document.getText();
       else {
@@ -221,7 +229,7 @@ function registerCompilerLint(context, status) {
       byPath.set(path.normalize(item.fsPath).toLowerCase(), item);
     }
     const include = new Set(group.map((item) => path.dirname(item.fsPath)));
-    const headers = await vscode.workspace.findFiles("**/*.mr", "{**/node_modules/**,**/.git/**}");
+    const headers = await vscode.workspace.findFiles("**/*.mr", ANALYSIS_EXCLUDE);
     let attached = true;
     while (attached) {
       attached = false;
@@ -231,6 +239,7 @@ function registerCompilerLint(context, status) {
       }
       if (imported.size === 0) continue;
       for (const header of headers) {
+        if (isInstallerCopy(header.fsPath)) continue;
         const base = path.basename(header.fsPath, ".mr");
         if (!imported.has(base)) continue;
         include.add(path.dirname(header.fsPath));
@@ -259,6 +268,7 @@ function registerCompilerLint(context, status) {
         }
       }
       for (const dir of include) {
+        if (isInstallerCopy(dir)) continue;
         args.push("-I", dir);
       }
       args.push("-slot", "0", "-o", output);

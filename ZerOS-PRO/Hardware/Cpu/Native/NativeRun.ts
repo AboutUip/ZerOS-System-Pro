@@ -209,7 +209,36 @@ export namespace ZerOS {
         return value;
       }
 
+      function readOctetNumber(port: NativeOctetPort, bit: number): number | null {
+        const load = port.loadNumber;
+        if (load === undefined) {
+          return readOctet(port, BigInt(bit));
+        }
+        if (bit < 0 || (bit & 7) !== 0 || bit + 8 > Number(port.limitBit)) {
+          return null;
+        }
+        const value = load(bit);
+        if (!Number.isInteger(value) || value < 0 || value > 255) {
+          return null;
+        }
+        return value;
+      }
+
       function readImm(port: NativeOctetPort, bit: bigint, count: number): bigint | null {
+        const load = port.loadNumber;
+        if (load !== undefined) {
+          let cursor = Number(bit);
+          let value = 0n;
+          for (let index = 0; index < count; index += 1) {
+            const octet = readOctetNumber(port, cursor);
+            if (octet === null) {
+              return null;
+            }
+            cursor += 8;
+            value += BigInt(octet) << BigInt(index * 8);
+          }
+          return value;
+        }
         let value = 0n;
         for (let index = 0; index < count; index += 1) {
           const octet = readOctet(port, bit + BigInt(index) * 8n);
@@ -317,18 +346,30 @@ export namespace ZerOS {
        * 复用这一只读取器，避免每条指令都新建一个对象。
        */
       let readerPort: NativeOctetPort | null = null;
-      const reusedReader: Reader = {
-        at: 0n,
+      /**
+       * 游标是位地址的安全整数。取每个八位组只加 8，不再做大整数加法。
+       * at 仍是位地址，指令算下一条时才物化一次。
+       */
+      const reusedReader = {
+        cursor: 0,
+        get at(): bigint {
+          return BigInt(this.cursor);
+        },
+        set at(value: bigint) {
+          this.cursor = Number(value);
+        },
         take(): number | null {
           const port = readerPort;
           if (port === null) {
             return null;
           }
-          const value = readOctet(port, this.at);
+          const value = port.loadNumber !== undefined
+            ? readOctetNumber(port, this.cursor)
+            : readOctet(port, BigInt(this.cursor));
           if (value === null) {
             return null;
           }
-          this.at += 8n;
+          this.cursor += 8;
           return value;
         },
       };

@@ -33,6 +33,22 @@ export namespace ZerOS {
       const writeMetric = MetricPageRoot.Hardware.Motherboard.writeMetric;
 
       let gpuWorker: Worker | null = null;
+
+      /**
+       * 显卡线程一次只能有一个 onmessage。
+       * 以前每次等待都把这个函数换掉。监督核正在等一批矩形时，固件或下一次呈现再等，
+       * 前一个等待就收不到回复，写终端的系统调用会空等直到超时，目录已经画出来，提示符却不回来。
+       * 这里改成一条监听、一队等待。回复交给第一个认领它的等待，别的等待继续留着。
+       */
+      type GpuWaiter = {
+        accept: (record: Record<string, unknown>) => boolean;
+        resolve: (record: Record<string, unknown>) => void;
+        reject: (error: Error) => void;
+        timer: number;
+      };
+
+      const gpuWaiters: GpuWaiter[] = [];
+      let gpuHooked = false;
       let gpuWidth = 0;
       let gpuHeight = 0;
       let gpuMemoryBytes = 0;
@@ -109,31 +125,60 @@ export namespace ZerOS {
         return data as Record<string, unknown>;
       }
 
+      function hookGpu(worker: Worker): void {
+        if (gpuHooked) {
+          return;
+        }
+        gpuHooked = true;
+        worker.addEventListener("message", (event: MessageEvent): void => {
+          const record = asRecord(event.data as unknown);
+          if (record === null) {
+            return;
+          }
+          if (record["kind"] === "fault" && typeof record["message"] === "string") {
+            const waiter = gpuWaiters.shift();
+            if (waiter === undefined) {
+              return;
+            }
+            clearTimeout(waiter.timer);
+            waiter.reject(new Error(record["message"]));
+            return;
+          }
+          const index = gpuWaiters.findIndex((waiter): boolean => waiter.accept(record));
+          if (index < 0) {
+            return;
+          }
+          const waiter = gpuWaiters[index];
+          if (waiter === undefined) {
+            return;
+          }
+          gpuWaiters.splice(index, 1);
+          clearTimeout(waiter.timer);
+          waiter.resolve(record);
+        });
+      }
+
       function waitMessage(
         worker: Worker,
         accept: (record: Record<string, unknown>) => boolean,
         timeoutMessage: string,
       ): Promise<Record<string, unknown>> {
+        hookGpu(worker);
         return new Promise((resolve, reject): void => {
-          const timer = setTimeout((): void => {
+          const waiter = {
+            accept,
+            resolve,
+            reject,
+            timer: 0,
+          };
+          waiter.timer = setTimeout((): void => {
+            const index = gpuWaiters.indexOf(waiter);
+            if (index >= 0) {
+              gpuWaiters.splice(index, 1);
+            }
             reject(new Error(timeoutMessage));
           }, 30000);
-          worker.onmessage = (event: MessageEvent): void => {
-            const record = asRecord(event.data as unknown);
-            if (record === null) {
-              return;
-            }
-            if (record["kind"] === "fault" && typeof record["message"] === "string") {
-              clearTimeout(timer);
-              reject(new Error(record["message"]));
-              return;
-            }
-            if (!accept(record)) {
-              return;
-            }
-            clearTimeout(timer);
-            resolve(record);
-          };
+          gpuWaiters.push(waiter);
         });
       }
 
@@ -224,6 +269,8 @@ export namespace ZerOS {
       export async function presentSurface(): Promise<{
         readonly frameWidth: number;
         readonly frameHeight: number;
+        readonly originX: number;
+        readonly originY: number;
         readonly pixels: Uint32Array | null;
         readonly bitmap: ImageBitmap | null;
       }> {
@@ -241,15 +288,19 @@ export namespace ZerOS {
         const frameHeight = frame["frameHeight"];
         const bitmap = frame["bitmap"];
         const pixels = frame["pixels"];
+        const originX = frame["originX"];
+        const originY = frame["originY"];
         if (typeof frameWidth !== "number" || typeof frameHeight !== "number") {
           throw new Error(`${seatPrefix} the picture size is incomplete`);
         }
         notePace(frame);
+        const patchX = typeof originX === "number" ? originX : 0;
+        const patchY = typeof originY === "number" ? originY : 0;
         if (bitmap instanceof ImageBitmap) {
-          return { frameWidth, frameHeight, pixels: null, bitmap };
+          return { frameWidth, frameHeight, originX: patchX, originY: patchY, pixels: null, bitmap };
         }
         if (pixels instanceof Uint32Array) {
-          return { frameWidth, frameHeight, pixels, bitmap: null };
+          return { frameWidth, frameHeight, originX: 0, originY: 0, pixels, bitmap: null };
         }
         throw new Error(`${seatPrefix} the frame is incomplete`);
       }

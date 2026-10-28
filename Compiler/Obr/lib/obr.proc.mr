@@ -7,6 +7,7 @@
    +256 读写个数、目录读回的名字长度。
    +320 实际读写的个数。
    +512 只给服务 26 回写字体路径。请求路径不放这里。
+   +448 stat 交回访问时间。+576 修改时间。+640 状态时间。三个都是从 Unix 纪元起的毫秒。
    +12288 附近是调用帧。
    +16384 请求路径，排法见 obr.text。最长 8192 个八位组。一个分量在内核里最长 512。
    +131072 读写和目录项的八位组，相邻隔 8 位，不是计数字符串。一次最多 262144 个八位组。
@@ -33,7 +34,8 @@ deRfun close(long home, long fd): long;
 deRfun dup(long home, long fd): long;
 /* 服务 25。to 不在 0 到 7，或旧描述符不存在，是 -1。两个号码相同则回复 0，不关闭。 */
 deRfun dup2(long home, long from, long to): long;
-/* 服务 4。路径在 +16384。种类在 +128，大小在 +192，权限在 +256，属主在 +320，属组在 +384。 */
+/* 服务 4。路径在 +16384。种类在 +128，大小在 +192，权限在 +256，属主在 +320，属组在 +384。
+   访问时间在 +448，修改时间在 +576，状态时间在 +640。 */
 deRfun stat(long home): long;
 /* 服务 9。路径在 +16384。名字八位组写到 +131072，个数在 +256。 */
 deRfun readdir(long home, long index, long capacity): long;
@@ -61,6 +63,17 @@ deRfun wait(long home, long pid): long;
 deRfun exit(long home, long code): long;
 /* 服务 29。当前目录的绝对路径写到字节区，长度在 +256。不含 . 和 ..。 */
 deRfun getcwd(long home): long;
+/* 服务 30。任何任务都能调用。+128 是从 Unix 纪元起的毫秒。 */
+deRfun clock(long home): long;
+/* 服务 31。路径在 +16384。setAccess 不是 0 时把 access 写成访问时间，setModify 不是 0 时把 modify 写成修改时间。
+   给出 0 的那一项保持原值。状态时间改成这次调用读到的现在。属主或根才能改。 */
+deRfun utime(long home, long setAccess, long setModify, long access, long modify): long;
+/* 服务 32。uid 在 +128，gid 在 +192，euid 在 +256，egid 在 +320。 */
+deRfun ident(long home): long;
+/* 服务 33。start 放在 +128。没有更多任务时回复 2。找到时回复 0，这份下标在 +192，下一份下标在 +320。
+   字节区 12 个字：pid、ppid、状态、核心、uid、gid、euid、egid、地址空间起点、长度、档、名字长度。
+   名字从第 12 个字之后起，最多 32 个八位组。状态 1 正在跑，2 就绪，3 在等，4 停住，5 僵尸。 */
+deRfun task(long home, long start): long;
 /* 服务 2。返回块地址。 */
 deRfun alloc(long home, long size): long;
 /* 服务 3。 */

@@ -55,17 +55,23 @@ export namespace ZerOS {
        * 稳态画面。尺寸不一致就关掉位图并丢掉，面板保持上一幅。
        * 不写入帧缓冲：这一幅已经在画布上，再拆成整数没有用。
        */
-      export function acceptGpuBitmap(frameWidth: number, frameHeight: number, bitmap: ImageBitmap): void {
-        if (
-          frameWidth !== Display.Width
-          || frameHeight !== Display.Height
-          || bitmap.width !== frameWidth
-          || bitmap.height !== frameHeight
-        ) {
+      export function acceptGpuBitmap(
+        frameWidth: number,
+        frameHeight: number,
+        bitmap: ImageBitmap,
+        originX = 0,
+        originY = 0,
+      ): void {
+        if (frameWidth !== Display.Width || frameHeight !== Display.Height) {
           bitmap.close();
           throw new Error(`${framePrefix} 位图尺寸和面板不一致`);
         }
-        Display.ShowBitmap(bitmap);
+        /* 整幅直接盖上。只改了一块时，位图比面板小，贴在改过的那一角，其余保持上一幅。 */
+        if (originX === 0 && originY === 0 && bitmap.width === frameWidth && bitmap.height === frameHeight) {
+          Display.ShowBitmap(bitmap);
+          return;
+        }
+        Display.ShowPatch(originX, originY, bitmap);
       }
     }
   }

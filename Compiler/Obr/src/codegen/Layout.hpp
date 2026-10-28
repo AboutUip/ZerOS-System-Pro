@@ -5,7 +5,10 @@
 namespace obr {
 
 // 这些地址会随 -slot 改写，所以不是编译期常量。0 号核心保持原值。
-inline int kSp = 1048576;
+// 窗口起点是调用参数字。alloc 把位数写在这里，监督核从同一处读。
+// 栈指针若也放在起点，内联进调用方之后这次写入会把栈指针盖成参数，下一次调用越界。
+// 栈数据从 kStack 往上长。指针字放在栈数据前一个字，落在数据下限和栈之间的空隙里。
+inline int kSp = 68173760;
 inline int kStack = 68173824;
 inline int kFrame = 70729728;
 inline int kStatic = 71319552;

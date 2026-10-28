@@ -1,4 +1,5 @@
 #include "Generator.hpp"
+#include "Peephole.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -32,7 +33,9 @@ Generated Generator::run(Unit& unit) {
     classes_ = &unit.classes;
     structs_ = &unit.structs;
     auto finish = [&]() {
-      return Generated{out_.str(), std::move(sites_)};
+      Generated result{out_.str(), std::move(sites_)};
+      /* 窥孔编出来的内核停在 Starting，自检画面被固件盖住。先关掉，等内核能到提示符再开。 */
+      return result;
     };
     auto emitStubs = [&]() {
       for (const Function& function : unit.functions) {

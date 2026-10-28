@@ -1,0 +1,111 @@
+/* POSIX whoami。没有选项，没有操作数。
+   服务 32 读有效用户标识，写到标准输出，末尾一个换行。
+   没有用户名数据库，只印数字，不印名字。
+   服务失败时写 whoami: cannot read user id，退出 1。
+   -- 结束选项。单独的 - 以及其它操作数写 whoami: too many arguments。
+   簇里任何一个字母都写 whoami: invalid option。
+   诊断在描述符 2，以 whoami: 开头，以换行结束。结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun writeDec(long home, long value): void {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long rev = home + 9664L;
+  long count = 0L;
+  if (value == 0L) {
+    memory::storeOctet(48L, rev);
+    count = 1L;
+  } else {
+    while (value > 0L && count < 20L) {
+      memory::storeOctet(48L + (value % 10L), rev + count * 8L);
+      value = value / 10L;
+      count = count + 1L;
+    }
+  }
+  long index = 0L;
+  while (count > 0L) {
+    count = count - 1L;
+    memory::storeOctet(u8(rev + count * 8L), obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (index > 0L) {
+    obr::proc::write(home, 1L, 0L, index);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      writeErr(home, "whoami: invalid option\n");
+      return finish(home, 1L);
+    }
+  }
+  if (index < count) {
+    writeErr(home, "whoami: too many arguments\n");
+    return finish(home, 1L);
+  }
+  if (obr::proc::ident(home) != 0L) {
+    writeErr(home, "whoami: cannot read user id\n");
+    return finish(home, 1L);
+  }
+  writeDec(home, obr::proc::slot(home, 256L));
+  writeOut(home, "\n");
+  return finish(home, 0L);
+}

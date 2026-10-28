@@ -224,14 +224,16 @@ export namespace ZerOS {
        * 交出当前画面，供客程序的稳态 Present 使用。
        * 加速器画过时直接是一张位图，页面贴上画布即可，不必再拆两百多万个像素。
        * 没画过，或位图没做成，就退回和 present 一样的像素副本。
-       * 无论哪一种都按帧里的像素个数记一拍。位图不是少算工作，只是宿主不再读回。
+       * 位图那一拍只记 1。像素已经在显卡上画完，再按整帧字数记账，
+       * 每个键和每个输出字节都要睡数毫秒，长列表会把这些睡眠加成十几秒。
+       * 频率常数不动。真的逐像素复制时仍按整帧记。
        */
       export async function presentView(): Promise<ImageBitmap | Uint32Array> {
         begin();
         try {
           const bitmap = await snapshotAccel();
           if (bitmap !== null) {
-            await spend(frame.length);
+            await spend(1);
             return bitmap;
           }
           await blitAccel(frame, frameWidth, frameHeight);

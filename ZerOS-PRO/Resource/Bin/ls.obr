@@ -1,0 +1,1865 @@
+/* POSIX.1-2017 ls。形式是
+   ls [-ikqrs] [-glno] [-A|-a] [-C|-m|-x|-1] [-F|-p] [-H|-L]
+      [-R|-d] [-S|-f|-t] [-c|-u] [file...]
+   下标 0 是程序名。-- 结束选项。单独一个 - 是名为减号的操作数。
+   第一个不是选项的参数也结束选项。短选项叠在一起，从左到右。
+   不认识的字母写 ls: invalid option，立刻退出 1。
+
+   没有操作数就列当前目录，路径用一个点。点开头的目录项隐藏。
+   -a 连 . 和 .. 一起显示。-A 显示其余点开头的名字，但仍不显示 . 和 ..。
+   直接写在命令行上的名字不受这条限制。-a 与 -A 后写的为准。
+   -f 强制打开 -a，并且不排序；-r、-S、-t 不再起作用。
+
+   缺省每行一个名字。没有判断标准输出是不是终端的服务，
+   所以不把缺省改成多列。-1 仍是每行一个，而且不取消长格式。
+   -C 按列向下，-x 按行向右，-m 用逗号加空格隔开并按宽度折行。
+   这三者会关掉长格式。-l、-g、-n、-o 打开长格式并关掉多列。
+   后写的版式生效。-g 之后不写属主，-o 之后不写属组，两个都写就都省。
+   列宽读 COLUMNS。不是正整数就用 80，大于 4096 收成 4096。
+
+   长格式的栏是：可选的序列号、可选的块数、类型和 9 位权限、
+   链接数、属主、属组、字节数、时间、名字。
+   时间缺省用修改时间。六个月以内写成 Mmm dd HH:MM，否则写成 Mmm dd  YYYY。
+   月份是固定的英文缩写。日按两位，不足补空格。年份前是两个空格，好和时:分对齐。
+   -c 改用状态时间，-u 改用访问时间，后写的为准。
+   -t 按这一栏的时间从新到旧排，相同再比名字。-f 打开后不再按时间排。
+   stat 没有链接数，这一列固定写 1。没有文件序列号，-i 固定写 0。
+   没有用户名和组名，属主和属组写 uid、gid，-n 和 -l 这一栏相同。
+   没有已分配块数。-s 和目录的 total 用字节数向上取整，
+   缺省 512，-k 改成 1024。权限只留低 9 位，没有 s、S、t、T。
+
+   没有符号链接。-H 和 -L 接受，不改变走法，也不写箭头。
+   -F 给目录加 /，给任一执行位为 1 的非目录加 *。没有 FIFO，不写 |。
+   -p 只给目录加 /。-F 和 -p 后写的为准。
+   -q 把小于 32 或大于 126 的八位组换成问号。宽度按八位组计算。
+
+   -d 只列出操作数自己。-R 递归列子目录。两个都出现时后写的为准。
+   不进入名为 . 或 .. 的项。层数从操作数算第 1 层，到 32 就停，
+   再往下写 ls: too deep。路径先拼上当前目录，再去掉 .、.. 和重复斜杠。
+   正要进入的目录若和栈上任一祖先收成同一条绝对路径，写
+   ls: 路径: directory loop，并且不再进入。
+   没有序列号，硬链接换成另一条字符串时认不出，只能认这条路径。
+   拿不到当前目录时，退回比较还没拼过当前目录的路径。
+
+   多个操作数时，先排好不是目录的那些再写，目录按命令行顺序。
+   目录标题在多于一个操作数、或者前面已经写过文件、或者 -R 时才写。
+   标题前若已经有输出，先空一行。-l 的 total 只加在目录内容前面。
+   一层最多 1024 项。再多写 ls: 路径: too many entries，这一层不显示。
+
+   名字按无符号八位组排。-S 先按字节数从大到小，一样再比名字。
+   -r 把比较结果整个倒过来。stat 失败写 ls: 路径: 原因，继续别的。
+   目录读失败写 cannot read 或对应原因。写失败写 ls: write error，马上停。
+   诊断在描述符 2。标准输出的偏移从 0 累加。结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (done + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    done = done + chunk;
+  }
+}
+
+deRfun blame(long home, long addr, long count, string suffix): void {
+  writeErr(home, "ls: ");
+  if (count > 0L) {
+    writeErrSpan(home, addr, count);
+  }
+  writeErr(home, suffix);
+}
+
+deRfun why(long home, long status): void {
+  if (status == -1L) {
+    writeErr(home, "Permission denied");
+  } else if (status == 3L) {
+    writeErr(home, "Not a directory");
+  } else if (status == 6L) {
+    writeErr(home, "File name too long");
+  } else if (status == 13L) {
+    writeErr(home, "Invalid argument");
+  } else {
+    writeErr(home, "No such file or directory");
+  }
+}
+
+deRfun blameWhy(long home, long addr, long count, long status): void {
+  writeErr(home, "ls: ");
+  if (count > 0L) {
+    writeErrSpan(home, addr, count);
+  }
+  writeErr(home, ": ");
+  why(home, status);
+  writeErr(home, "\n");
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun fail(long home, string text): int {
+  writeErr(home, text);
+  return finish(home, 1L);
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 0 显示，1 藏起来。dots：0 藏全部点开头，1 全显示，2 藏 . 和 ..。 */
+deRfun hiddenName(long addr, long count, long dots): long {
+  if (count < 1L) {
+    return 1L;
+  }
+  if (u8(addr) != 46L) {
+    return 0L;
+  }
+  if (dots == 1L) {
+    return 0L;
+  }
+  if (dots == 2L) {
+    return isDot(addr, count);
+  }
+  return 1L;
+}
+
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  if (nameLen < 1L) {
+    return -1L;
+  }
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+/* 去掉重复斜杠、. 和能退的 ..。结果写到另一块缓冲。 */
+deRfun collapse(long src, long srcLen, long dest): long {
+  long absolute = 0L;
+  long out = 0L;
+  if (srcLen > 0L && u8(src) == 47L) {
+    absolute = 1L;
+    memory::storeOctet(47L, dest);
+    out = 1L;
+  }
+  long index = 0L;
+  while (index < srcLen) {
+    while (index < srcLen && u8(src + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index < srcLen) {
+      long start = index;
+      while (index < srcLen && u8(src + index * 8L) != 47L) {
+        index = index + 1L;
+      }
+      long n = index - start;
+      long part = 0L;
+      if (n == 1L && u8(src + start * 8L) == 46L) {
+        part = 1L;
+      }
+      if (n == 2L && u8(src + start * 8L) == 46L && u8(src + (start + 1L) * 8L) == 46L) {
+        part = 2L;
+      }
+      if (part == 2L && absolute == 1L) {
+        if (out > 1L) {
+          long p = out - 1L;
+          while (p > 0L && u8(dest + p * 8L) != 47L) {
+            p = p - 1L;
+          }
+          if (p == 0L) {
+            out = 1L;
+          } else {
+            out = p;
+          }
+        }
+      } else if (part == 2L && out == 0L) {
+        memory::storeOctet(46L, dest);
+        memory::storeOctet(46L, dest + 8L);
+        out = 2L;
+      } else if (part == 2L) {
+        long slash = -1L;
+        long p = out - 1L;
+        while (p > 0L) {
+          if (u8(dest + p * 8L) == 47L) {
+            slash = p;
+            p = 0L;
+          } else {
+            p = p - 1L;
+          }
+        }
+        long comp = 0L;
+        if (slash >= 0L) {
+          comp = slash + 1L;
+        }
+        long clen = out - comp;
+        long keep = 0L;
+        if (clen == 2L && u8(dest + comp * 8L) == 46L && u8(dest + (comp + 1L) * 8L) == 46L) {
+          keep = 1L;
+        }
+        if (keep == 1L) {
+          if (out + 3L > 8192L) {
+            return -1L;
+          }
+          memory::storeOctet(47L, dest + out * 8L);
+          memory::storeOctet(46L, dest + (out + 1L) * 8L);
+          memory::storeOctet(46L, dest + (out + 2L) * 8L);
+          out = out + 3L;
+        } else if (slash < 0L) {
+          out = 0L;
+        } else {
+          out = slash;
+        }
+      } else if (part == 0L) {
+        long extra = n;
+        long lead = 0L;
+        if (out != 0L && (absolute != 1L || out != 1L)) {
+          lead = 1L;
+          extra = n + 1L;
+        }
+        if (n < 1L || out + extra > 8192L) {
+          return -1L;
+        }
+        if (lead == 1L) {
+          memory::storeOctet(47L, dest + out * 8L);
+          out = out + 1L;
+        }
+        copySpan(src + start * 8L, dest + out * 8L, n);
+        out = out + n;
+      }
+    }
+  }
+  if (out == 0L) {
+    memory::storeOctet(46L, dest);
+    return 1L;
+  }
+  return out;
+}
+
+/* 相对路径先接上当前目录。cwd 长度为 0 时只折叠原文。 */
+deRfun resolve(long cwd, long cwdLen, long path, long pathLen, long scratch, long dest): long {
+  if (pathLen < 1L || pathLen > 8192L) {
+    return -1L;
+  }
+  long absLen = 0L;
+  if (cwdLen < 1L || u8(path) == 47L) {
+    copySpan(path, scratch, pathLen);
+    absLen = pathLen;
+  } else {
+    absLen = joinPath(cwd, cwdLen, path, pathLen, scratch);
+    if (absLen < 0L) {
+      return -1L;
+    }
+  }
+  return collapse(scratch, absLen, dest);
+}
+
+deRfun readCwd(long home, long dest): long {
+  if (obr::proc::getcwd(home) != 0L) {
+    return 0L;
+  }
+  long n = obr::proc::slot(home, 256L);
+  if (n < 1L || n > 8192L) {
+    return 0L;
+  }
+  copySpan(obr::proc::bytes(home), dest, n);
+  return n;
+}
+
+deRfun statOf(long home, long addr, long count, long* kind, long* size, long* mode, long* uid, long* gid, long which, long* stamp): long {
+  plant(home, addr, count);
+  long status = obr::proc::stat(home);
+  if (status == 0L) {
+    *kind = obr::proc::slot(home, 128L);
+    *size = obr::proc::slot(home, 192L);
+    *mode = obr::proc::slot(home, 256L);
+    *uid = obr::proc::slot(home, 320L);
+    *gid = obr::proc::slot(home, 384L);
+    *stamp = obr::proc::slot(home, 576L);
+    if (which == 1L) {
+      *stamp = obr::proc::slot(home, 640L);
+    } else if (which == 2L) {
+      *stamp = obr::proc::slot(home, 448L);
+    }
+    if (*size < 0L) {
+      *size = 0L;
+    }
+  }
+  return status;
+}
+
+/* 一项 512 位：长度、种类、大小、权限、属主、属组、名字地址、选中的时间。 */
+deRfun putEntry(long entry, long name, long nameLen, long kind, long size, long mode, long uid, long gid, long stamp): void {
+  memory::store64(nameLen, entry);
+  memory::store64(kind, entry + 64L);
+  memory::store64(size, entry + 128L);
+  memory::store64(mode, entry + 192L);
+  memory::store64(uid, entry + 256L);
+  memory::store64(gid, entry + 320L);
+  memory::store64(name, entry + 384L);
+  memory::store64(stamp, entry + 448L);
+}
+
+deRfun entryAt(long base, long index): long {
+  return base + index * 512L;
+}
+
+/* 0 相同，1 左边的名字应排在后面，2 左边应排在前面。 */
+deRfun nameOrd(long leftEntry, long rightEntry): long {
+  long left = memory::load64(leftEntry + 384L);
+  long leftLen = memory::load64(leftEntry);
+  long right = memory::load64(rightEntry + 384L);
+  long rightLen = memory::load64(rightEntry);
+  long n = leftLen;
+  if (rightLen < n) {
+    n = rightLen;
+  }
+  long index = 0L;
+  while (index < n) {
+    long a = u8(left + index * 8L);
+    long b = u8(right + index * 8L);
+    if (a != b) {
+      if (a > b) {
+        return 1L;
+      }
+      return 2L;
+    }
+    index = index + 1L;
+  }
+  if (leftLen == rightLen) {
+    return 0L;
+  }
+  if (leftLen > rightLen) {
+    return 1L;
+  }
+  return 2L;
+}
+
+/* 1 表示左边在最终次序里应排到右边之后。sortKey 1 按大小，2 按时间，时间新的在前。 */
+deRfun comesAfter(long base, long leftIndex, long rightIndex, long sortKey, long reverse): long {
+  long left = entryAt(base, leftIndex);
+  long right = entryAt(base, rightIndex);
+  long ord = nameOrd(left, right);
+  if (sortKey == 1L || sortKey == 2L) {
+    long sl = memory::load64(left + 128L);
+    long sr = memory::load64(right + 128L);
+    if (sortKey == 2L) {
+      sl = memory::load64(left + 448L);
+      sr = memory::load64(right + 448L);
+    }
+    if (sl != sr) {
+      if (sl < sr) {
+        ord = 1L;
+      } else {
+        ord = 2L;
+      }
+    }
+  }
+  if (reverse == 1L) {
+    if (ord == 2L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (ord == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun layIndex(long idx, long n): void {
+  long index = 0L;
+  while (index < n) {
+    memory::store64(index, idx + index * 64L);
+    index = index + 1L;
+  }
+}
+
+deRfun sortEntries(long base, long idx, long n, long sortKey, long reverse): void {
+  long index = 1L;
+  while (index < n) {
+    long key = memory::load64(idx + index * 64L);
+    long slot = index;
+    long moving = 1L;
+    while (moving == 1L && slot > 0L) {
+      long prev = memory::load64(idx + (slot - 1L) * 64L);
+      if (comesAfter(base, prev, key, sortKey, reverse) == 1L) {
+        memory::store64(prev, idx + slot * 64L);
+        slot = slot - 1L;
+      } else {
+        moving = 0L;
+      }
+    }
+    memory::store64(key, idx + slot * 64L);
+    index = index + 1L;
+  }
+}
+
+deRfun blocksOf(long size, long block): long {
+  if (size <= 0L || block <= 0L) {
+    return 0L;
+  }
+  long whole = size / block;
+  long rem = size % block;
+  if (rem != 0L) {
+    whole = whole + 1L;
+  }
+  return whole;
+}
+
+deRfun digitsOf(long value): long {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long n = 1L;
+  long rest = value;
+  while (rest >= 10L) {
+    rest = rest / 10L;
+    n = n + 1L;
+  }
+  return n;
+}
+
+/* 0 没有记号，1 是 -F，2 是 -p。目录优先写斜杠。 */
+deRfun markOf(long kind, long mode, long style): long {
+  if (style == 0L) {
+    return 0L;
+  }
+  if (isDir(kind) == 1L) {
+    return 47L;
+  }
+  if (style != 1L) {
+    return 0L;
+  }
+  long bits = mode % 512L;
+  long exec = 0L;
+  if ((bits / 64L) % 2L == 1L) {
+    exec = 1L;
+  }
+  if ((bits / 8L) % 2L == 1L) {
+    exec = 1L;
+  }
+  if (bits % 2L == 1L) {
+    exec = 1L;
+  }
+  if (exec == 1L) {
+    return 42L;
+  }
+  return 0L;
+}
+
+deRfun writeChunk(long home, long opt, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long place = memory::load64(opt + 896L);
+    if (obr::proc::write(home, 1L, place, chunk) != 0L) {
+      writeErr(home, "ls: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "ls: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    memory::store64(place + wrote, opt + 896L);
+    memory::store64(1L, opt + 1024L);
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+/* 标准输出先攒在 opt+2624，最多 64 个八位组。个数在 opt+2560。
+   满 64 或遇到换行再写。长格式原先每个字符一次 write，每次都要整帧呈现。 */
+deRfun flushHeld(long home, long opt): long {
+  long count = memory::load64(opt + 2560L);
+  if (count < 1L) {
+    return 0L;
+  }
+  memory::store64(0L, opt + 2560L);
+  copySpan(opt + 2624L, obr::proc::bytes(home), count);
+  return writeChunk(home, opt, count);
+}
+
+deRfun writeReady(long home, long opt, long count): long {
+  return writeChunk(home, opt, count);
+}
+
+deRfun emitSpan(long home, long opt, long addr, long count): long {
+  if (flushHeld(home, opt) != 0L) {
+    return -1L;
+  }
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + done * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, opt, chunk) != 0L) {
+      return -1L;
+    }
+    done = done + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitText(long home, long opt, string text): long {
+  if (flushHeld(home, opt) != 0L) {
+    return -1L;
+  }
+  int raw = length(text);
+  long count = raw;
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[done + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeReady(home, opt, chunk) != 0L) {
+      return -1L;
+    }
+    done = done + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitOctet(long home, long opt, long octet): long {
+  long count = memory::load64(opt + 2560L);
+  if (count < 0L || count >= 64L) {
+    count = 0L;
+  }
+  memory::storeOctet(octet, opt + 2624L + count * 8L);
+  count = count + 1L;
+  memory::store64(count, opt + 2560L);
+  if (count >= 64L || octet == 10L) {
+    if (flushHeld(home, opt) != 0L) {
+      return -1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun emitSpaces(long home, long opt, long count): long {
+  if (flushHeld(home, opt) != 0L) {
+    return -1L;
+  }
+  long left = count;
+  while (left > 0L) {
+    long chunk = left;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(32L, obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeReady(home, opt, chunk) != 0L) {
+      return -1L;
+    }
+    left = left - chunk;
+  }
+  return 0L;
+}
+
+deRfun emitDecimal(long home, long opt, long value, long width): long {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long digs = digitsOf(value);
+  if (width > digs) {
+    if (emitSpaces(home, opt, width - digs) != 0L) {
+      return -1L;
+    }
+  }
+  long div = 1L;
+  long temp = value;
+  while (temp >= 10L) {
+    temp = temp / 10L;
+    div = div * 10L;
+  }
+  long rest = value;
+  while (div > 0L) {
+    long digit = rest / div;
+    if (emitOctet(home, opt, 48L + digit) != 0L) {
+      return -1L;
+    }
+    rest = rest % div;
+    div = div / 10L;
+  }
+  return 0L;
+}
+
+deRfun emitName(long home, long opt, long addr, long count): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  if (memory::load64(opt + 576L) == 0L) {
+    return emitSpan(home, opt, addr, count);
+  }
+  long dest = memory::load64(opt + 1280L);
+  long index = 0L;
+  while (index < count) {
+    long octet = u8(addr + index * 8L);
+    if (octet < 32L || octet > 126L) {
+      octet = 63L;
+    }
+    memory::storeOctet(octet, dest + index * 8L);
+    index = index + 1L;
+  }
+  return emitSpan(home, opt, dest, count);
+}
+
+deRfun emitMode(long home, long opt, long kind, long mode): long {
+  long dest = memory::load64(opt + 1216L);
+  long type = 45L;
+  if (isDir(kind) == 1L) {
+    type = 100L;
+  } else if (kind == 3L) {
+    type = 99L;
+  } else if (kind != 1L && kind != 5L) {
+    type = 63L;
+  }
+  memory::storeOctet(type, dest);
+  long bits = mode % 512L;
+  long flag = 256L;
+  long index = 0L;
+  while (index < 9L) {
+    long ch = 45L;
+    if ((bits / flag) % 2L == 1L) {
+      long which = index % 3L;
+      if (which == 0L) {
+        ch = 114L;
+      }
+      if (which == 1L) {
+        ch = 119L;
+      }
+      if (which == 2L) {
+        ch = 120L;
+      }
+    }
+    memory::storeOctet(ch, dest + (index + 1L) * 8L);
+    flag = flag / 2L;
+    index = index + 1L;
+  }
+  return emitSpan(home, opt, dest, 10L);
+}
+
+/* 序列号和块数。序列号没有来源，固定 0。块数按上面算好的宽度补空格。 */
+deRfun emitLead(long home, long opt, long blocks): long {
+  if (memory::load64(opt + 448L) == 1L) {
+    if (emitText(home, opt, "0 ") != 0L) {
+      return -1L;
+    }
+  }
+  if (memory::load64(opt + 640L) == 1L) {
+    if (emitDecimal(home, opt, blocks, memory::load64(opt + 2240L)) != 0L) {
+      return -1L;
+    }
+    if (emitOctet(home, opt, 32L) != 0L) {
+      return -1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun measure(long opt, long base, long idx, long n): void {
+  long maxName = 0L;
+  long maxOwner = 1L;
+  long maxGroup = 1L;
+  long maxSize = 1L;
+  long maxBlocks = 1L;
+  long total = 0L;
+  long style = memory::load64(opt + 192L);
+  long unit = memory::load64(opt + 512L);
+  long index = 0L;
+  while (index < n) {
+    long which = memory::load64(idx + index * 64L);
+    long entry = entryAt(base, which);
+    long nameLen = memory::load64(entry);
+    long kind = memory::load64(entry + 64L);
+    long size = memory::load64(entry + 128L);
+    long mode = memory::load64(entry + 192L);
+    long uid = memory::load64(entry + 256L);
+    long gid = memory::load64(entry + 320L);
+    long extra = 0L;
+    if (markOf(kind, mode, style) != 0L) {
+      extra = 1L;
+    }
+    if (nameLen + extra > maxName) {
+      maxName = nameLen + extra;
+    }
+    long blocks = blocksOf(size, unit);
+    total = total + blocks;
+    long blockDigits = digitsOf(blocks);
+    if (blockDigits > maxBlocks) {
+      maxBlocks = blockDigits;
+    }
+    long sizeDigits = digitsOf(size);
+    if (sizeDigits > maxSize) {
+      maxSize = sizeDigits;
+    }
+    if (memory::load64(opt + 704L) == 0L) {
+      long ownerDigits = digitsOf(uid);
+      if (ownerDigits > maxOwner) {
+        maxOwner = ownerDigits;
+      }
+    }
+    if (memory::load64(opt + 768L) == 0L) {
+      long groupDigits = digitsOf(gid);
+      if (groupDigits > maxGroup) {
+        maxGroup = groupDigits;
+      }
+    }
+    index = index + 1L;
+  }
+  memory::store64(maxName, opt + 1984L);
+  memory::store64(maxOwner, opt + 2048L);
+  memory::store64(maxGroup, opt + 2112L);
+  memory::store64(maxSize, opt + 2176L);
+  memory::store64(maxBlocks, opt + 2240L);
+  memory::store64(total, opt + 2304L);
+}
+
+deRfun leadWidth(long opt): long {
+  long width = 0L;
+  if (memory::load64(opt + 448L) == 1L) {
+    width = width + 2L;
+  }
+  if (memory::load64(opt + 640L) == 1L) {
+    width = width + memory::load64(opt + 2240L) + 1L;
+  }
+  return width;
+}
+
+deRfun namePart(long opt, long entry): long {
+  long extra = 0L;
+  if (markOf(memory::load64(entry + 64L), memory::load64(entry + 192L), memory::load64(opt + 192L)) != 0L) {
+    extra = 1L;
+  }
+  return memory::load64(entry) + extra;
+}
+
+deRfun floorDiv(long n, long d): long {
+  long q = n / d;
+  if (n % d < 0L) {
+    q = q - 1L;
+  }
+  return q;
+}
+
+deRfun daysFromCivil(long y, long m, long d): long {
+  if (m <= 2L) {
+    y = y - 1L;
+  }
+  long era = y / 400L;
+  if (y < 0L) {
+    era = (y - 399L) / 400L;
+  }
+  long yoe = y - era * 400L;
+  long march = m + 9L;
+  if (m > 2L) {
+    march = m - 3L;
+  }
+  long doy = (153L * march + 2L) / 5L + d - 1L;
+  long doe = yoe * 365L + yoe / 4L - yoe / 100L + doy;
+  return era * 146097L + doe - 719468L;
+}
+
+deRfun civilFromDays(long z, long* y, long* m, long* d): void {
+  z = z + 719468L;
+  long era = z / 146097L;
+  if (z < 0L) {
+    era = (z - 146096L) / 146097L;
+  }
+  long doe = z - era * 146097L;
+  long yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L;
+  long year = yoe + era * 400L;
+  long doy = doe - (365L * yoe + yoe / 4L - yoe / 100L);
+  long mp = (5L * doy + 2L) / 153L;
+  long day = doy - (153L * mp + 2L) / 5L + 1L;
+  long month = mp + 3L;
+  if (mp >= 10L) {
+    month = mp - 9L;
+  }
+  if (month <= 2L) {
+    year = year + 1L;
+  }
+  *y = year;
+  *m = month;
+  *d = day;
+}
+
+deRfun leapYear(long year): long {
+  if (year % 400L == 0L) {
+    return 1L;
+  }
+  if (year % 100L == 0L) {
+    return 0L;
+  }
+  if (year % 4L == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun monthLen(long year, long month): long {
+  if (month == 2L) {
+    if (leapYear(year) == 1L) {
+      return 29L;
+    }
+    return 28L;
+  }
+  if (month == 4L || month == 6L || month == 9L || month == 11L) {
+    return 30L;
+  }
+  return 31L;
+}
+
+deRfun breakMillis(long ms, long* year, long* month, long* day, long* hour, long* minute, long* second): void {
+  long days = floorDiv(ms, 86400000L);
+  long tod = ms - days * 86400000L;
+  long seconds = tod / 1000L;
+  *hour = seconds / 3600L;
+  *minute = (seconds % 3600L) / 60L;
+  *second = seconds % 60L;
+  civilFromDays(days, year, month, day);
+}
+
+deRfun packMillis(long year, long month, long day, long hour, long minute, long second): long {
+  long days = daysFromCivil(year, month, day);
+  return (days * 86400L + hour * 3600L + minute * 60L + second) * 1000L;
+}
+
+/* 六个月以前的那一瞬。日超过该月长度时收到月末，时分秒保持不变。 */
+deRfun monthsAgo(long ms): long {
+  long year = 0L;
+  long month = 0L;
+  long day = 0L;
+  long hour = 0L;
+  long minute = 0L;
+  long second = 0L;
+  breakMillis(ms, &year, &month, &day, &hour, &minute, &second);
+  month = month - 6L;
+  if (month < 1L) {
+    month = month + 12L;
+    year = year - 1L;
+  }
+  long cap = monthLen(year, month);
+  if (day > cap) {
+    day = cap;
+  }
+  return packMillis(year, month, day, hour, minute, second);
+}
+
+deRfun emitMonth(long home, long opt, long month): long {
+  if (month == 1L) {
+    return emitText(home, opt, "Jan");
+  }
+  if (month == 2L) {
+    return emitText(home, opt, "Feb");
+  }
+  if (month == 3L) {
+    return emitText(home, opt, "Mar");
+  }
+  if (month == 4L) {
+    return emitText(home, opt, "Apr");
+  }
+  if (month == 5L) {
+    return emitText(home, opt, "May");
+  }
+  if (month == 6L) {
+    return emitText(home, opt, "Jun");
+  }
+  if (month == 7L) {
+    return emitText(home, opt, "Jul");
+  }
+  if (month == 8L) {
+    return emitText(home, opt, "Aug");
+  }
+  if (month == 9L) {
+    return emitText(home, opt, "Sep");
+  }
+  if (month == 10L) {
+    return emitText(home, opt, "Oct");
+  }
+  if (month == 11L) {
+    return emitText(home, opt, "Nov");
+  }
+  if (month == 12L) {
+    return emitText(home, opt, "Dec");
+  }
+  return emitText(home, opt, "???");
+}
+
+deRfun emitZero2(long home, long opt, long value): long {
+  if (value < 0L) {
+    value = 0L;
+  }
+  if (value > 99L) {
+    value = value % 100L;
+  }
+  if (emitOctet(home, opt, 48L + value / 10L) != 0L) {
+    return -1L;
+  }
+  return emitOctet(home, opt, 48L + value % 10L);
+}
+
+/* 六个月以内，且不晚于现在：Mmm dd HH:MM。否则 Mmm dd  YYYY。两边各留一个空格。 */
+deRfun emitWhen(long home, long opt, long when): long {
+  long now = memory::load64(opt + 2496L);
+  long clock = 0L;
+  if (when <= now && when >= monthsAgo(now)) {
+    clock = 1L;
+  }
+  long year = 0L;
+  long month = 0L;
+  long day = 0L;
+  long hour = 0L;
+  long minute = 0L;
+  long second = 0L;
+  breakMillis(when, &year, &month, &day, &hour, &minute, &second);
+  if (emitOctet(home, opt, 32L) != 0L) {
+    return -1L;
+  }
+  if (emitMonth(home, opt, month) != 0L) {
+    return -1L;
+  }
+  if (emitOctet(home, opt, 32L) != 0L) {
+    return -1L;
+  }
+  if (emitDecimal(home, opt, day, 2L) != 0L) {
+    return -1L;
+  }
+  if (clock == 1L) {
+    if (emitOctet(home, opt, 32L) != 0L) {
+      return -1L;
+    }
+    if (emitZero2(home, opt, hour) != 0L) {
+      return -1L;
+    }
+    if (emitOctet(home, opt, 58L) != 0L) {
+      return -1L;
+    }
+    if (emitZero2(home, opt, minute) != 0L) {
+      return -1L;
+    }
+  } else {
+    if (emitSpaces(home, opt, 2L) != 0L) {
+      return -1L;
+    }
+    if (emitDecimal(home, opt, year, 4L) != 0L) {
+      return -1L;
+    }
+  }
+  return emitOctet(home, opt, 32L);
+}
+
+/* mode 0 每行一个，1 长格式，2 只写名字那段、不换行。 */
+deRfun emitItem(long home, long opt, long entry, long mode): long {
+  long kind = memory::load64(entry + 64L);
+  long size = memory::load64(entry + 128L);
+  long bits = memory::load64(entry + 192L);
+  long blocks = blocksOf(size, memory::load64(opt + 512L));
+  if (emitLead(home, opt, blocks) != 0L) {
+    return -1L;
+  }
+  if (mode == 1L) {
+    if (emitMode(home, opt, kind, bits) != 0L) {
+      return -1L;
+    }
+    if (emitText(home, opt, " 1") != 0L) {
+      return -1L;
+    }
+    if (memory::load64(opt + 704L) == 0L) {
+      if (emitOctet(home, opt, 32L) != 0L) {
+        return -1L;
+      }
+      if (emitDecimal(home, opt, memory::load64(entry + 256L), memory::load64(opt + 2048L)) != 0L) {
+        return -1L;
+      }
+    }
+    if (memory::load64(opt + 768L) == 0L) {
+      if (emitOctet(home, opt, 32L) != 0L) {
+        return -1L;
+      }
+      if (emitDecimal(home, opt, memory::load64(entry + 320L), memory::load64(opt + 2112L)) != 0L) {
+        return -1L;
+      }
+    }
+    if (emitOctet(home, opt, 32L) != 0L) {
+      return -1L;
+    }
+    if (emitDecimal(home, opt, size, memory::load64(opt + 2176L)) != 0L) {
+      return -1L;
+    }
+    if (emitWhen(home, opt, memory::load64(entry + 448L)) != 0L) {
+      return -1L;
+    }
+  }
+  if (emitName(home, opt, memory::load64(entry + 384L), memory::load64(entry)) != 0L) {
+    return -1L;
+  }
+  long mark = markOf(kind, bits, memory::load64(opt + 192L));
+  if (mark != 0L) {
+    if (emitOctet(home, opt, mark) != 0L) {
+      return -1L;
+    }
+  }
+  if (mode != 2L) {
+    if (emitOctet(home, opt, 10L) != 0L) {
+      return -1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun columnCount(long opt, long n): long {
+  if (n < 1L) {
+    return 1L;
+  }
+  long width = memory::load64(opt + 832L);
+  long item = leadWidth(opt) + memory::load64(opt + 1984L);
+  if (item < 1L) {
+    item = 1L;
+  }
+  if (item >= width) {
+    return 1L;
+  }
+  long cols = 1L + (width - item) / (item + 2L);
+  if (cols < 1L) {
+    cols = 1L;
+  }
+  if (cols > n) {
+    cols = n;
+  }
+  return cols;
+}
+
+deRfun padGap(long home, long opt, long entry): long {
+  long pad = memory::load64(opt + 1984L) - namePart(opt, entry);
+  if (pad > 0L) {
+    if (emitSpaces(home, opt, pad) != 0L) {
+      return -1L;
+    }
+  }
+  return emitSpaces(home, opt, 2L);
+}
+
+deRfun showDown(long home, long opt, long base, long idx, long n): long {
+  long cols = columnCount(opt, n);
+  long rows = (n + cols - 1L) / cols;
+  long row = 0L;
+  while (row < rows) {
+    long col = 0L;
+    while (col < cols) {
+      long pos = row + col * rows;
+      if (pos < n) {
+        long which = memory::load64(idx + pos * 64L);
+        long entry = entryAt(base, which);
+        if (emitItem(home, opt, entry, 2L) != 0L) {
+          return -1L;
+        }
+        long more = 0L;
+        long next = col + 1L;
+        while (next < cols) {
+          if (row + next * rows < n) {
+            more = 1L;
+          }
+          next = next + 1L;
+        }
+        if (more == 1L) {
+          if (padGap(home, opt, entry) != 0L) {
+            return -1L;
+          }
+        }
+      }
+      col = col + 1L;
+    }
+    if (emitOctet(home, opt, 10L) != 0L) {
+      return -1L;
+    }
+    row = row + 1L;
+  }
+  return 0L;
+}
+
+deRfun showAcross(long home, long opt, long base, long idx, long n): long {
+  long cols = columnCount(opt, n);
+  long index = 0L;
+  while (index < n) {
+    long which = memory::load64(idx + index * 64L);
+    long entry = entryAt(base, which);
+    if (emitItem(home, opt, entry, 2L) != 0L) {
+      return -1L;
+    }
+    long endLine = 0L;
+    if (index + 1L == n) {
+      endLine = 1L;
+    } else if ((index + 1L) % cols == 0L) {
+      endLine = 1L;
+    }
+    if (endLine == 1L) {
+      if (emitOctet(home, opt, 10L) != 0L) {
+        return -1L;
+      }
+    } else if (padGap(home, opt, entry) != 0L) {
+      return -1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun showStream(long home, long opt, long base, long idx, long n): long {
+  long column = 0L;
+  long width = memory::load64(opt + 832L);
+  long index = 0L;
+  while (index < n) {
+    long which = memory::load64(idx + index * 64L);
+    long entry = entryAt(base, which);
+    long part = leadWidth(opt) + namePart(opt, entry);
+    long extra = 0L;
+    if (index + 1L < n) {
+      extra = 2L;
+    }
+    if (column > 0L && column + part + extra > width) {
+      if (emitOctet(home, opt, 10L) != 0L) {
+        return -1L;
+      }
+      column = 0L;
+    }
+    if (emitItem(home, opt, entry, 2L) != 0L) {
+      return -1L;
+    }
+    if (extra == 2L) {
+      if (emitText(home, opt, ", ") != 0L) {
+        return -1L;
+      }
+      column = column + part + 2L;
+    } else {
+      column = column + part;
+    }
+    index = index + 1L;
+  }
+  return emitOctet(home, opt, 10L);
+}
+
+/* withTotal 为 1 时，长格式先写 total。返回 0 成功，-1 写失败。 */
+deRfun showEntries(long home, long opt, long base, long idx, long n, long withTotal): long {
+  measure(opt, base, idx, n);
+  long shape = memory::load64(opt);
+  if (n < 1L) {
+    if (withTotal == 1L && shape == 1L) {
+      if (emitText(home, opt, "total ") != 0L) {
+        return -1L;
+      }
+      if (emitDecimal(home, opt, 0L, 0L) != 0L) {
+        return -1L;
+      }
+      return emitOctet(home, opt, 10L);
+    }
+    return 0L;
+  }
+  if (withTotal == 1L && shape == 1L) {
+    if (emitText(home, opt, "total ") != 0L) {
+      return -1L;
+    }
+    if (emitDecimal(home, opt, memory::load64(opt + 2304L), 0L) != 0L) {
+      return -1L;
+    }
+    if (emitOctet(home, opt, 10L) != 0L) {
+      return -1L;
+    }
+  }
+  if (shape == 1L || shape == 0L) {
+    long mode = 0L;
+    if (shape == 1L) {
+      mode = 1L;
+    }
+    long index = 0L;
+    while (index < n) {
+      long which = memory::load64(idx + index * 64L);
+      if (emitItem(home, opt, entryAt(base, which), mode) != 0L) {
+        return -1L;
+      }
+      index = index + 1L;
+    }
+    return 0L;
+  }
+  if (shape == 3L) {
+    return showStream(home, opt, base, idx, n);
+  }
+  if (shape == 4L) {
+    return showAcross(home, opt, base, idx, n);
+  }
+  return showDown(home, opt, base, idx, n);
+}
+
+deRfun orderEntries(long opt, long base, long idx, long n): void {
+  layIndex(idx, n);
+  if (memory::load64(opt + 384L) == 1L || n < 2L) {
+    return;
+  }
+  sortEntries(base, idx, n, memory::load64(opt + 320L), memory::load64(opt + 256L));
+}
+
+deRfun spanStep(long count): long {
+  long step = 64L + count * 8L;
+  long rem = step % 64L;
+  if (rem != 0L) {
+    step = step + (64L - rem);
+  }
+  return step;
+}
+
+deRfun poolAdd(long opt, long name, long nameLen): long {
+  long pool = memory::load64(opt + 1536L);
+  long cap = memory::load64(opt + 1600L);
+  long at = memory::load64(opt + 1664L);
+  long step = spanStep(nameLen);
+  if (at < 0L || step < 64L || at + step > cap) {
+    return 1L;
+  }
+  memory::store64(nameLen, pool + at);
+  copySpan(name, pool + at + 64L, nameLen);
+  memory::store64(at + step, opt + 1664L);
+  return 0L;
+}
+
+deRfun childName(long pool, long start, long index, long* at, long* len): void {
+  long cursor = start;
+  long item = 0L;
+  while (item < index) {
+    long n = memory::load64(pool + cursor);
+    cursor = cursor + spanStep(n);
+    item = item + 1L;
+  }
+  *len = memory::load64(pool + cursor);
+  *at = pool + cursor + 64L;
+}
+
+/* 祖先 0 到 sp 含当前目录。foldedLen 小于 0 时改比原始路径。 */
+deRfun looped(long opt, long sp, long raw, long rawLen, long folded, long foldedLen): long {
+  long paths = memory::load64(opt + 1728L);
+  long anc = memory::load64(opt + 1792L);
+  long frames = memory::load64(opt + 1856L);
+  long index = 0L;
+  while (index <= sp) {
+    long frame = frames + index * 512L;
+    long alen = memory::load64(frame + 384L);
+    long hit = 0L;
+    if (alen >= 0L && foldedLen >= 0L) {
+      if (sameSpan(anc + index * 65536L, alen, folded, foldedLen) == 1L) {
+        hit = 1L;
+      }
+    } else {
+      long plen = memory::load64(frame);
+      if (sameSpan(paths + index * 65536L, plen, raw, rawLen) == 1L) {
+        hit = 1L;
+      }
+    }
+    if (hit == 1L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun writeHead(long home, long opt, long path, long pathLen): long {
+  if (memory::load64(opt + 1024L) == 1L) {
+    if (emitOctet(home, opt, 10L) != 0L) {
+      return -1L;
+    }
+  }
+  if (emitName(home, opt, path, pathLen) != 0L) {
+    return -1L;
+  }
+  return emitText(home, opt, ":\n");
+}
+
+/* 返回 0 这一层列完，1 这一层失败，-1 必须停。子目录名字按排序装进池。 */
+deRfun fillDir(long home, long opt, long frame, long dir, long dirLen, long heads): long {
+  long entries = memory::load64(opt + 1344L);
+  long indices = memory::load64(opt + 1408L);
+  long namePool = memory::load64(opt + 1472L);
+  long grab = memory::load64(opt + 2432L);
+  long scratch = memory::load64(opt + 1216L);
+  long nameCap = 1024L * 512L * 8L;
+  long nameUsed = 0L;
+  long n = 0L;
+  long index = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    plant(home, dir, dirLen);
+    long listed = obr::proc::readdir(home, index, 512L);
+    if (listed == 2L) {
+      reading = 0L;
+    } else if (listed != 0L) {
+      blameWhy(home, dir, dirLen, listed);
+      memory::store64(1L, opt + 960L);
+      return 1L;
+    } else {
+      long nameLen = obr::proc::slot(home, 256L);
+      if (nameLen == 0L) {
+        reading = 0L;
+      } else if (nameLen < 0L || nameLen > 512L) {
+        blame(home, dir, dirLen, ": cannot read\n");
+        memory::store64(1L, opt + 960L);
+        return 1L;
+      } else {
+        copySpan(obr::proc::bytes(home), grab, nameLen);
+        index = index + 1L;
+        if (hiddenName(grab, nameLen, memory::load64(opt + 64L)) == 0L) {
+          if (n >= 1024L || nameUsed + nameLen * 8L > nameCap) {
+            blame(home, dir, dirLen, ": too many entries\n");
+            memory::store64(1L, opt + 960L);
+            return 1L;
+          }
+          long joined = joinPath(dir, dirLen, grab, nameLen, scratch);
+          if (joined < 0L) {
+            writeErr(home, "ls: path too long\n");
+            memory::store64(1L, opt + 960L);
+            return 1L;
+          }
+          long kind = 0L;
+          long size = 0L;
+          long mode = 0L;
+          long uid = 0L;
+          long gid = 0L;
+          long stamp = 0L;
+          long status = statOf(home, scratch, joined, &kind, &size, &mode, &uid, &gid, memory::load64(opt + 2368L), &stamp);
+          if (status != 0L) {
+            blameWhy(home, scratch, joined, status);
+            memory::store64(1L, opt + 960L);
+          } else {
+            copySpan(grab, namePool + nameUsed, nameLen);
+            putEntry(entryAt(entries, n), namePool + nameUsed, nameLen, kind, size, mode, uid, gid, stamp);
+            nameUsed = nameUsed + nameLen * 8L;
+            n = n + 1L;
+          }
+        }
+      }
+    }
+  }
+  orderEntries(opt, entries, indices, n);
+  if (heads == 1L) {
+    if (writeHead(home, opt, dir, dirLen) != 0L) {
+      return -1L;
+    }
+  }
+  if (showEntries(home, opt, entries, indices, n, 1L) != 0L) {
+    return -1L;
+  }
+  memory::store64(memory::load64(opt + 1664L), frame + 320L);
+  memory::store64(0L, frame + 256L);
+  if (memory::load64(opt + 128L) != 1L) {
+    return 0L;
+  }
+  long item = 0L;
+  while (item < n) {
+    long which = memory::load64(indices + item * 64L);
+    long entry = entryAt(entries, which);
+    long kind = memory::load64(entry + 64L);
+    long np = memory::load64(entry + 384L);
+    long nl = memory::load64(entry);
+    if (isDir(kind) == 1L && isDot(np, nl) == 0L) {
+      if (poolAdd(opt, np, nl) != 0L) {
+        writeErr(home, "ls: out of memory\n");
+        return -1L;
+      }
+      memory::store64(memory::load64(frame + 256L) + 1L, frame + 256L);
+    }
+    item = item + 1L;
+  }
+  return 0L;
+}
+
+deRfun pushChild(long home, long opt, long sp): long {
+  long frames = memory::load64(opt + 1856L);
+  long paths = memory::load64(opt + 1728L);
+  long anc = memory::load64(opt + 1792L);
+  long scratch = memory::load64(opt + 1216L);
+  long fold = memory::load64(opt + 1280L);
+  long frame = frames + sp * 512L;
+  long parent = paths + sp * 65536L;
+  long parentLen = memory::load64(frame);
+  long nameAt = 0L;
+  long nameLen = 0L;
+  childName(memory::load64(opt + 1536L), memory::load64(frame + 320L), memory::load64(frame + 192L), &nameAt, &nameLen);
+  memory::store64(memory::load64(frame + 192L) + 1L, frame + 192L);
+  long slot = paths + (sp + 1L) * 65536L;
+  long childLen = joinPath(parent, parentLen, nameAt, nameLen, slot);
+  if (childLen < 0L) {
+    writeErr(home, "ls: path too long\n");
+    memory::store64(1L, opt + 960L);
+    return sp;
+  }
+  long absLen = resolve(memory::load64(opt + 1088L), memory::load64(opt + 1152L), slot, childLen, scratch, fold);
+  if (looped(opt, sp, slot, childLen, fold, absLen) == 1L) {
+    blame(home, slot, childLen, ": directory loop\n");
+    memory::store64(1L, opt + 960L);
+    return sp;
+  }
+  long next = sp + 1L;
+  long child = frames + next * 512L;
+  memory::store64(childLen, child);
+  memory::store64(0L, child + 64L);
+  memory::store64(memory::load64(frame + 128L) + 1L, child + 128L);
+  memory::store64(0L, child + 192L);
+  memory::store64(0L, child + 256L);
+  memory::store64(0L, child + 320L);
+  if (absLen >= 0L) {
+    copySpan(fold, anc + next * 65536L, absLen);
+    memory::store64(absLen, child + 384L);
+  } else {
+    memory::store64(-1L, child + 384L);
+  }
+  return next;
+}
+
+/* 从这一条目录操作数往下走。返回 -1 表示必须停。 */
+deRfun walkOne(long home, long opt, long dir, long dirLen, long heads): long {
+  if (dirLen < 1L || dirLen > 8192L) {
+    writeErr(home, "ls: path too long\n");
+    memory::store64(1L, opt + 960L);
+    return 0L;
+  }
+  memory::store64(0L, opt + 1664L);
+  long paths = memory::load64(opt + 1728L);
+  long anc = memory::load64(opt + 1792L);
+  long frames = memory::load64(opt + 1856L);
+  long scratch = memory::load64(opt + 1216L);
+  long fold = memory::load64(opt + 1280L);
+  copySpan(dir, paths, dirLen);
+  long absLen = resolve(memory::load64(opt + 1088L), memory::load64(opt + 1152L), paths, dirLen, scratch, fold);
+  long frame = frames;
+  memory::store64(dirLen, frame);
+  memory::store64(0L, frame + 64L);
+  memory::store64(1L, frame + 128L);
+  memory::store64(0L, frame + 192L);
+  memory::store64(0L, frame + 256L);
+  memory::store64(0L, frame + 320L);
+  if (absLen >= 0L) {
+    copySpan(fold, anc, absLen);
+    memory::store64(absLen, frame + 384L);
+  } else {
+    memory::store64(-1L, frame + 384L);
+  }
+  long sp = 0L;
+  while (sp >= 0L) {
+    frame = frames + sp * 512L;
+    long phase = memory::load64(frame + 64L);
+    if (phase == 0L) {
+      long useHead = heads;
+      if (memory::load64(frame + 128L) > 1L) {
+        useHead = 1L;
+      }
+      long result = fillDir(home, opt, frame, paths + sp * 65536L, memory::load64(frame), useHead);
+      if (result < 0L) {
+        return -1L;
+      }
+      if (result > 0L || memory::load64(frame + 256L) == 0L) {
+        sp = sp - 1L;
+      } else {
+        memory::store64(1L, frame + 64L);
+        memory::store64(0L, frame + 192L);
+      }
+    } else {
+      long next = memory::load64(frame + 192L);
+      long kids = memory::load64(frame + 256L);
+      if (next >= kids) {
+        memory::store64(memory::load64(frame + 320L), opt + 1664L);
+        sp = sp - 1L;
+      } else if (memory::load64(frame + 128L) >= 32L) {
+        writeErr(home, "ls: too deep\n");
+        memory::store64(1L, opt + 960L);
+        memory::store64(kids, frame + 192L);
+      } else if (sp >= 31L) {
+        writeErr(home, "ls: too deep\n");
+        memory::store64(1L, opt + 960L);
+        memory::store64(kids, frame + 192L);
+      } else {
+        sp = pushChild(home, opt, sp);
+      }
+    }
+  }
+  return 0L;
+}
+
+deRfun columnsOf(long home, long scratch): long {
+  putText(scratch, 0L, "COLUMNS");
+  long value = 0L;
+  long valueLen = 0L;
+  if (envLookup(home, scratch, 7L, &value, &valueLen) != 1L) {
+    return 80L;
+  }
+  if (valueLen < 1L || valueLen > 6L) {
+    return 80L;
+  }
+  long n = 0L;
+  long index = 0L;
+  while (index < valueLen) {
+    long digit = u8(value + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 80L;
+    }
+    n = n * 10L + digit - 48L;
+    index = index + 1L;
+  }
+  if (n < 1L) {
+    return 80L;
+  }
+  if (n > 4096L) {
+    return 4096L;
+  }
+  return n;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long shape = 0L;
+  long dots = 0L;
+  long descend = 0L;
+  long mark = 0L;
+  long reverse = 0L;
+  long sortKey = 0L;
+  long unsorted = 0L;
+  long inode = 0L;
+  long unit = 512L;
+  long quote = 0L;
+  long timeSelect = 0L;
+  long showBlocks = 0L;
+  long omitOwner = 0L;
+  long omitGroup = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L || len == 1L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 65L) {
+          dots = 2L;
+        } else if (bit == 67L) {
+          shape = 2L;
+        } else if (bit == 70L) {
+          mark = 1L;
+        } else if (bit == 72L || bit == 76L) {
+          bit = bit;
+        } else if (bit == 82L) {
+          descend = 1L;
+        } else if (bit == 83L) {
+          sortKey = 1L;
+        } else if (bit == 97L) {
+          dots = 1L;
+        } else if (bit == 99L) {
+          timeSelect = 1L;
+        } else if (bit == 117L) {
+          timeSelect = 2L;
+        } else if (bit == 100L) {
+          descend = 2L;
+        } else if (bit == 102L) {
+          unsorted = 1L;
+        } else if (bit == 103L) {
+          shape = 1L;
+          omitOwner = 1L;
+        } else if (bit == 105L) {
+          inode = 1L;
+        } else if (bit == 107L) {
+          unit = 1024L;
+        } else if (bit == 108L) {
+          shape = 1L;
+        } else if (bit == 109L) {
+          shape = 3L;
+        } else if (bit == 110L) {
+          shape = 1L;
+        } else if (bit == 111L) {
+          shape = 1L;
+          omitGroup = 1L;
+        } else if (bit == 112L) {
+          mark = 2L;
+        } else if (bit == 113L) {
+          quote = 1L;
+        } else if (bit == 114L) {
+          reverse = 1L;
+        } else if (bit == 115L) {
+          showBlocks = 1L;
+        } else if (bit == 116L) {
+          sortKey = 2L;
+        } else if (bit == 120L) {
+          shape = 4L;
+        } else if (bit == 49L) {
+          if (shape != 1L) {
+            shape = 0L;
+          }
+        } else {
+          return fail(home, "ls: invalid option\n");
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  /* -f 在全部选项看完后再生效，后写的 -A 也盖不住它。 */
+  if (unsorted == 1L) {
+    dots = 1L;
+    reverse = 0L;
+    sortKey = 0L;
+  }
+  long opt = obr::proc::alloc(home, 8192L);
+  long entries = obr::proc::alloc(home, 1024L * 512L);
+  long indices = obr::proc::alloc(home, 1024L * 64L);
+  long namePool = obr::proc::alloc(home, 1024L * 512L * 8L);
+  long childPool = obr::proc::alloc(home, 65536L * 256L);
+  long paths = obr::proc::alloc(home, 32L * 65536L);
+  long anc = obr::proc::alloc(home, 32L * 65536L);
+  long frames = obr::proc::alloc(home, 32L * 512L);
+  long cwd = obr::proc::alloc(home, 65536L);
+  long scratch = obr::proc::alloc(home, 65536L);
+  long fold = obr::proc::alloc(home, 65536L);
+  long grab = obr::proc::alloc(home, 512L * 8L);
+  long dirAt = obr::proc::alloc(home, 64L * 64L);
+  long dirLn = obr::proc::alloc(home, 64L * 64L);
+  long dot = obr::proc::alloc(home, 64L);
+  if (opt == 0L || entries == 0L || indices == 0L || namePool == 0L || childPool == 0L) {
+    return fail(home, "ls: out of memory\n");
+  }
+  if (paths == 0L || anc == 0L || frames == 0L || cwd == 0L || scratch == 0L || fold == 0L) {
+    return fail(home, "ls: out of memory\n");
+  }
+  if (grab == 0L || dirAt == 0L || dirLn == 0L || dot == 0L) {
+    return fail(home, "ls: out of memory\n");
+  }
+  memory::storeOctet(46L, dot);
+  long columns = columnsOf(home, scratch);
+  long cwdLen = readCwd(home, cwd);
+  memory::store64(shape, opt);
+  memory::store64(dots, opt + 64L);
+  memory::store64(descend, opt + 128L);
+  memory::store64(mark, opt + 192L);
+  memory::store64(reverse, opt + 256L);
+  memory::store64(sortKey, opt + 320L);
+  memory::store64(unsorted, opt + 384L);
+  memory::store64(inode, opt + 448L);
+  memory::store64(unit, opt + 512L);
+  memory::store64(quote, opt + 576L);
+  memory::store64(showBlocks, opt + 640L);
+  memory::store64(omitOwner, opt + 704L);
+  memory::store64(omitGroup, opt + 768L);
+  memory::store64(columns, opt + 832L);
+  memory::store64(0L, opt + 896L);
+  memory::store64(0L, opt + 960L);
+  memory::store64(0L, opt + 1024L);
+  memory::store64(cwd, opt + 1088L);
+  memory::store64(cwdLen, opt + 1152L);
+  memory::store64(scratch, opt + 1216L);
+  memory::store64(fold, opt + 1280L);
+  memory::store64(entries, opt + 1344L);
+  memory::store64(indices, opt + 1408L);
+  memory::store64(namePool, opt + 1472L);
+  memory::store64(childPool, opt + 1536L);
+  memory::store64(65536L * 256L, opt + 1600L);
+  memory::store64(0L, opt + 1664L);
+  memory::store64(paths, opt + 1728L);
+  memory::store64(anc, opt + 1792L);
+  memory::store64(frames, opt + 1856L);
+  memory::store64(grab, opt + 2432L);
+  memory::store64(timeSelect, opt + 2368L);
+  long now = 0L;
+  if (obr::proc::clock(home) == 0L) {
+    now = obr::proc::slot(home, 128L);
+  }
+  memory::store64(now, opt + 2496L);
+  memory::store64(0L, opt + 2560L);
+  long fileN = 0L;
+  long dirN = 0L;
+  long cursor = index;
+  long running = 1L;
+  if (index >= count) {
+    cursor = -1L;
+  }
+  while (running == 1L) {
+    long path = 0L;
+    long pathLen = 0L;
+    if (cursor < 0L) {
+      path = dot;
+      pathLen = 1L;
+      running = 0L;
+    } else {
+      path = argPtr(home, cursor);
+      pathLen = argLen(home, cursor);
+      cursor = cursor + 1L;
+      if (cursor >= count) {
+        running = 0L;
+      }
+    }
+    long kind = 0L;
+    long size = 0L;
+    long mode = 0L;
+    long uid = 0L;
+    long gid = 0L;
+    long stamp = 0L;
+    long status = statOf(home, path, pathLen, &kind, &size, &mode, &uid, &gid, timeSelect, &stamp);
+    if (status != 0L) {
+      blameWhy(home, path, pathLen, status);
+      memory::store64(1L, opt + 960L);
+    } else if (descend != 2L && isDir(kind) == 1L) {
+      if (dirN >= 64L) {
+        return fail(home, "ls: too many arguments\n");
+      }
+      memory::store64(path, dirAt + dirN * 64L);
+      memory::store64(pathLen, dirLn + dirN * 64L);
+      dirN = dirN + 1L;
+    } else if (fileN >= 1024L) {
+      return fail(home, "ls: too many arguments\n");
+    } else {
+      putEntry(entryAt(entries, fileN), path, pathLen, kind, size, mode, uid, gid, stamp);
+      fileN = fileN + 1L;
+    }
+  }
+  if (fileN > 0L) {
+    orderEntries(opt, entries, indices, fileN);
+    if (showEntries(home, opt, entries, indices, fileN, 0L) != 0L) {
+      flushHeld(home, opt);
+      return finish(home, 1L);
+    }
+  }
+  long heads = 0L;
+  if (descend == 1L || dirN > 1L || (fileN > 0L && dirN > 0L)) {
+    heads = 1L;
+  }
+  long dirIndex = 0L;
+  while (dirIndex < dirN) {
+    long outcome = walkOne(home, opt, memory::load64(dirAt + dirIndex * 64L), memory::load64(dirLn + dirIndex * 64L), heads);
+    if (outcome < 0L) {
+      flushHeld(home, opt);
+      return finish(home, 1L);
+    }
+    dirIndex = dirIndex + 1L;
+  }
+  if (flushHeld(home, opt) != 0L) {
+    return finish(home, 1L);
+  }
+  if (memory::load64(opt + 960L) != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

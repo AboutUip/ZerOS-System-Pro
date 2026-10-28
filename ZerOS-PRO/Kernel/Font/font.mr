@@ -3,5 +3,6 @@ deRfun fontCensus(): void;
 deRfun fontQuery(long home): long;
 deRfun termPhase(): long;
 deRfun termSet(long value): void;
-deRfun termOpen(): long;
+deRfun termMap(): long;
+deRfun termFont(): long;
 deRfun termShow(): void;

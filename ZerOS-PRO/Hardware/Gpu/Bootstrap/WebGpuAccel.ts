@@ -163,6 +163,7 @@ struct Vout {
        */
       const viewShader = `
 @group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> origin: vec2<u32>;
 
 @vertex fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
   var x = -1.0;
@@ -177,7 +178,8 @@ struct Vout {
 }
 
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-  return textureLoad(src, vec2<i32>(floor(pos.xy)), 0);
+  let at = vec2<i32>(floor(pos.xy)) + vec2<i32>(origin);
+  return textureLoad(src, at, 0);
 }
 `;
 
@@ -243,8 +245,6 @@ struct Vout {
        */
       let colorView: GPUTextureView | null = null;
       let depthView: GPUTextureView | null = null;
-      /** 把颜色目标贴进位图时用的绑定组。源纹理没换就继续用这一份。 */
-      let copyGroup: GPUBindGroup | null = null;
       let pipeline: GPURenderPipeline | null = null;
       let uniform: GPUBuffer | null = null;
       let vertices: GPUBuffer | null = null;
@@ -253,6 +253,16 @@ struct Vout {
       let viewCanvas: OffscreenCanvas | null = null;
       let viewContext: GPUCanvasContext | null = null;
       let viewPipe: GPURenderPipeline | null = null;
+      let viewOriginBuffer: GPUBuffer | null = null;
+      let viewGroup: GPUBindGroup | null = null;
+      /** 这一帧真正改过的像素。下一次位图只交这块，不再整帧读回。 */
+      let inkLeft = 0;
+      let inkTop = 0;
+      let inkRight = 0;
+      let inkBottom = 0;
+      let inkAny = false;
+      let postedX = 0;
+      let postedY = 0;
       let bind: GPUBindGroup | null = null;
       let sampler: GPUSampler | null = null;
       let white: GPUTexture | null = null;
@@ -368,7 +378,7 @@ struct Vout {
       function dropTargetViews(): void {
         colorView = null;
         depthView = null;
-        copyGroup = null;
+        viewGroup = null;
       }
 
       /** 帧尺寸变化后丢掉旧的颜色目标，下次绘制再按新尺寸建立。 */
@@ -385,6 +395,7 @@ struct Vout {
         readback = null;
         viewCanvas = null;
         viewContext = null;
+        viewGroup = null;
         pipeline = null;
         colorReady = false;
         depthReady = false;
@@ -998,6 +1009,44 @@ struct Vout {
        * 颜色清除并进当前段。这段已经有图元时另开一段，好让清除发生在那些图元之后。
        * 只清深度先挂起，不单独占一次提交。
        */
+      function markInk(x: number, y: number, cellWidth: number, cellHeight: number): void {
+        const left = Math.max(0, Math.floor(x));
+        const top = Math.max(0, Math.floor(y));
+        const right = Math.min(width, Math.ceil(x + cellWidth));
+        const bottom = Math.min(height, Math.ceil(y + cellHeight));
+        if (right <= left || bottom <= top) {
+          return;
+        }
+        if (!inkAny) {
+          inkLeft = left;
+          inkTop = top;
+          inkRight = right;
+          inkBottom = bottom;
+          inkAny = true;
+          return;
+        }
+        if (left < inkLeft) {
+          inkLeft = left;
+        }
+        if (top < inkTop) {
+          inkTop = top;
+        }
+        if (right > inkRight) {
+          inkRight = right;
+        }
+        if (bottom > inkBottom) {
+          inkBottom = bottom;
+        }
+      }
+
+      function markFull(): void {
+        inkLeft = 0;
+        inkTop = 0;
+        inkRight = width;
+        inkBottom = height;
+        inkAny = true;
+      }
+
       function recordClear(mask: number): void {
         const colorBit = (mask & 1) !== 0;
         const depthBit = (mask & 2) !== 0;
@@ -1007,6 +1056,8 @@ struct Vout {
         if (!colorBit) {
           return;
         }
+        /* 清颜色会改整帧。这一次位图必须把整幅交出去，不能只交后面画上的那一行。 */
+        markFull();
         const last = screenPasses[screenPasses.length - 1];
         if (last?.count === 0) {
           last.clearColor = true;
@@ -1042,6 +1093,7 @@ struct Vout {
        * 原点在左上，y 向下。不碰矩阵栈，也不看混合开关；透明度总是按源透明度叠上去。
        */
       function pushScreenQuad(x: number, y: number, cellWidth: number, cellHeight: number, u0: number, v0: number, u1: number, v1: number, font: number, mode: number, radius: number): void {
+        markInk(x, y, cellWidth, cellHeight);
         const tintR = clampUnit(red);
         const tintG = clampUnit(green);
         const tintB = clampUnit(blue);
@@ -1610,16 +1662,29 @@ struct Vout {
         return "configure" in context && "getCurrentTexture" in context;
       }
 
+      /** 最近一次位图相对整帧的左上角。整幅时是 0,0。 */
+      export function viewOrigin(): { readonly x: number; readonly y: number } {
+        return { x: postedX, y: postedY };
+      }
+
       /**
-       * 准备一张和颜色目标一样大的画布。
+       * 准备一张刚好盖住这块脏矩形的画布。
        * 浏览器画布的像素格式常常不是 rgba8unorm，所以不用纹理拷贝，改画一个铺满的三角形。
+       * 尺寸没变就沿用上一张。位图被拿走之后，下一次 getCurrentTexture 会换新纹理。
        */
-      function ensureView(active: GPUDevice): OffscreenCanvas {
+      function ensureView(active: GPUDevice, patchWidth: number, patchHeight: number): OffscreenCanvas {
         const existing = viewCanvas;
-        if (existing !== null && existing.width === width && existing.height === height && viewContext !== null && viewPipe !== null) {
+        if (
+          existing !== null
+          && existing.width === patchWidth
+          && existing.height === patchHeight
+          && viewContext !== null
+          && viewPipe !== null
+          && viewOriginBuffer !== null
+        ) {
           return existing;
         }
-        const canvas = new OffscreenCanvas(width, height);
+        const canvas = new OffscreenCanvas(patchWidth, patchHeight);
         const context = canvas.getContext("webgpu");
         if (context === null || !isGpuCanvas(context)) {
           fail("画面画布没有 WebGPU 上下文");
@@ -1632,6 +1697,14 @@ struct Vout {
         });
         viewCanvas = canvas;
         viewContext = context;
+        if (viewOriginBuffer === null) {
+          /* 统一缓冲的绑定长度必须是 16 的倍数。只要 8 字节时绑定会失败，
+             位图做不成，每个键都退回整帧读回。 */
+          viewOriginBuffer = active.createBuffer({
+            size: 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+        }
         if (viewPipe === null) {
           const module = active.createShaderModule({ code: viewShader });
           viewPipe = active.createRenderPipeline({
@@ -1649,20 +1722,27 @@ struct Vout {
       }
 
       /**
-       * 把颜色目标画进位图。
+       * 把颜色目标里这块矩形画进位图。
        * 先等这一次提交做完，再把画布交出去。位图拿走之后画布是空的，下一帧会再画。
+       * 只交改过的那一块。整帧读回会让每个键都等一两百毫秒。
        */
-      async function copyColor(active: GPUDevice, source: GPUTexture): Promise<ImageBitmap> {
-        const canvas = ensureView(active);
+      async function copyColor(active: GPUDevice, source: GPUTexture, originX: number, originY: number, patchWidth: number, patchHeight: number): Promise<ImageBitmap> {
+        const canvas = ensureView(active, patchWidth, patchHeight);
         const context = viewContext;
         const pipe = viewPipe;
-        if (context === null || pipe === null) {
+        const originBuffer = viewOriginBuffer;
+        if (context === null || pipe === null || originBuffer === null) {
           fail("画面画布还没有建立");
         }
+        const packed = new Uint32Array([originX, originY]);
+        active.queue.writeBuffer(originBuffer, 0, packed);
         /* 源纹理不变就复用绑定组。每一帧新建一份，会和视图一样越积越慢。 */
-        const group = copyGroup ??= active.createBindGroup({
+        const group = viewGroup ??= active.createBindGroup({
           layout: pipe.getBindGroupLayout(0),
-          entries: [{ binding: 0, resource: colorAttachment(source) }],
+          entries: [
+            { binding: 0, resource: colorAttachment(source) },
+            { binding: 1, resource: { buffer: originBuffer } },
+          ],
         });
         const encoder = active.createCommandEncoder();
         const pass = encoder.beginRenderPass({
@@ -1680,11 +1760,14 @@ struct Vout {
         pass.end();
         active.queue.submit([encoder.finish()]);
         await active.queue.onSubmittedWorkDone();
+        postedX = originX;
+        postedY = originY;
         return canvas.transferToImageBitmap();
       }
 
       /**
        * 加速器刚画过时，交出一张位图，不再把每个像素读回成整数。
+       * 位图只覆盖这一帧改过的矩形，左上角在 viewOrigin。
        * 还没画过就返回空，调用方继续用节点树合成的帧。失败时也返回空，同一幅仍可以走读回。
        */
       export async function snapshot(): Promise<ImageBitmap | null> {
@@ -1694,13 +1777,19 @@ struct Vout {
         if (!drawn || active === null || source === null) {
           return null;
         }
+        const originX = inkAny ? inkLeft : 0;
+        const originY = inkAny ? inkTop : 0;
+        const patchWidth = inkAny ? Math.max(1, inkRight - inkLeft) : width;
+        const patchHeight = inkAny ? Math.max(1, inkBottom - inkTop) : height;
+        inkAny = false;
         try {
-          const bitmap = await copyColor(active, source);
+          const bitmap = await copyColor(active, source, originX, originY, patchWidth, patchHeight);
           drawn = false;
           return bitmap;
         } catch {
           viewCanvas = null;
           viewContext = null;
+          viewGroup = null;
           return null;
         }
       }

@@ -10,10 +10,9 @@ import suite;
 import trap;
 import board;
 import memory;
-import obr.nas;
 import obr.os;
 
-/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd */
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd  30 clock  31 utime  32 ident  33 task */
 
 deRfun pack(): long {
   return 4294967296L;
@@ -24,12 +23,14 @@ deRfun word(long address): long {
 }
 
 deRfun reply(long caller, long value): void {
-  obr::os::pass(caller, value);
-  obr::os::schedule(caller);
+  /* 先标成正在跑，再调度。调度会把监督核停住，客程序马上接着取指。
+     状态若留在调度之后，客程序看见的仍是上一次的停住。 */
   long index = taskFind(caller);
   if (index >= 0L) {
     taskAt(index).state = TaskState::Running;
   }
+  obr::os::pass(caller, value);
+  obr::os::schedule(caller);
 }
 
 /* 兼容任务的陷入。只做 write 和 exit。别的号把 -38 写回 rax。引导不走这里。 */
@@ -93,6 +94,7 @@ deRfun boot(): void {
   obr::os::gate();
   long me = obr::os::core();
   obr::os::bound(me, kArena(me), kSlot());
+  mmReset();
   /* 标量和 UTF-8 对不上就停在英文点阵上。字体面还没打开，这里不能画中文。 */
   suiteRun();
   taskClear();
@@ -163,6 +165,7 @@ deRfun dispatch(long caller, long service): void {
       reply(caller, 0L);
       return;
     }
+    commNamed(taskByPid(pid), 1L);
     obr::os::hertz(core, 30L);
     schedWake(core);
     reply(caller, core);
@@ -220,7 +223,22 @@ deRfun dispatch(long caller, long service): void {
     schedResume(caller);
     return;
   }
-  if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L || service == 29L) {
+  /* 读时钟。任何有任务的客程序都能调用。毫秒写在 +128，不改整机时间。 */
+  if (service == 30L) {
+    memory::store64(query(0L, 3L, 0L), home + 128L);
+    reply(caller, 0L);
+    return;
+  }
+  /* 身份和任务表。字段都是任务上已经有的，命令名在格子后面的表里。 */
+  if (service == 32L) {
+    reply(caller, doIdent(caller, home));
+    return;
+  }
+  if (service == 33L) {
+    reply(caller, doTask(caller, home));
+    return;
+  }
+  if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L || service == 29L || service == 31L) {
     long filed = vfsCall(caller, service);
     if (filed != -2L) {
       reply(caller, filed);
@@ -244,8 +262,9 @@ deRfun noteInstall(): void {
   *flag = 1L;
 }
 
-/* 0 还没开始。先请固件停笔，再打开字体。两边同时画会卡在宿主上。
-   6336 答应之后才读字体、再画。打不开就停在 3，方标已经停了，这一帧留着。
+/* 0 还没开始。字体先映进映射，这一段只有网络读，固件继续转圈。
+   映射好了才请固件停笔。6336 答应之后才建立字体面并铺终端，两边不同时画。
+   打不开就写下 6272 再停在 3，方标留在最后一帧。
    2 是终端已经送出。6272 和 6336 在固件低位，客核心写不到。 */
 deRfun termBring(): void {
   long phase = termPhase();
@@ -256,7 +275,7 @@ deRfun termBring(): void {
     if (memory::load64(6336L) == 0L) {
       return;
     }
-    if (termOpen() == 0L) {
+    if (termFont() == 0L) {
       termSet(3L);
       return;
     }
@@ -267,30 +286,41 @@ deRfun termBring(): void {
   if (termShell() == 0L) {
     return;
   }
+  if (termMap() == 0L) {
+    memory::store64(1L, 6272L);
+    termSet(3L);
+    return;
+  }
   memory::store64(1L, 6272L);
   termSet(1L);
 }
 
 deRfun main(): int {
+  /* 地址缓存紧挨任务上界。窗口里原来的数不是 0，不先清掉就会把垃圾当成文件系统末址。 */
+  memory::store64(0L, kArena(2L) + 13312L);
+  memory::store64(0L, kArena(2L) + 13376L);
   boot();
   while (1) {
+    /* 没有前台在跑或就绪时收回 16MB。有前台时写成 256MB，调度前还会再写一次。 */
+    spanPublish();
     conPump();
-    /* 大家都在睡时，扫表和问宿主要几十毫秒，按键就排在这一圈后面。先收键、先取调用。 */
-    if (schedIdle() == 0L) {
-      schedSweep();
-    }
+    /* 先取调用，再扫表。扫表要问每个核心，调用已经在保持位里时不该排在它后面。
+       这一圈取到了调用，就不再抢占，回复之后客程序接着跑。 */
     long value = 0L;
     long found = obr::os::take(&value);
     if (found == 1L) {
       dispatch(value / pack(), value % pack());
+    } else if (schedIdle() == 0L) {
+      schedSweep();
     }
     /* 537931776 为 1 时刚放行了驱动，先回去取调用。没调用时按 30 Hz 空转，核心保持执行中。
+       有任务在跑时也要这一拍。去掉之后监督核占住宿主线程，固件停在 Starting，字体的网络读也完不成。
        宿主按降频前的频率结算已经跑完的指令。降频后的取数和其它 30 Hz 核心合睡一次，不逐条各睡一拍。 */
     bootPump();
     noteInstall();
     termBring();
     if (memory::load64(537931776L) == 0L) {
-      if (schedIdle() == 0L) {
+      if (found == 0L && schedIdle() == 0L) {
         schedTick();
       }
       obr::os::hertz(obr::os::core(), 30L);

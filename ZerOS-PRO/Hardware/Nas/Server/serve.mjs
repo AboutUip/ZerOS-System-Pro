@@ -150,6 +150,11 @@ export function startServer(root, port) {
       sockets.delete(socket);
       connection.closeAll();
     });
+    /* 对端突然断开是 ECONNRESET。不接住的话，这一条套接字会把整个服务带退出。 */
+    socket.on("error", () => {
+      sockets.delete(socket);
+      connection.closeAll();
+    });
     attach(connection, request, socket);
   });
   server.on("close", () => {
@@ -178,8 +183,16 @@ function isDirectRun() {
 if (isDirectRun()) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../Root");
   fs.mkdirSync(root, { recursive: true });
-  seedDisplay();
-  seedDebug();
+  try {
+    seedDisplay();
+  } catch (error) {
+    process.stderr.write(`seedDisplay: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  try {
+    seedDebug();
+  } catch (error) {
+    process.stderr.write(`seedDebug: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
   void startServer(root, Port).then((started) => {
     process.stdout.write(`ZNP1 NAS ws://${Host}:${String(started.port)}/fs\n${root}\n`);
   }).catch((error) => {

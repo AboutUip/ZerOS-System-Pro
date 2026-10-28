@@ -450,6 +450,7 @@ deRfun drvLoad(): void {
       long pid = bootDriver(core);
       if (pid != 0L) {
         devPublish(core, pid, drvName(), got);
+        commPut(taskByPid(pid), drvName(), got);
       }
       core = core + 1L;
     }
@@ -481,6 +482,7 @@ deRfun bootInit(): void {
     return;
   }
   taskAt(taskByPid(1L)).ppid = 0L;
+  commNamed(taskByPid(1L), 0L);
   memory::store64(core, holdAt(0L));
   /* 30 太慢，写一行要等好几秒。这里拉高，字马上出来。 */
   obr::os::hertz(core, 1000000L);
@@ -824,8 +826,9 @@ deRfun execSpawn(long caller, long home): long {
     rank = 2L;
   }
   rankSet(taskByPid(pid), rank);
+  commFromPath(taskByPid(pid), home + 16384L);
   vfsHand(taskIndex, taskByPid(pid));
-  clearArgs(query(1L, 8L, core));
+  /* handArgs 会盖住整段参数区，不必先按字清零。 */
   handArgs(home, query(1L, 8L, core));
   /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。
      再拉到 100000000 测过，按键仍是大约一秒，时间不在客程序的节拍上。 */

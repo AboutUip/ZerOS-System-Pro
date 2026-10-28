@@ -50,22 +50,52 @@ else
   require_file "$SRC/Toolchain/package-lock.json"
 fi
 
+MIRROR_FALLBACKS=(
+  mirrors.ustc.edu.cn
+  deb.debian.org
+)
+
 apt_update() {
   apt-get -o Acquire::Retries=5 update
 }
 
-use_fallback_mirror() {
-  echo "switching apt mirror to deb.debian.org"
-  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do
+remove_cdrom_sources() {
+  local file
+  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
     [ -f "$file" ] || continue
-    sed -i 's|mirrors.tuna.tsinghua.edu.cn|deb.debian.org|g' "$file" || true
+    sed -i -E '/^[[:space:]]*(deb|deb-src)[[:space:]]+cdrom:/d' "$file" || true
+    if grep -qE '^[[:space:]]*URIs:[[:space:]]*cdrom:' "$file"; then
+      rm -f "$file"
+    fi
   done
 }
 
-if ! apt_update; then
-  use_fallback_mirror
-  apt_update || die "apt update failed after mirror fallback"
+use_fallback_mirror() {
+  local host="$1" file
+  echo "switching apt mirror to $host"
+  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+    [ -f "$file" ] || continue
+    sed -i -E "s#(https?://)(deb\.debian\.org|security\.debian\.org|mirrors\.tuna\.tsinghua\.edu\.cn|mirrors\.aliyun\.com|mirrors\.ustc\.edu\.cn)#\1$host#g" "$file" || true
+  done
+}
+
+remove_cdrom_sources
+use_fallback_mirror "mirrors.aliyun.com"
+
+apt_ok=0
+if apt_update; then
+  apt_ok=1
 fi
+if [ "$apt_ok" -eq 0 ]; then
+  for host in "${MIRROR_FALLBACKS[@]}"; do
+    use_fallback_mirror "$host"
+    if apt_update; then
+      apt_ok=1
+      break
+    fi
+  done
+fi
+[ "$apt_ok" -eq 1 ] || die "apt update failed after mirror fallback"
 
 PACKAGES=(
   nodejs ca-certificates curl
@@ -83,10 +113,16 @@ fi
 
 if ! apt-get -o Acquire::Retries=5 install -y --no-install-recommends "${PACKAGES[@]}"; then
   echo "apt install failed; retrying with mirror fallback"
-  use_fallback_mirror
-  apt_update || true
-  apt-get -o Acquire::Retries=5 install -y --no-install-recommends "${PACKAGES[@]}" \
-    || die "apt install failed"
+  installed=0
+  for host in "${MIRROR_FALLBACKS[@]}"; do
+    use_fallback_mirror "$host"
+    apt_update || true
+    if apt-get -o Acquire::Retries=5 install -y --no-install-recommends "${PACKAGES[@]}"; then
+      installed=1
+      break
+    fi
+  done
+  [ "$installed" -eq 1 ] || die "apt install failed"
 fi
 
 require_cmd chromium
@@ -216,7 +252,7 @@ cat > /opt/zeros/fallback.html <<'EOF'
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ZerOS</title>
+<title>ZerOS-Pro</title>
 <style>
 html, body { margin: 0; height: 100%; background: #050505; color: #e8e8e8;
   font: 20px/1.6 monospace; }
@@ -227,7 +263,7 @@ pre { background: #111; padding: 1em; border: 1px solid #333; }
 </head>
 <body>
 <main>
-<h1>ZerOS failed to start</h1>
+<h1>ZerOS-Pro failed to start</h1>
 <p>The boot self-check failed. Inspect:</p>
 <pre>/var/log/zeros-selfcheck.log
 /var/log/zeros-build.log
@@ -416,7 +452,13 @@ After=zeros-nas.service nginx.service zeros-selfcheck.service
 Wants=zeros-nas.service nginx.service zeros-selfcheck.service
 EOF
 
-# Kiosk lockdown.
+# Kiosk lockdown. A desktop task may leave GDM as the active display manager.
+for unit in gdm3.service gdm.service; do
+  systemctl disable "$unit" 2>/dev/null || true
+done
+rm -f /etc/systemd/system/display-manager.service
+echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
+
 systemctl set-default graphical.target
 systemctl enable lightdm.service nginx.service zeros-nas.service zeros-selfcheck.service
 systemctl mask getty@tty1.service getty@tty2.service getty@tty3.service \

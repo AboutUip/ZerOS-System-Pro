@@ -34,7 +34,11 @@ deRfun taskLimit(): long {
 
 /* 优先级不进 Task 的 19 个字。每个任务一个八位组，落在兼容描述之后、任务表 65536 之前。
    0 是空，1 是后台，2 是前台。前台同一档轮转；后台只在没有更高档就绪时才上核。
-   49152 起再留 8 个八位组，一核一个，给宿主看这颗核上正在跑的是哪一档。 */
+   49152 起再留 8 个八位组，一核一个，给宿主看这颗核上正在跑的是哪一档。
+   紧接着的一个八位组是停机字。写成 1 表示 1 号被信号打中，宿主据此画失败帧。
+   49280 起的一个字是堆的颗粒游标，由堆使用，不是任务的第 20 个字。
+   49344 起的一个字是这一轮消息上限。没有前台在跑或就绪时是 16777216，有前台时是 268435456。
+   这是上限，不是每次必须送满的长度。宿主满一段再加倍，没有前台就收回默认值。 */
 deRfun rankAt(long index): long {
   return kArena(2L) + 45056L + index * 8L;
 }
@@ -137,8 +141,42 @@ deRfun taskFind(long core): long {
   return other;
 }
 
-/* 监督核把这颗核心上正在跑的档写出去。宿主按这一档决定让不让、给多大一块。 */
+/* 这一轮允许的消息上限。有前台在跑或就绪时，宿主可以一路加到 256MB。否则停在 16MB。 */
+deRfun spanMark(): long {
+  return kArena(2L) + 49344L;
+}
+
+deRfun spanChoose(): long {
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (task.pid != 0L) {
+      long state = task.state;
+      if (state == TaskState::Running || state == TaskState::Ready) {
+        if (rankGet(index) >= 2L) {
+          return 268435456L;
+        }
+      }
+    }
+    index = index + 1L;
+  }
+  return 16777216L;
+}
+
+deRfun spanPublish(): void {
+  long next = spanChoose();
+  long mark = spanMark();
+  if (memory::load64(mark) == next) {
+    return;
+  }
+  memory::store64(next, mark);
+}
+
+/* 监督核把这颗核心上正在跑的档写出去。宿主按这一档决定让不让、给多大一块。
+   先写下这一轮的消息上限，调度把脏字送出之后，客程序第一次缺页就已经能用新上限。 */
 deRfun rankPublish(long core): void {
+  spanPublish();
   if (core < 0L || core > 7L) {
     return;
   }
@@ -286,6 +324,7 @@ deRfun taskClear(): void {
     task.waitFor = 0L;
     task.held = 0L;
     rankSet(index, 0L);
+    commClear(index);
     index = index + 1L;
   }
   long core = 0L;
@@ -294,6 +333,7 @@ deRfun taskClear(): void {
     core = core + 1L;
   }
   memory::store64(1L, pidWord());
+  spanPublish();
 }
 
 /* 1 号留给用户态 init。之后 nextPid 从 2 起，驱动不会占掉 1。 */
@@ -332,6 +372,7 @@ deRfun taskRelease(long index): void {
   task.mm.freeHead = 0L;
   task.sig = 0L;
   rankSet(index, 0L);
+  commClear(index);
 }
 
 deRfun taskDrop(long core): void {
@@ -634,6 +675,81 @@ deRfun taskAllows(long core, long service): long {
   return 1L;
 }
 
+/* 服务 32。身份就在凭证里，不另开字段。 */
+deRfun doIdent(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  if (taskIndex < 0L) {
+    return -1L;
+  }
+  Task* task = taskAt(taskIndex);
+  memory::store64(task.cred.uid, home + 128L);
+  memory::store64(task.cred.gid, home + 192L);
+  memory::store64(task.cred.euid, home + 256L);
+  memory::store64(task.cred.egid, home + 320L);
+  return 0L;
+}
+
+deRfun stateCode(long index): long {
+  if (taskAt(index).state == TaskState::Running) {
+    return 1L;
+  }
+  if (taskAt(index).state == TaskState::Ready) {
+    return 2L;
+  }
+  if (taskAt(index).state == TaskState::Sleeping) {
+    return 3L;
+  }
+  if (taskAt(index).state == TaskState::Stopped) {
+    return 4L;
+  }
+  if (taskAt(index).state == TaskState::Zombie) {
+    return 5L;
+  }
+  return 0L;
+}
+
+/* 服务 33。任何有任务的客程序都能扫。名字在格子后面的表里，不在这 19 个字中。 */
+deRfun doTask(long caller, long home): long {
+  if (taskFind(caller) < 0L) {
+    return -1L;
+  }
+  long index = memory::load64(home + 128L);
+  if (index < 0L) {
+    index = 0L;
+  }
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (task.pid != 0L && task.state != TaskState::Empty) {
+      long bytes = home + 131072L;
+      memory::store64(task.pid, bytes);
+      memory::store64(task.ppid, bytes + 64L);
+      memory::store64(stateCode(index), bytes + 128L);
+      memory::store64(task.core, bytes + 192L);
+      memory::store64(task.cred.uid, bytes + 256L);
+      memory::store64(task.cred.gid, bytes + 320L);
+      memory::store64(task.cred.euid, bytes + 384L);
+      memory::store64(task.cred.egid, bytes + 448L);
+      memory::store64(task.mm.origin, bytes + 512L);
+      memory::store64(task.mm.length, bytes + 576L);
+      memory::store64(rankGet(index), bytes + 640L);
+      long nameLen = commLen(index);
+      memory::store64(nameLen, bytes + 704L);
+      long step = 0L;
+      while (step < nameLen) {
+        memory::storeOctet(commByte(index, step), bytes + 768L + step * 8L);
+        step = step + 1L;
+      }
+      memory::store64(index, home + 192L);
+      memory::store64(index + 1L, home + 320L);
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  memory::store64(taskLimit(), home + 320L);
+  return 2L;
+}
+
 deRfun taskByPid(long pid): long {
   long index = 0L;
   long end = taskScanEnd();
@@ -668,8 +784,13 @@ deRfun sigPendingKill(long core): long {
   return 0L;
 }
 
+/* 1 号被非 0 信号打中时整机不能再跑。停机字由宿主在写入时接走，这里不会返回。 */
+deRfun machineHalt(): void {
+  memory::storeOctet(1L, kArena(2L) + 49216L);
+}
+
 deRfun sigRaise(long caller, long pid, long sig): long {
-  if (sig < 0L || sig > 31L || pid == 1L) {
+  if (sig < 0L || sig > 31L) {
     return -1L;
   }
   long target = taskByPid(pid);
@@ -684,6 +805,10 @@ deRfun sigRaise(long caller, long pid, long sig): long {
   }
   if (sig == 0L) {
     return 0L;
+  }
+  if (pid == 1L) {
+    machineHalt();
+    return -1L;
   }
   long mask = sigMask(sig);
   if (task.sig / mask % 2L == 0L) {
@@ -892,6 +1017,8 @@ deRfun procBreak(): long {
     obr::os::capture(core, slot);
   }
   dropOwnCall(core);
+  /* 先拨光标、放开键盘等待，再收进程。收的时候才会把父进程叫醒去画提示符。 */
+  conInterrupt(core);
   procExit(core, 130L);
   return 1L;
 }

@@ -61,6 +61,8 @@ export namespace ZerOS {
         frameHeight: number,
         pixels: Uint32Array | null,
         bitmap: ImageBitmap | null,
+        originX?: number,
+        originY?: number,
       ) => void) | null = null;
 
       /** 显卡换成新的帧尺寸时调用。页面再把同一组宽高交给显示器。 */
@@ -149,6 +151,8 @@ export namespace ZerOS {
           const frameHeight = record["frameHeight"];
           const pixels = record["pixels"];
           const bitmap = record["bitmap"];
+          const originX = record["originX"];
+          const originY = record["originY"];
           const listener = frameListener;
           if (typeof frameWidth !== "number" || typeof frameHeight !== "number" || listener === null) {
             if (bitmap instanceof ImageBitmap) {
@@ -157,7 +161,14 @@ export namespace ZerOS {
             return;
           }
           if (bitmap instanceof ImageBitmap) {
-            listener(frameWidth, frameHeight, null, bitmap);
+            listener(
+              frameWidth,
+              frameHeight,
+              null,
+              bitmap,
+              typeof originX === "number" ? originX : 0,
+              typeof originY === "number" ? originY : 0,
+            );
             return;
           }
           if (pixels instanceof Uint32Array) {
@@ -302,6 +313,8 @@ export namespace ZerOS {
           frameHeight: number,
           pixels: Uint32Array | null,
           bitmap: ImageBitmap | null,
+          originX?: number,
+          originY?: number,
         ) => void): void {
           frameListener = listener;
         },

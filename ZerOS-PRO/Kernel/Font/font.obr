@@ -1,7 +1,7 @@
 /* 系统字体目录。文件在 NAS 的 /font，监督核引导时记下在不在和八位组数。
    表在本窗口 +20480。+12416 起是 pid 和光标，+12800 是控制台暂存的调用者窗口，+32768 起是驱动路径。
    两份，每份两个字：在不在，八位组数。0 号是更纱黑体 SC，1 号是枫 Mono CN。
-   引导只登记路径。shell 起来之后再把 0 号映进映射区并建立 16 像素的字体面，终端格子由监督核绘制。 */
+   引导只登记路径。shell 起来之后先把 0 号映进映射区，固件仍转圈；答应停笔之后再建立 16 像素的字体面。终端格子由监督核绘制。 */
 #LINK /start.obr
 import memory;
 import fs;
@@ -87,9 +87,14 @@ deRfun termSet(long value): void {
   memory::store64(value, termSlot(0L));
 }
 
-/* 打开 0 号更纱。超过 16777216 个八位组就留给方标，不建立字体面。
-   句柄留着，映射页要靠它调入。失败时不写 6272，固件继续画方标。 */
-deRfun termOpen(): long {
+/* 字体表占两个字，阶段从 +512 起。中间这个字留给映射句柄，映射页还要靠它调入。 */
+deRfun termHandle(): long {
+  return fontBase() + 256L;
+}
+
+/* 把 0 号更纱读进映射。超过 16777216 个八位组就留给方标。
+   这一步只有网络读，不碰显卡，固件继续转圈。失败时不写 6272。 */
+deRfun termMap(): long {
   if (memory::load64(fontBase()) != 1L) {
     return 0L;
   }
@@ -106,15 +111,26 @@ deRfun termOpen(): long {
     obr::nas::close(handle);
     return 0L;
   }
+  memory::store64(address, termSlot(2L));
+  memory::store64(octets, termSlot(3L));
+  memory::store64(handle, termHandle());
+  return 1L;
+}
+
+/* 映射已经在。固件答应停笔之后再建立字体面，两边不同时画。 */
+deRfun termFont(): long {
+  long address = memory::load64(termSlot(2L));
+  long octets = memory::load64(termSlot(3L));
+  long handle = memory::load64(termHandle());
   long face = obr::font::face(address, octets, 16L);
   if (face < 1L) {
     obr::os::munmap(address, octets);
-    obr::nas::close(handle);
+    if (handle != 0L) {
+      obr::nas::close(handle);
+    }
     return 0L;
   }
   memory::store64(face, termSlot(1L));
-  memory::store64(address, termSlot(2L));
-  memory::store64(octets, termSlot(3L));
   return 1L;
 }
 

@@ -27,10 +27,28 @@ export namespace ZerOS {
       export const MailboxBytes = 320;
 
       /**
-       * 一次跨线程搬运的八位组数。
-       * 再长的访问拆成几段。一段只同步一次，不再每个八位组各等一次。
+       * 没有前台任务时，一次消息的默认上限。
+       * 这是上限，不是必须长度。要送 100 个八位组就送 100 个，不会补齐到这个数。
        */
-      export const MailboxSpanBytes = 262144;
+      export const SpanDefaultBytes = 16777216;
+
+      /**
+       * 一次消息的绝对上限。
+       * 内核允许时，当前上限从默认值每次加一倍，到这里为止。再长的访问仍拆开，但单段不再卡在旧的 256KB。
+       */
+      export const SpanCeilBytes = 268435456;
+
+      /**
+       * 搬运区一开始只占这么多。
+       * 本次要送的长度超过它时再加大，不会按绝对上限先占满 256MB。
+       */
+      export const SpanLaneBytes = 262144;
+
+      /**
+       * 一次消息允许的最大八位组数，等于绝对上限。
+       * 短于它的访问按实际长度送。当前这一轮允许多大，由内核写在监督核窗口里，宿主再按满段加倍。
+       */
+      export const MailboxSpanBytes = SpanCeilBytes;
 
       /** 文本区起点。必须 8 字节对齐，好让前面的 bigint 视图合法。 */
       export const MailboxTextOffset = 64;
@@ -109,6 +127,12 @@ export namespace ZerOS {
         DebugSwitch: "debug-switch",
         /** 上一次调试运行的结果。开关关闭时不会出现。 */
         DebugResult: "debug-run-result",
+        /**
+         * 搬运区换了一块更大的共享缓冲。
+         * 这是主板线程和内存线程之间的宿主消息，不是客程序能看见的协议字段。
+         * 必须先于同一次搬运的 Go 被内存线程收下，否则字节会写进旧缓冲。
+         */
+        SpanBind: "span-bind",
       } as const;
 
       /* ------------------------------------------------------------------ */

@@ -1,4 +1,7 @@
-/* 堆。每块前面两个字：载荷位数，以及空闲链表的下一块。使用中的链字是 -1。只有入口分配。 */
+/* 堆。每块前面两个字：载荷位数，以及空闲链表的下一块。使用中的链字是 -1。只有入口分配。
+   一颗是 2MB，位地址上是 16777216。放得下一整块的数据留在同一颗里，这样一条 Tick 通道一次就能读完。
+   下一份能放到后面的颗上，就不要和上一份挤在同一颗。一颗放不下的大块才跨颗。
+   49280 那个字记下上一份小块落在哪一颗。0 表示还没有。49344 那个字是消息上限，不要占用。 */
 #LINK /start.obr
 import proc;
 import memory;
@@ -46,6 +49,196 @@ deRfun insertFree(Task* task, long block): void {
   coalesce(task);
 }
 
+deRfun grainBits(): long {
+  return 16777216L;
+}
+
+deRfun grainOf(long address): long {
+  if (address < 0L) {
+    return 0L;
+  }
+  return address / 16777216L;
+}
+
+deRfun grainMark(): long {
+  return kArena(2L) + 49280L;
+}
+
+deRfun mmReset(): void {
+  memory::store64(0L, grainMark());
+}
+
+deRfun lastGrain(): long {
+  long mark = memory::load64(grainMark());
+  if (mark < 1L) {
+    return -1L;
+  }
+  return mark - 1L;
+}
+
+deRfun noteGrain(long block): void {
+  memory::store64(grainOf(block) + 1L, grainMark());
+}
+
+/* 头加载荷还在一颗里面，就按小块处理。更大的块跨过几颗，每颗各是一条通道。 */
+deRfun smallBlock(long need): long {
+  if (128L + need <= 16777216L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun sameGrain(long block, long need): long {
+  long last = block + 128L + need - 1L;
+  if (grainOf(block) == grainOf(last)) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 在一块空闲区里找一个不跨颗的起点。跨过当前颗时，下一块必须还能留下合法的空闲头。 */
+deRfun placeAt(long cursor, long span, long need): long {
+  long end = cursor + 128L + span;
+  if (sameGrain(cursor, need) == 1L && cursor + 128L + need <= end) {
+    return cursor;
+  }
+  long at = (grainOf(cursor) + 1L) * 16777216L;
+  if (at < cursor) {
+    return 0L;
+  }
+  long left = at - cursor;
+  if (left != 0L && left < 192L) {
+    return 0L;
+  }
+  if (at + 128L + need <= end && sameGrain(at, need) == 1L) {
+    return at;
+  }
+  return 0L;
+}
+
+/* 从空闲区切出这一块。切在中间时，左边仍留在链上，右边够大才再挂一块。 */
+deRfun carve(Task* task, long prev, long cursor, long at, long need): long {
+  long span = memory::load64(cursor);
+  long next = memory::load64(cursor + 64L);
+  long end = cursor + 128L + span;
+  long right = end - (at + 128L + need);
+  long used = need;
+  if (right > 0L && right < 192L) {
+    used = need + right;
+    right = 0L;
+  }
+  if (at == cursor) {
+    if (right >= 192L) {
+      memory::store64(used, cursor);
+      long rest = cursor + 128L + used;
+      memory::store64(right - 128L, rest);
+      memory::store64(next, rest + 64L);
+      if (prev == 0L) {
+        task.mm.freeHead = rest;
+      } else {
+        memory::store64(rest, prev + 64L);
+      }
+    } else if (prev == 0L) {
+      task.mm.freeHead = next;
+    } else {
+      memory::store64(next, prev + 64L);
+    }
+  } else {
+    long left = at - cursor;
+    memory::store64(left - 128L, cursor);
+    if (right >= 192L) {
+      long rest = at + 128L + used;
+      memory::store64(right - 128L, rest);
+      memory::store64(next, rest + 64L);
+      memory::store64(rest, cursor + 64L);
+    }
+  }
+  memory::store64(used, at);
+  memory::store64(-1L, at + 64L);
+  noteGrain(at);
+  return at + 128L;
+}
+
+/* 先找和上一份不同颗的空位。没有，才接受同一颗里的空位。 */
+deRfun takeSmall(Task* task, long need): long {
+  long seen = lastGrain();
+  long pass = 0L;
+  while (pass < 2L) {
+    long prev = 0L;
+    long cursor = task.mm.freeHead;
+    while (cursor != 0L) {
+      long span = memory::load64(cursor);
+      long next = memory::load64(cursor + 64L);
+      if (span >= need) {
+        long at = placeAt(cursor, span, need);
+        if (at != 0L) {
+          if (pass == 1L || seen < 0L || grainOf(at) != seen) {
+            return carve(task, prev, cursor, at, need);
+          }
+        }
+      }
+      prev = cursor;
+      cursor = next;
+    }
+    pass = pass + 1L;
+  }
+  return 0L;
+}
+
+/* 堆还够伸到下一颗时，把这一份放到还没放过的颗上。伸不到就回复 0，让调用方改去填已有的空位。 */
+deRfun bumpSpread(long core, Task* task, long need): long {
+  long base = task.mm.brk;
+  long at = base;
+  if (sameGrain(at, need) == 0L) {
+    at = (grainOf(base) + 1L) * grainBits();
+  }
+  long seen = lastGrain();
+  if (seen >= 0L && grainOf(at) == seen) {
+    long next = (seen + 1L) * grainBits();
+    if (next > base) {
+      at = next;
+    } else {
+      at = (grainOf(base) + 1L) * grainBits();
+    }
+  }
+  if (at < base || sameGrain(at, need) == 0L) {
+    return 0L;
+  }
+  if (seen >= 0L && grainOf(at) == seen) {
+    return 0L;
+  }
+  long limit = task.mm.origin + task.mm.length;
+  if (base < task.mm.heap || at + 128L + need > limit) {
+    long extra = 64L;
+    if (at >= task.mm.heap && at + 128L + need > limit) {
+      extra = at + 128L + need - limit;
+    }
+    if (extra < 64L) {
+      extra = 64L;
+    }
+    if (poolGrow(core, extra) == 0L) {
+      return 0L;
+    }
+    limit = task.mm.origin + task.mm.length;
+    if (base < task.mm.heap || at + 128L + need > limit) {
+      return 0L;
+    }
+  }
+  if (at > base) {
+    long gap = at - base;
+    if (gap >= 192L) {
+      memory::store64(gap - 128L, base);
+      memory::store64(-1L, base + 64L);
+      insertFree(task, base);
+    }
+  }
+  memory::store64(need, at);
+  memory::store64(-1L, at + 64L);
+  task.mm.brk = at + 128L + need;
+  noteGrain(at);
+  return at + 128L;
+}
+
 deRfun mmAlloc(long core, long size): long {
   long index = taskFind(core);
   if (index < 0L || size < 1L) {
@@ -53,6 +246,17 @@ deRfun mmAlloc(long core, long size): long {
   }
   Task* task = taskAt(index);
   long need = alignNeed(size);
+  /* 放得进一颗的，先占一颗还没放过的。池子伸不到新颗时，再填已有的空位。 */
+  if (smallBlock(need) == 1L) {
+    long spread = bumpSpread(core, task, need);
+    if (spread != 0L) {
+      return spread;
+    }
+    long reused = takeSmall(task, need);
+    if (reused != 0L) {
+      return reused;
+    }
+  }
   long prev = 0L;
   long cursor = task.mm.freeHead;
   while (cursor != 0L) {

@@ -299,6 +299,8 @@ export namespace ZerOS {
           return;
         }
         const kind = record["kind"];
+        if (typeof kind === "string") {
+        }
         if (kind === "bind") {
           onBind(record);
           return;

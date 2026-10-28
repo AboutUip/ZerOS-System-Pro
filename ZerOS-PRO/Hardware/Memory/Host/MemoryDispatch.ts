@@ -34,7 +34,7 @@ export namespace ZerOS {
       const mailboxControl = MailboxRoot.Hardware.Motherboard.mailboxControl;
       const mailboxWords = MailboxRoot.Hardware.Motherboard.mailboxWords;
       const writeMailboxText = MailboxRoot.Hardware.Motherboard.writeMailboxText;
-      const MailboxSpanBytes = MailboxRoot.Hardware.Motherboard.MailboxSpanBytes;
+      const SpanCeilBytes = MailboxRoot.Hardware.Motherboard.SpanCeilBytes;
       const spend = ClockRoot.Hardware.Memory.spend;
       const spendBulk = ClockRoot.Hardware.Memory.spendBulk;
       const setHertz = ClockRoot.Hardware.Memory.setHertz;
@@ -141,7 +141,7 @@ export namespace ZerOS {
         }
         mailbox = value;
         const shared = record["span"];
-        if (shared instanceof SharedArrayBuffer && shared.byteLength === MailboxSpanBytes) {
+        if (shared instanceof SharedArrayBuffer && shared.byteLength >= 1 && shared.byteLength <= SpanCeilBytes) {
           span = new Uint8Array(shared);
         }
         const origin = record["clockOrigin"];
@@ -272,8 +272,17 @@ export namespace ZerOS {
           onBind(record);
           return;
         }
+        /* 搬运区加大后换一块缓冲。不写信箱状态，主板这次也没有在等。必须在随后的 Go 之前做完。 */
+        if (kind === MailMessage.SpanBind) {
+          const shared = record["span"];
+          if (shared instanceof SharedArrayBuffer && shared.byteLength >= 1 && shared.byteLength <= SpanCeilBytes) {
+            span = new Uint8Array(shared);
+          }
+          return;
+        }
         if (kind === MailMessage.Go) {
           onGo(record);
+          return;
         }
       }
 

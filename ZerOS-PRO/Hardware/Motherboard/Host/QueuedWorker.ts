@@ -84,7 +84,7 @@ export namespace ZerOS {
        */
       export function openBoardWorker(): Worker {
         /* 查询用来躲开上一次主板线程的模块缓存。改了座位上的搬运就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("./BoardDispatch.ts")}?board=1`;
+        const moduleUrl = `${resolveModuleUrl("./BoardDispatch.ts")}?board=21`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Motherboard.acceptBoardMessage",
@@ -97,7 +97,7 @@ export namespace ZerOS {
        * 只把地址交给引导脚本。主板线程不执行内存实现。
        */
       export function openMemoryWorker(): Worker {
-        const moduleUrl = resolveModuleUrl("../../Memory/Host/MemoryDispatch.ts");
+        const moduleUrl = `${resolveModuleUrl("../../Memory/Host/MemoryDispatch.ts")}?mem=5`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Memory.acceptMemoryMessage",
@@ -108,7 +108,7 @@ export namespace ZerOS {
       /** 打开 CPU 主体线程。核心 Worker 另开，不在这里创建。 */
       export function openCpuWorker(): Worker {
         /* 查询只用来躲开浏览器对上一次核心图的缓存。改了 CpuDispatch 的依赖就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=9`;
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=79`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCpuMessage",
@@ -119,7 +119,7 @@ export namespace ZerOS {
       /** 打开一个核心线程。主板每挂载一个核心调用一次。 */
       export function openCoreWorker(): Worker {
         /* 和 CPU 主体一样，查询用来躲开上一次核心线程的模块缓存。 */
-        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts")}?core=1`;
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts")}?core=14`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCoreMessage",
@@ -129,7 +129,8 @@ export namespace ZerOS {
 
       /** 打开显卡线程。帧存储在那条线程里，不在主板线程里。 */
       export function openGpuWorker(): Worker {
-        const moduleUrl = resolveModuleUrl("../../Gpu/Host/GpuDispatch.ts");
+        /* 查询用来躲开上一次显卡线程的模块缓存。改了呈现记账就要把数字加一。 */
+        const moduleUrl = `${resolveModuleUrl("../../Gpu/Host/GpuDispatch.ts")}?gpu=8`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Gpu.acceptGpuMessage",

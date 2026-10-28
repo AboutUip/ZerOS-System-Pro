@@ -1,6 +1,7 @@
 /* 文件层。目录项和索引节点在监督核的窗口里。NAS 只负责字节，属主和权限位在这里。
    种类 1 是 NAS 上的文件，2 是 NAS 上的目录，3 是字符设备，4 是只活在这张表里的目录。/dev 是种类 4。
    种类 5 是内存文件，6 是内存目录。根在 NAS 没就绪，或 /boot/root 正好是 mem 时，用种类 6。
+   索引节点 11 个字、704 位。末尾三个字是访问、修改、状态时间，从 Unix 纪元起的毫秒。
    描述符可以复制。几个描述符共用同一个打开对象时，关掉一个不关掉其余的。
    派生会把调用者已经打开的描述符交给子任务，两边各算一份。 */
 #LINK /start.obr, /exec.obr, /task.obr, /font.obr
@@ -22,6 +23,10 @@ struct Inode {
   long size;
   long parent;
   long nlink;
+  /* 从 Unix 纪元起的毫秒。atime 访问，mtime 修改，ctime 状态。 */
+  long atime;
+  long mtime;
+  long ctime;
 }
 
 struct Dentry {
@@ -154,8 +159,9 @@ deRfun scratchRoom(): long {
   return 8192L;
 }
 
+/* 128 个索引节点，每个 11 个字、704 位。路径分量的 512 个八位组不在这个步长里。 */
 deRfun inodeBytes(): long {
-  return inodeCount() * 512L;
+  return inodeCount() * 704L;
 }
 
 deRfun dentryBytes(): long {
@@ -210,8 +216,20 @@ deRfun devBase(): long {
   return pipeDataBase() + pipeDataBytes();
 }
 
+/* 任务上界在监督核窗口 +13248。紧挨着放两个字：0 是文件系统末址，1 是字符格起点。
+   这两处都是常量。每次按键若重新乘一遍，光算地址就要几万条指令。 */
+deRfun layoutWord(long slot): long {
+  return kArena(2L) + 13312L + slot * 64L;
+}
+
 deRfun vfsEnd(): long {
-  return devRingBase() + devCount() * 2L * ringRoom() * 8L;
+  long cached = memory::load64(layoutWord(0L));
+  if (cached != 0L) {
+    return cached;
+  }
+  long base = devRingBase() + devCount() * 2L * ringRoom() * 8L;
+  memory::store64(base, layoutWord(0L));
+  return base;
 }
 
 /* 设备头 12 个字。两条环另排在所有设备头后面，不再挤在 2048 位的槽里。 */
@@ -236,7 +254,7 @@ deRfun devDown(long index): long {
 }
 
 deRfun inodeAt(long index): Inode* {
-  return (Inode*)(vfsBase() + index * 512L);
+  return (Inode*)(vfsBase() + index * 704L);
 }
 
 deRfun dentryAt(long index): Dentry* {
@@ -295,6 +313,35 @@ deRfun isDir(long kind): long {
     return 1L;
   }
   return 0L;
+}
+
+/* 监督核 query(0, 3, 0)。宿主 Date.now() 的毫秒，和三个文件时间同一单位。 */
+deRfun nowMillis(): long {
+  return query(0L, 3L, 0L);
+}
+
+deRfun stampCreate(Inode* node): void {
+  long now = nowMillis();
+  node.atime = now;
+  node.mtime = now;
+  node.ctime = now;
+}
+
+deRfun stampWrite(Inode* node): void {
+  long now = nowMillis();
+  node.mtime = now;
+  node.ctime = now;
+}
+
+deRfun stampStatus(Inode* node): void {
+  node.ctime = nowMillis();
+}
+
+/* 只有普通文件。目录、字符设备和终端的读不改访问时间。 */
+deRfun stampAccess(Inode* node): void {
+  if (node.kind == 1L || node.kind == 5L) {
+    node.atime = nowMillis();
+  }
 }
 
 /* 内存文件的槽号表紧挨在设备环后面。每个索引节点一个字，-1 表示没有正文。
@@ -437,6 +484,9 @@ deRfun vfsInit(): void {
     node.size = 0L;
     node.parent = 0L;
     node.nlink = 0L;
+    node.atime = 0L;
+    node.mtime = 0L;
+    node.ctime = 0L;
     memory::store64(-1L, memSlotAt(index));
     Dentry* dent = dentryAt(index);
     dent.used = 0L;
@@ -485,6 +535,7 @@ deRfun vfsInit(): void {
   if (memoryRoot() == 1L) {
     root.kind = 6L;
   }
+  stampCreate(root);
   Dentry* top = dentryAt(0L);
   top.used = 1L;
   top.parent = -1L;
@@ -678,6 +729,7 @@ deRfun fillNode(long ino, long parent, long kind, long mode, long uid, long gid,
   node.size = size;
   node.parent = parent;
   node.nlink = 1L;
+  stampCreate(node);
 }
 
 deRfun takeChild(long parent, long path, long from, long count, long kind, long size, long uid, long gid, long mode): long {
@@ -1136,6 +1188,7 @@ deRfun vfsPlant(long caller, long path, long dest, long* size): long {
     index = index + 1L;
   }
   *size = node.size;
+  stampAccess(node);
   return 0L;
 }
 
@@ -1151,6 +1204,9 @@ deRfun doStat(long caller, long home): long {
   memory::store64(node.mode, home + 256L);
   memory::store64(node.uid, home + 320L);
   memory::store64(node.gid, home + 384L);
+  memory::store64(node.atime, home + 448L);
+  memory::store64(node.mtime, home + 576L);
+  memory::store64(node.ctime, home + 640L);
   return 0L;
 }
 
@@ -1275,6 +1331,7 @@ deRfun doOpen(long caller, long home): long {
   if (node.kind == 5L) {
     if (flags == 1L) {
       node.size = 0L;
+      stampWrite(node);
     }
     long fd = allocFd(taskIndex);
     if (fd < 0L) {
@@ -1301,6 +1358,7 @@ deRfun doOpen(long caller, long home): long {
   }
   if (flags == 1L) {
     node.size = 0L;
+    stampWrite(node);
   }
   long fd = allocFd(taskIndex);
   if (fd < 0L) {
@@ -1514,12 +1572,17 @@ deRfun doRead(long caller, long home, long writing): long {
         return pulled;
       }
       conEmit(home);
+      stampWrite(inodeAt(file.ino));
       return 0L;
     }
     if (writing == 0L) {
       return devMove(file.handle, home, 0L, 0L, caller, 1L);
     }
-    return devMove(file.handle, home, 1L, 1L, caller, 2L);
+    long wrote = devMove(file.handle, home, 1L, 1L, caller, 2L);
+    if (wrote == 0L) {
+      stampWrite(inodeAt(file.ino));
+    }
+    return wrote;
   }
   if (writing == 0L && file.flags != 0L && file.flags != 2L) {
     return -1L;
@@ -1528,7 +1591,15 @@ deRfun doRead(long caller, long home, long writing): long {
     return -1L;
   }
   if (inodeAt(file.ino).kind == 5L) {
-    return memMove(file, home, writing);
+    long moved = memMove(file, home, writing);
+    if (moved == 0L) {
+      if (writing == 1L) {
+        stampWrite(inodeAt(file.ino));
+      } else {
+        stampAccess(inodeAt(file.ino));
+      }
+    }
+    return moved;
   }
   long offset = memory::load64(home + 192L);
   long count = memory::load64(home + 256L);
@@ -1551,6 +1622,9 @@ deRfun doRead(long caller, long home, long writing): long {
     if (offset + got > node.size) {
       node.size = offset + got;
     }
+    stampWrite(node);
+  } else {
+    stampAccess(inodeAt(file.ino));
   }
   memory::store64(got, home + 320L);
   return 0L;
@@ -1708,6 +1782,7 @@ deRfun doChmod(long caller, long home): long {
     return -1L;
   }
   node.mode = memory::load64(home + 128L) % 512L;
+  stampStatus(node);
   return 0L;
 }
 
@@ -1724,6 +1799,35 @@ deRfun doChown(long caller, long home): long {
   Inode* node = inodeAt(dentryAt(dent).ino);
   node.uid = memory::load64(home + 128L);
   node.gid = memory::load64(home + 192L);
+  stampStatus(node);
+  return 0L;
+}
+
+/* 服务 31。+128、+192 不是 0 时，分别采用 +256 的访问时间和 +320 的修改时间。
+   给出 0 的那一项保持原值。状态时间改成这次读到的现在。属主或根才能改。 */
+deRfun doUtime(long caller, long home): long {
+  long setAccess = memory::load64(home + 128L);
+  long setModify = memory::load64(home + 192L);
+  long access = memory::load64(home + 256L);
+  long modify = memory::load64(home + 320L);
+  long taskIndex = taskFind(caller);
+  long dent = 0L;
+  long status = walk(taskIndex, home + 16384L, &dent);
+  if (status != 0L) {
+    return status;
+  }
+  Inode* node = inodeAt(dentryAt(dent).ino);
+  Task* task = taskAt(taskIndex);
+  if (task.cred.euid != 0L && task.cred.euid != node.uid) {
+    return -1L;
+  }
+  if (setAccess != 0L) {
+    node.atime = access;
+  }
+  if (setModify != 0L) {
+    node.mtime = modify;
+  }
+  stampStatus(node);
   return 0L;
 }
 
@@ -1994,7 +2098,136 @@ deRfun devDir(): long {
 /* 终端格子紧挨内存文件正文。头 1024 位，行长到 4096，输入队列到 8192，格子到 253952。
    一次写入只把脏行画出来，再呈现一帧。抽键不呈现。 */
 deRfun gridBase(): long {
-  return vfsEnd() + inodeCount() * 64L + memSlots() * memCap() * 8L;
+  long cached = memory::load64(layoutWord(1L));
+  if (cached != 0L) {
+    return cached;
+  }
+  long base = vfsEnd() + inodeCount() * 64L + memSlots() * memCap() * 8L;
+  memory::store64(base, layoutWord(1L));
+  return base;
+}
+
+/* 命令名不进任务的 19 个字。终端格子用到 +253952，这里从 +262144 起，中间留一截。
+   每份先是长度字，再 32 个八位组。512 份大约 16 万位，仍在编译器栈 +67125248 之前。 */
+deRfun commBase(long index): long {
+  return gridBase() + 262144L + index * 320L;
+}
+
+deRfun commClear(long index): void {
+  if (index < 0L || index >= taskLimit()) {
+    return;
+  }
+  memory::store64(0L, commBase(index));
+}
+
+deRfun commPut(long index, long addr, long count): void {
+  if (index < 0L || index >= taskLimit()) {
+    return;
+  }
+  if (count < 0L) {
+    count = 0L;
+  }
+  if (count > 32L) {
+    count = 32L;
+  }
+  long at = commBase(index);
+  memory::store64(count, at);
+  long step = 0L;
+  while (step < count) {
+    long value = memory::loadOctet(addr + step * 8L);
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    memory::storeOctet(value, at + 64L + step * 8L);
+    step = step + 1L;
+  }
+}
+
+/* 路径是计数字符串。去掉末尾的斜杠，只留下最后一段，超长就留末尾 32 个八位组。 */
+deRfun commFromPath(long index, long path): void {
+  long len = memory::load64(path);
+  if (len < 1L || len > 8192L) {
+    commClear(index);
+    return;
+  }
+  long end = len;
+  while (end > 0L) {
+    long value = memory::loadOctet(path + 64L + (end - 1L) * 8L);
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    if (value != 47L) {
+      break;
+    }
+    end = end - 1L;
+  }
+  long start = end;
+  while (start > 0L) {
+    long value = memory::loadOctet(path + 64L + (start - 1L) * 8L);
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    if (value == 47L) {
+      break;
+    }
+    start = start - 1L;
+  }
+  long count = end - start;
+  if (count > 32L) {
+    start = end - 32L;
+    count = 32L;
+  }
+  commPut(index, path + 64L + start * 8L, count);
+}
+
+deRfun commNamed(long index, long which): void {
+  long at = commBase(index);
+  if (index < 0L || index >= taskLimit()) {
+    return;
+  }
+  if (which == 0L) {
+    memory::store64(4L, at);
+    memory::storeOctet(105L, at + 64L);
+    memory::storeOctet(110L, at + 72L);
+    memory::storeOctet(105L, at + 80L);
+    memory::storeOctet(116L, at + 88L);
+    return;
+  }
+  if (which == 1L) {
+    memory::store64(5L, at);
+    memory::storeOctet(112L, at + 64L);
+    memory::storeOctet(117L, at + 72L);
+    memory::storeOctet(108L, at + 80L);
+    memory::storeOctet(115L, at + 88L);
+    memory::storeOctet(101L, at + 96L);
+    return;
+  }
+  memory::store64(0L, at);
+}
+
+deRfun commLen(long index): long {
+  if (index < 0L || index >= taskLimit()) {
+    return 0L;
+  }
+  long count = memory::load64(commBase(index));
+  if (count < 0L) {
+    return 0L;
+  }
+  if (count > 32L) {
+    return 32L;
+  }
+  return count;
+}
+
+deRfun commByte(long index, long at): long {
+  if (index < 0L || index >= taskLimit() || at < 0L || at >= commLen(index)) {
+    return 0L;
+  }
+  long value = memory::loadOctet(commBase(index) + 64L + at * 8L);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
 }
 
 deRfun termFace(): long {
@@ -2057,22 +2290,42 @@ deRfun conMeasure(): void {
   memory::store64(rows, gridBase() + 128L);
 }
 
+/* 脏行收在一个字里。低 6 位是个数，后面每 6 位一个行号。
+   个数 63 表示整屏。移位只保留 32 位，第 32 行以后的标记会缠回低位，
+   于是按一个键就把每一行都画一遍，回读将近整帧。这里只用乘除。 */
 deRfun conMark(long row): void {
   if (row < 0L || row >= 48L) {
     return;
   }
-  long bits = memory::load64(gridBase() + 320L);
-  bits = bits | (1L << row);
-  memory::store64(bits, gridBase() + 320L);
+  long packed = memory::load64(gridBase() + 320L);
+  long count = packed % 64L;
+  if (count == 63L) {
+    return;
+  }
+  long seen = packed / 64L;
+  long index = 0L;
+  while (index < count) {
+    if (seen % 64L == row) {
+      return;
+    }
+    seen = seen / 64L;
+    index = index + 1L;
+  }
+  if (count >= 8L) {
+    memory::store64(63L, gridBase() + 320L);
+    return;
+  }
+  long scale = 64L;
+  index = 0L;
+  while (index < count) {
+    scale = scale * 64L;
+    index = index + 1L;
+  }
+  memory::store64(packed + 1L + row * scale, gridBase() + 320L);
 }
 
 deRfun conMarkAll(): void {
-  long row = 0L;
-  long rows = conRows();
-  while (row < rows) {
-    conMark(row);
-    row = row + 1L;
-  }
+  memory::store64(63L, gridBase() + 320L);
 }
 
 deRfun conRowLen(long row): long {
@@ -2321,9 +2574,26 @@ deRfun conCopyOut(long home, long count): long {
   return got;
 }
 
+/* 打断正在跑的程序。键盘等待若就是这颗核，清掉，免得稍后 reply 到已经卸下的核。
+   光标不在 0 列就换一行。提示符由父进程醒来之后再画，这里只拨光标。 */
+deRfun conInterrupt(long core): void {
+  long base = gridBase();
+  if (memory::load64(base + 384L) == core) {
+    memory::store64(-1L, base + 384L);
+  }
+  if (memory::load64(base + 256L) != 0L) {
+    conByte(10L);
+  }
+}
+
 deRfun conWake(): void {
   long base = gridBase();
   long waiter = memory::load64(base + 384L);
+  /* 等键盘的那颗核已经收掉时，队列里即使还有字节也不能再 reply。 */
+  if (waiter >= 0L && taskFind(waiter) < 0L) {
+    memory::store64(-1L, base + 384L);
+    return;
+  }
   if (waiter < 0L || memory::load64(base + 640L) < 1L) {
     return;
   }
@@ -2360,13 +2630,35 @@ deRfun conPull(long caller, long home): long {
   return -2L;
 }
 
+deRfun conPaintRow(long row, long wide, long paper, long ink, long face): void {
+  long y = 8L + row * 18L;
+  obr::ui::rect(0L, y, wide, 18L, paper, 255L);
+  long len = conRowLen(row);
+  if (len > conCols()) {
+    len = conCols();
+  }
+  if (len > 0L) {
+    /* 纸色矩形会把当前墨色留成纸色。字形图章沿用它，不先换成浅色就和纸融在一起。
+       左缘点一颗再盖回去，只为换色。笔位是基线，格顶再往下 14 像素。 */
+    obr::ui::rect(0L, y, 1L, 1L, ink, 255L);
+    obr::font::select(face, 8L, y + 14L);
+    obr::font::draw(conCell(row, 0L), len);
+    obr::ui::rect(0L, y, 1L, 1L, paper, 255L);
+  }
+}
+
 deRfun conPaint(): void {
   conInit();
   long face = memory::load64(termFace());
   if (face < 1L) {
     return;
   }
-  long wide = obr::ui::width();
+  /* 列数已经量过就用它还原像素宽度，避免每个键都再问一次显卡。 */
+  long colsNow = conCols();
+  long wide = colsNow * 8L + 16L;
+  if (colsNow < 1L) {
+    wide = obr::ui::width();
+  }
   long paper = obr::ui::rgb(30L, 30L, 30L);
   long ink = obr::ui::rgb(230L, 230L, 230L);
   long base = gridBase();
@@ -2390,29 +2682,27 @@ deRfun conPaint(): void {
     conMarkAll();
   }
   long rows = conRows();
-  long bits = memory::load64(base + 320L);
-  long row = 0L;
-  while (row < rows) {
-    long hit = bits & (1L << row);
-    if (hit != 0L) {
-      long y = 8L + row * 18L;
-      obr::ui::rect(0L, y, wide, 18L, paper, 255L);
-      long len = conRowLen(row);
-      if (len > conCols()) {
-        len = conCols();
-      }
-      if (len > 0L) {
-        /* 纸色矩形会把当前墨色留成纸色。字形图章沿用它，不先换成浅色就和纸融在一起。
-           左缘点一颗再盖回去，只为换色。笔位是基线，格顶再往下 14 像素。 */
-        obr::ui::rect(0L, y, 1L, 1L, ink, 255L);
-        obr::font::select(face, 8L, y + 14L);
-        obr::font::draw(conCell(row, 0L), len);
-        obr::ui::rect(0L, y, 1L, 1L, paper, 255L);
-      }
-    }
-    row = row + 1L;
-  }
+  long packed = memory::load64(base + 320L);
+  long count = packed % 64L;
   memory::store64(0L, base + 320L);
+  if (count == 63L) {
+    long row = 0L;
+    while (row < rows) {
+      conPaintRow(row, wide, paper, ink, face);
+      row = row + 1L;
+    }
+  } else {
+    long seen = packed / 64L;
+    long index = 0L;
+    while (index < count) {
+      long row = seen % 64L;
+      seen = seen / 64L;
+      if (row >= 0L && row < rows) {
+        conPaintRow(row, wide, paper, ink, face);
+      }
+      index = index + 1L;
+    }
+  }
   long col = memory::load64(base + 256L);
   long crow = memory::load64(base + 192L);
   if (crow >= 0L && crow < rows && col >= 0L && col <= conCols()) {
@@ -2733,6 +3023,9 @@ deRfun vfsCall(long caller, long service): long {
   }
   if (service == 29L) {
     return doGetcwd(caller, home);
+  }
+  if (service == 31L) {
+    return doUtime(caller, home);
   }
   return 13L;
 }

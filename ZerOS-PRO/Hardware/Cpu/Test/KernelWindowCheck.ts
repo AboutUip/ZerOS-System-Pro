@@ -87,8 +87,11 @@ export namespace ZerOS {
         if (slotBits !== widen(RelocateSlotBits) || dataFloor !== widen(RelocateDataFloor)) {
           fail("槽距或数据下限和核心装入位移不一致");
         }
-        if (widen(KernelWindow.CompilerSp) !== dataFloor) {
-          fail("栈指针字不在数据下限上");
+        if (widen(KernelWindow.CompilerSp) + 64 !== widen(KernelWindow.CompilerStack)) {
+          fail("栈指针字不在栈数据前一个字");
+        }
+        if (widen(KernelWindow.CompilerSp) === dataFloor) {
+          fail("栈指针字盖住了窗口起点的调用参数");
         }
         if (addressSlot !== resident * slotBits) {
           fail("地址位移不是核心号乘槽距");

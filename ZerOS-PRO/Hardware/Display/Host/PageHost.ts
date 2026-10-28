@@ -48,10 +48,10 @@ export namespace ZerOS {
           /* 面板已经换成这一档，再把宽高落进 NAS 的 /boot/display。 */
           void saveDisplaySize(width, height);
         });
-        page.WhenFrame((frameWidth, frameHeight, pixels, bitmap): void => {
+        page.WhenFrame((frameWidth, frameHeight, pixels, bitmap, originX, originY): void => {
           try {
             if (bitmap !== null) {
-              acceptGpuBitmap(frameWidth, frameHeight, bitmap);
+              acceptGpuBitmap(frameWidth, frameHeight, bitmap, originX ?? 0, originY ?? 0);
               return;
             }
             if (pixels !== null) {

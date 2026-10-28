@@ -1,0 +1,486 @@
+/* POSIX.1-2017 kill（utilities/kill.html）。
+   沿用服务 18（obr::proc::kill）。打到 1 号时由服务停机，这里不再提前拒绝。
+   没有作业控制，% 作业号不是 pid。没有进程组：pid 为 0 或负数不发送。
+   缺省信号是 TERM（15）。-s 的名字、 -名字 和 -数字 都认，后写的信号为准。
+   名字不分大小写，可以带 SIG 前缀。数字只接受下面有名字的号，外加 0。
+   编号沿用本内核已经在用的传统号：2 是 INT，9 是 KILL。
+   1 HUP  2 INT  3 QUIT  4 ILL  5 TRAP  6 ABRT  7 BUS  8 FPE
+   9 KILL  10 USR1  11 SEGV  12 USR2  13 PIPE  14 ALRM  15 TERM
+   17 CHLD  18 CONT  19 STOP  20 TSTP  21 TTIN  22 TTOU  23 URG
+   24 XCPU  25 XFSZ  26 VTALRM  27 PROF  28 WINCH  29 POLL  31 SYS
+   16 和 30 没有 POSIX 名字，-16 这种拒绝。
+   服务 18 只把信号位记上。调度只把 9 当成杀死；其余要任务自己 sigtake。
+   STOP 和 CONT 不会冻结或放行任务，这一层没有那种状态。
+   -l 无操作数时，上面这些名字用空格隔开，最后换行，不列 0。
+   -l 0 写 0。-l 15 写 TERM。大于 128 且小于 256 时减去 128，再对名字
+   （壳里信号退出是 128 加信号号，2 号中断就是 130）。
+   诊断在标准错误，前缀 kill:。成功时标准输出只给 -l。退出用服务 28。 */
+import memory;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun writeFd(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun failSpan(long home, long addr, long count, string tail): void {
+  writeErr(home, "kill: ");
+  if (count > 0L) {
+    writeFd(home, 2L, addr, count);
+  }
+  writeErr(home, tail);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 小写比较。信号名在规范里不分大小写。 */
+deRfun sameFold(long addr, long len, string text): long {
+  int raw = length(text);
+  long count = raw;
+  if (len != count) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    long have = u8(addr + index * 8L);
+    long want = text[index];
+    if (have >= 65L && have <= 90L) {
+      have = have + 32L;
+    }
+    if (want >= 65L && want <= 90L) {
+      want = want + 32L;
+    }
+    if (have != want) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun known(long sig): long {
+  if (sig == 0L) {
+    return 1L;
+  }
+  if (sig >= 1L && sig <= 15L) {
+    return 1L;
+  }
+  if (sig >= 17L && sig <= 29L) {
+    return 1L;
+  }
+  if (sig == 31L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun readDec(long addr, long len, long* value): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    if (total > 922337203685477580L) {
+      return 0L;
+    }
+    if (total == 922337203685477580L && digit > 7L) {
+      return 0L;
+    }
+    total = total * 10L + digit;
+    index = index + 1L;
+  }
+  *value = total;
+  return 1L;
+}
+
+/* 纯数字是信号号。否则按名字，可选的 SIG 前缀先拿掉。 */
+deRfun parseSignal(long addr, long len): long {
+  if (len < 1L) {
+    return -1L;
+  }
+  long digits = 1L;
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      digits = 0L;
+    }
+    index = index + 1L;
+  }
+  if (digits == 1L) {
+    long value = 0L;
+    if (readDec(addr, len, &value) == 0L || known(value) == 0L) {
+      return -1L;
+    }
+    return value;
+  }
+  long at = addr;
+  long count = len;
+  if (len > 3L && sameFold(addr, 3L, "sig") == 1L) {
+    at = addr + 24L;
+    count = len - 3L;
+  }
+  if (sameFold(at, count, "hup") == 1L) {
+    return 1L;
+  }
+  if (sameFold(at, count, "int") == 1L) {
+    return 2L;
+  }
+  if (sameFold(at, count, "quit") == 1L) {
+    return 3L;
+  }
+  if (sameFold(at, count, "ill") == 1L) {
+    return 4L;
+  }
+  if (sameFold(at, count, "trap") == 1L) {
+    return 5L;
+  }
+  if (sameFold(at, count, "abrt") == 1L) {
+    return 6L;
+  }
+  if (sameFold(at, count, "bus") == 1L) {
+    return 7L;
+  }
+  if (sameFold(at, count, "fpe") == 1L) {
+    return 8L;
+  }
+  if (sameFold(at, count, "kill") == 1L) {
+    return 9L;
+  }
+  if (sameFold(at, count, "usr1") == 1L) {
+    return 10L;
+  }
+  if (sameFold(at, count, "segv") == 1L) {
+    return 11L;
+  }
+  if (sameFold(at, count, "usr2") == 1L) {
+    return 12L;
+  }
+  if (sameFold(at, count, "pipe") == 1L) {
+    return 13L;
+  }
+  if (sameFold(at, count, "alrm") == 1L) {
+    return 14L;
+  }
+  if (sameFold(at, count, "term") == 1L) {
+    return 15L;
+  }
+  if (sameFold(at, count, "chld") == 1L) {
+    return 17L;
+  }
+  if (sameFold(at, count, "cont") == 1L) {
+    return 18L;
+  }
+  if (sameFold(at, count, "stop") == 1L) {
+    return 19L;
+  }
+  if (sameFold(at, count, "tstp") == 1L) {
+    return 20L;
+  }
+  if (sameFold(at, count, "ttin") == 1L) {
+    return 21L;
+  }
+  if (sameFold(at, count, "ttou") == 1L) {
+    return 22L;
+  }
+  if (sameFold(at, count, "urg") == 1L) {
+    return 23L;
+  }
+  if (sameFold(at, count, "xcpu") == 1L) {
+    return 24L;
+  }
+  if (sameFold(at, count, "xfsz") == 1L) {
+    return 25L;
+  }
+  if (sameFold(at, count, "vtalrm") == 1L) {
+    return 26L;
+  }
+  if (sameFold(at, count, "prof") == 1L) {
+    return 27L;
+  }
+  if (sameFold(at, count, "winch") == 1L) {
+    return 28L;
+  }
+  if (sameFold(at, count, "poll") == 1L) {
+    return 29L;
+  }
+  if (sameFold(at, count, "sys") == 1L) {
+    return 31L;
+  }
+  return -1L;
+}
+
+/* 和文件头的名字表是同一组。0 单独写成 0，全表不列它。 */
+deRfun writeName(long home, long sig): void {
+  if (sig == 0L) {
+    writeOut(home, "0");
+  } else if (sig == 1L) {
+    writeOut(home, "HUP");
+  } else if (sig == 2L) {
+    writeOut(home, "INT");
+  } else if (sig == 3L) {
+    writeOut(home, "QUIT");
+  } else if (sig == 4L) {
+    writeOut(home, "ILL");
+  } else if (sig == 5L) {
+    writeOut(home, "TRAP");
+  } else if (sig == 6L) {
+    writeOut(home, "ABRT");
+  } else if (sig == 7L) {
+    writeOut(home, "BUS");
+  } else if (sig == 8L) {
+    writeOut(home, "FPE");
+  } else if (sig == 9L) {
+    writeOut(home, "KILL");
+  } else if (sig == 10L) {
+    writeOut(home, "USR1");
+  } else if (sig == 11L) {
+    writeOut(home, "SEGV");
+  } else if (sig == 12L) {
+    writeOut(home, "USR2");
+  } else if (sig == 13L) {
+    writeOut(home, "PIPE");
+  } else if (sig == 14L) {
+    writeOut(home, "ALRM");
+  } else if (sig == 15L) {
+    writeOut(home, "TERM");
+  } else if (sig == 17L) {
+    writeOut(home, "CHLD");
+  } else if (sig == 18L) {
+    writeOut(home, "CONT");
+  } else if (sig == 19L) {
+    writeOut(home, "STOP");
+  } else if (sig == 20L) {
+    writeOut(home, "TSTP");
+  } else if (sig == 21L) {
+    writeOut(home, "TTIN");
+  } else if (sig == 22L) {
+    writeOut(home, "TTOU");
+  } else if (sig == 23L) {
+    writeOut(home, "URG");
+  } else if (sig == 24L) {
+    writeOut(home, "XCPU");
+  } else if (sig == 25L) {
+    writeOut(home, "XFSZ");
+  } else if (sig == 26L) {
+    writeOut(home, "VTALRM");
+  } else if (sig == 27L) {
+    writeOut(home, "PROF");
+  } else if (sig == 28L) {
+    writeOut(home, "WINCH");
+  } else if (sig == 29L) {
+    writeOut(home, "POLL");
+  } else if (sig == 31L) {
+    writeOut(home, "SYS");
+  }
+}
+
+/* 退出状态：本身是信号号，或 128 加信号号。0 只走前一种。 */
+deRfun statusSignal(long status): long {
+  if (known(status) == 1L) {
+    return status;
+  }
+  if (status > 128L && status < 256L) {
+    long sig = status - 128L;
+    if (sig != 0L && known(sig) == 1L) {
+      return sig;
+    }
+  }
+  return -1L;
+}
+
+deRfun parsePid(long addr, long len, long* value): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long at = addr;
+  long count = len;
+  long neg = 0L;
+  if (u8(addr) == 45L) {
+    if (len < 2L) {
+      return 0L;
+    }
+    neg = 1L;
+    at = addr + 8L;
+    count = len - 1L;
+  }
+  long number = 0L;
+  if (readDec(at, count, &number) == 0L) {
+    return 0L;
+  }
+  if (neg == 1L) {
+    if (number == 0L) {
+      *value = 0L;
+      return 1L;
+    }
+    *value = 0L - number;
+    return 1L;
+  }
+  *value = number;
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long list = 0L;
+  long sig = 15L;
+  long sigSet = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 108L) {
+      list = 1L;
+      index = index + 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 115L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "kill: invalid signal\n");
+        return finish(home, 1L);
+      }
+      long picked = parseSignal(argPtr(home, index), argLen(home, index));
+      if (picked < 0L) {
+        writeErr(home, "kill: invalid signal\n");
+        return finish(home, 1L);
+      }
+      sig = picked;
+      sigSet = 1L;
+      index = index + 1L;
+    } else if (len > 1L && u8(at) == 45L) {
+      long picked = parseSignal(at + 8L, len - 1L);
+      if (picked < 0L) {
+        writeErr(home, "kill: invalid signal\n");
+        return finish(home, 1L);
+      }
+      sig = picked;
+      sigSet = 1L;
+      index = index + 1L;
+    } else if (len > 0L && u8(at) == 45L) {
+      writeErr(home, "kill: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      ended = 1L;
+    }
+  }
+  if (list == 1L && sigSet == 1L) {
+    writeErr(home, "kill: invalid option\n");
+    return finish(home, 1L);
+  }
+  if (list == 1L) {
+    if (count - index > 1L) {
+      writeErr(home, "kill: too many arguments\n");
+      return finish(home, 1L);
+    }
+    if (index == count) {
+      writeOut(home, "HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM CHLD CONT STOP TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH POLL SYS\n");
+      return finish(home, 0L);
+    }
+    long status = 0L;
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (readDec(at, len, &status) == 0L) {
+      failSpan(home, at, len, ": invalid signal\n");
+      return finish(home, 1L);
+    }
+    long mapped = statusSignal(status);
+    if (mapped < 0L) {
+      failSpan(home, at, len, ": invalid signal\n");
+      return finish(home, 1L);
+    }
+    writeName(home, mapped);
+    writeOut(home, "\n");
+    return finish(home, 0L);
+  }
+  if (index >= count) {
+    writeErr(home, "kill: missing operand\n");
+    return finish(home, 1L);
+  }
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long pid = 0L;
+    if (parsePid(at, len, &pid) == 0L) {
+      failSpan(home, at, len, ": invalid pid\n");
+      failed = 1L;
+    } else if (pid <= 0L) {
+      failSpan(home, at, len, ": process group not supported\n");
+      failed = 1L;
+    } else {
+      long status = obr::proc::kill(home, pid, sig);
+      if (status == 2L) {
+        failSpan(home, at, len, ": no such process\n");
+        failed = 1L;
+      } else if (status != 0L) {
+        failSpan(home, at, len, ": not permitted\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (failed == 1L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

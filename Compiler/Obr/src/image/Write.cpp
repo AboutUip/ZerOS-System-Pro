@@ -547,7 +547,7 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
     cursor += 1;
   }
   if (exports.size() > 256 || imports.size() > 256) fail("符号太多");
-  if (relocs.size() > 4096) fail("重定位太多");
+  if (relocs.size() > 8192) fail("重定位太多");
   if (!unit.pie && !unit.shared && imports.empty() && relocs.empty() && nativeReady(image.lines)) {
     std::vector<NativeSymbol> symbols;
     for (const LinkSite& item : exports) symbols.push_back(NativeSymbol{item.name, item.index});

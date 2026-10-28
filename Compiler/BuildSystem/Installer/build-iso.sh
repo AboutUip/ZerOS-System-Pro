@@ -7,13 +7,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 WORK="$HERE/work"
 OUT="$HERE/out"
+LOGO="$HERE/assets/zeros-pro.png"
+LOGO_GRUB="$HERE/assets/zeros-pro-grub.png"
 NETINST_NAME="debian-13.7.0-amd64-netinst.iso"
 NETINST_URLS=(
-  "https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64/iso-cd/$NETINST_NAME"
-  "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$NETINST_NAME"
   "https://deb.debian.org/debian-cd/current/amd64/iso-cd/$NETINST_NAME"
+  "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$NETINST_NAME"
+  "https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64/iso-cd/$NETINST_NAME"
 )
-SHA_URL="https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64/iso-cd/SHA256SUMS"
+SHA_URLS=(
+  "https://deb.debian.org/debian-cd/current/amd64/iso-cd/SHA256SUMS"
+  "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/SHA256SUMS"
+  "https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64/iso-cd/SHA256SUMS"
+)
 NETINST="$WORK/$NETINST_NAME"
 SHA_FILE="$WORK/SHA256SUMS"
 ISO="$OUT/zeros-standard-amd64.iso"
@@ -47,7 +53,14 @@ fetch_sha() {
     return 0
   fi
   echo "Fetching SHA256SUMS ..."
-  curl -L --fail --retry 2 --connect-timeout 20 --max-time 120 -o "$SHA_FILE" "$SHA_URL" || true
+  local url
+  for url in "${SHA_URLS[@]}"; do
+    rm -f "$SHA_FILE"
+    if curl -L --fail --retry 2 --connect-timeout 20 --max-time 120 -o "$SHA_FILE" "$url"; then
+      return 0
+    fi
+  done
+  return 0
 }
 
 verify_netinst() {
@@ -165,44 +178,76 @@ xorriso -osirrox on -indev "$NETINST" \
   -extract /boot/grub/grub.cfg "$WORK/grub.cfg" >/dev/null
 [[ -s "$WORK/isolinux.cfg" ]] || die "isolinux.cfg missing from netinst"
 [[ -s "$WORK/grub.cfg" ]] || die "grub.cfg missing from netinst"
+chmod u+w "$WORK/isolinux.cfg" "$WORK/grub.cfg"
 
-cat > "$WORK/zeros-isolinux.cfg" <<'EOF'
+cat > "$WORK/isolinux.cfg" <<'EOF'
+ui vesamenu.c32
+menu title ZerOS-Pro Installer
+menu background splash.png
+menu color title * #ff4d3dff *
+menu color border * #00000000 #00000000 none
+menu color sel * #ffffffff #ff4d3dff *
+menu color hotsel 1;7;37;40 #ffffffff #ff4d3dff *
+menu color tabmsg * #ffffffff #00000000 *
+menu color help 37;40 #ffdddd00 #00000000 none
+menu vshift 10
+menu rows 8
+menu helpmsgrow 14
+menu cmdlinerow 16
+menu timeoutrow 16
+menu tabmsgrow 18
+menu tabmsg Press ENTER to install ZerOS-Pro
+prompt 0
+timeout 50
+default zeros
 label zeros
-  menu label ^Install ZerOS (erases disk)
+  menu label ^Install ZerOS-Pro (erases disk)
   kernel /install.amd/vmlinuz
   append auto=true priority=critical preseed/file=/cdrom/preseed.cfg vga=788 initrd=/install.amd/initrd.gz --- quiet
 EOF
-cat "$WORK/zeros-isolinux.cfg" "$WORK/isolinux.cfg" > "$WORK/isolinux.new"
-mv "$WORK/isolinux.new" "$WORK/isolinux.cfg"
-sed -i 's/^default .*/default zeros/' "$WORK/isolinux.cfg"
-sed -i 's/^timeout .*/timeout 50/' "$WORK/isolinux.cfg"
-sed -i 's/^prompt .*/prompt 0/' "$WORK/isolinux.cfg"
 grep -q '^default zeros' "$WORK/isolinux.cfg" || die "isolinux default was not set"
 grep -q '^timeout 50' "$WORK/isolinux.cfg" || die "isolinux timeout was not set"
 grep -q 'preseed/file=/cdrom/preseed.cfg' "$WORK/isolinux.cfg" || die "isolinux preseed path missing"
 
-cat > "$WORK/zeros-grub.cfg" <<'EOF'
+cat > "$WORK/grub.cfg" <<'EOF'
 set default="0"
 set timeout=5
-menuentry 'Install ZerOS (erases disk)' {
+if loadfont $prefix/font.pf2 ; then
+  set gfxmode=800x600
+  set gfxpayload=keep
+  insmod efi_gop
+  insmod efi_uga
+  insmod video_bochs
+  insmod video_cirrus
+  insmod gfxterm
+  terminal_output gfxterm
+fi
+insmod png
+if background_image /boot/grub/zeros-pro.png; then
+  set color_normal=light-gray/black
+  set menu_color_normal=white/black
+  set menu_color_highlight=black/light-gray
+fi
+menuentry 'Install ZerOS-Pro (erases disk)' {
     set background_color=black
     linux /install.amd/vmlinuz auto=true priority=critical preseed/file=/cdrom/preseed.cfg vga=788 --- quiet
     initrd /install.amd/initrd.gz
 }
 EOF
-cat "$WORK/zeros-grub.cfg" "$WORK/grub.cfg" > "$WORK/grub.new"
-mv "$WORK/grub.new" "$WORK/grub.cfg"
-grep -q "menuentry 'Install ZerOS" "$WORK/grub.cfg" || die "grub ZerOS entry missing"
+grep -q "menuentry 'Install ZerOS-Pro" "$WORK/grub.cfg" || die "grub ZerOS-Pro entry missing"
 grep -q 'preseed/file=/cdrom/preseed.cfg' "$WORK/grub.cfg" || die "grub preseed path missing"
 
 remaster() {
   local mode="$1"
   rm -f "$ISO"
   xorriso -indev "$NETINST" -outdev "$ISO" \
+    -volid ZEROS_PRO \
     -map "$WORK/preseed.cfg" /preseed.cfg \
     -map "$WORK/zeros" /zeros \
     -map "$WORK/isolinux.cfg" /isolinux/isolinux.cfg \
     -map "$WORK/grub.cfg" /boot/grub/grub.cfg \
+    -map "$LOGO" /isolinux/splash.png \
+    -map "$LOGO_GRUB" /boot/grub/zeros-pro.png \
     -boot_image any "$mode"
 }
 

@@ -158,6 +158,10 @@ export namespace ZerOS {
             const offset = index % 8;
             return charAt(protocols[ordinal] ?? "", offset);
           }
+          /* 从 Unix 纪元起的毫秒。下标不参与计算。监督核用它给文件记时间，问一次就读一次，不能写进指标页再读旧值。 */
+          if (field === 3) {
+            return BigInt(Date.now());
+          }
         }
         if (seat === 2) {
           if (field === 0) {

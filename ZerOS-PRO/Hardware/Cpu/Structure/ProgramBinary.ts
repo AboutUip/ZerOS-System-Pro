@@ -1075,7 +1075,7 @@ export namespace ZerOS {
       const LinkNameMax = 64;
       const LinkExportMax = 256;
       const LinkImportMax = 256;
-      const LinkRelocMax = 4096;
+      const LinkRelocMax = 8192;
 
       function readU16(reader: Reader): number {
         if (reader.at + 2 > reader.end) {

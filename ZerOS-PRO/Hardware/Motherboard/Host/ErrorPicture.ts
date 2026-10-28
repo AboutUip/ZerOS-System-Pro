@@ -10,6 +10,7 @@
  * 七个字段的行首仍是协议规定的 ERROR、CODE、SRC、CORE、AT、SITE。
  * 说明按帧宽折行。调用栈最多四行，一行放不下时收成函数名和文件名。
  * 字形表只有 ASCII。记录在进来之前已经收成这个范围。
+ * 整幅是蓝底。笑脸用方块拼，字形只有 8 像素，拼出来才看得清。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -37,14 +38,36 @@ export namespace ZerOS {
 
       const Glyph = 8;
       const Ink = 16777215;
-      /** 和加载画面四块方标同一支蓝。 */
-      const Rail = 30932;
-      /** 比纯黑抬一点的玻璃底，字行之间的空档能看见。 */
-      const Glass = 1053206;
+      /** Windows 停机蓝 #0078D7。整幅铺这一种，不再用近黑玻璃。 */
+      const Field = 30935;
       const Margin = 16;
+      /**
+       * Windows 停机画面上的那张脸，就是 ":("。
+       * # 是一格白块。左边两竖是冒号，右边一条弯是括号。
+       * 8 像素字形画出来几乎看不见，所以用方块拼大。
+       */
+      const SadFace = [
+        "....................",
+        "##..................",
+        "##..................",
+        "....................",
+        "##..................",
+        "##..................",
+        "....................",
+        "..............####..",
+        ".............#......",
+        "............#.......",
+        "...........#........",
+        "..........#.........",
+        "..........#.........",
+        "...........#........",
+        "............#.......",
+        ".............#......",
+        "..............####..",
+      ];
 
       /**
-       * 全幅清成 0，再按协议逐行写失败字段。
+       * 先清成 0，再铺满停机蓝，左上角用方块拼出笑脸，下面按协议逐行写失败字段。
        * 宽高用已经发布的帧。还没发布，或边长小到放不下一行字时，退回 640×480。
        * r6 是底，r7 是文本。最后 compose、present、halt，调用方等到停。
        */
@@ -63,24 +86,11 @@ export namespace ZerOS {
           "place r1, 0",
           "place r2, 0",
           `place r3, ${String(frame.width)}`,
-          "place r4, 3",
-          `place r5, ${String(Rail)}`,
-          "gpu.box r6, r0, r1, r2, r3, r4, r5",
-          "place r0, 0",
-          "place r1, 0",
-          "place r2, 0",
-          "place r3, 4",
           `place r4, ${String(frame.height)}`,
-          `place r5, ${String(Rail)}`,
-          "gpu.box r6, r0, r1, r2, r3, r4, r5",
-          "place r0, 0",
-          "place r1, 8",
-          "place r2, 8",
-          `place r3, ${String(frame.width - 16)}`,
-          `place r4, ${String(frame.height - 16)}`,
-          `place r5, ${String(Glass)}`,
+          `place r5, ${String(Field)}`,
           "gpu.box r6, r0, r1, r2, r3, r4, r5",
         ];
+        const faceBottom = sadFace(lines, frame.width, frame.height);
         const name = FaultSourceName[record.Source] ?? "Board";
         const core = record.Core < 0 ? "CORE -" : `CORE ${String(record.Core)}`;
         const op = record.Op.length > 0 ? `AT ${String(record.Index)} ${record.Op}` : `AT ${String(record.Index)}`;
@@ -93,7 +103,7 @@ export namespace ZerOS {
           `SITE ${record.Site}`,
           record.Text,
         ];
-        let row = 2;
+        let row = Math.floor((faceBottom + Glyph) / Glyph) + 1;
         for (let index = 0; index < blocks.length; index += 1) {
           const block = blocks[index] ?? "";
           const rows = Math.max(1, Math.ceil(block.length / columns));
@@ -114,6 +124,39 @@ export namespace ZerOS {
         }
         lines.push("gpu.compose", "gpu.present", "halt");
         return lines;
+      }
+
+      /**
+       * 把笑脸拼进画面。返回脸的下沿，协议文字从这里下面开始，免得压住眼睛。
+       * 帧太矮时缩小格子，文字仍要留得下。
+       */
+      function sadFace(lines: string[], frameWidth: number, frameHeight: number): number {
+        const cell = frameHeight >= 600 ? 18 : frameHeight >= 480 ? 14 : 8;
+        const originX = 48;
+        const originY = 36;
+        for (let row = 0; row < SadFace.length; row += 1) {
+          const line = SadFace[row] ?? "";
+          for (let col = 0; col < line.length; col += 1) {
+            if (line[col] !== "#") {
+              continue;
+            }
+            const x = originX + col * cell;
+            const y = originY + row * cell;
+            if (x + cell > frameWidth || y + cell > frameHeight) {
+              continue;
+            }
+            lines.push(
+              "place r0, 0",
+              `place r1, ${String(x)}`,
+              `place r2, ${String(y)}`,
+              `place r3, ${String(cell)}`,
+              `place r4, ${String(cell)}`,
+              `place r5, ${String(Ink)}`,
+              "gpu.box r6, r0, r1, r2, r3, r4, r5",
+            );
+          }
+        }
+        return originY + SadFace.length * cell;
       }
 
       /** 边长还没发布，或小到协议那一行字放不下时，用上电时的 640×480。 */
@@ -175,7 +218,7 @@ export namespace ZerOS {
 
       /**
        * 一块文本一个节点。高度按行数留足，放不下的字符裁掉，不画出帧外。
-       * 底色是 0，空字位不会把上一帧的颜色留住。
+       * 字的底色和停机蓝相同，空字位不再抠出黑块。
        * 返回下一块可用的行号。
        */
       function paint(
@@ -203,7 +246,7 @@ export namespace ZerOS {
           `place r4, ${String(roomRows * Glyph)}`,
           "gpu.text r7, r6, r1, r2, r3, r4",
           `place r1, ${String(Ink)}`,
-          "place r2, 0",
+          `place r2, ${String(Field)}`,
           "gpu.paint r7, r1, r2",
         );
         for (let index = 0; index < visible.length; index += 1) {

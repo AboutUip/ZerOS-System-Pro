@@ -49,13 +49,13 @@ export function seedDebug() {
 
 /** 缺文件时写成小端 16 位宽、小端 16 位高。已有文件不改。 */
 export function seedDisplay() {
-  const size = readDisplayDefault();
   const boot = path.join(root, "boot");
-  fs.mkdirSync(boot, { recursive: true });
   const display = path.join(boot, "display");
   if (fs.existsSync(display)) {
     return;
   }
+  const size = readDisplayDefault();
+  fs.mkdirSync(boot, { recursive: true });
   const bytes = Buffer.alloc(4);
   bytes.writeUInt16LE(size.width, 0);
   bytes.writeUInt16LE(size.height, 2);

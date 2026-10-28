@@ -662,23 +662,29 @@ export namespace ZerOS {
        */
       async function postNas(request: NasRequest): Promise<NasReply> {
         const socket = await openSocket();
-        return await new Promise((resolve, reject): void => {
-          const waiter: NasWaiter = {
-            done: false,
-            resolve,
-            reject,
-            timer: setTimeout((): void => {
+        let reply: NasReply;
+        try {
+          reply = await new Promise<NasReply>((resolve, reject): void => {
+            const waiter: NasWaiter = {
+              done: false,
+              resolve,
+              reject,
+              timer: setTimeout((): void => {
+                settleWaiter(waiter, null, new Error(`${runtimePrefix} 服务没有应答`));
+                socket.close();
+              }, ServiceTimeoutMs),
+            };
+            nasWaiters.push(waiter);
+            try {
+              socket.send(JSON.stringify(request));
+            } catch {
               settleWaiter(waiter, null, new Error(`${runtimePrefix} 服务没有应答`));
-              socket.close();
-            }, ServiceTimeoutMs),
-          };
-          nasWaiters.push(waiter);
-          try {
-            socket.send(JSON.stringify(request));
-          } catch {
-            settleWaiter(waiter, null, new Error(`${runtimePrefix} 服务没有应答`));
-          }
-        });
+            }
+          });
+        } catch (error: unknown) {
+          throw error;
+        }
+        return reply;
       }
 
       /**

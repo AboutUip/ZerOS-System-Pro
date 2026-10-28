@@ -9,6 +9,7 @@
  * 节拍按绝对时间轴：第 n 拍到期于起点 + n × 1000 / Hertz。错过的拍丢掉。
  * 帧缓冲没有新内容时，这一拍只推进时间轴，不再把同一幅拆进画布。
  * 启动画面的六个点例外：它们按墙上的毫秒换色，不看固件循环快慢，也不看读盘。
+ * 四块方标和拖影也在这一侧转。固件停笔之后，最后一帧不会把圆圈冻住。
  * 启动画面之后的画面是显卡交来的位图，直接贴上画布，不再把帧缓冲拆进画布。
  * 不创建 Worker。内存和主板在各自的线程里，不会堵住这里的计时。
  *
@@ -27,6 +28,7 @@
 
 import { ZerOS as ConfigRoot } from "../Config/DisplayConfig";
 import { ZerOS as SplashRoot } from "./SplashDots";
+import { ZerOS as RingRoot } from "./SplashRing";
 import { ZerOS as HertzRoot } from "../Structure/Hertz";
 import { ZerOS as ResolutionRoot } from "../Structure/Resolution";
 
@@ -42,6 +44,9 @@ export namespace ZerOS {
       const sameSplash = SplashRoot.Hardware.Display.sameSplash;
       const splashPhase = SplashRoot.Hardware.Display.splashPhase;
       const composeSplash = SplashRoot.Hardware.Display.composeSplash;
+      const loadingMark = RingRoot.Hardware.Display.loadingMark;
+      const looksLikeLoading = RingRoot.Hardware.Display.looksLikeLoading;
+      const paintLoading = RingRoot.Hardware.Display.paintLoading;
       type SplashDots = SplashRoot.Hardware.Display.SplashDots;
 
       const displayPrefix = "[ZerOS.Hardware.Display.Display]";
@@ -93,6 +98,30 @@ export namespace ZerOS {
          */
         private splashDone = false;
 
+        /** 加载圆圈由页面按 40 毫秒一拍自己转。固件不再送来新相位时也不停。 */
+        private loading = false;
+
+        /** 拖影头部。0 到 23，和固件那一圈相同。 */
+        private loadingPhase = 0;
+
+        /** 圆圈的下一拍。和刷新率那条时间轴分开，免得节拍被 shown 吃掉。 */
+        private loadingTimer: number | null = null;
+
+        /** 这一轮拖影从哪一毫秒开始。相位按墙上的时间算，迟到的回调不会停在第一拍。 */
+        private loadingOrigin = 0;
+
+        /** 已经见过方标，并且后来的整幅不再是方标。此后不再抽样，BIOS 和终端不付读回的代价。 */
+        private sawLoading = false;
+
+        /** 方标已经交接给终端或设置画面。 */
+        private settled = false;
+
+        /** 只用来抽样即将贴上的位图。主画布保持硬件加速，避免每一帧整幅读回。 */
+        private eye: HTMLCanvasElement | null = null;
+
+        /** 抽样画布的上下文。按频繁读回创建，读到的是刚画上的那一格。 */
+        private eyeContext: CanvasRenderingContext2D | null = null;
+
         /** 当前宽度。 */
         public get Width(): number {
           return this.width;
@@ -124,6 +153,7 @@ export namespace ZerOS {
           if (this.canvas !== null) {
             throw new Error(`${displayPrefix} 显示器已经接上另一块画布`);
           }
+          /* 主画布不按频繁读回创建。那样每一帧都会走软件位图，BIOS 每 16 毫秒整幅重画就会卡住。 */
           const context = canvas.getContext("2d", { alpha: false });
           if (context === null) {
             throw new Error(`${displayPrefix} 画布没有二维上下文`);
@@ -192,8 +222,72 @@ export namespace ZerOS {
             bitmap.close();
             throw new Error(`${displayPrefix} 位图尺寸和面板不一致`);
           }
+          /* 先在小画布上认方标，再贴主画布。主画布不读回，设置界面才不会被读像素拖死。 */
+          let hold = false;
+          if (!this.settled) {
+            try {
+              hold = this.bitmapLooksLoading(bitmap);
+            } catch {
+              hold = false;
+            }
+          }
           try {
             context.drawImage(bitmap, 0, 0);
+          } finally {
+            bitmap.close();
+          }
+          this.splash = null;
+          this.splashDone = true;
+          this.shown = true;
+          if (this.settled) {
+            return;
+          }
+          /* 整幅仍是四块方标就立刻盖上自己的拖影。固件这帧的相位经常是停住的。 */
+          if (hold) {
+            this.sawLoading = true;
+            this.holdLoading();
+            return;
+          }
+          if (this.sawLoading) {
+            this.settled = true;
+          }
+          this.stopLoading();
+        }
+
+        /**
+         * 把一小块位图贴进已经画过的面板。
+         * 按键和一行输出只改这条带。整帧再读回来，每个键都要等一两百毫秒。
+         * 这块超出面板就整块丢掉，不留下半条。
+         */
+        public ShowPatch(originX: number, originY: number, bitmap: ImageBitmap): void {
+          const context = this.context;
+          if (context === null) {
+            bitmap.close();
+            throw new Error(`${displayPrefix} 面板还没有接上`);
+          }
+          /* 圆圈还在转时，画面中部的拖影补丁会把圆圈冻住。终端的字在顶上，那一块要留下并停转。 */
+          if (this.loading && originY >= 80 && bitmap.height < 160) {
+            bitmap.close();
+            return;
+          }
+          if (this.loading) {
+            this.stopLoading();
+          }
+          if (
+            !Number.isInteger(originX)
+            || !Number.isInteger(originY)
+            || originX < 0
+            || originY < 0
+            || bitmap.width < 1
+            || bitmap.height < 1
+            || originX + bitmap.width > this.width
+            || originY + bitmap.height > this.height
+          ) {
+            bitmap.close();
+            throw new Error(`${displayPrefix} 位图超出面板`);
+          }
+          try {
+            context.drawImage(bitmap, originX, originY);
           } finally {
             bitmap.close();
           }
@@ -208,8 +302,117 @@ export namespace ZerOS {
           if (canvas === null) {
             return;
           }
+          this.stopLoading();
           canvas.width = this.width;
           canvas.height = this.height;
+        }
+
+        /** 抽样画布只建一次。8×8 足够看一格，不把整幅位图拆进主画布再读。 */
+        private prepareEye(): CanvasRenderingContext2D | null {
+          if (this.eyeContext !== null) {
+            return this.eyeContext;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = 8;
+          canvas.height = 8;
+          const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+          if (context === null) {
+            return null;
+          }
+          this.eye = canvas;
+          this.eyeContext = context;
+          return context;
+        }
+
+        /**
+         * 从还没关闭的位图上取一格。
+         * 主画布贴完再读，经常还是上一幅，而且会把设置界面拖进软件读回。
+         */
+        private sampleBitmap(bitmap: ImageBitmap, x: number, y: number): Uint8ClampedArray | null {
+          if (x < 2 || y < 2 || x + 2 >= bitmap.width || y + 2 >= bitmap.height) {
+            return null;
+          }
+          const context = this.prepareEye();
+          if (context === null) {
+            return null;
+          }
+          context.imageSmoothingEnabled = false;
+          context.drawImage(bitmap, x - 2, y - 2, 8, 8, 0, 0, 8, 8);
+          return context.getImageData(2, 2, 1, 1).data;
+        }
+
+        /** 左上角近黑、方标那一格是蓝，才算加载画面。认的是这一张位图，不是已经贴上的主画布。 */
+        private bitmapLooksLoading(bitmap: ImageBitmap): boolean {
+          if (bitmap.width < 80 || bitmap.height < 200) {
+            return false;
+          }
+          const corner = this.sampleBitmap(bitmap, 2, 2);
+          if (corner === null) {
+            return false;
+          }
+          const mark = loadingMark(bitmap.width, bitmap.height);
+          const shifts = [0, 8, 16];
+          for (const shift of shifts) {
+            const logo = this.sampleBitmap(bitmap, mark.x, mark.y + shift);
+            if (logo !== null && looksLikeLoading(corner, logo)) {
+              return true;
+            }
+          }
+          return false;
+        }
+
+        /** 从现在起由页面转拖影。已经在转就按墙上的时间盖当前这一拍，不把起点拨回现在。 */
+        private holdLoading(): void {
+          const context = this.context;
+          if (context === null) {
+            return;
+          }
+          if (!this.loading) {
+            this.loading = true;
+            this.loadingOrigin = performance.now();
+            this.armLoading();
+          }
+          this.paintLoadingNow(context);
+        }
+
+        /** 相位是走过的毫秒除以 40，再绕 24 拍。回调晚了也会跳到该在的位置。 */
+        private paintLoadingNow(context: CanvasRenderingContext2D): void {
+          const elapsed = performance.now() - this.loadingOrigin;
+          const steps = Math.floor(elapsed / 40);
+          this.loadingPhase = ((steps % 24) + 24) % 24;
+          paintLoading(context, this.width, this.height, this.loadingPhase);
+        }
+
+        /** 终端或别的画面来了。停掉拖影，调用方已经把那一帧贴上。 */
+        private stopLoading(): void {
+          this.loading = false;
+          if (this.loadingTimer !== null) {
+            window.clearTimeout(this.loadingTimer);
+            this.loadingTimer = null;
+          }
+        }
+
+        /**
+         * 40 毫秒一拍，和固件原来的 dwell 一样。
+         * 已经排着就不动。固件若连着送同一帧，不能把这一拍一次次推后，否则圆圈永远停在开头。
+         */
+        private armLoading(): void {
+          if (this.loadingTimer !== null) {
+            return;
+          }
+          this.loadingTimer = window.setTimeout((): void => {
+            this.loadingTimer = null;
+            if (!this.loading) {
+              return;
+            }
+            const context = this.context;
+            if (context === null) {
+              this.loading = false;
+              return;
+            }
+            this.paintLoadingNow(context);
+            this.armLoading();
+          }, 40);
         }
 
         /**
@@ -281,6 +484,38 @@ export namespace ZerOS {
             return;
           }
           this.paintPixels(this.framebuffer);
+          /* 像素路径送来的方标同样接上拖影。换成别的画面就停，免得圆圈盖住终端。 */
+          if (this.bufferLooksLoading()) {
+            this.holdLoading();
+          } else if (this.loading) {
+            this.stopLoading();
+          }
+        }
+
+        /** 帧缓冲里方标那一格是蓝、角上是黑。终端纸色和停机蓝对不上。 */
+        private bufferLooksLoading(): boolean {
+          const width = this.width;
+          const height = this.height;
+          const pixels = this.framebuffer;
+          if (width < 80 || height < 200 || pixels.length < width * height) {
+            return false;
+          }
+          const corner = pixels[2 * width + 2] ?? 0;
+          const cornerBytes = Uint8ClampedArray.of((corner >> 16) & 255, (corner >> 8) & 255, corner & 255, 255);
+          const mark = loadingMark(width, height);
+          const shifts = [0, 8, 16];
+          for (const shift of shifts) {
+            const y = mark.y + shift;
+            if (y < 0 || y >= height || mark.x < 0 || mark.x >= width) {
+              continue;
+            }
+            const pixel = pixels[y * width + mark.x] ?? 0;
+            const logo = Uint8ClampedArray.of((pixel >> 16) & 255, (pixel >> 8) & 255, pixel & 255, 255);
+            if (looksLikeLoading(cornerBytes, logo)) {
+              return true;
+            }
+          }
+          return false;
         }
 
         /** 从现在起重新数拍。已经排好的定时作废。 */

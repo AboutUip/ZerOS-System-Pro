@@ -50,6 +50,9 @@ export namespace ZerOS {
         readonly limitBit: bigint;
         load(bit: bigint): number;
         store(bit: bigint, value: number): void;
+        /** 位地址已经落在安全整数里时走这里，取指不必为每个八位组再造一个大整数。 */
+        loadNumber?(bit: number): number;
+        storeNumber?(bit: number, value: number): void;
       }
 
       export type NativeStop =

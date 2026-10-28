@@ -123,6 +123,31 @@ deRfun obr::proc::getcwd(long home): long {
   return obr::os::svc(29L);
 }
 
+deRfun obr::proc::clock(long home): long {
+  long status = obr::os::svc(30L);
+  if (status != 0L) {
+    memory::store64(0L, home + 128L);
+  }
+  return status;
+}
+
+deRfun obr::proc::utime(long home, long setAccess, long setModify, long access, long modify): long {
+  memory::store64(setAccess, home + 128L);
+  memory::store64(setModify, home + 192L);
+  memory::store64(access, home + 256L);
+  memory::store64(modify, home + 320L);
+  return obr::os::svc(31L);
+}
+
+deRfun obr::proc::ident(long home): long {
+  return obr::os::svc(32L);
+}
+
+deRfun obr::proc::task(long home, long start): long {
+  memory::store64(start, home + 128L);
+  return obr::os::svc(33L);
+}
+
 deRfun obr::proc::alloc(long home, long size): long {
   memory::store64(size, home);
   return obr::os::svc(2L);

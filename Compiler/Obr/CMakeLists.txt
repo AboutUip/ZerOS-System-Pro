@@ -12,6 +12,7 @@ add_executable(obrc
   src/codegen/Generate.cpp
   src/codegen/Emit.cpp
   src/codegen/Fold.cpp
+  src/codegen/Peephole.cpp
   src/codegen/Runtime.cpp
   src/codegen/Collect.cpp
   src/codegen/Inline.cpp

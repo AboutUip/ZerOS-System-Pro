@@ -1,0 +1,821 @@
+/* POSIX.1-2017 date（utilities/date.html）。
+   没有时区库。本地时间与 UTC 相同，%Z 固定写 UTC，-u 的结果与不写 -u 相同。
+   形式是 date [-u] [+format]，以及 date [-u] mmddHHMM[[cc]yy]。
+   没有 +format 时，输出等同 date "+%a %b %e %H:%M:%S %Z %Y" 再加一个换行。
+   +format 只接受该页列出的转换，以及 E、O 修饰。
+   没有区域设置，E 和 O 退回没有修饰的转换。名字用固定的英文。
+   不接受标志、宽度、精度，也不接受 %F、%s、%z 这些该页没有的写法。
+   设置操作数仍写 date: setting the time is not supported，不改系统时间。
+   诊断在标准错误，前缀 date:。结束用服务 28。 */
+import memory;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun hasByte(string text, long bit): long {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    long want = text[index];
+    if (want == bit) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 从第一个 % 起。E 只能接 c C x X y Y，O 只能接规范列出的那 13 个。 */
+deRfun formatOk(long addr, long len): long {
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit != 37L) {
+      index = index + 1L;
+    } else {
+      index = index + 1L;
+      if (index >= len) {
+        return 0L;
+      }
+      bit = u8(addr + index * 8L);
+      if (bit == 37L) {
+        index = index + 1L;
+      } else if (bit == 69L) {
+        index = index + 1L;
+        if (index >= len || hasByte("cCxXyY", u8(addr + index * 8L)) == 0L) {
+          return 0L;
+        }
+        index = index + 1L;
+      } else if (bit == 79L) {
+        index = index + 1L;
+        if (index >= len || hasByte("deHImMSuUVwWy", u8(addr + index * 8L)) == 0L) {
+          return 0L;
+        }
+        index = index + 1L;
+      } else if (hasByte("aAbBcCdDehHIjmMnprStTuUVwWxXyYZ", bit) == 0L) {
+        return 0L;
+      } else {
+        index = index + 1L;
+      }
+    }
+  }
+  return 1L;
+}
+
+deRfun two(long addr, long index): long {
+  long high = u8(addr + index * 8L) - 48L;
+  long low = u8(addr + (index + 1L) * 8L) - 48L;
+  return high * 10L + low;
+}
+
+deRfun allDigits(long addr, long len): long {
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun monthDays(long month, long year, long known): long {
+  if (month == 2L) {
+    if (known == 0L) {
+      return 29L;
+    }
+    if (year % 400L == 0L) {
+      return 29L;
+    }
+    if (year % 100L == 0L) {
+      return 28L;
+    }
+    if (year % 4L == 0L) {
+      return 29L;
+    }
+    return 28L;
+  }
+  if (month == 4L || month == 6L || month == 9L || month == 11L) {
+    return 30L;
+  }
+  return 31L;
+}
+
+deRfun dateOk(long addr, long len): long {
+  if (len != 8L && len != 10L && len != 12L) {
+    return 0L;
+  }
+  if (allDigits(addr, len) == 0L) {
+    return 0L;
+  }
+  long month = two(addr, 0L);
+  long day = two(addr, 2L);
+  long hour = two(addr, 4L);
+  long minute = two(addr, 6L);
+  if (month < 1L || month > 12L || hour > 23L || minute > 59L) {
+    return 0L;
+  }
+  long year = 0L;
+  long known = 0L;
+  if (len == 12L) {
+    year = two(addr, 8L) * 100L + two(addr, 10L);
+    known = 1L;
+  } else if (len == 10L) {
+    long yy = two(addr, 8L);
+    if (yy >= 69L) {
+      year = 1900L + yy;
+    } else {
+      year = 2000L + yy;
+    }
+    known = 1L;
+  }
+  long limit = monthDays(month, year, known);
+  if (day < 1L || day > limit) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun floorDiv(long n, long d): long {
+  long q = n / d;
+  if (n % d < 0L) {
+    q = q - 1L;
+  }
+  return q;
+}
+
+deRfun daysFromCivil(long y, long m, long d): long {
+  if (m <= 2L) {
+    y = y - 1L;
+  }
+  long era = y / 400L;
+  if (y < 0L) {
+    era = (y - 399L) / 400L;
+  }
+  long yoe = y - era * 400L;
+  long march = m + 9L;
+  if (m > 2L) {
+    march = m - 3L;
+  }
+  long doy = (153L * march + 2L) / 5L + d - 1L;
+  long doe = yoe * 365L + yoe / 4L - yoe / 100L + doy;
+  return era * 146097L + doe - 719468L;
+}
+
+deRfun civilFromDays(long z, long* y, long* m, long* d): void {
+  z = z + 719468L;
+  long era = z / 146097L;
+  if (z < 0L) {
+    era = (z - 146096L) / 146097L;
+  }
+  long doe = z - era * 146097L;
+  long yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L;
+  long year = yoe + era * 400L;
+  long doy = doe - (365L * yoe + yoe / 4L - yoe / 100L);
+  long mp = (5L * doy + 2L) / 153L;
+  long day = doy - (153L * mp + 2L) / 5L + 1L;
+  long month = mp + 3L;
+  if (mp >= 10L) {
+    month = mp - 9L;
+  }
+  if (month <= 2L) {
+    year = year + 1L;
+  }
+  *y = year;
+  *m = month;
+  *d = day;
+}
+
+deRfun leapYear(long year): long {
+  if (year % 400L == 0L) {
+    return 1L;
+  }
+  if (year % 100L == 0L) {
+    return 0L;
+  }
+  if (year % 4L == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun monthLen(long year, long month): long {
+  if (month == 2L) {
+    if (leapYear(year) == 1L) {
+      return 29L;
+    }
+    return 28L;
+  }
+  if (month == 4L || month == 6L || month == 9L || month == 11L) {
+    return 30L;
+  }
+  return 31L;
+}
+
+/* 0 表示 1 月 1 日。 */
+deRfun dayOfYear(long year, long month, long day): long {
+  long n = day - 1L;
+  long cursor = 1L;
+  while (cursor < month) {
+    n = n + monthLen(year, cursor);
+    cursor = cursor + 1L;
+  }
+  return n;
+}
+
+deRfun breakMillis(long ms, long* year, long* month, long* day, long* hour, long* minute, long* second): void {
+  long days = floorDiv(ms, 86400000L);
+  long tod = ms - days * 86400000L;
+  long seconds = tod / 1000L;
+  *hour = seconds / 3600L;
+  *minute = (seconds % 3600L) / 60L;
+  *second = seconds % 60L;
+  civilFromDays(days, year, month, day);
+}
+
+/* 九个字：年、月、日、时、分、秒、星期（0 是星期日）、年内第几天（从 0）、纪元日。 */
+deRfun fillClock(long ms, long rec): void {
+  long year = 0L;
+  long month = 0L;
+  long day = 0L;
+  long hour = 0L;
+  long minute = 0L;
+  long second = 0L;
+  breakMillis(ms, &year, &month, &day, &hour, &minute, &second);
+  long days = floorDiv(ms, 86400000L);
+  long wday = (days + 4L) % 7L;
+  if (wday < 0L) {
+    wday = wday + 7L;
+  }
+  memory::store64(year, rec);
+  memory::store64(month, rec + 64L);
+  memory::store64(day, rec + 128L);
+  memory::store64(hour, rec + 192L);
+  memory::store64(minute, rec + 256L);
+  memory::store64(second, rec + 320L);
+  memory::store64(wday, rec + 384L);
+  memory::store64(dayOfYear(year, month, day), rec + 448L);
+  memory::store64(days, rec + 512L);
+}
+
+deRfun outByte(long home, long bit, long* place): long {
+  memory::storeOctet(bit, obr::proc::bytes(home));
+  if (obr::proc::write(home, 1L, *place, 1L) != 0L) {
+    return 1L;
+  }
+  long wrote = obr::proc::slot(home, 320L);
+  if (wrote < 1L) {
+    return 1L;
+  }
+  *place = *place + wrote;
+  return 0L;
+}
+
+deRfun outText(long home, string text, long* place): long {
+  int raw = length(text);
+  long count = raw;
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[done + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L || wrote > chunk) {
+      return 1L;
+    }
+    *place = *place + wrote;
+    done = done + wrote;
+  }
+  return 0L;
+}
+
+deRfun outNum(long home, long value, long width, long* place): long {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long use = 1L;
+  long left = 1L;
+  while (left < width) {
+    use = use * 10L;
+    left = left + 1L;
+  }
+  if (value >= use * 10L) {
+    use = 1L;
+    long temp = value;
+    while (temp >= 10L) {
+      temp = temp / 10L;
+      use = use * 10L;
+    }
+  }
+  long rest = value;
+  while (use > 0L) {
+    long digit = rest / use;
+    if (outByte(home, 48L + digit, place) != 0L) {
+      return 1L;
+    }
+    rest = rest % use;
+    use = use / 10L;
+  }
+  return 0L;
+}
+
+deRfun outWeek(long home, long wday, long full, long* place): long {
+  if (full == 1L) {
+    if (wday == 0L) {
+      return outText(home, "Sunday", place);
+    }
+    if (wday == 1L) {
+      return outText(home, "Monday", place);
+    }
+    if (wday == 2L) {
+      return outText(home, "Tuesday", place);
+    }
+    if (wday == 3L) {
+      return outText(home, "Wednesday", place);
+    }
+    if (wday == 4L) {
+      return outText(home, "Thursday", place);
+    }
+    if (wday == 5L) {
+      return outText(home, "Friday", place);
+    }
+    return outText(home, "Saturday", place);
+  }
+  if (wday == 0L) {
+    return outText(home, "Sun", place);
+  }
+  if (wday == 1L) {
+    return outText(home, "Mon", place);
+  }
+  if (wday == 2L) {
+    return outText(home, "Tue", place);
+  }
+  if (wday == 3L) {
+    return outText(home, "Wed", place);
+  }
+  if (wday == 4L) {
+    return outText(home, "Thu", place);
+  }
+  if (wday == 5L) {
+    return outText(home, "Fri", place);
+  }
+  return outText(home, "Sat", place);
+}
+
+deRfun outMon(long home, long month, long full, long* place): long {
+  if (full == 1L) {
+    if (month == 1L) {
+      return outText(home, "January", place);
+    }
+    if (month == 2L) {
+      return outText(home, "February", place);
+    }
+    if (month == 3L) {
+      return outText(home, "March", place);
+    }
+    if (month == 4L) {
+      return outText(home, "April", place);
+    }
+    if (month == 5L) {
+      return outText(home, "May", place);
+    }
+    if (month == 6L) {
+      return outText(home, "June", place);
+    }
+    if (month == 7L) {
+      return outText(home, "July", place);
+    }
+    if (month == 8L) {
+      return outText(home, "August", place);
+    }
+    if (month == 9L) {
+      return outText(home, "September", place);
+    }
+    if (month == 10L) {
+      return outText(home, "October", place);
+    }
+    if (month == 11L) {
+      return outText(home, "November", place);
+    }
+    return outText(home, "December", place);
+  }
+  if (month == 1L) {
+    return outText(home, "Jan", place);
+  }
+  if (month == 2L) {
+    return outText(home, "Feb", place);
+  }
+  if (month == 3L) {
+    return outText(home, "Mar", place);
+  }
+  if (month == 4L) {
+    return outText(home, "Apr", place);
+  }
+  if (month == 5L) {
+    return outText(home, "May", place);
+  }
+  if (month == 6L) {
+    return outText(home, "Jun", place);
+  }
+  if (month == 7L) {
+    return outText(home, "Jul", place);
+  }
+  if (month == 8L) {
+    return outText(home, "Aug", place);
+  }
+  if (month == 9L) {
+    return outText(home, "Sep", place);
+  }
+  if (month == 10L) {
+    return outText(home, "Oct", place);
+  }
+  if (month == 11L) {
+    return outText(home, "Nov", place);
+  }
+  return outText(home, "Dec", place);
+}
+
+deRfun outClock(long home, long rec, long* place): long {
+  if (outNum(home, memory::load64(rec + 192L), 2L, place) != 0L) {
+    return 1L;
+  }
+  if (outByte(home, 58L, place) != 0L) {
+    return 1L;
+  }
+  if (outNum(home, memory::load64(rec + 256L), 2L, place) != 0L) {
+    return 1L;
+  }
+  if (outByte(home, 58L, place) != 0L) {
+    return 1L;
+  }
+  return outNum(home, memory::load64(rec + 320L), 2L, place);
+}
+
+deRfun outDayPad(long home, long day, long* place): long {
+  if (day < 10L) {
+    if (outByte(home, 32L, place) != 0L) {
+      return 1L;
+    }
+    return outByte(home, 48L + day, place);
+  }
+  return outNum(home, day, 2L, place);
+}
+
+deRfun emitConv(long home, long rec, long code, long* place): long {
+  long year = memory::load64(rec);
+  long month = memory::load64(rec + 64L);
+  long day = memory::load64(rec + 128L);
+  long hour = memory::load64(rec + 192L);
+  long wday = memory::load64(rec + 384L);
+  long yday = memory::load64(rec + 448L);
+  long days = memory::load64(rec + 512L);
+  if (code == 97L) {
+    return outWeek(home, wday, 0L, place);
+  }
+  if (code == 65L) {
+    return outWeek(home, wday, 1L, place);
+  }
+  if (code == 98L || code == 104L) {
+    return outMon(home, month, 0L, place);
+  }
+  if (code == 66L) {
+    return outMon(home, month, 1L, place);
+  }
+  if (code == 99L) {
+    if (outWeek(home, wday, 0L, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 32L, place) != 0L) {
+      return 1L;
+    }
+    if (outMon(home, month, 0L, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 32L, place) != 0L) {
+      return 1L;
+    }
+    if (outDayPad(home, day, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 32L, place) != 0L) {
+      return 1L;
+    }
+    if (outClock(home, rec, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 32L, place) != 0L) {
+      return 1L;
+    }
+    return outNum(home, year, 1L, place);
+  }
+  if (code == 67L) {
+    long century = year / 100L;
+    if (century < 0L) {
+      century = 0L;
+    }
+    return outNum(home, century, 2L, place);
+  }
+  if (code == 100L) {
+    return outNum(home, day, 2L, place);
+  }
+  if (code == 68L || code == 120L) {
+    if (outNum(home, month, 2L, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 47L, place) != 0L) {
+      return 1L;
+    }
+    if (outNum(home, day, 2L, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 47L, place) != 0L) {
+      return 1L;
+    }
+    long yy = year % 100L;
+    if (yy < 0L) {
+      yy = 0L;
+    }
+    return outNum(home, yy, 2L, place);
+  }
+  if (code == 101L) {
+    return outDayPad(home, day, place);
+  }
+  if (code == 72L) {
+    return outNum(home, hour, 2L, place);
+  }
+  if (code == 73L) {
+    long show = hour % 12L;
+    if (show == 0L) {
+      show = 12L;
+    }
+    return outNum(home, show, 2L, place);
+  }
+  if (code == 106L) {
+    return outNum(home, yday + 1L, 3L, place);
+  }
+  if (code == 109L) {
+    return outNum(home, month, 2L, place);
+  }
+  if (code == 77L) {
+    return outNum(home, memory::load64(rec + 256L), 2L, place);
+  }
+  if (code == 112L) {
+    if (hour < 12L) {
+      return outText(home, "AM", place);
+    }
+    return outText(home, "PM", place);
+  }
+  if (code == 114L) {
+    long show = hour % 12L;
+    if (show == 0L) {
+      show = 12L;
+    }
+    if (outNum(home, show, 2L, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 58L, place) != 0L) {
+      return 1L;
+    }
+    if (outNum(home, memory::load64(rec + 256L), 2L, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 58L, place) != 0L) {
+      return 1L;
+    }
+    if (outNum(home, memory::load64(rec + 320L), 2L, place) != 0L) {
+      return 1L;
+    }
+    if (outByte(home, 32L, place) != 0L) {
+      return 1L;
+    }
+    if (hour < 12L) {
+      return outText(home, "AM", place);
+    }
+    return outText(home, "PM", place);
+  }
+  if (code == 83L) {
+    return outNum(home, memory::load64(rec + 320L), 2L, place);
+  }
+  if (code == 84L || code == 88L) {
+    return outClock(home, rec, place);
+  }
+  if (code == 117L) {
+    long iso = wday;
+    if (iso == 0L) {
+      iso = 7L;
+    }
+    return outNum(home, iso, 1L, place);
+  }
+  if (code == 85L) {
+    return outNum(home, (yday + 7L - wday) / 7L, 2L, place);
+  }
+  if (code == 86L) {
+    long iso = wday;
+    if (iso == 0L) {
+      iso = 7L;
+    }
+    long thursday = days + 4L - iso;
+    long ty = 0L;
+    long tm = 0L;
+    long td = 0L;
+    civilFromDays(thursday, &ty, &tm, &td);
+    long week = dayOfYear(ty, tm, td) / 7L + 1L;
+    return outNum(home, week, 2L, place);
+  }
+  if (code == 119L) {
+    return outNum(home, wday, 1L, place);
+  }
+  if (code == 87L) {
+    long monday = (wday + 6L) % 7L;
+    return outNum(home, (yday + 7L - monday) / 7L, 2L, place);
+  }
+  if (code == 121L) {
+    long yy = year % 100L;
+    if (yy < 0L) {
+      yy = 0L;
+    }
+    return outNum(home, yy, 2L, place);
+  }
+  if (code == 89L) {
+    return outNum(home, year, 1L, place);
+  }
+  if (code == 90L) {
+    return outText(home, "UTC", place);
+  }
+  return 1L;
+}
+
+deRfun formatBit(long fromText, long addr, long index, string text): long {
+  if (fromText == 1L) {
+    return text[index];
+  }
+  return u8(addr + index * 8L);
+}
+
+deRfun paint(long home, long rec, long fromText, long addr, long len, string text, long* place): long {
+  long index = 0L;
+  while (index < len) {
+    long bit = formatBit(fromText, addr, index, text);
+    if (bit != 37L) {
+      if (outByte(home, bit, place) != 0L) {
+        return 1L;
+      }
+      index = index + 1L;
+    } else {
+      index = index + 1L;
+      if (index >= len) {
+        return 1L;
+      }
+      bit = formatBit(fromText, addr, index, text);
+      if (bit == 37L) {
+        if (outByte(home, 37L, place) != 0L) {
+          return 1L;
+        }
+      } else if (bit == 110L) {
+        if (outByte(home, 10L, place) != 0L) {
+          return 1L;
+        }
+      } else if (bit == 116L) {
+        if (outByte(home, 9L, place) != 0L) {
+          return 1L;
+        }
+      } else {
+        if (bit == 69L || bit == 79L) {
+          index = index + 1L;
+          if (index >= len) {
+            return 1L;
+          }
+          bit = formatBit(fromText, addr, index, text);
+        }
+        if (emitConv(home, rec, bit, place) != 0L) {
+          return 1L;
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun showNow(long home, long fromText, long addr, long len, string text): int {
+  if (obr::proc::clock(home) != 0L) {
+    writeErr(home, "date: cannot read clock\n");
+    return finish(home, 1L);
+  }
+  long ms = obr::proc::slot(home, 128L);
+  long rec = obr::proc::alloc(home, 576L);
+  if (rec == 0L) {
+    writeErr(home, "date: out of memory\n");
+    return finish(home, 1L);
+  }
+  fillClock(ms, rec);
+  long use = len;
+  if (fromText == 1L) {
+    int raw = length(text);
+    use = raw;
+  }
+  long place = 0L;
+  if (paint(home, rec, fromText, addr, use, text, &place) != 0L) {
+    writeErr(home, "date: write error\n");
+    return finish(home, 1L);
+  }
+  if (outByte(home, 10L, &place) != 0L) {
+    writeErr(home, "date: write error\n");
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long utc = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len > 0L && u8(at) == 45L) {
+      if (len == 1L) {
+        writeErr(home, "date: invalid option\n");
+        return finish(home, 1L);
+      }
+      long cursor = 1L;
+      while (cursor < len) {
+        if (u8(at + cursor * 8L) != 117L) {
+          writeErr(home, "date: invalid option\n");
+          return finish(home, 1L);
+        }
+        utc = 1L;
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  if (utc == 1L) {
+    utc = 1L;
+  }
+  if (count - index > 1L) {
+    writeErr(home, "date: too many arguments\n");
+    return finish(home, 1L);
+  }
+  if (index == count) {
+    return showNow(home, 1L, 0L, 23L, "%a %b %e %H:%M:%S %Z %Y");
+  }
+  long at = argPtr(home, index);
+  long len = argLen(home, index);
+  if (len > 0L && u8(at) == 43L) {
+    if (formatOk(at + 8L, len - 1L) == 0L) {
+      writeErr(home, "date: invalid format\n");
+      return finish(home, 1L);
+    }
+    return showNow(home, 0L, at + 8L, len - 1L, "");
+  }
+  if (dateOk(at, len) == 0L) {
+    writeErr(home, "date: invalid date\n");
+    return finish(home, 1L);
+  }
+  writeErr(home, "date: setting the time is not supported\n");
+  return finish(home, 1L);
+}

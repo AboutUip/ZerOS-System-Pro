@@ -13,29 +13,65 @@ OVERLAY=/opt/zeros-overlay.tar.gz
 exec > >(tee -a "$LOG") 2>&1
 echo "== ZerOS lite bootstrap start: $(date -u +%Y-%m-%dT%H:%M:%SZ) =="
 
+MIRROR_FALLBACKS=(
+  mirrors.ustc.edu.cn
+  deb.debian.org
+)
+
 apt_update() {
   apt-get -o Acquire::Retries=5 update
 }
 
-use_fallback_mirror() {
-  echo "switching apt mirror to deb.debian.org"
-  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do
+remove_cdrom_sources() {
+  local file
+  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
     [ -f "$file" ] || continue
-    sed -i 's|mirrors.tuna.tsinghua.edu.cn|deb.debian.org|g' "$file" || true
+    sed -i -E '/^[[:space:]]*(deb|deb-src)[[:space:]]+cdrom:/d' "$file" || true
+    if grep -qE '^[[:space:]]*URIs:[[:space:]]*cdrom:' "$file"; then
+      rm -f "$file"
+    fi
   done
 }
 
-if ! apt_update; then
-  use_fallback_mirror
-  apt_update || { echo "apt update failed"; exit 1; }
+use_fallback_mirror() {
+  local host="$1" file
+  echo "switching apt mirror to $host"
+  for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+    [ -f "$file" ] || continue
+    sed -i -E "s#(https?://)(deb\.debian\.org|security\.debian\.org|mirrors\.tuna\.tsinghua\.edu\.cn|mirrors\.aliyun\.com|mirrors\.ustc\.edu\.cn)#\1$host#g" "$file" || true
+  done
+}
+
+remove_cdrom_sources
+use_fallback_mirror "mirrors.aliyun.com"
+
+apt_ok=0
+if apt_update; then
+  apt_ok=1
 fi
+if [ "$apt_ok" -eq 0 ]; then
+  for host in "${MIRROR_FALLBACKS[@]}"; do
+    use_fallback_mirror "$host"
+    if apt_update; then
+      apt_ok=1
+      break
+    fi
+  done
+fi
+[ "$apt_ok" -eq 1 ] || { echo "apt update failed"; exit 1; }
 
 echo "Installing git ..."
 if ! apt-get -o Acquire::Retries=5 install -y --no-install-recommends git ca-certificates; then
-  use_fallback_mirror
-  apt_update || true
-  apt-get -o Acquire::Retries=5 install -y --no-install-recommends git ca-certificates \
-    || { echo "could not install git"; exit 1; }
+  installed=0
+  for host in "${MIRROR_FALLBACKS[@]}"; do
+    use_fallback_mirror "$host"
+    apt_update || true
+    if apt-get -o Acquire::Retries=5 install -y --no-install-recommends git ca-certificates; then
+      installed=1
+      break
+    fi
+  done
+  [ "$installed" -eq 1 ] || { echo "could not install git"; exit 1; }
 fi
 
 echo "Cloning $GIT_URL ($GIT_REF) ..."

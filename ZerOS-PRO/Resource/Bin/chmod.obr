@@ -484,7 +484,8 @@ deRfun main(): int {
     }
     return finish(home, 1L);
   }
-  long visitBits = 8388608L;
+  /* 128*65536 才是 8388608。不小于 1048576 的立即数会被 pie 当成数据地址。 */
+  long visitBits = 128L * 65536L;
   long slots = obr::proc::alloc(home, 32L * 65536L);
   long names = obr::proc::alloc(home, 512L * 8L);
   long visited = obr::proc::alloc(home, visitBits);

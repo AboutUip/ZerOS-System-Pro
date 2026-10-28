@@ -57,6 +57,8 @@ deRfun taskPrefer(long core, long except): long;
 deRfun rankGet(long index): long;
 deRfun rankSet(long index, long rank): void;
 deRfun rankPublish(long core): void;
+/* 按当前有没有前台任务，把消息上限写成 16MB 或 256MB。相同的值不重写。 */
+deRfun spanPublish(): void;
 deRfun taskClear(): void;
 deRfun reserveOne(): void;
 deRfun taskDrop(long core): void;
@@ -74,3 +76,10 @@ deRfun procBreak(): long;
 deRfun procCollect(): void;
 /* 没有正在跑、也没有在槽里等着上的任务时返回 1。调度可以先不向宿主询问。 */
 deRfun schedIdle(): long;
+/* 服务 32。把调用者的 uid、gid、euid、egid 写到 +128、+192、+256、+320。 */
+deRfun doIdent(long caller, long home): long;
+/* 服务 33。从 +128 的下标起找下一个仍占着的任务。没有则回复 2。
+   找到时回复 0，+192 是这份下标，+320 是下一份要试的下标。
+   字节区 12 个字：pid、ppid、状态、核心、uid、gid、euid、egid、地址空间起点、长度、档、名字长度。
+   名字八位组从第 12 个字之后开始，最多 32 个。状态 1 正在跑，2 就绪，3 在等，4 停住，5 僵尸。 */
+deRfun doTask(long caller, long home): long;

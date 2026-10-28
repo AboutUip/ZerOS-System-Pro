@@ -33,7 +33,7 @@ sudo apt-get install -y --no-install-recommends xorriso curl openssl
 
 脚本会：
 
-- 从清华镜像下载 Debian 13 netinst；失败时依次尝试 `cdimage.debian.org`、`deb.debian.org`；
+- 默认从 `deb.debian.org` 下载 Debian 13 netinst；失败时依次尝试 `cdimage.debian.org`、清华镜像；
 - 用 `SHA256SUMS` 校验 netinst；已有文件校验失败会删除重下；
 - 把仓库源码（不含构建产物、`node_modules`、`Nas/Root`）打成 `work/zeros/src.tar.gz`；
 - 检查源包必须包含目标安装脚本、编译器构建脚本、`build-guest.mjs`、`/bin/pwd`、字体、`package-lock.json` 等；
@@ -56,7 +56,7 @@ out/zeros-standard-amd64.iso
 2. 自动使用 DHCP（VMware NAT 即可，不需要密码）。
 3. 自动选择第一块磁盘（`list-devices disk`，找不到时退回 `/dev/sda`），分区、安装 Debian 基础系统。
 4. 在目标系统里执行 `Compiler/BuildSystem/Installer/target-install.sh`：
-   - 安装构建工具和运行时；apt 失败会先重试，再自动把清华源切到 `deb.debian.org`；
+   - 安装构建工具和运行时；apt 默认 `mirrors.aliyun.com`，失败会先重试，再切到中科大和 `deb.debian.org`；
    - `Compiler/BuildSystem/build.sh` 构建 `obrc`；测试失败会退回 `--no-test` 只构建；
    - `npm ci` 失败会退回 `npm install`；
    - `npm run build` 失败会退回 `node_modules/.bin/vite build`（跳过 typecheck/lint）；
@@ -72,12 +72,14 @@ out/zeros-standard-amd64.iso
 | 项目 | 建议 |
 |---|---|
 | 固件 | BIOS（ISO 也支持 UEFI） |
-| 磁盘 | 40GB，精简置备 |
+| 磁盘 | 建议 40GB，精简置备；快速包 15GB 起，标准/轻量 25GB 起 |
 | 磁盘控制器 | **LSI Logic SAS 或 SATA** 最稳；安装器会自动识别第一块磁盘，NVMe 也可尝试 |
 | 网络 | NAT，启动时连接 |
 | 3D 加速 | 关闭，WebGPU 用 lavapipe |
 | 内存 | 安装阶段 8GB 更稳 |
 | CPU | 4–8 vCPU |
+
+40GB 是建议值，不是安装器的硬性下限。`partman-auto` 的 `atomic` 会把整块磁盘分给 `/`（另加约 1GB swap），所以 `df` 看到的容量等于虚拟磁盘大小；实际写入通常是快速包 4–6GB、标准/轻量 6–9GB。精简置备的宿主机文件随实际写入增长，不会一开始就占 40GB。
 
 安装完成后：
 
@@ -111,10 +113,10 @@ out/zeros-standard-amd64.iso
 ## 已知限制
 
 - 快速包不在目标机运行 Vite；Vite 只在宿主机构建 `Dist`，目标机用 nginx 服务它。预编译 payload 与宿主机当前源码绑定，源码变了要重打快速包。
-- 轻量版默认从 GitHub `main` 拉取，加上 `Compiler/BuildSystem`、`Installer`、`Resource/Bin`、`build-guest.mjs` 的小 overlay。当前仓库里未提交的 shell/kernel/CpuRuntime 改动不在 git 中，轻量版不会包含；要完全一致，先 commit/push，或扩大 overlay。
+- 轻量版默认从 GitHub `main` 拉取，加上 `Compiler/BuildSystem`、`Installer`、`Resource/Bin`、`Hardware/Nas/Server`、`Hardware/Display/index.html` 的小 overlay。当前仓库里未提交的 shell/kernel/CpuRuntime 改动不在 git 中，轻量版不会包含；要完全一致，先 commit/push，或扩大 overlay。
 - 轻量版需要能访问 GitHub；不能访问时改 `lite-bootstrap.sh` 的 `GIT_URL`/`GIT_REF`，或先在镜像里放替代源。
 - 分区默认自动选第一块磁盘；多磁盘机器仍建议先用 LSI/SATA 单盘验证。
-- Debian 镜像默认清华 `tuna`；apt 失败会切到 `deb.debian.org`，netinst 下载失败会尝试官方 CDN。
+- apt 默认 `mirrors.aliyun.com`；失败会切到中科大和 `deb.debian.org`。netinst 构建下载仍以官方 CDN 和清华镜像为回退。
 - 目前 GRUB 保留 3 秒菜单，方便维护/测试；还没有加 GRUB 密码。
 - 安装脚本只做 `vulkaninfo` 校验；真正的 WebGPU adapter 和页面要等 kiosk 启动后确认。
 - `F12` 进虚拟 BIOS 可能被 Chromium 截获，还没做透传。

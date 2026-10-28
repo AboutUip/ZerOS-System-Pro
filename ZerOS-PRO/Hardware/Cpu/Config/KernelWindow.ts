@@ -63,7 +63,8 @@ export namespace ZerOS {
 
       /**
        * 小于这个地址的格子留给固件。
-       * 与沙盒 DataFloor 相同。编译器的栈指针字正好落在这里，因此也会被错开。
+       * 与沙盒 DataFloor 相同。客窗口从这里起，调用参数写在起点。
+       * 编译器栈指针在栈数据前一个字，不占用这个起点。
        */
       const DataFloor = 1048576;
 
@@ -104,8 +105,8 @@ export namespace ZerOS {
         ResidentCore,
         SlotBits,
         DataFloor,
-        /** 栈指针字。与 DataFloor 是同一个地址。 */
-        CompilerSp: 1048576,
+        /** 栈指针字。紧挨在 CompilerStack 之前，与 Layout.hpp 的 kSp 相同。 */
+        CompilerSp: 68173760,
         /** 栈底。跨度与 Layout.hpp 的 kStackStride 一致。 */
         CompilerStack: 68173824,
         CompilerStackBits: 524288,

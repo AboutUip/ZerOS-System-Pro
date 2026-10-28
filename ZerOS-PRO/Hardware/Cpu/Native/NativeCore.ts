@@ -81,6 +81,7 @@ export namespace ZerOS {
       const nativeCharacter = RuntimeRoot.Hardware.Cpu.nativeCharacter;
       const nativeAccel = RuntimeRoot.Hardware.Cpu.nativeAccel;
       const nativeBitAllowed = RuntimeRoot.Hardware.Cpu.nativeBitAllowed;
+      const nativeBoundFree = RuntimeRoot.Hardware.Cpu.nativeBoundFree;
       const nativeExchange = RuntimeRoot.Hardware.Cpu.nativeExchange;
       const nativeCarry = RuntimeRoot.Hardware.Cpu.nativeCarry;
       const nativeFill = RuntimeRoot.Hardware.Cpu.nativeFill;
@@ -97,11 +98,14 @@ export namespace ZerOS {
       const nativePaceBudget = RuntimeRoot.Hardware.Cpu.nativePaceBudget;
       const nativeChargePace = RuntimeRoot.Hardware.Cpu.nativeChargePace;
       const nativeCoast = RuntimeRoot.Hardware.Cpu.nativeCoast;
-      const nativeIdleTick = RuntimeRoot.Hardware.Cpu.nativeIdleTick;
       const nativeYieldPace = RuntimeRoot.Hardware.Cpu.nativeYieldPace;
-      const nativeKeyWait = RuntimeRoot.Hardware.Cpu.nativeKeyWait;
-      const nativeGuestHot = RuntimeRoot.Hardware.Cpu.nativeGuestHot;
+      const nativeGuestBusy = RuntimeRoot.Hardware.Cpu.nativeGuestBusy;
+      const nativeGatePending = RuntimeRoot.Hardware.Cpu.nativeGatePending;
+      const nativeWaitLatch = RuntimeRoot.Hardware.Cpu.nativeWaitLatch;
+      const nativeTerminalLive = RuntimeRoot.Hardware.Cpu.nativeTerminalLive;
       const noteCoreRank = RuntimeRoot.Hardware.Cpu.noteCoreRank;
+      const noteSpanBudget = RuntimeRoot.Hardware.Cpu.noteSpanBudget;
+      const noteMachineHalt = RuntimeRoot.Hardware.Cpu.noteMachineHalt;
       const nativeAccount = RuntimeRoot.Hardware.Cpu.nativeAccount;
       const enterNativeImage = RuntimeRoot.Hardware.Cpu.enterNativeImage;
       const leaveNativeImage = RuntimeRoot.Hardware.Cpu.leaveNativeImage;
@@ -727,95 +731,214 @@ export namespace ZerOS {
          */
         const pageOctets = 65536n;
         const pageMask = pageOctets - 1n;
-        const pages = new Map<bigint, Uint8Array>();
-        const sparse = new Map<bigint, number>();
-        const dirty = new Set<bigint>();
+        const pageOctetsN = 65536;
+        const pageMaskN = 65535;
+        /* 页键用安全整数。大整数做键时，每次取数都要散列一个堆对象，监督核的循环会被这截拖住。 */
+        const pages = new Map<number, Uint8Array>();
+        const sparse = new Map<number, number>();
+        const dirty = new Set<number>();
         let waiting = false;
-        const recall = (octet: bigint): number | undefined => {
-          const lone = sparse.get(octet);
+        let hot: Uint8Array | null = null;
+        let hotBase = -1;
+        const recallNum = (index: number): number | undefined => {
+          const lone = sparse.get(index);
           if (lone !== undefined) {
             return lone;
           }
-          const base = octet & ~pageMask;
+          const local = index - hotBase;
+          if (hot !== null && local >= 0 && local < pageOctetsN) {
+            return hot[local];
+          }
+          const base = index & ~pageMaskN;
           const page = pages.get(base);
           if (page === undefined) {
             return undefined;
           }
-          return page[Number(octet - base)];
+          hot = page;
+          hotBase = base;
+          return page[index - base];
         };
-        /* 核心 2 的数据起点是 1048576 + 2×268435456。档发布在这之后 49152 位，八个八位组。 */
-        const rankPublishOctet = 67246080n;
-        const keep = (octet: bigint, value: number): void => {
+        const forgetRange = (address: bigint, count: bigint): void => {
+          /* 搬运和填零写在别的核心上。只丢掉这一段，监督核自己的页还留着。
+             整份缓冲一起丢掉的话，下一条指令又把六万字节拉回来，一次列目录会重复拉几千兆。 */
+          if (count <= 0n || address < 0n) {
+            return;
+          }
+          const start = Number(address / 8n);
+          const bytes = Number(count);
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(bytes) || bytes < 1) {
+            pages.clear();
+            sparse.clear();
+            hot = null;
+            return;
+          }
+          const end = start + bytes;
+          hot = null;
+          for (const key of sparse.keys()) {
+            if (key >= start && key < end) {
+              sparse.delete(key);
+            }
+          }
+          const first = start & ~pageMaskN;
+          const last = (end + pageMaskN) & ~pageMaskN;
+          for (let page = first; page < last; page += pageOctetsN) {
+            pages.delete(page);
+          }
+        };
+        const recall = (octet: bigint): number | undefined => {
+          return recallNum(Number(octet));
+        };
+        /* 核心 2 的数据起点是 1048576 + 2×268435456。档发布在这之后 49152 位，八个八位组。
+           49344 位是内核发布的这一轮消息上限，小端 8 个八位组。颗粒游标占到 49343，再往后才是这个字。 */
+        const rankPublishN = 67246080;
+        const spanWordN = rankPublishN + 24;
+        const keep = (index: number, value: number): void => {
           const stored = value & 0xff;
-          if (octet >= rankPublishOctet && octet < rankPublishOctet + 8n) {
-            noteCoreRank(Number(octet - rankPublishOctet), stored);
+          if (index >= rankPublishN && index < rankPublishN + 8) {
+            noteCoreRank(index - rankPublishN, stored);
           }
-          const base = octet & ~pageMask;
-          const page = pages.get(base);
+          /* 档发布之后的那一个八位组。1 表示 1 号被信号打中，宿主从这里停机。 */
+          if (index === rankPublishN + 8) {
+            noteMachineHalt(stored);
+          }
+          const base = index & ~pageMaskN;
+          const page = base === hotBase && hot !== null ? hot : pages.get(base);
           if (page !== undefined) {
-            page[Number(octet - base)] = stored;
-            sparse.delete(octet);
+            hot = page;
+            hotBase = base;
+            page[index - base] = stored;
+            sparse.delete(index);
           } else {
-            sparse.set(octet, stored);
+            sparse.set(index, stored);
           }
-          dirty.add(octet);
+          dirty.add(index);
+          /* 上限字的八个八位组都到了，才把小端的低 32 位交给主板。高位不是 0 就当成还没发布。 */
+          if (index >= spanWordN && index < spanWordN + 8) {
+            let word = 0;
+            let high = false;
+            for (let step = 0; step < 8; step += 1) {
+              const byte = recallNum(spanWordN + step);
+              if (byte === undefined) {
+                word = -1;
+                break;
+              }
+              if (step < 4) {
+                word += byte << (step * 8);
+              } else if (byte !== 0) {
+                high = true;
+              }
+            }
+            if (word >= 0) {
+              noteSpanBudget(high ? 0 : word);
+            }
+          }
         };
         const install = (origin: bigint, bytes: Uint8Array): void => {
-          if (bytes.length === Number(pageOctets) && (origin & pageMask) === 0n) {
-            pages.set(origin, new Uint8Array(bytes));
-            const end = origin + pageOctets;
+          const originN = Number(origin);
+          hot = null;
+          if (bytes.length === pageOctetsN && (originN & pageMaskN) === 0) {
+            pages.set(originN, new Uint8Array(bytes));
+            const end = originN + pageOctetsN;
             for (const key of sparse.keys()) {
-              if (key >= origin && key < end) {
+              if (key >= originN && key < end) {
                 sparse.delete(key);
               }
             }
             return;
           }
           for (let step = 0; step < bytes.length; step += 1) {
-            const octet = origin + BigInt(step);
+            const octet = originN + step;
             const stored = bytes[step] ?? 0;
-            const base = octet & ~pageMask;
+            const base = octet & ~pageMaskN;
             const page = pages.get(base);
             if (page !== undefined) {
-              page[Number(octet - base)] = stored;
+              page[octet - base] = stored;
               sparse.delete(octet);
             } else {
               sparse.set(octet, stored);
             }
           }
         };
-        const flush = async (): Promise<void> => {
+        const sharedOctet = BigInt(RelocateDataFloor) / 8n;
+        const flush = async (mailboxOnly = false, onlyPage: bigint | null = null): Promise<void> => {
           if (dirty.size === 0) {
             return;
           }
-          /* 连续脏字节收成一段。段与段不相邻时一次消息写回，不再每段等一次主板。 */
-          const pending = [...dirty].sort((left, right): number => (left < right ? -1 : left > right ? 1 : 0));
+          /* 连续脏字节收成一段。段与段不相邻时一次消息写回，不再每段等一次主板。
+             降频、空转和还没画字形的矩形只送邮箱，数据窗留到取出、调度、查询或字形绘制。
+             缺页时只送即将被整页换掉的那一页，别的页继续攒着。
+             引导清表的脏字节远超上限，那种调用不会走这条。邮箱每次都送，固件才能看见。 */
+          const sharedN = Number(sharedOctet);
+          const onlyN = onlyPage === null ? null : Number(onlyPage);
+          const pending: number[] = [];
+          for (const octet of dirty) {
+            if (mailboxOnly && octet >= sharedN) {
+              continue;
+            }
+            if (onlyN !== null && octet >= sharedN && (octet & ~pageMaskN) !== onlyN) {
+              continue;
+            }
+            pending.push(octet);
+          }
+          if (pending.length === 0) {
+            return;
+          }
+          pending.sort((left, right): number => left - right);
           const addresses: bigint[] = [];
           const parts: Uint8Array[] = [];
+          /* 调用还没返回时，相邻的几个字中间常常空着一两个没改的字节。
+             这些字节本核心已经有，并进同一段，一次搬运就能带走整条记录。
+             没读过的空洞不能用旧值盖掉，仍从这里切开。调用之外不并空洞。 */
+          const holeLimit = serving ? 64 : 0;
           let index = 0;
           while (index < pending.length) {
             const origin = pending[index];
             if (origin === undefined) {
               break;
             }
-            let count = 1;
-            while (
-              count < MailboxSpanBytes
-              && index + count < pending.length
-              && pending[index + count] === origin + BigInt(count)
-            ) {
-              count += 1;
+            let end = origin;
+            let scan = index;
+            while (scan < pending.length && end - origin < MailboxSpanBytes) {
+              const key = pending[scan];
+              if (key === undefined) {
+                break;
+              }
+              if (key > end) {
+                const gap = key - end;
+                if (!Number.isSafeInteger(gap) || gap > holeLimit || key - origin >= MailboxSpanBytes) {
+                  break;
+                }
+                let cached = true;
+                for (let step = 0; step < gap; step += 1) {
+                  if (recallNum(end + step) === undefined) {
+                    cached = false;
+                    break;
+                  }
+                }
+                if (!cached) {
+                  break;
+                }
+                end = key;
+              }
+              while (scan < pending.length && pending[scan] === end && end - origin < MailboxSpanBytes) {
+                end += 1;
+                scan += 1;
+              }
+            }
+            const count = end - origin;
+            if (!Number.isSafeInteger(count) || count < 1) {
+              break;
             }
             const bytes = new Uint8Array(count);
             for (let step = 0; step < count; step += 1) {
-              bytes[step] = recall(origin + BigInt(step)) ?? 0;
+              bytes[step] = recallNum(origin + step) ?? 0;
             }
-            addresses.push(origin * 8n);
+            addresses.push(BigInt(origin) * 8n);
             parts.push(bytes);
             for (let step = 0; step < count; step += 1) {
-              dirty.delete(origin + BigInt(step));
+              dirty.delete(origin + step);
             }
-            index += count;
+            index = scan;
           }
           let cursor = 0;
           while (cursor < addresses.length) {
@@ -825,7 +948,9 @@ export namespace ZerOS {
           }
         };
         const fill = async (bit: bigint): Promise<void> => {
-          await flush();
+          /* 只把这一页已经改过的字节送出去。整份脏缓冲一起送的话，每次缺页都会把还没写完的记录切成几十字节。 */
+          const dirtyPage = (bit / 8n) & ~pageMask;
+          await flush(false, dirtyPage);
           /* 整页都在窗口里才一次读回。窗口边只读错过的那一个八位组，不把窗外的字节带进缓冲。 */
           let page = (bit / 8n) & ~pageMask;
           let count = Number(pageOctets);
@@ -838,15 +963,16 @@ export namespace ZerOS {
         };
         /* 数据区以下是和固件共用的邮箱。这一拍写回之后丢掉，下一拍才能看见固件刚写的字。
            数据区起点按页对齐，整页要么全在邮箱里，要么全在数据区。 */
-        const sharedOctet = BigInt(RelocateDataFloor) / 8n;
         const dropShared = (): void => {
+          const sharedN = Number(sharedOctet);
+          hot = null;
           for (const key of sparse.keys()) {
-            if (key < sharedOctet) {
+            if (key < sharedN) {
               sparse.delete(key);
             }
           }
           for (const key of pages.keys()) {
-            if (key < sharedOctet) {
+            if (key < sharedN) {
               pages.delete(key);
             }
           }
@@ -860,14 +986,17 @@ export namespace ZerOS {
          */
         const ownOctet = (BigInt(RelocateDataFloor) + BigInt(ordinal) * BigInt(RelocateSlotBits)) / 8n;
         const ownEnd = ownOctet + BigInt(RelocateSlotBits) / 8n;
+        const ownN = Number(ownOctet);
+        const ownEndN = Number(ownEnd);
         const dropForeign = (): void => {
+          hot = null;
           for (const key of sparse.keys()) {
-            if (key < ownOctet || key >= ownEnd) {
+            if (key < ownN || key >= ownEndN) {
               sparse.delete(key);
             }
           }
           for (const key of pages.keys()) {
-            if (key < ownOctet || key >= ownEnd) {
+            if (key < ownN || key >= ownEndN) {
               pages.delete(key);
             }
           }
@@ -876,16 +1005,23 @@ export namespace ZerOS {
          * 节拍不足 1 毫秒时不会挂起，所以每拍结束仍要让出一次宏任务。
          * 频率高时一拍的预算能到 10 万条。stepNative 在 CPU 线程上同步做完，墙钟往往是一两百毫秒。
          * 固件的 dwell 和别的核心的定时都排在这条线程上。
-         * 这里不改频率。墙钟走过 1 毫秒就先把已经跑过的条数记上拍再让出，100 MHz 仍是 100 MHz。
+         * 这里不改频率。没有系统调用时，墙钟走过 1 毫秒就先记账再让出，100 MHz 仍是 100 MHz。
+         * 取出一条调用之后，分发要一次做完。再按 1 毫秒切开，每次让出都要等别的核心排完，
+         * 一次分配就会被拉到一百多毫秒。这一段把上限放到 32 毫秒，到了仍让出，客程序才能把回复接走。
+         * 主循环回到 hertz 或 core，说明这次调用已经返回，上限收回 1 毫秒，空转不再占住线程。
          */
-        const sliceMs = 1;
+        let serving = false;
+        let sliceMs = 1;
         const sliceCheck = 8;
         /*
          * 平时用消息通道让出，监督核的空转不会每拍都吃掉 4 毫秒。
-         * 有至少 1000 Hz 的客程序正在跑，或停在系统调用里等键盘时，最多每 4 毫秒改用一次定时器。
-         * 消息通道会插到定时器前面。壳程序的访存回复若只排在通道后面，按键就会等到下一次空转睡醒。
+         * 消息通道会插到定时器前面。终端铺上之后仍只用通道，避免按键路径上堆定时器。
+         * 终端还没铺上时，固件的加载圈和设置界面都停在 dwell 上。
+         * 通道若完全不让，圆圈画出一帧就停住，字体的网络读也完不成。
+         * 这一段大约每 32 毫秒才走一次定时器，其余仍走通道。频率和每拍条数都不改。
          */
         let yieldResume: (() => void) | null = null;
+        let timerYieldAt = 0;
         const yieldChannel = new MessageChannel();
         yieldChannel.port1.onmessage = (): void => {
           const resume = yieldResume;
@@ -894,11 +1030,13 @@ export namespace ZerOS {
             resume();
           }
         };
-        let lastGuestYield = 0;
         const yieldTurn = (): Promise<void> => {
-          const now = performance.now();
-          if (nativeGuestHot(ordinal) && now - lastGuestYield >= 4) {
-            lastGuestYield = now;
+          /* 终端还没铺上时，大约每 32 毫秒才把队列让给定时器一次。
+             固件的 30 Hz 圆圈和字体的网络读仍排得进。
+             其余节拍走消息通道。每拍都用定时器的话，宿主会把 0 毫秒抬到大约 4 毫秒，引导就被这截间隙拖住。
+             终端铺上之后仍只用通道，避免按键路径上堆定时器。 */
+          if (!nativeTerminalLive() && performance.now() - timerYieldAt >= 32) {
+            timerYieldAt = performance.now();
             return new Promise((resolve): void => {
               setTimeout(resolve, 0);
             });
@@ -908,44 +1046,100 @@ export namespace ZerOS {
             yieldChannel.port2.postMessage(null);
           });
         };
+        const baseNum = Number(base);
+        const boundFree = nativeBoundFree(ordinal);
+        const loadNumber = (bit: number): number => {
+          if (bit < 0 || (bit & 7) !== 0) {
+            return -1;
+          }
+          /* 位址会超过 2^31。不能用 >>，那是 32 位有符号移位，核心 1 往后的窗口会落成负数，同一页永远命不中。 */
+          const index = (bit - baseNum) / 8;
+          if (index >= 0 && index < code.length && Number.isInteger(index)) {
+            return code[index] ?? 0;
+          }
+          if (!boundFree && !nativeBitAllowed(ordinal, BigInt(bit), 8)) {
+            return -1;
+          }
+          const found = recallNum(bit / 8);
+          if (found !== undefined) {
+            return found;
+          }
+          throw nativeMiss(BigInt(bit));
+        };
+        const storeNumber = (bit: number, value: number): void => {
+          if (bit < 0 || (bit & 7) !== 0) {
+            return;
+          }
+          if (!boundFree && !nativeBitAllowed(ordinal, BigInt(bit), 8)) {
+            return;
+          }
+          const index = (bit - baseNum) / 8;
+          if (index >= 0 && index < code.length && Number.isInteger(index)) {
+            code[index] = value & 0xff;
+          }
+          keep(bit / 8, value);
+        };
         const port: NativeOctetPort = {
           limitBit: 1n << 48n,
+          loadNumber,
+          storeNumber,
           load(bit: bigint): number {
-            if (bit >= base && bit % 8n === 0n) {
-              const index = Number((bit - base) / 8n);
-              if (Number.isSafeInteger(index) && index >= 0 && index < code.length) {
-                return code[index] ?? 0;
-              }
-            }
-            if (!nativeBitAllowed(ordinal, bit, 8)) {
-              return -1;
-            }
-            const found = recall(bit / 8n);
-            if (found !== undefined) {
-              return found;
-            }
-            throw nativeMiss(bit);
+            return loadNumber(Number(bit));
           },
           store(bit: bigint, value: number): void {
-            if (!nativeBitAllowed(ordinal, bit, 8) || bit % 8n !== 0n) {
-              return;
-            }
-            const octet = bit / 8n;
-            if (bit >= base) {
-              const index = Number((bit - base) / 8n);
-              if (Number.isSafeInteger(index) && index >= 0 && index < code.length) {
-                code[index] = value & 0xff;
-              }
-            }
-            keep(octet, value);
+            storeNumber(Number(bit), value);
           },
         };
         try {
           if (ordinal >= 0 && ordinal < coastArm.length) {
             coastArm[ordinal] = 0;
           }
+          /* 数据窗里已经改过、还没送出的字节。邮箱标志不算，固件要马上看见。 */
+          const dataOctets = (): number => {
+            let count = 0;
+            for (const octet of dirty) {
+              if (octet >= sharedOctet) {
+                count += 1;
+              }
+            }
+            return count;
+          };
+          /* 这些出口会让别的核心或设备读刚才写下的字节，必须先整段送出。
+             降频、空转和查询只碰邮箱，数据留到回复或下一次这种出口。 */
+          const mustExpose = (opcode: number): boolean => {
+            return opcode === NativeEscapePass
+              || opcode === NativeEscapeSchedule
+              || opcode === NativeEscapePresent
+              || opcode === NativeEscapeCharacter
+              || opcode === NativeEscapeExchange
+              || opcode === NativeEscapeCarry
+              || opcode === NativeEscapeFill
+              || opcode === NativeEscapeInstall
+              || opcode === NativeEscapeAdmit
+              || opcode === NativeEscapeAttach
+              || opcode === NativeEscapeCapture
+              || opcode === NativeEscapeRestore;
+          };
+          /* 客程序已经在取指、保持位里又没有新调用：监督核停在这里。
+             停在这一拍的末尾再让，前面那 128 条仍会把命令挤成几十毫秒一跳。 */
+          const parkForGuest = async (): Promise<boolean> => {
+            if (!nativeTerminalLive() || !nativeGuestBusy(ordinal) || nativeGatePending()) {
+              return false;
+            }
+            if (dataOctets() > 0) {
+              await flush(false);
+            }
+            serving = false;
+            sliceMs = 1;
+            await nativeWaitLatch();
+            return true;
+          };
           for (;;) {
-            const budget = nativePaceBudget(ordinal);
+            if (await parkForGuest()) {
+              continue;
+            }
+            sliceMs = serving ? 32 : 1;
+            let budget = nativePaceBudget(ordinal);
             if (budget < 1) {
               await flush();
               dropShared();
@@ -981,7 +1175,30 @@ export namespace ZerOS {
                 }
                 continue;
               }
-              await flush();
+              /* 连续的存储先留在本核心。每一拍结束都整段送出的话，一次调用会被切成几十次二十字节的往返。
+                 回复、调度、绘制、搬运和装入之前整段送出。打开字体面和画字符串也在这里送，
+                 从本核心缓冲抄字体再附在命令上会抄到空页。攒过 64KB 仍马上送，避免脏页无界增长。 */
+              let mailboxOnly = false;
+              if (typeof outcome === "object") {
+                const opcode = outcome.opcode;
+                let expose = mustExpose(opcode) || dataOctets() >= 65536;
+                if (opcode === NativeEscapeAccel) {
+                  const operation = readReg(state, outcome.regs, 1);
+                  if (operation === 40n || operation === 42n) {
+                    expose = true;
+                  }
+                }
+                const quiet = opcode === NativeEscapeHertz
+                  || opcode === NativeEscapeCore
+                  || opcode === NativeEscapeQuery
+                  || opcode === NativeEscapeDwell
+                  || opcode === NativeEscapeInbox
+                  || opcode === NativeEscapePortState
+                  || opcode === NativeEscapePortChar
+                  || opcode === NativeEscapePortByte;
+                mailboxOnly = dataOctets() < 65536 && (quiet || !expose);
+              }
+              await flush(mailboxOnly);
               if (outcome === "halt") {
                 finishNativeHalt(ordinal);
                 return;
@@ -1014,15 +1231,33 @@ export namespace ZerOS {
                 coastArm[ordinal] = previousBudget > 1 && nextBudget === 1 ? 1 : 0;
               }
               if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill) {
-                pages.clear();
-                sparse.clear();
+                const addressSlot = outcome.opcode === NativeEscapeFill ? 2 : 4;
+                const countSlot = outcome.opcode === NativeEscapeFill ? 3 : 5;
+                const address = readReg(state, outcome.regs, addressSlot);
+                const count = readReg(state, outcome.regs, countSlot);
+                if (address === null || count === null) {
+                  pages.clear();
+                  sparse.clear();
+                  hot = null;
+                } else {
+                  forgetRange(address, count);
+                }
               }
+              let tookCall = false;
               if (outcome.opcode === NativeEscapeTake) {
                 const foundSlot = outcome.regs[0];
                 const found = foundSlot === undefined ? 0n : state.reg[foundSlot] ?? 0n;
                 if (found === 1n) {
                   dropForeign();
+                  /* 调用号已经在寄存器里。分发紧挨着这条 take，不要先让出再做。 */
+                  serving = true;
+                  sliceMs = 32;
+                  tookCall = true;
                 }
+              }
+              /* 主循环尾上的降频和 core 表示这次调用已经走完。下一拍恢复 1 毫秒，把线程还给固件和客程序。 */
+              if (outcome.opcode === NativeEscapeHertz || outcome.opcode === NativeEscapeCore) {
+                serving = false;
               }
               if (applied === "fault") {
                 throw new Error("native instruction failed");
@@ -1035,23 +1270,41 @@ export namespace ZerOS {
                 finishNativeYield(ordinal);
                 return;
               }
-              /* 查询不离开这一拍。调度每圈要问好几次核心状态，每次都让出会把按键推迟到下一次空转。 */
+              if (tookCall && performance.now() - sliceAt < sliceMs) {
+                continue;
+              }
+              /* 查询不离开这一拍。调度每圈要问好几次核心状态，每次都让出会把按键推迟到下一次空转。
+                 已经攒下的绘制同样留在这一拍里。一行一次让出，滚屏会把换行拖到好几秒。
+                 打开字体面要等编号，不在这里连着做。 */
               if (outcome.opcode === NativeEscapeQuery && performance.now() - sliceAt < sliceMs) {
+                continue;
+              }
+              if (outcome.opcode === NativeEscapeAccel && performance.now() - sliceAt < sliceMs) {
+                const operation = readReg(state, outcome.regs, 1);
+                if (operation !== 40n) {
+                  continue;
+                }
+              }
+              /* 主循环尾上的降频和 core 仍要让出，但同一毫秒里先把这一圈跑完。
+                 每条都让出时，定时器会把引导切成几毫秒一截。满一毫秒后下面的 break 仍把线程还给固件。 */
+              if (
+                (outcome.opcode === NativeEscapeHertz || outcome.opcode === NativeEscapeCore)
+                && performance.now() - sliceAt < sliceMs
+              ) {
                 continue;
               }
               break;
             }
-            await flush();
+            /* 这一拍被系统调用或查询打断时，数据窗继续留着。
+               以前只要这一拍不是被钟截断就会整段送出，相邻的几个字被拆成二十字节一次。
+               超过 64KB 仍送，引导清表不会堆在缓冲里。 */
+            await flush(dataOctets() < 65536);
             dropShared();
             if (ordinal >= 0 && ordinal < coastArm.length && (coastArm[ordinal] ?? 0) === 1 && ran > 0) {
-              /* 壳等键盘时，这一拍的 8 毫秒合睡会挡住下一次收键。只让出，不把线程睡住。
-                 有命令在取指时仍合睡，这条线程留给命令。 */
-              if (nativeKeyWait(ordinal)) {
-                nativeYieldPace(ordinal);
-                await nativeChargePace(ordinal, ran);
-              } else {
-                await nativeIdleTick(ordinal);
-              }
+              /* 降到 30 Hz 之后不再合睡。合睡会把刚做完的调用按住大约 8 毫秒。
+                 频率账仍记下，paceYield 把这一拍的条数从睡眠里拿掉，线程接着跑下一条。 */
+              nativeYieldPace(ordinal);
+              await nativeChargePace(ordinal, ran);
               nativeCoast(ordinal);
               coastArm[ordinal] = 0;
             } else {
@@ -1059,6 +1312,12 @@ export namespace ZerOS {
             }
             if (nativeAccount(ordinal, ran + billed)) {
               return;
+            }
+            /* 客程序正在算时，监督核停在保持位上。空转扫表会把线程从命令手里抢走。
+               正在分发时也停：回复已经调度了客程序，再跑完这一圈会把命令挤到下一次降频。
+               调用写入保持位后立刻继续。客程序还没跑起来、或正停在调用里时不在这里等，否则没人把调用做完。 */
+            if (await parkForGuest()) {
+              continue;
             }
             await yieldTurn();
           }

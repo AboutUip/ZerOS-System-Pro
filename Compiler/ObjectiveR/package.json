@@ -2,7 +2,7 @@
 	"name": "objective-r-file-support",
 	"displayName": "ObjectiveR File Support",
 	"description": "Obr / ModuleR / ZAP：着色、补全、悬停、键入检查，并用 obrc 做动态诊断。ZPB1 与 ZNB1 程序映像预览。",
-	"version": "0.6.1",
+	"version": "0.6.2",
 	"activationEvents": [
 		"onStartupFinished",
 		"onCommand:objectiveR.openZapBinary"
@@ -42,7 +42,7 @@
 				"objectiveR.diagnostics.compiler": {
 					"type": "boolean",
 					"default": true,
-					"description": "停手约一秒后，用工作区里的 obrc 检查当前 .obr、#LINK 连到的文件，以及 import 同目录的同名实现。"
+					"description": "停手约一秒后，用工作区里的 obrc 检查当前 .obr、#LINK 连到的文件，以及 import 同目录的同名实现。安装器 work/ 和 out/ 里的副本不参与。"
 				},
 				"objectiveR.compiler.path": {
 					"type": "string",

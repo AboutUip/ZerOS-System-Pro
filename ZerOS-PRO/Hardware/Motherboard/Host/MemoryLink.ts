@@ -25,6 +25,7 @@ import { ZerOS as ClockRoot } from "../../Clock/Bootstrap/HostClock";
 import { ZerOS as MailboxRoot } from "./Mailbox";
 import { ZerOS as QueryRoot } from "./HardwareQuery";
 import { ZerOS as QueuedWorkerRoot } from "./QueuedWorker";
+import { ZerOS as SpanBudgetRoot } from "./SpanBudget";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -34,7 +35,10 @@ export namespace ZerOS {
       const MailStatus = MailboxRoot.Hardware.Motherboard.MailStatus;
       const MailMessage = MailboxRoot.Hardware.Motherboard.MailMessage;
       const createMailbox = MailboxRoot.Hardware.Motherboard.createMailbox;
-      const MailboxSpanBytes = MailboxRoot.Hardware.Motherboard.MailboxSpanBytes;
+      const SpanCeilBytes = MailboxRoot.Hardware.Motherboard.SpanCeilBytes;
+      const SpanLaneBytes = MailboxRoot.Hardware.Motherboard.SpanLaneBytes;
+      const spanTake = SpanBudgetRoot.Hardware.Motherboard.spanTake;
+      const spanFilled = SpanBudgetRoot.Hardware.Motherboard.spanFilled;
       const mailboxControl = MailboxRoot.Hardware.Motherboard.mailboxControl;
       const mailboxWords = MailboxRoot.Hardware.Motherboard.mailboxWords;
       const writeMailboxText = MailboxRoot.Hardware.Motherboard.writeMailboxText;
@@ -56,8 +60,11 @@ export namespace ZerOS {
 
         private readonly worker: Worker;
 
-        /** 和内存线程共用的搬运区。一段八位组只同步一次。 */
-        private readonly span: Uint8Array;
+        /**
+         * 和内存线程共用的搬运区。
+         * 容量是这一块缓冲有多大，不是这一次必须送满的长度。不够本次那一段时再换一块更大的。
+         */
+        private span: Uint8Array;
 
         private seq = 0;
 
@@ -83,7 +90,7 @@ export namespace ZerOS {
           this.buffer = createMailbox();
           this.control = mailboxControl(this.buffer);
           this.words = mailboxWords(this.buffer);
-          this.span = new Uint8Array(new SharedArrayBuffer(MailboxSpanBytes));
+          this.span = new Uint8Array(new SharedArrayBuffer(SpanLaneBytes));
           this.worker = QueuedWorkerRoot.Hardware.Motherboard.openMemoryWorker();
           this.whenReady = this.listenForReady();
         }
@@ -184,12 +191,13 @@ export namespace ZerOS {
 
         /**
          * 把一整段八位组写入连续的线性地址。相邻八位组相隔 8 个位元。
-         * 内存线程在本地写完，主板只等一次。比下界更长的段拆开送。
+         * 每一段只送这一次用到的长度。送满当前上限并且后面还有时，立刻把上限加一倍再送下一段。
          */
         public writeSpan(address: bigint, bytes: Uint8Array): void {
           let offset = 0;
           while (offset < bytes.length) {
-            const run = Math.min(MailboxSpanBytes, bytes.length - offset);
+            const run = spanTake(bytes.length - offset);
+            this.ensureSpan(run);
             this.span.set(bytes.subarray(offset, offset + run));
             const bit = address + BigInt(offset) * 8n;
             this.transact(MailOp.WriteSpan, (): void => {
@@ -197,6 +205,9 @@ export namespace ZerOS {
               Atomics.store(this.control, MailSlot.Width, run);
             }, null, 30000);
             offset += run;
+            if (offset < bytes.length) {
+              spanFilled(run);
+            }
           }
           if (bytes.length > 0) {
             noteMemoryPace(readMailboxText(this.buffer));
@@ -206,12 +217,14 @@ export namespace ZerOS {
         /**
          * 从连续的线性地址读出一整段八位组。
          * 返回的是拷贝，搬运区可以立刻再给下一次用。
+         * 调用方要的长度可以大于当前上限。这里按上限分段，段满了立刻加倍，一次调用里把要的字节读完。
          */
         public readSpan(address: bigint, length: number): Uint8Array {
           const out = new Uint8Array(length);
           let offset = 0;
           while (offset < length) {
-            const run = Math.min(MailboxSpanBytes, length - offset);
+            const run = spanTake(length - offset);
+            this.ensureSpan(run);
             const bit = address + BigInt(offset) * 8n;
             this.transact(MailOp.ReadSpan, (): void => {
               this.storeWord(0, bit);
@@ -219,11 +232,36 @@ export namespace ZerOS {
             }, null, 30000);
             out.set(this.span.subarray(0, run), offset);
             offset += run;
+            if (offset < length) {
+              spanFilled(run);
+            }
           }
           if (length > 0) {
             noteMemoryPace(readMailboxText(this.buffer));
           }
           return out;
+        }
+
+        /**
+         * 搬运区装不下这一段时，换成刚好够这一段的共享缓冲。
+         * 按两倍往上长，停在绝对上限，不会为了短访问去占 256MB。
+         * 新缓冲先交给内存线程，再开始这一段的握手。两条消息进同一条队列，内存线程会先换缓冲再搬字节。
+         */
+        private ensureSpan(need: number): void {
+          if (need <= this.span.length) {
+            return;
+          }
+          let size = this.span.length;
+          while (size < need && size < SpanCeilBytes) {
+            const grown = size * 2;
+            size = grown > SpanCeilBytes ? SpanCeilBytes : grown;
+          }
+          if (size < need) {
+            throw new Error(`${linkPrefix} span lane cannot hold this piece`);
+          }
+          const shared = new SharedArrayBuffer(size);
+          this.span = new Uint8Array(shared);
+          this.worker.postMessage({ kind: MailMessage.SpanBind, span: shared });
         }
 
         /** 改内存 Hz。非法值由内存线程拒绝，已记下的频率不动。 */
@@ -288,7 +326,16 @@ export namespace ZerOS {
             if (performance.now() - start > timeout) {
               throw new Error(timeoutMessage);
             }
+            /* 先记下叫醒计数，再看这次是不是已经写完。
+               内存线程往往比主板进入等待更快：状态已经是完成，计数也已经加过。
+               若这时仍按新计数去等下一次叫醒，没人会再通知，每次读写都要睡满 50 毫秒。
+               计数没变而状态仍是忙，才睡。完成发生在这两次读取之间时，等的是旧计数，通知能立刻回来。 */
             const token = Atomics.load(this.control, MailSlot.Wake);
+            const seenNow = Atomics.load(this.control, MailSlot.Seq);
+            const statusNow = Atomics.load(this.control, MailSlot.Status);
+            if (seenNow === seq && statusNow !== MailStatus.Busy) {
+              continue;
+            }
             Atomics.wait(this.control, MailSlot.Wake, token, 50);
           }
         }

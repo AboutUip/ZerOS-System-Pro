@@ -1,0 +1,229 @@
+/* POSIX.1-2017 id。四种形式：id [user]、id -G [-n] [user]、id -g [-nr] [user]、id -u [-nr] [user]。
+   服务 32 读调用进程的真实用户标识、有效用户标识、真实组标识和有效组标识。
+   没有用户名数据库，也没有补充组。读到标识时只印数字，不写括号和名字；-n 同样只印数字。
+   不带选项时写 uid= 与 gid=。有效标识和真实标识不同时再加 euid=、egid=。
+   -G 先印有效组，真实组不同再加一个，中间一个空格。-g 和 -u 只印一个数字。
+   -r 把 -g、-u 从有效标识改成真实标识。
+   服务失败时写 id: cannot read identity，退出 1。
+   用户操作数是登录名。任何名字都对不上，写 id: 名字: no such user，退出 1。
+   不检查调用进程有没有特权：没有名字可查。
+   -G、-g、-u 只能有一个。-n 必须和这三者之一一起写。-r 只能和 -g 或 -u 一起写。
+   -- 结束选项。单独的 - 是登录名，不是选项。多余操作数写 id: too many arguments。
+   不认识的字母写 id: invalid option。诊断在描述符 2，以 id: 开头，以换行结束。
+   结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+/* 诊断中间夹一段参数八位组。一次最多 4096，和别的客程序一样切开写。 */
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun note(long home, string prefix, long addr, long count, string suffix): void {
+  writeErr(home, prefix);
+  writeSpan(home, addr, count);
+  writeErr(home, suffix);
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+/* 数字先倒着放在 +9664，再正着写到标准输出。标识不会是负数。 */
+deRfun writeDec(long home, long value): void {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long rev = home + 9664L;
+  long count = 0L;
+  if (value == 0L) {
+    memory::storeOctet(48L, rev);
+    count = 1L;
+  } else {
+    while (value > 0L && count < 20L) {
+      memory::storeOctet(48L + (value % 10L), rev + count * 8L);
+      value = value / 10L;
+      count = count + 1L;
+    }
+  }
+  long index = 0L;
+  while (count > 0L) {
+    count = count - 1L;
+    memory::storeOctet(u8(rev + count * 8L), obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (index > 0L) {
+    obr::proc::write(home, 1L, 0L, index);
+  }
+}
+
+deRfun showIdent(long home, long flagG, long flagLowerG, long flagU, long flagR): long {
+  if (obr::proc::ident(home) != 0L) {
+    writeErr(home, "id: cannot read identity\n");
+    return 1L;
+  }
+  long uid = obr::proc::slot(home, 128L);
+  long gid = obr::proc::slot(home, 192L);
+  long euid = obr::proc::slot(home, 256L);
+  long egid = obr::proc::slot(home, 320L);
+  if (flagU == 1L) {
+    long shown = euid;
+    if (flagR == 1L) {
+      shown = uid;
+    }
+    writeDec(home, shown);
+    writeOut(home, "\n");
+    return 0L;
+  }
+  if (flagLowerG == 1L) {
+    long shown = egid;
+    if (flagR == 1L) {
+      shown = gid;
+    }
+    writeDec(home, shown);
+    writeOut(home, "\n");
+    return 0L;
+  }
+  if (flagG == 1L) {
+    writeDec(home, egid);
+    if (gid != egid) {
+      writeOut(home, " ");
+      writeDec(home, gid);
+    }
+    writeOut(home, "\n");
+    return 0L;
+  }
+  writeOut(home, "uid=");
+  writeDec(home, uid);
+  writeOut(home, " gid=");
+  writeDec(home, gid);
+  if (euid != uid) {
+    writeOut(home, " euid=");
+    writeDec(home, euid);
+  }
+  if (egid != gid) {
+    writeOut(home, " egid=");
+    writeDec(home, egid);
+  }
+  writeOut(home, "\n");
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long flagG = 0L;
+  long flagLowerG = 0L;
+  long flagN = 0L;
+  long flagR = 0L;
+  long flagU = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        /* 71 G，103 g，110 n，114 r，117 u。 */
+        if (bit == 71L) {
+          flagG = 1L;
+        } else if (bit == 103L) {
+          flagLowerG = 1L;
+        } else if (bit == 110L) {
+          flagN = 1L;
+        } else if (bit == 114L) {
+          flagR = 1L;
+        } else if (bit == 117L) {
+          flagU = 1L;
+        } else {
+          writeErr(home, "id: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  if (index + 1L < count) {
+    writeErr(home, "id: too many arguments\n");
+    return finish(home, 1L);
+  }
+  long picks = flagG + flagLowerG + flagU;
+  if (picks > 1L) {
+    writeErr(home, "id: mutually exclusive options\n");
+    return finish(home, 1L);
+  }
+  if (flagN == 1L && picks == 0L) {
+    writeErr(home, "id: option -n requires -G, -g, or -u\n");
+    return finish(home, 1L);
+  }
+  if (flagR == 1L && flagLowerG == 0L && flagU == 0L) {
+    writeErr(home, "id: option -r requires -g or -u\n");
+    return finish(home, 1L);
+  }
+  if (index < count) {
+    note(home, "id: ", argPtr(home, index), argLen(home, index), ": no such user\n");
+    return finish(home, 1L);
+  }
+  return finish(home, showIdent(home, flagG, flagLowerG, flagU, flagR));
+}

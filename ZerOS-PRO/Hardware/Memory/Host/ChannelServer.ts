@@ -7,6 +7,7 @@
  * ---------------------------------------------------------------------------
  * 主板把地址、字宽、数据放进信箱。真正调用内存端口的是这一文件，因为它和总控在同一条线程。
  * 字宽规则与主板通道一致：1 位走线性位元，8 位走八位组，16/32/64 走线性小端整数。
+ * 跨颗粒的一段先按颗切开，再交给存储 Tick 的唯一入口。一颗一条通道。
  * 不创建 Worker，也不决定主板支持哪些协议。
  *
  * ---------------------------------------------------------------------------
@@ -26,6 +27,7 @@ import type { ZerOS as MemoryControllerRoot } from "../Controller/MemoryControll
 import { ZerOS as Uint32Root } from "../Structure/Uint32";
 import { ZerOS as ChannelWidthRoot } from "../../Motherboard/Enum/ChannelWidth";
 import { ZerOS as InitStateRoot } from "../Enum/UnitInitState";
+import { ZerOS as TickRoot } from "./StorageTick";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -38,6 +40,8 @@ export namespace ZerOS {
       const ChannelWidthBit = ChannelWidthRoot.Hardware.Motherboard.ChannelWidthBit;
       const ChannelWidthOctet = ChannelWidthRoot.Hardware.Motherboard.ChannelWidthOctet;
       const InitStateActive = InitStateRoot.Hardware.Memory.UnitInitStateCode.Active;
+      const drainStorage = TickRoot.Hardware.Memory.drainStorage;
+      type StorageWork = TickRoot.Hardware.Memory.StorageWork;
 
       /** 总控只存在于这条内存线程。还没发布时通道不能碰存储体。 */
       function requireController(): MemoryController {
@@ -141,8 +145,9 @@ export namespace ZerOS {
       }
 
       /**
-       * 一段八位组直接落进颗粒的 Cells。
-       * 每颗先确认已经正式可用，再整段拷贝。不再为每个八位组重走线性整数端口。
+       * 一段八位组按颗粒切开，交给唯一的 Tick 入口。
+       * 一颗是一条通道。落在不同颗上的几份在同一拍里一起搬，能搬多少搬多少。
+       * 不再为每个八位组重走线性整数端口。
        */
       function moveSpan(address: bigint, bytes: Uint8Array, writing: boolean): void {
         if (address % 8n !== 0n) {
@@ -152,7 +157,7 @@ export namespace ZerOS {
         const units = Array.from(controller.Units.values()).sort(
           (left, right): number => left.UnitOrdinal - right.UnitOrdinal,
         );
-        const rows: { readonly origin: bigint; readonly count: bigint; readonly cells: Uint8Array; readonly active: boolean }[] = [];
+        const rows: { readonly origin: bigint; readonly count: bigint; readonly cells: Uint8Array; readonly active: boolean; readonly channel: number }[] = [];
         let cursor = 0n;
         for (const unit of units) {
           const count = BigInt(unit.CellCount) / 8n;
@@ -161,10 +166,12 @@ export namespace ZerOS {
             count,
             cells: unit.Cells,
             active: unit.InitState === InitStateActive,
+            channel: unit.UnitOrdinal,
           });
           cursor += count;
         }
         const start = address / 8n;
+        const queue: StorageWork[] = [];
         let offset = 0;
         while (offset < bytes.length) {
           const linear = start + BigInt(offset);
@@ -179,11 +186,30 @@ export namespace ZerOS {
             const local = Number(linear - row.origin);
             const room = Number(row.origin + row.count - linear);
             const run = Math.min(bytes.length - offset, room);
-            if (writing) {
-              row.cells.set(bytes.subarray(offset, offset + run), local);
-            } else {
-              bytes.set(row.cells.subarray(local, local + run), offset);
-            }
+            const spanOffset = offset;
+            const spanLocal = local;
+            const spanRun = run;
+            const cells = row.cells;
+            const work: StorageWork = {
+              channel: row.channel,
+              octets: spanRun,
+              moved: 0,
+              run(): void {
+                const done = work.moved;
+                const left = spanRun - done;
+                if (left < 1) {
+                  return;
+                }
+                const from = spanOffset + done;
+                if (writing) {
+                  cells.set(bytes.subarray(from, from + left), spanLocal + done);
+                } else {
+                  bytes.set(cells.subarray(spanLocal + done, spanLocal + done + left), from);
+                }
+                work.moved = spanRun;
+              },
+            };
+            queue.push(work);
             offset += run;
             placed = true;
             break;
@@ -191,6 +217,17 @@ export namespace ZerOS {
           if (!placed) {
             throw new Error(`${channelPrefix} a transfer left the machine bit line`);
           }
+        }
+        // 一拍搬完能搬的。一份提前结束，下一拍马上开始，中间不睡。
+        drainStorage(queue, { now: (): number => performance.now() });
+        let pending = 0;
+        for (const work of queue) {
+          if (work.moved < work.octets) {
+            pending += 1;
+          }
+        }
+        if (pending !== 0) {
+          throw new Error(`${channelPrefix} a transfer tick left bytes behind`);
         }
       }
 

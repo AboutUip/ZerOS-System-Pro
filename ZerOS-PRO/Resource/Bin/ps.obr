@@ -1,0 +1,1026 @@
+/* POSIX.1-2017 ps。
+   ps [-aA] [-defl] [-g grouplist] [-G grouplist] [-n namelist] [-o format]...
+      [-p proclist] [-t termlist] [-u userlist] [-U userlist]
+   没有操作数。-- 结束选项。单独的 - 是多余操作数。
+
+   服务 32 读调用者的有效用户标识。服务 33 从任务表逐份抄出
+   pid、ppid、状态、核心、uid、gid、euid、egid、地址空间、档和命令名。
+   命令名是启动路径的最后一段。没有用户名数据库，用户和组只印数字。
+   没有累计处理器时间，TIME 印 0:00，%CPU 和 ELAPSED 印 -。
+   没有控制终端的名字，TTY 印 ?。这台机器只有一块控制台，-t 只要列表非空就选全部任务。
+   没有进程组调用。PGID 印任务自己的 pid。
+   会话首领是沿着父任务走到父任务为 0 的那一个。-a 和 -d 排除它。
+   档 2 是前台，NI 印 0。档 1 是后台，NI 印 10。
+   地址空间长度按位计，VSZ 印成 KiB。
+
+   没写选择项时，只留和调用者有效用户标识相同的任务。
+   -a、-A、-d、-e、-g、-G、-p、-t、-u、-U 里写了任何一个，就不用这组缺省，多项是或。
+   -f 印 UID PID PPID %CPU TIME TTY CMD。-l 印 S UID PID PPID NI VSZ CMD。
+   -o 盖过 -f 和 -l。认 POSIX 的这 15 个名字：
+   args comm etime group nice pcpu pgid pid ppid rgroup ruser time tty user vsz。
+   多个 -o 按出现顺序拼。等号后面直到该参数结束是表头。
+   一份列表最多 16 项。再多写 ps: invalid list。
+   -n 用 stat 核对路径在不在。长于 8192 写 ps: namelist too long。
+   stat 失败写 ps: 路径: cannot access。文件在也不读内容。
+   不认识的字母写 ps: invalid option。缺参数写 ps: option requires an argument。
+   多余操作数写 ps: too many arguments。诊断在描述符 2，以 ps: 开头。结束用服务 28。 */
+import memory;
+import obr.os;
+import obr.proc;
+import arg;
+
+/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun note(long home, string prefix, long addr, long count, string suffix): void {
+  writeErr(home, prefix);
+  writeSpan(home, addr, count);
+  writeErr(home, suffix);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 长度字在 path()，八位组从 +64 起、隔 8 位。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun same(long addr, long len, string text): long {
+  int raw = length(text);
+  long count = raw;
+  if (count != len) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    long bit = text[index];
+    if (u8(addr + index * 8L) != bit) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 1 pid  2 ppid  3 user  4 ruser  5 group  6 rgroup  7 comm  8 args
+   9 tty  10 time  11 etime  12 nice  13 pcpu  14 pgid  15 vsz。16 只给 -l 的状态。 */
+deRfun colId(long addr, long len): long {
+  if (same(addr, len, "pid") == 1L) {
+    return 1L;
+  }
+  if (same(addr, len, "ppid") == 1L) {
+    return 2L;
+  }
+  if (same(addr, len, "user") == 1L) {
+    return 3L;
+  }
+  if (same(addr, len, "ruser") == 1L) {
+    return 4L;
+  }
+  if (same(addr, len, "group") == 1L) {
+    return 5L;
+  }
+  if (same(addr, len, "rgroup") == 1L) {
+    return 6L;
+  }
+  if (same(addr, len, "comm") == 1L) {
+    return 7L;
+  }
+  if (same(addr, len, "args") == 1L) {
+    return 8L;
+  }
+  if (same(addr, len, "tty") == 1L) {
+    return 9L;
+  }
+  if (same(addr, len, "time") == 1L) {
+    return 10L;
+  }
+  if (same(addr, len, "etime") == 1L) {
+    return 11L;
+  }
+  if (same(addr, len, "nice") == 1L) {
+    return 12L;
+  }
+  if (same(addr, len, "pcpu") == 1L) {
+    return 13L;
+  }
+  if (same(addr, len, "pgid") == 1L) {
+    return 14L;
+  }
+  if (same(addr, len, "vsz") == 1L) {
+    return 15L;
+  }
+  return 0L;
+}
+
+/* 选项块从界限起点 +768 起，每个字 64 位。调用帧在 +12288，不能越过。
+   0 有选择项  1 全部  2 去掉会话首领  3 -f  4 -l  5 列数
+   6 起 16 个列号，22 起表头地址，38 起表头长度。
+   54 进程号个数，55 起 16 个。71 有效用户，88 真实用户，105 有效组，122 会话。 */
+deRfun optGet(long home, long slot): long {
+  return memory::load64(home + 768L + slot * 64L);
+}
+
+deRfun optSet(long home, long slot, long value): void {
+  memory::store64(value, home + 768L + slot * 64L);
+}
+
+deRfun optZero(long home): void {
+  long slot = 0L;
+  while (slot < 139L) {
+    optSet(home, slot, 0L);
+    slot = slot + 1L;
+  }
+}
+
+deRfun pushCol(long home, long id, long header, long headerLen): long {
+  long count = optGet(home, 5L);
+  if (count >= 16L) {
+    return 0L;
+  }
+  optSet(home, 6L + count, id);
+  optSet(home, 22L + count, header);
+  optSet(home, 38L + count, headerLen);
+  optSet(home, 5L, count + 1L);
+  return 1L;
+}
+
+deRfun pushId(long home, long countSlot, long value): long {
+  long count = optGet(home, countSlot);
+  if (count >= 16L) {
+    return 0L;
+  }
+  optSet(home, countSlot + 1L + count, value);
+  optSet(home, countSlot, count + 1L);
+  return 1L;
+}
+
+/* 放得进有符号 64 位的十进制，至少一位，不要正负号。成功时写进 *out。 */
+deRfun readDec(long addr, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L) {
+      return 0L;
+    }
+    if (value == 922337203685477580L && digit > 7L) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 逗号、空格、制表符是分隔。等号把本参数余下的字节整段当成表头。
+   need 为 1 表示还欠一个名字。saw 是已经收下的名字个数。成功返回 1。 */
+deRfun feed(long home, long addr, long len, long* need, long* saw): long {
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit == 61L) {
+      return 0L;
+    }
+    if (bit == 44L) {
+      if (*need == 1L) {
+        return 0L;
+      }
+      *need = 1L;
+      index = index + 1L;
+    } else if (bit == 32L || bit == 9L) {
+      index = index + 1L;
+    } else {
+      long start = index;
+      long stop = 0L;
+      while (index < len && stop == 0L) {
+        bit = u8(addr + index * 8L);
+        if (bit == 61L) {
+          long name = index - start;
+          long id = colId(addr + start * 8L, name);
+          if (name < 1L || id == 0L) {
+            return 0L;
+          }
+          if (pushCol(home, id, addr + (index + 1L) * 8L, len - index - 1L) == 0L) {
+            return 0L;
+          }
+          *saw = *saw + 1L;
+          *need = 0L;
+          return 1L;
+        }
+        if (bit == 44L || bit == 32L || bit == 9L) {
+          stop = 1L;
+        } else {
+          index = index + 1L;
+        }
+      }
+      long nameLen = index - start;
+      long id = colId(addr + start * 8L, nameLen);
+      if (nameLen < 1L || id == 0L) {
+        return 0L;
+      }
+      if (pushCol(home, id, 0L, 0L) == 0L) {
+        return 0L;
+      }
+      *saw = *saw + 1L;
+      *need = 0L;
+    }
+  }
+  return 1L;
+}
+
+/* mode 0 是进程号、会话或组号，写进 countSlot。mode 1 是用户号，非数字是登录名。
+   mode 2 是终端名，这台机器只有一块控制台，列表非空就把全部任务选上。失败时已经写了诊断。 */
+deRfun scanList(long home, long addr, long len, long mode, long countSlot): long {
+  long index = 0L;
+  long need = 1L;
+  long tokens = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit == 44L) {
+      if (need == 1L) {
+        writeErr(home, "ps: invalid list\n");
+        return 1L;
+      }
+      need = 1L;
+      index = index + 1L;
+    } else if (bit == 32L || bit == 9L) {
+      index = index + 1L;
+    } else {
+      long start = index;
+      while (index < len) {
+        bit = u8(addr + index * 8L);
+        if (bit == 44L || bit == 32L || bit == 9L) {
+          break;
+        }
+        index = index + 1L;
+      }
+      long nameLen = index - start;
+      if (nameLen < 1L) {
+        writeErr(home, "ps: invalid list\n");
+        return 1L;
+      }
+      if (mode == 2L) {
+        optSet(home, 1L, 1L);
+      } else {
+        long value = 0L;
+        if (readDec(addr + start * 8L, nameLen, &value) == 0L) {
+          if (mode == 1L) {
+            note(home, "ps: ", addr + start * 8L, nameLen, ": no such user\n");
+          } else {
+            writeErr(home, "ps: invalid list\n");
+          }
+          return 1L;
+        }
+        if (pushId(home, countSlot, value) == 0L) {
+          writeErr(home, "ps: invalid list\n");
+          return 1L;
+        }
+      }
+      tokens = tokens + 1L;
+      need = 0L;
+    }
+  }
+  if (tokens < 1L || need == 1L) {
+    writeErr(home, "ps: invalid list\n");
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 103 g，71 G，110 n，111 o，112 p，116 t，117 u，85 U。 */
+deRfun takes(long bit): long {
+  if (bit == 103L || bit == 71L || bit == 110L || bit == 111L) {
+    return 1L;
+  }
+  if (bit == 112L || bit == 116L || bit == 117L || bit == 85L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 语法和 -n 的 stat 都在这里做完。返回 1 表示诊断已经写过。返回 0 表示可以印表。 */
+deRfun ready(long home): long {
+  optZero(home);
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long sawO = 0L;
+  long need = 1L;
+  long saw = 0L;
+  long sawN = 0L;
+  long nameAt = 0L;
+  long nameLen = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      long stop = 0L;
+      while (cursor < len && stop == 0L) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 97L || bit == 100L) {
+          optSet(home, 0L, 1L);
+          optSet(home, 2L, 1L);
+          cursor = cursor + 1L;
+        } else if (bit == 65L || bit == 101L) {
+          optSet(home, 0L, 1L);
+          optSet(home, 1L, 1L);
+          cursor = cursor + 1L;
+        } else if (bit == 102L) {
+          optSet(home, 3L, 1L);
+          cursor = cursor + 1L;
+        } else if (bit == 108L) {
+          optSet(home, 4L, 1L);
+          cursor = cursor + 1L;
+        } else if (takes(bit) == 1L) {
+          long argAt = 0L;
+          long span = 0L;
+          if (cursor + 1L < len) {
+            argAt = at + (cursor + 1L) * 8L;
+            span = len - cursor - 1L;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "ps: option requires an argument\n");
+              return 1L;
+            }
+            argAt = argPtr(home, index);
+            span = argLen(home, index);
+          }
+          if (bit == 111L) {
+            sawO = 1L;
+            if (feed(home, argAt, span, &need, &saw) == 0L) {
+              writeErr(home, "ps: invalid format\n");
+              return 1L;
+            }
+          } else if (bit == 110L) {
+            sawN = 1L;
+            nameAt = argAt;
+            nameLen = span;
+          } else if (bit == 117L) {
+            optSet(home, 0L, 1L);
+            if (scanList(home, argAt, span, 1L, 71L) != 0L) {
+              return 1L;
+            }
+          } else if (bit == 85L) {
+            optSet(home, 0L, 1L);
+            if (scanList(home, argAt, span, 1L, 88L) != 0L) {
+              return 1L;
+            }
+          } else if (bit == 116L) {
+            optSet(home, 0L, 1L);
+            if (scanList(home, argAt, span, 2L, 0L) != 0L) {
+              return 1L;
+            }
+          } else if (bit == 112L) {
+            optSet(home, 0L, 1L);
+            if (scanList(home, argAt, span, 0L, 54L) != 0L) {
+              return 1L;
+            }
+          } else if (bit == 103L) {
+            optSet(home, 0L, 1L);
+            if (scanList(home, argAt, span, 0L, 122L) != 0L) {
+              return 1L;
+            }
+          } else if (scanList(home, argAt, span, 0L, 105L) != 0L) {
+            optSet(home, 0L, 1L);
+            return 1L;
+          } else {
+            optSet(home, 0L, 1L);
+          }
+          index = index + 1L;
+          stop = 1L;
+        } else {
+          writeErr(home, "ps: invalid option\n");
+          return 1L;
+        }
+      }
+      if (stop == 0L) {
+        index = index + 1L;
+      }
+    }
+  }
+  if (sawO == 1L && (saw < 1L || need == 1L)) {
+    writeErr(home, "ps: invalid format\n");
+    return 1L;
+  }
+  if (index < count) {
+    writeErr(home, "ps: too many arguments\n");
+    return 1L;
+  }
+  if (sawN == 1L) {
+    if (nameLen > 8192L) {
+      writeErr(home, "ps: namelist too long\n");
+      return 1L;
+    }
+    plant(home, nameAt, nameLen);
+    if (obr::proc::stat(home) != 0L) {
+      note(home, "ps: ", nameAt, nameLen, ": cannot access\n");
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 一行最多 240 个八位组，放在 +10000。选项块用到 +9600，数字暂存在 +9664。 */
+deRfun lineAt(long home): long {
+  return home + 10000L;
+}
+
+deRfun lineSpace(long home, long* at, long count): void {
+  long index = 0L;
+  while (index < count && *at < 240L) {
+    memory::storeOctet(32L, lineAt(home) + *at * 8L);
+    *at = *at + 1L;
+    index = index + 1L;
+  }
+}
+
+deRfun linePut(long home, long* at, long addr, long count): void {
+  long index = 0L;
+  while (index < count && *at < 240L) {
+    memory::storeOctet(u8(addr + index * 8L), lineAt(home) + *at * 8L);
+    *at = *at + 1L;
+    index = index + 1L;
+  }
+}
+
+deRfun lineText(long home, long* at, string text, long width, long right): void {
+  int raw = length(text);
+  long count = raw;
+  long pad = 0L;
+  if (width > count) {
+    pad = width - count;
+  }
+  if (right == 1L) {
+    lineSpace(home, at, pad);
+  }
+  long index = 0L;
+  while (index < count && *at < 240L) {
+    memory::storeOctet(text[index], lineAt(home) + *at * 8L);
+    *at = *at + 1L;
+    index = index + 1L;
+  }
+  if (right == 0L) {
+    lineSpace(home, at, pad);
+  }
+  lineSpace(home, at, 2L);
+}
+
+deRfun lineCell(long home, long* at, long addr, long len, long width, long right): void {
+  long pad = 0L;
+  if (width > len) {
+    pad = width - len;
+  }
+  if (right == 1L) {
+    lineSpace(home, at, pad);
+  }
+  linePut(home, at, addr, len);
+  if (right == 0L) {
+    lineSpace(home, at, pad);
+  }
+  lineSpace(home, at, 2L);
+}
+
+deRfun lineNum(long home, long* at, long value, long width): void {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long rev = home + 9664L;
+  long count = 0L;
+  if (value == 0L) {
+    memory::storeOctet(48L, rev);
+    count = 1L;
+  } else {
+    while (value > 0L && count < 20L) {
+      memory::storeOctet(48L + (value % 10L), rev + count * 8L);
+      value = value / 10L;
+      count = count + 1L;
+    }
+  }
+  long pad = 0L;
+  if (width > count) {
+    pad = width - count;
+  }
+  lineSpace(home, at, pad);
+  while (count > 0L && *at < 240L) {
+    count = count - 1L;
+    memory::storeOctet(u8(rev + count * 8L), lineAt(home) + *at * 8L);
+    *at = *at + 1L;
+  }
+  lineSpace(home, at, 2L);
+}
+
+deRfun lineFlush(long home, long count): void {
+  if (count < 1L) {
+    return;
+  }
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(lineAt(home) + index * 8L), obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  obr::proc::write(home, 1L, 0L, count);
+}
+
+deRfun colWidth(long id): long {
+  if (id == 1L || id == 2L || id == 3L || id == 4L || id == 5L || id == 6L || id == 14L) {
+    return 5L;
+  }
+  if (id == 9L) {
+    return 3L;
+  }
+  if (id == 10L || id == 12L) {
+    return 5L;
+  }
+  if (id == 11L) {
+    return 7L;
+  }
+  if (id == 13L) {
+    return 4L;
+  }
+  if (id == 15L) {
+    return 6L;
+  }
+  if (id == 16L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun colRight(long id): long {
+  if (id == 7L || id == 8L || id == 9L || id == 16L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun useCount(long home): long {
+  if (optGet(home, 5L) > 0L) {
+    return optGet(home, 5L);
+  }
+  if (optGet(home, 3L) == 1L || optGet(home, 4L) == 1L) {
+    return 7L;
+  }
+  return 4L;
+}
+
+deRfun useCol(long home, long index): long {
+  if (optGet(home, 5L) > 0L) {
+    return optGet(home, 6L + index);
+  }
+  if (optGet(home, 3L) == 1L) {
+    if (index == 0L) {
+      return 3L;
+    }
+    if (index == 1L) {
+      return 1L;
+    }
+    if (index == 2L) {
+      return 2L;
+    }
+    if (index == 3L) {
+      return 13L;
+    }
+    if (index == 4L) {
+      return 10L;
+    }
+    if (index == 5L) {
+      return 9L;
+    }
+    return 7L;
+  }
+  if (optGet(home, 4L) == 1L) {
+    if (index == 0L) {
+      return 16L;
+    }
+    if (index == 1L) {
+      return 3L;
+    }
+    if (index == 2L) {
+      return 1L;
+    }
+    if (index == 3L) {
+      return 2L;
+    }
+    if (index == 4L) {
+      return 12L;
+    }
+    if (index == 5L) {
+      return 15L;
+    }
+    return 7L;
+  }
+  if (index == 0L) {
+    return 1L;
+  }
+  if (index == 1L) {
+    return 9L;
+  }
+  if (index == 2L) {
+    return 10L;
+  }
+  return 7L;
+}
+
+deRfun paintHead(long home, long* at, long index, long id): void {
+  long header = 0L;
+  long headerLen = 0L;
+  if (optGet(home, 5L) > 0L) {
+    header = optGet(home, 22L + index);
+    headerLen = optGet(home, 38L + index);
+  }
+  if (header != 0L) {
+    lineCell(home, at, header, headerLen, colWidth(id), colRight(id));
+    return;
+  }
+  if (id == 1L) {
+    lineText(home, at, "PID", 5L, 1L);
+    return;
+  }
+  if (id == 2L) {
+    lineText(home, at, "PPID", 5L, 1L);
+    return;
+  }
+  if (id == 3L) {
+    lineText(home, at, "UID", 5L, 1L);
+    return;
+  }
+  if (id == 4L) {
+    lineText(home, at, "RUSER", 5L, 1L);
+    return;
+  }
+  if (id == 5L) {
+    lineText(home, at, "GID", 5L, 1L);
+    return;
+  }
+  if (id == 6L) {
+    lineText(home, at, "RGROUP", 5L, 1L);
+    return;
+  }
+  if (id == 7L || id == 8L) {
+    lineText(home, at, "CMD", 0L, 0L);
+    return;
+  }
+  if (id == 9L) {
+    lineText(home, at, "TTY", 3L, 0L);
+    return;
+  }
+  if (id == 10L) {
+    lineText(home, at, "TIME", 5L, 1L);
+    return;
+  }
+  if (id == 11L) {
+    lineText(home, at, "ELAPSED", 7L, 1L);
+    return;
+  }
+  if (id == 12L) {
+    lineText(home, at, "NI", 5L, 1L);
+    return;
+  }
+  if (id == 13L) {
+    lineText(home, at, "%CPU", 4L, 1L);
+    return;
+  }
+  if (id == 14L) {
+    lineText(home, at, "PGID", 5L, 1L);
+    return;
+  }
+  if (id == 15L) {
+    lineText(home, at, "VSZ", 6L, 1L);
+    return;
+  }
+  lineText(home, at, "S", 1L, 0L);
+}
+
+/* 每份快照 1280 位：12 个字，名字从 +768 起。 */
+deRfun snap(long base, long row, long word): long {
+  return memory::load64(base + row * 1280L + word * 64L);
+}
+
+deRfun snapName(long base, long row): long {
+  return base + row * 1280L + 768L;
+}
+
+deRfun listed(long home, long countSlot, long value): long {
+  long count = optGet(home, countSlot);
+  long index = 0L;
+  while (index < count) {
+    if (optGet(home, countSlot + 1L + index) == value) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 父任务为 0 的那一个是会话首领。链断了就停在当前这个 pid。 */
+deRfun sidOf(long base, long rows, long pid): long {
+  long guard = 0L;
+  long current = pid;
+  while (guard < 16L) {
+    long row = 0L;
+    long found = 0L;
+    long parent = 0L;
+    while (row < rows) {
+      if (snap(base, row, 0L) == current) {
+        parent = snap(base, row, 1L);
+        found = 1L;
+      }
+      row = row + 1L;
+    }
+    if (found == 0L || parent == 0L || parent == current) {
+      return current;
+    }
+    current = parent;
+    guard = guard + 1L;
+  }
+  return current;
+}
+
+deRfun wanted(long home, long base, long rows, long row, long mine): long {
+  long pid = snap(base, row, 0L);
+  long uid = snap(base, row, 4L);
+  long gid = snap(base, row, 5L);
+  long euid = snap(base, row, 6L);
+  if (optGet(home, 0L) == 0L) {
+    if (euid == mine) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (optGet(home, 1L) == 1L) {
+    return 1L;
+  }
+  if (optGet(home, 2L) == 1L && pid != sidOf(base, rows, pid)) {
+    return 1L;
+  }
+  if (listed(home, 54L, pid) == 1L) {
+    return 1L;
+  }
+  if (listed(home, 71L, euid) == 1L) {
+    return 1L;
+  }
+  if (listed(home, 88L, uid) == 1L) {
+    return 1L;
+  }
+  if (listed(home, 105L, gid) == 1L) {
+    return 1L;
+  }
+  if (listed(home, 122L, sidOf(base, rows, pid)) == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun paintState(long home, long* at, long state): void {
+  if (state == 1L || state == 2L) {
+    lineText(home, at, "R", 1L, 0L);
+    return;
+  }
+  if (state == 3L) {
+    lineText(home, at, "S", 1L, 0L);
+    return;
+  }
+  if (state == 4L) {
+    lineText(home, at, "T", 1L, 0L);
+    return;
+  }
+  if (state == 5L) {
+    lineText(home, at, "Z", 1L, 0L);
+    return;
+  }
+  lineText(home, at, "?", 1L, 0L);
+}
+
+deRfun paintField(long home, long* at, long id, long base, long row): void {
+  if (id == 1L) {
+    lineNum(home, at, snap(base, row, 0L), 5L);
+    return;
+  }
+  if (id == 2L) {
+    lineNum(home, at, snap(base, row, 1L), 5L);
+    return;
+  }
+  if (id == 3L) {
+    lineNum(home, at, snap(base, row, 6L), 5L);
+    return;
+  }
+  if (id == 4L) {
+    lineNum(home, at, snap(base, row, 4L), 5L);
+    return;
+  }
+  if (id == 5L) {
+    lineNum(home, at, snap(base, row, 7L), 5L);
+    return;
+  }
+  if (id == 6L) {
+    lineNum(home, at, snap(base, row, 5L), 5L);
+    return;
+  }
+  if (id == 7L || id == 8L) {
+    long nameLen = snap(base, row, 11L);
+    if (nameLen < 1L) {
+      lineText(home, at, "?", 0L, 0L);
+      return;
+    }
+    lineCell(home, at, snapName(base, row), nameLen, 0L, 0L);
+    return;
+  }
+  if (id == 9L) {
+    lineText(home, at, "?", 3L, 0L);
+    return;
+  }
+  if (id == 10L) {
+    lineText(home, at, "0:00", 5L, 1L);
+    return;
+  }
+  if (id == 11L || id == 13L) {
+    long width = 7L;
+    if (id == 13L) {
+      width = 4L;
+    }
+    lineText(home, at, "-", width, 1L);
+    return;
+  }
+  if (id == 12L) {
+    long nice = 0L;
+    if (snap(base, row, 10L) == 1L) {
+      nice = 10L;
+    }
+    lineNum(home, at, nice, 5L);
+    return;
+  }
+  if (id == 14L) {
+    lineNum(home, at, snap(base, row, 0L), 5L);
+    return;
+  }
+  if (id == 15L) {
+    long bits = snap(base, row, 9L);
+    long kb = 0L;
+    if (bits > 0L) {
+      kb = bits / 8192L;
+    }
+    lineNum(home, at, kb, 6L);
+    return;
+  }
+  paintState(home, at, snap(base, row, 2L));
+}
+
+deRfun takeTasks(long home, long base): long {
+  long index = 0L;
+  long count = 0L;
+  while (count < 64L) {
+    long status = obr::proc::task(home, index);
+    if (status == 2L) {
+      return count;
+    }
+    if (status != 0L) {
+      return -1L;
+    }
+    long row = base + count * 1280L;
+    long word = 0L;
+    while (word < 12L) {
+      memory::store64(memory::load64(obr::proc::bytes(home) + word * 64L), row + word * 64L);
+      word = word + 1L;
+    }
+    long nameLen = memory::load64(row + 11L * 64L);
+    if (nameLen > 32L) {
+      nameLen = 32L;
+    }
+    memory::store64(nameLen, row + 11L * 64L);
+    long step = 0L;
+    while (step < nameLen) {
+      memory::storeOctet(u8(obr::proc::bytes(home) + 768L + step * 8L), row + 768L + step * 8L);
+      step = step + 1L;
+    }
+    long next = obr::proc::slot(home, 320L);
+    count = count + 1L;
+    if (next <= index) {
+      return count;
+    }
+    index = next;
+  }
+  return count;
+}
+
+deRfun show(long home, long mine): long {
+  long base = obr::proc::alloc(home, 81920L);
+  if (base == 0L) {
+    writeErr(home, "ps: cannot read process list\n");
+    return 1L;
+  }
+  long rows = takeTasks(home, base);
+  if (rows < 0L) {
+    obr::proc::free(home, base, 81920L);
+    writeErr(home, "ps: cannot read process list\n");
+    return 1L;
+  }
+  long at = 0L;
+  long columns = useCount(home);
+  long index = 0L;
+  while (index < columns) {
+    paintHead(home, &at, index, useCol(home, index));
+    index = index + 1L;
+  }
+  lineSpace(home, &at, 0L);
+  if (at > 0L) {
+    memory::storeOctet(10L, lineAt(home) + (at - 2L) * 8L);
+    lineFlush(home, at - 1L);
+  }
+  long row = 0L;
+  while (row < rows) {
+    if (wanted(home, base, rows, row, mine) == 1L) {
+      at = 0L;
+      index = 0L;
+      while (index < columns) {
+        paintField(home, &at, useCol(home, index), base, row);
+        index = index + 1L;
+      }
+      if (at > 1L) {
+        memory::storeOctet(10L, lineAt(home) + (at - 2L) * 8L);
+        lineFlush(home, at - 1L);
+      }
+    }
+    row = row + 1L;
+  }
+  obr::proc::free(home, base, 81920L);
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  if (ready(home) != 0L) {
+    return finish(home, 1L);
+  }
+  if (obr::proc::ident(home) != 0L) {
+    writeErr(home, "ps: cannot read process list\n");
+    return finish(home, 1L);
+  }
+  long mine = obr::proc::slot(home, 256L);
+  return finish(home, show(home, mine));
+}

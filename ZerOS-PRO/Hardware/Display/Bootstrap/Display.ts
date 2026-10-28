@@ -63,6 +63,14 @@ export namespace ZerOS {
         ShowBitmap(bitmap: ImageBitmap): void {
           device.ShowBitmap(bitmap);
         },
+
+        /**
+         * 把一块比面板小的位图贴到指定位置。
+         * 这是宿主呈现，不是 ZDP1 方法名。没改到的像素留着上一幅。
+         */
+        ShowPatch(originX: number, originY: number, bitmap: ImageBitmap): void {
+          device.ShowPatch(originX, originY, bitmap);
+        },
       };
     }
   }

@@ -30,6 +30,7 @@ import { ZerOS as InboxRoot } from "../Host/Inbox";
 import { ZerOS as InstructionRoot } from "../Structure/MemoryInstruction";
 import { ZerOS as MailboxRoot } from "../Host/Mailbox";
 import { ZerOS as MemoryLinkRoot } from "../Host/MemoryLink";
+import { ZerOS as SpanBudgetRoot } from "../Host/SpanBudget";
 import { ZerOS as OpcodeRoot } from "../Enum/MemoryOpcode";
 import { ZerOS as MapRoot } from "../../Cpu/Map/LinearMap";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
@@ -63,6 +64,8 @@ export namespace ZerOS {
       const queryHardware = QueryRoot.Hardware.Motherboard.queryHardware;
       const sharedMemoryLink = MemoryLinkRoot.Hardware.Motherboard.sharedMemoryLink;
       const MailMessage = MailboxRoot.Hardware.Motherboard.MailMessage;
+      const SpanCeilBytes = MailboxRoot.Hardware.Motherboard.SpanCeilBytes;
+      const spanApply = SpanBudgetRoot.Hardware.Motherboard.spanApply;
       const memoryOpcodeDirection = OpcodeRoot.Hardware.Motherboard.memoryOpcodeDirection;
       const MemoryOpcodeStore64 = OpcodeRoot.Hardware.Motherboard.MemoryOpcodeStore64;
       /** 固件调试开关。BIOS 用整字写成 0 或 1。不是协议字段。 */
@@ -182,6 +185,22 @@ export namespace ZerOS {
        * 客核心的失败日志和调试运行的结果也从这条监听转出。
        * 常驻固件会换掉 onmessage，换掉之后这两种消息仍要到页面。
        */
+      /**
+       * CPU 线程看见内核写下的消息上限后，从这里交到主板。
+       * 上限立刻生效。下一次搬运按新上限截断，已经加过的段如果超出新上限也马上收回。
+       */
+      function acceptSpanCap(data: unknown): void {
+        const record = asRecord(data);
+        if (record === null || record["kind"] !== "span-cap") {
+          return;
+        }
+        const bytes = record["bytes"];
+        if (typeof bytes !== "number") {
+          return;
+        }
+        spanApply(bytes);
+      }
+
       function forwardHostNote(data: unknown): void {
         const record = asRecord(data);
         const kind = record?.["kind"];
@@ -211,13 +230,22 @@ export namespace ZerOS {
        * 把一帧送到页面。
        * 位图和像素缓冲都是转交：送出之后这里不能再读。两边都没有就失败。
        */
-      function publishFrame(frameWidth: number, frameHeight: number, pixels: Uint32Array | null, bitmap: ImageBitmap | null): boolean {
+      function publishFrame(
+        frameWidth: number,
+        frameHeight: number,
+        pixels: Uint32Array | null,
+        bitmap: ImageBitmap | null,
+        originX = 0,
+        originY = 0,
+      ): boolean {
         if (bitmap !== null) {
           globalThis.postMessage(
             {
               kind: MailMessage.Frame,
               frameWidth,
               frameHeight,
+              originX,
+              originY,
               bitmap,
             },
             { transfer: [bitmap] },
@@ -252,6 +280,19 @@ export namespace ZerOS {
         void (async (): Promise<void> => {
           try {
             if (gpuOp === "present") {
+              const commands = record["commands"];
+              if (Array.isArray(commands) && commands.length > 0) {
+                const batch: Record<string, unknown>[] = [];
+                for (const item of commands) {
+                  if (typeof item !== "object" || item === null || Array.isArray(item)) {
+                    replyCore(port, false, true, 0n, `${seatPrefix} one GPU batch command is incomplete`);
+                    return;
+                  }
+                  batch.push(item as Record<string, unknown>);
+                }
+                /* 启动那一次也要先把字画上，再按像素交回。先交像素会把这一队丢掉。 */
+                await applyGpuBatch(batch);
+              }
               if (splashReadback) {
                 splashReadback = false;
                 const frame = await presentFrame();
@@ -263,7 +304,7 @@ export namespace ZerOS {
                 return;
               }
               const frame = await presentSurface();
-              if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, frame.bitmap)) {
+              if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, frame.bitmap, frame.originX, frame.originY)) {
                 replyCore(port, false, true, 0n, `${seatPrefix} the frame copy could not be transferred`);
                 return;
               }
@@ -794,6 +835,9 @@ export namespace ZerOS {
 
       function onCoreExec(port: MessagePort, data: unknown): void {
         const record = asRecord(data);
+        const arrived = record?.["kind"];
+        if (typeof arrived === "string") {
+        }
         if (record?.["kind"] === "inbox") {
           const word = pullInbox();
           port.postMessage({
@@ -826,7 +870,7 @@ export namespace ZerOS {
         if (record?.["kind"] === "store-span") {
           const address = record["address"];
           const bytes = record["bytes"];
-          if (typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 262144 || address < 0n || address % 8n !== 0n) {
+          if (typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > SpanCeilBytes || address < 0n || address % 8n !== 0n) {
             port.postMessage({ kind: "store-span-result", ok: false, message: `${seatPrefix} native store failed` });
             return;
           }
@@ -854,15 +898,17 @@ export namespace ZerOS {
           for (let index = 0; index < addresses.length; index += 1) {
             const address = addresses[index];
             const bytes = parts[index];
-            if (typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 262144 || address < 0n || address % 8n !== 0n) {
+            if (typeof address !== "bigint" || !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > SpanCeilBytes || address < 0n || address % 8n !== 0n) {
               port.postMessage({ kind: "store-spans-result", ok: false, message: `${seatPrefix} native store failed` });
               return;
             }
             runs.push({ address, bytes });
           }
           void (async (): Promise<void> => {
+            let octets = 0;
             try {
               for (const run of runs) {
+                octets += run.bytes.length;
                 await demandBytes(run.address, run.bytes.length);
                 sharedMemoryLink().writeSpan(run.address, run.bytes);
                 noteDebugSpan(run.address, run.bytes);
@@ -878,7 +924,7 @@ export namespace ZerOS {
         if (record?.["kind"] === "load-span") {
           const address = record["address"];
           const length = record["length"];
-          if (typeof address !== "bigint" || typeof length !== "number" || !Number.isInteger(length) || length < 1 || length > 262144 || address < 0n || address % 8n !== 0n) {
+          if (typeof address !== "bigint" || typeof length !== "number" || !Number.isInteger(length) || length < 1 || length > SpanCeilBytes || address < 0n || address % 8n !== 0n) {
             port.postMessage({ kind: "load-span-result", ok: false, bytes: null, message: `${seatPrefix} install memory access` });
             return;
           }
@@ -967,6 +1013,7 @@ export namespace ZerOS {
         const worker = QueuedRoot.Hardware.Motherboard.openCpuWorker();
         cpuWorker = worker;
         worker.addEventListener("message", (event: MessageEvent): void => {
+          acceptSpanCap(event.data as unknown);
           forwardCoreStop(event.data as unknown);
           forwardHostNote(event.data as unknown);
         });
