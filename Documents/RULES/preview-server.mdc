@@ -1,0 +1,10 @@
+---
+description: 预览服务固定使用 5173，更新前先释放端口
+alwaysApply: true
+---
+
+# 预览服务
+
+页面预览只使用 http://localhost:5173/。Vite 已设置 `strictPort`，端口被占用时不要改到别的端口。
+
+再次启动或因配置更新需要重启时，先结束占用 5173 的进程，确认端口已释放，再在 `Toolchain` 执行 `npm run dev`。

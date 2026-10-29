@@ -14,7 +14,7 @@ description: >-
 ## 何时启用
 
 - 在 `ZerOS-PRO/**` 新增或修改 TypeScript
-- `ZerOS-PRO/Kernel/` 与 `ZerOS-PRO/System/` 不在本技能的 TypeScript 范围。这两处只能写 Obr，见 `.cursor/rules/obr-kernel-os.mdc` 与 `obr-language` 技能。禁止在内核或操作系统目录留下 `.ts` 来实现文本、进程或系统调用
+- `ZerOS-PRO/Kernel/` 与 `ZerOS-PRO/System/` 不在本技能的 TypeScript 范围。这两处只能写 Obr，见 `Documents/RULES/obr-kernel-os.mdc` 与 `obr-language` 技能。禁止在内核或操作系统目录留下 `.ts` 来实现文本、进程或系统调用
 - 用户提到规范编码、严格类型、命名空间、中文注释、目录整理、独立文件、未约定不实现
 - 实现 Hardware / Boot / Kernel 等与 ZMP 协议对齐的模块
 - 审查「文件是否散乱平铺、枚举/结构是否未剥离」

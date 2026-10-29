@@ -1,40 +1,26 @@
 # Documents/SKILLS
 
-本目录存放协议文档写作和 ZerOS-PRO 编码规范的权威源。Obr 语法的权威源在 `.cursor/skills/obr-language/`。
+本目录是技能正文。规则正文在 [Documents/RULES](../RULES/)。`.cursor` 不进版本库，里面只有指回这里的本地链接。
 
-| 子目录 | Skill `name` | 用途 |
-|--------|--------------|------|
-| [ProtocolDocumentAuthoring](./ProtocolDocumentAuthoring/) | `protocol-document-authoring` | 编写 / 修订 / 审查**对外协议文档** |
-| [CodingStandards](./CodingStandards/) | `coding-standards` | **ZerOS-PRO 规范编码** |
+| 子目录 | Cursor 链接 | Skill `name` | 用途 |
+|--------|-------------|--------------|------|
+| [ProtocolDocumentAuthoring](./ProtocolDocumentAuthoring/) | `.cursor/skills/protocol-document-authoring/` | `protocol-document-authoring` | 编写 / 修订 / 审查对外协议文档 |
+| [CodingStandards](./CodingStandards/) | `.cursor/skills/coding-standards/` | `coding-standards` | ZerOS-PRO 规范编码 |
+| [ObrLanguage](./ObrLanguage/) | `.cursor/skills/obr-language/` | `obr-language` | Obr 语法 |
 
-## Cursor 副本
+规则目录整份接到 `.cursor/rules/`：
 
-Cursor 从项目根 **`.cursor/skills/`** 加载。根 `.gitignore` 忽略 `.cursor/*`，但保留 `.cursor/skills/`，所以技能随仓库走。
+| 文件 | 作用 |
+|------|------|
+| [preview-server.mdc](../RULES/preview-server.mdc) | 预览只用 5173 |
+| [obr-kernel-os.mdc](../RULES/obr-kernel-os.mdc) | 内核与操作系统只用 Obr |
+| [boot-fault-english.mdc](../RULES/boot-fault-english.mdc) | 字体面打开前的失败说明用英文 |
 
-这里的权威源和 Cursor 加载的目录是两份文件，不是符号链接。内容必须逐字节相同。`Toolchain` 里的 `npm test` 会比对；不一致就失败。改了本目录之后执行 `npm run skills:sync`，把副本覆盖过去。不要只改 `.cursor/skills/` 里的这两份。
-
-| Cursor 路径 | 权威源 |
-|-------------|--------|
-| `.cursor/skills/protocol-document-authoring/` | `Documents/SKILLS/ProtocolDocumentAuthoring/` |
-| `.cursor/skills/coding-standards/` | `Documents/SKILLS/CodingStandards/` |
-| `.cursor/skills/obr-language/` | 自身。Obr 语法以这份为准，不在本目录 |
+克隆之后在 `Toolchain` 执行 `npm run skills:sync`，接上这些链接。`npm test` 只确认链接指向本目录和 `Documents/RULES`，不再保留第二份副本。改技能或规则时改这里，不要在 `.cursor` 里另存一份。
 
 ## 使用说明
 
-- 每个子目录必须包含 `SKILL.md`（YAML：`name`、`description`）。
-- 协议文档 → `protocol-document-authoring`；`ZerOS-PRO/**` 编码 → `coding-standards`。
-- 新增 Skill：PascalCase 子文件夹 → `SKILL.md` → 更新本 README → 在 `.cursor/skills/` 增加 kebab-case 副本，并让 `npm test` 比对这一对。
-
-## 目录约定
-
-```
-Documents/SKILLS/                    ← 协议与编码规范的权威源
-├── README.md
-├── ProtocolDocumentAuthoring/
-└── CodingStandards/
-
-.cursor/skills/                      ← Cursor 加载的副本，纳入 Git
-├── protocol-document-authoring/     ← 与 ProtocolDocumentAuthoring 逐字节相同
-├── coding-standards/                ← 与 CodingStandards 逐字节相同
-└── obr-language/                    ← Obr 语法权威源，只放这里
-```
+- 每个技能子目录必须包含 `SKILL.md`（YAML：`name`、`description`）。
+- 协议文档用 `protocol-document-authoring`。`ZerOS-PRO/**` 编码用 `coding-standards`。改 Obr 表面时用 `obr-language`。
+- 新增技能：在本目录建 PascalCase 子文件夹和 `SKILL.md`，更新本 README，再把对应的 kebab-case 链接加进 `Toolchain/check-consistency.mjs` 的 `cursorLinks`。
+- 新增规则：把 `.mdc` 放进 `Documents/RULES/`。`.cursor/rules` 是整个目录的链接，不用再单独接。

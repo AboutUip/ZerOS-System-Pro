@@ -1,6 +1,6 @@
 # Obr 编译器
 
-语法规则写在 `.cursor/skills/obr-language/SKILL.md`。改语言表面时，编译器、该技能和本文一起改。
+语法规则写在 `Documents/SKILLS/ObrLanguage/SKILL.md`。Cursor 经 `.cursor/skills/obr-language/SKILL.md` 读到同一份。改语言表面时，编译器、该技能和本文一起改。
 
 `examples/` 里以 `bad-` 开头的源文件应当在编译期被拒绝。运行时才失败的例子不用这个前缀。`ui-meter-runtime.obr` 能通过编译；`meter` 的最大值小于 1 时在运行时失败。
 

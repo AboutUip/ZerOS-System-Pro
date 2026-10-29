@@ -106,9 +106,10 @@ NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO
 |------|--------|------|
 | 协议文档 | [Documents/SKILLS](./Documents/SKILLS/README.md) | 写和审 `Documents/Protocol/` |
 | 编码规范 | 同上 | 写 `ZerOS-PRO/` |
-| Obr 语法 | [`.cursor/skills/obr-language`](./.cursor/skills/obr-language/SKILL.md) | 改编译器表面，或写 `.obr` / `.mr` |
+| Obr 语法 | [Documents/SKILLS/ObrLanguage](./Documents/SKILLS/ObrLanguage/SKILL.md) | 改编译器表面，或写 `.obr` / `.mr` |
+| 项目规则 | [Documents/RULES](./Documents/RULES/) | 预览端口、内核语言、引导失败说明 |
 
-Cursor 从 `.cursor/skills/` 加载。协议与编码规范的权威源是 `Documents/SKILLS/`，Cursor 目录里是一份必须与权威源逐字节相同的副本。`npm test` 会比对；改了权威源之后在 `Toolchain` 执行 `npm run skills:sync`。Obr 语法以 `.cursor/skills/obr-language/` 为准，不在 `Documents/SKILLS/`。
+Cursor 从 `.cursor/skills/` 和 `.cursor/rules/` 加载。这两处是本地链接，正文只在 `Documents/SKILLS/` 和 `Documents/RULES/`。克隆后在 `Toolchain` 执行 `npm run skills:sync` 接上链接。`npm test` 确认链接指向这两处。
 
 ## 相关链接
 

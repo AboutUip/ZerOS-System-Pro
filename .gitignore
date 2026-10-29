@@ -1,6 +1,5 @@
-# Cursor local state. Project skills stay tracked so Obr syntax can be maintained here.
-.cursor/*
-!.cursor/skills/
+# Cursor only keeps local links. Skills and rules are maintained in Documents/.
+.cursor/
 
 # Toolchain
 Toolchain/node_modules/

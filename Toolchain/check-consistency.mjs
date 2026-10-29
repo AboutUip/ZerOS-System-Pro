@@ -1,8 +1,8 @@
 /**
- * 核对协议页眉、目录索引、技能副本、本机路径，以及 obrc 的输出位置。
- * 只使用 Node 自带模块。--sync 先把 Documents/SKILLS 覆盖到 .cursor/skills，再核对。
+ * 核对协议页眉、目录索引、Cursor 链接、本机路径，以及 obrc 的输出位置。
+ * 只使用 Node 自带模块。--sync 把 .cursor 里的技能和规则接成指向 Documents 的目录联接。
  */
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,68 +26,47 @@ function mentions(text, id) {
   return new RegExp(`(?:^|[^A-Z0-9])${id}(?:[^A-Z0-9]|$)`).test(text);
 }
 
-const skillPairs = [
+/** Cursor 路径只是本地联接。左边是仓库里维护的那一份。 */
+const cursorLinks = [
   ["Documents/SKILLS/ProtocolDocumentAuthoring", ".cursor/skills/protocol-document-authoring"],
   ["Documents/SKILLS/CodingStandards", ".cursor/skills/coding-standards"],
+  ["Documents/SKILLS/ObrLanguage", ".cursor/skills/obr-language"],
+  ["Documents/RULES", ".cursor/rules"],
 ];
 
-function listFiles(relDir) {
-  const root = path.join(repoRoot, relDir);
-  const out = [];
-  const walk = (current) => {
-    for (const name of readdirSync(current)) {
-      const full = path.join(current, name);
-      if (statSync(full).isDirectory()) {
-        walk(full);
-      } else {
-        out.push(path.relative(root, full).split(path.sep).join("/"));
-      }
-    }
-  };
-  walk(root);
-  out.sort();
-  return out;
-}
-
-function syncSkills() {
-  for (const [src, dest] of skillPairs) {
+function syncCursorLinks() {
+  for (const [src, dest] of cursorLinks) {
     const from = path.join(repoRoot, src);
     const to = path.join(repoRoot, dest);
+    if (!existsSync(from)) {
+      fail(`缺少权威源 ${src}`);
+      continue;
+    }
     rmSync(to, { recursive: true, force: true });
     mkdirSync(path.dirname(to), { recursive: true });
-    cpSync(from, to, { recursive: true });
+    symlinkSync(from, to, "junction");
   }
 }
 
-function checkSkills() {
-  for (const [src, dest] of skillPairs) {
-    if (!existsSync(path.join(repoRoot, src)) || !existsSync(path.join(repoRoot, dest))) {
-      fail(`技能目录缺少一边：${src} 与 ${dest}`);
+function checkCursorLinks() {
+  for (const [src, dest] of cursorLinks) {
+    const from = path.join(repoRoot, src);
+    const to = path.join(repoRoot, dest);
+    if (!existsSync(from)) {
+      fail(`缺少权威源 ${src}`);
       continue;
     }
-    const left = listFiles(src);
-    const right = listFiles(dest);
-    const leftSet = new Set(left);
-    const rightSet = new Set(right);
-    for (const name of left) {
-      if (!rightSet.has(name)) {
-        fail(`${dest} 缺少 ${name}`);
-      }
+    if (!existsSync(to)) {
+      fail(`${dest} 还没有接到 ${src}。在 Toolchain 执行 npm run skills:sync`);
+      continue;
     }
-    for (const name of right) {
-      if (!leftSet.has(name)) {
-        fail(`${dest} 多出 ${name}`);
-      }
+    const linked = lstatSync(to);
+    if (!linked.isSymbolicLink()) {
+      fail(`${dest} 是实体目录，不是指向 ${src} 的链接`);
+      continue;
     }
-    for (const name of left) {
-      if (!rightSet.has(name)) {
-        continue;
-      }
-      const a = readFileSync(path.join(repoRoot, src, name));
-      const b = readFileSync(path.join(repoRoot, dest, name));
-      if (!a.equals(b)) {
-        fail(`${src}/${name} 与 ${dest}/${name} 内容不同`);
-      }
+    if (realpathSync(to) !== realpathSync(from)) {
+      fail(`${dest} 没有指向 ${src}`);
     }
   }
 }
@@ -245,9 +224,9 @@ function checkDrivePaths() {
 }
 
 if (process.argv.includes("--sync")) {
-  syncSkills();
+  syncCursorLinks();
 }
-checkSkills();
+checkCursorLinks();
 checkProtocols();
 checkCompilerOutput();
 checkExamples();
