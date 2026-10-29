@@ -23,15 +23,15 @@ Compiler/BuildSystem/Installer/*.sha256
 Compiler/**/*.pdb
 Compiler/**/*.ilk
 Compiler/**/*.exp
-# Packaged editor plugin. Source stays in Compiler/ObjectiveR; rebuild with vsce.
-Compiler/ObjectiveR/*.vsix
+# Packaged editor plugin. Source stays in Compiler/ObrExtension; rebuild with vsce.
+Compiler/ObrExtension/*.vsix
 # g++ -o obrc on Linux. The source file is obrc.cpp and stays tracked.
 Compiler/**/obrc
 # obrc -o beside an example. The .obr and .mr sources stay tracked.
-Compiler/Obr/examples/*
-!Compiler/Obr/examples/*.obr
-!Compiler/Obr/examples/*.mr
-!Compiler/Obr/examples/*.md
+Compiler/ObrCompiler/examples/*
+!Compiler/ObrCompiler/examples/*.obr
+!Compiler/ObrCompiler/examples/*.mr
+!Compiler/ObrCompiler/examples/*.md
 
 # Preview firmware from Boot/*.obr. Logo, Bios, and Load are the three ROM images.
 # The .debug beside each is the fault map. This build does not write .zap.

@@ -89,9 +89,9 @@ if [[ $run_tests -eq 1 ]]; then
   ctest --preset "$preset" --output-on-failure
 fi
 
-if [[ ! -f ../Obr/obrc ]]; then
-  echo "obrc was not produced at ../Obr/obrc" >&2
+if [[ ! -f ../ObrCompiler/obrc ]]; then
+  echo "obrc was not produced at ../ObrCompiler/obrc" >&2
   exit 1
 fi
 
-printf '\nPreset:  %s\nBuild:   build/%s\nobrc:    ../Obr/obrc\n' "$preset" "$preset"
+printf '\nPreset:  %s\nBuild:   build/%s\nobrc:    ../ObrCompiler/obrc\n' "$preset" "$preset"

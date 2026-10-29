@@ -1139,7 +1139,7 @@ export namespace ZerOS {
               continue;
             }
             sliceMs = serving ? 32 : 1;
-            let budget = nativePaceBudget(ordinal);
+            const budget = nativePaceBudget(ordinal);
             if (budget < 1) {
               await flush();
               dropShared();

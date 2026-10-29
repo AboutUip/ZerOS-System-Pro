@@ -11,4 +11,4 @@ alwaysApply: true
 - 自检若要跑内核逻辑，编译 Obr 程序再交给 CPU 执行。不要在宿主里重写一份平行实现。
 - 现有语言表达不了、或表达得不通用时，可以改 Obr 或 ZCP1 指令。新增的语法、库函数和指令必须能被任意 Obr 程序复用，不能只为某一处内核写专用形式。
 - 新的 CPU 指令必须是通用 ZCP1 指令。禁止只给编译器使用、客程序写不出来的指令。
-- 改了词法、语法、语义或可接受的语言表面时，同一轮更新 `Documents/SKILLS/ObrLanguage/SKILL.md` 和 `Compiler/Obr/README.md`。
+- 改了词法、语法、语义或可接受的语言表面时，同一轮更新 `Documents/Skills/ObrLanguage/SKILL.md` 和 `Compiler/ObrCompiler/README.md`。

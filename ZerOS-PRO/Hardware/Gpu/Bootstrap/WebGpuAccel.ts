@@ -1697,14 +1697,12 @@ struct Vout {
         });
         viewCanvas = canvas;
         viewContext = context;
-        if (viewOriginBuffer === null) {
-          /* 统一缓冲的绑定长度必须是 16 的倍数。只要 8 字节时绑定会失败，
-             位图做不成，每个键都退回整帧读回。 */
-          viewOriginBuffer = active.createBuffer({
-            size: 16,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-          });
-        }
+        /* 统一缓冲的绑定长度必须是 16 的倍数。只要 8 字节时绑定会失败，
+           位图做不成，每个键都退回整帧读回。 */
+        viewOriginBuffer ??= active.createBuffer({
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
         if (viewPipe === null) {
           const module = active.createShaderModule({ code: viewShader });
           viewPipe = active.createRenderPipeline({

@@ -47,7 +47,7 @@
 				"objectiveR.compiler.path": {
 					"type": "string",
 					"default": "",
-					"description": "obrc 可执行文件。留空时查找工作区 Compiler/Obr/obrc.exe。"
+					"description": "obrc 可执行文件。留空时查找工作区 Compiler/ObrCompiler/obrc.exe。"
 				},
 				"objectiveR.semanticHighlighting.enable": {
 					"type": "boolean",

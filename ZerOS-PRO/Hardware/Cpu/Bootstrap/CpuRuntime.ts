@@ -109,6 +109,17 @@ export namespace ZerOS {
        */
       let deferredFont: Uint8Array | null = null;
 
+      /**
+       * 取出画字符串时核心交回的标量，并清空槽。
+       * 这些字节是在 gpu() 等待回复时由消息处理写进来的。
+       * 写在单独的函数里，调用方才能看见这次写入；写在同一个函数里，检查器会以为槽里仍是等待前清掉的空值。
+       */
+      function takeDeferredFont(): Uint8Array | null {
+        const bytes = deferredFont;
+        deferredFont = null;
+        return bytes;
+      }
+
       /** 一批出核心访问的结果。hostFault 非空时由 CPU 线程换成原来的失败语句。 */
       interface AccessOutcome {
         readonly ok: boolean;
@@ -1497,7 +1508,7 @@ export namespace ZerOS {
             continue;
           }
           const core = cores.get(ordinal);
-          if (core === undefined || core.stopKind !== StopReasonWaiting || rankOf(ordinal) === 1) {
+          if (core?.stopKind !== StopReasonWaiting || rankOf(ordinal) === 1) {
             continue;
           }
           if (service !== ReadService) {
@@ -1563,7 +1574,7 @@ export namespace ZerOS {
             gateWait = null;
             resolve();
           };
-          if (nativeGatePending() && gateWait !== null) {
+          if (nativeGatePending()) {
             const resume = gateWait;
             gateWait = null;
             resume();
@@ -2255,8 +2266,7 @@ export namespace ZerOS {
             d,
             deferDraw: true,
           });
-          const bytes = deferredFont;
-          deferredFont = null;
+          const bytes = takeDeferredFont();
           if (bytes !== null) {
             queuePaint(ordinal, {
               gpuOp: "accel",

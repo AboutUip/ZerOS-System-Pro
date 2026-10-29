@@ -28,6 +28,6 @@ node ZerOS-PRO/Hardware/Nas/Server/check.mjs
 
 ## Obr
 
-`import obr.nas;` 的函数头在 `Compiler/Obr/lib/obr.nas.mr`，函数体在旁边的 `obr.nas.obr`。编译时要把这个 `.obr` 和程序放在一起，并让 `board.mr`、`memory.mr` 处在搜索路径里。库内部通过 `xchg` 组 ZNP1 的字，再由插头经 WebSocket 询问参考服务。`Exec` 之后的拉回缓冲用 `fill` 一次写到位元线。客程序看不见 URL。
+`import obr.nas;` 的函数头在 `Compiler/ObrCompiler/lib/obr.nas.mr`，函数体在旁边的 `obr.nas.obr`。编译时要把这个 `.obr` 和程序放在一起，并让 `board.mr`、`memory.mr` 处在搜索路径里。库内部通过 `xchg` 组 ZNP1 的字，再由插头经 WebSocket 询问参考服务。`Exec` 之后的拉回缓冲用 `fill` 一次写到位元线。客程序看不见 URL。
 
 官方库使用扩展口 `2`。路径是 `string`。读写缓冲区是线性位地址，相邻八位组相隔 8 位，没有字符串那种 64 位长度头。一次读取从 262144 个八位组起，搬满则加倍，最多 268435456。对象更短就一次读完。返回值是 ZNP1 状态，`0` 是成功。

@@ -40,12 +40,12 @@ export namespace ZerOS {
        * 前一个等待就收不到回复，写终端的系统调用会空等直到超时，目录已经画出来，提示符却不回来。
        * 这里改成一条监听、一队等待。回复交给第一个认领它的等待，别的等待继续留着。
        */
-      type GpuWaiter = {
+      interface GpuWaiter {
         accept: (record: Record<string, unknown>) => boolean;
         resolve: (record: Record<string, unknown>) => void;
         reject: (error: Error) => void;
         timer: number;
-      };
+      }
 
       const gpuWaiters: GpuWaiter[] = [];
       let gpuHooked = false;

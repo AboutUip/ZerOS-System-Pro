@@ -147,7 +147,7 @@ else
     echo "compiler build/test failed; retrying without ctest"
     bash build.sh --no-test || die "compiler build failed"
   fi
-  require_exec "$SRC/Compiler/Obr/obrc"
+  require_exec "$SRC/Compiler/ObrCompiler/obrc"
 
   # Browser app and firmware. If the checked build fails, fall back to a plain
   # Vite build so a type/lint regression does not make the whole installer fail.
@@ -294,7 +294,7 @@ bad() { note "FAIL $*"; fail=1; }
 [ -s /opt/zeros/web/index.html ] && ok web-files || bad web-files
 [ -s /opt/zeros/nas/Root/kernel/start ] && ok kernel-files || bad kernel-files
 if [ -d /opt/zeros-src ]; then
-  [ -x /opt/zeros-src/Compiler/Obr/obrc ] && ok obrc || bad obrc
+  [ -x /opt/zeros-src/Compiler/ObrCompiler/obrc ] && ok obrc || bad obrc
 fi
 
 if nginx -t >> "$LOG" 2>&1; then ok nginx-config; else bad nginx-config; fi
@@ -497,7 +497,7 @@ update-grub
 require_file /opt/zeros/web/index.html
 require_file /opt/zeros/nas/Root/kernel/start
 if [ -z "$FAST_PAYLOAD" ]; then
-  require_exec /opt/zeros-src/Compiler/Obr/obrc
+  require_exec /opt/zeros-src/Compiler/ObrCompiler/obrc
 fi
 nginx -t || die "nginx check failed"
 

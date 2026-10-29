@@ -85,9 +85,9 @@ function findCompiler(folders) {
   const names = ["obrc.exe", "obrc"];
   for (const folder of folders || []) {
     for (const name of names) {
-      const candidate = path.join(folder.uri.fsPath, "Compiler", "Obr", name);
+      const candidate = path.join(folder.uri.fsPath, "Compiler", "ObrCompiler", name);
       if (fs.existsSync(candidate)) return candidate;
-      const built = path.join(folder.uri.fsPath, "Compiler", "Obr", "build", name);
+      const built = path.join(folder.uri.fsPath, "Compiler", "ObrCompiler", "build", name);
       if (fs.existsSync(built)) return built;
     }
   }

@@ -104,10 +104,10 @@ build_payload() {
     --exclude='./Toolchain/Dist' \
     --exclude='./Toolchain/Zap' \
     --exclude='./ZerOS-PRO/Hardware/Nas/Root' \
-    --exclude='./Compiler/Obr/build' \
+    --exclude='./Compiler/ObrCompiler/build' \
     --exclude='./Compiler/BuildSystem/build' \
     --exclude='./Compiler/BuildSystem/out' \
-    --exclude='./Compiler/Obr/obrc' \
+    --exclude='./Compiler/ObrCompiler/obrc' \
     --exclude='*.exe' --exclude='*.o' --exclude='*.obj' \
     --exclude='*.zap' --exclude='*.pdb' --exclude='*.ilk' \
     --exclude='*.exp' --exclude='*.vsix' \

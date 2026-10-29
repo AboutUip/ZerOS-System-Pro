@@ -53,15 +53,15 @@ try {
     }
   }
 
-  $artifact = Join-Path $here '../Obr/obrc.exe'
+  $artifact = Join-Path $here '../ObrCompiler/obrc.exe'
   if (-not (Test-Path $artifact)) {
-    throw "obrc.exe was not produced at ../Obr/obrc.exe"
+    throw "obrc.exe was not produced at ../ObrCompiler/obrc.exe"
   }
 
   Write-Host ''
   Write-Host "Preset:  $Preset"
   Write-Host "Build:   build/$Preset"
-  Write-Host 'obrc:    ../Obr/obrc.exe'
+  Write-Host 'obrc:    ../ObrCompiler/obrc.exe'
 }
 finally {
   Pop-Location

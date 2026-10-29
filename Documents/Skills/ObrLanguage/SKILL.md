@@ -1,12 +1,12 @@
 ---
 name: obr-language
 description: >-
-  维护 ZerOS Obr 方言的语法规则。改 Compiler/Obr 的词法、语法、语义或可接受的语言表面时必须同步本技能；编写或审查 .obr、.mr、类、继承、for、async、import、@Callfun、array、list、set、map 时也要先读本技能。Objective-R 原仓库只作背景，冲突时以本技能和 Compiler/Obr 为准。
+  维护 ZerOS Obr 方言的语法规则。改 Compiler/ObrCompiler 的词法、语法、语义或可接受的语言表面时必须同步本技能；编写或审查 .obr、.mr、类、继承、for、async、import、@Callfun、array、list、set、map 时也要先读本技能。Objective-R 原仓库只作背景，冲突时以本技能和 Compiler/ObrCompiler 为准。
 ---
 
 # Obr 语法
 
-本技能是这份仓库里 Obr 的语法规则。实现在 `Compiler/Obr`。`Compiler/Obr/README.md` 给人读，必须和本技能同一版。
+本技能是这份仓库里 Obr 的语法规则。实现在 `Compiler/ObrCompiler`。`Compiler/ObrCompiler/README.md` 给人读，必须和本技能同一版。
 
 Objective-R 原仓库太远，不作为本方言的权威。那里的草案和本技能冲突时，改这里的编译器与本技能，不要把草案抄进来。
 
@@ -14,11 +14,11 @@ Objective-R 原仓库太远，不作为本方言的权威。那里的草案和�
 
 语言表面一变，同一次修改里做完这三步：
 
-1. 改 `Compiler/Obr` 里对应的词法、语法或语义。
+1. 改 `Compiler/ObrCompiler` 里对应的词法、语法或语义。
 2. 改本技能，写清现在接受什么、拒绝什么、运行时实际做什么。
-3. 改 `Compiler/Obr/README.md` 的「这一版接受」或「还没有」，使两处说法一致。
+3. 改 `Compiler/ObrCompiler/README.md` 的「这一版接受」或「还没有」，使两处说法一致。
 
-不要只改编译器。不要只改技能。新增行为要用 `Compiler/Obr` 下的 `obrc` 编一个例子；会改变运行结果时，把编出的 `.zap` 送进沙盒跑完，并核对 `r0`。
+不要只改编译器。不要只改技能。新增行为要用 `Compiler/ObrCompiler` 下的 `obrc` 编一个例子；会改变运行结果时，把编出的 `.zap` 送进沙盒跑完，并核对 `r0`。
 
 `import` 只决定编译期能不能看见某个名字。它不是权限。CPU 不读源文件里的 `import`。
 

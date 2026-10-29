@@ -210,14 +210,13 @@ export namespace ZerOS {
       }
 
       function readOctetNumber(port: NativeOctetPort, bit: number): number | null {
-        const load = port.loadNumber;
-        if (load === undefined) {
+        if (port.loadNumber === undefined) {
           return readOctet(port, BigInt(bit));
         }
         if (bit < 0 || (bit & 7) !== 0 || bit + 8 > Number(port.limitBit)) {
           return null;
         }
-        const value = load(bit);
+        const value = port.loadNumber(bit);
         if (!Number.isInteger(value) || value < 0 || value > 255) {
           return null;
         }
@@ -225,8 +224,7 @@ export namespace ZerOS {
       }
 
       function readImm(port: NativeOctetPort, bit: bigint, count: number): bigint | null {
-        const load = port.loadNumber;
-        if (load !== undefined) {
+        if (port.loadNumber !== undefined) {
           let cursor = Number(bit);
           let value = 0n;
           for (let index = 0; index < count; index += 1) {

@@ -325,9 +325,6 @@ export namespace ZerOS {
         if (record === null) {
           return;
         }
-        const boardKind = readKind(record);
-        if (boardKind !== null) {
-        }
         if (readKind(record) === MailMessage.Run) {
           onRun(record);
           return;

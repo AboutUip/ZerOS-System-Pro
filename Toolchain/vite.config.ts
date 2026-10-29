@@ -84,7 +84,7 @@ const firmwareResolved = "\0zeros-boot-firmware";
  */
 function hostCompilerPath(): string {
   const fileName = process.platform === "win32" ? "obrc.exe" : "obrc";
-  return path.resolve(repoRoot, "Compiler/Obr", fileName);
+  return path.resolve(repoRoot, "Compiler/ObrCompiler", fileName);
 }
 
 /**
@@ -114,8 +114,8 @@ function obrFirmwarePlugin(): Plugin {
         path.resolve(productRoot, "Boot/Bios.obr"),
         path.resolve(productRoot, "Boot/Clear.obr"),
         path.resolve(repoRoot, "Driver/Pointer/pointer.obr"),
-        path.resolve(repoRoot, "Compiler/Obr/lib/obr.widget.obr"),
-        path.resolve(repoRoot, "Compiler/Obr/lib/obr.nas.obr"),
+        path.resolve(repoRoot, "Compiler/ObrCompiler/lib/obr.widget.obr"),
+        path.resolve(repoRoot, "Compiler/ObrCompiler/lib/obr.nas.obr"),
         path.resolve(repoRoot, "Driver/Display/panel.obr"),
         gpuDriver,
       ],
@@ -130,7 +130,7 @@ function obrFirmwarePlugin(): Plugin {
     {
       sources: [
         path.resolve(productRoot, "Boot/Load.obr"),
-        path.resolve(repoRoot, "Compiler/Obr/lib/obr.nas.obr"),
+        path.resolve(repoRoot, "Compiler/ObrCompiler/lib/obr.nas.obr"),
       ],
       output: path.resolve(outputDir, "Load"),
       exportName: "loadProgram",
@@ -141,7 +141,7 @@ function obrFirmwarePlugin(): Plugin {
   const compile = (): void => {
     const compiler = hostCompilerPath();
     if (!existsSync(compiler)) {
-      throw new Error(`找不到宿主编译器 ${compiler}。请在当前系统用 C++20 编译 Compiler/Obr。`);
+      throw new Error(`找不到宿主编译器 ${compiler}。请在当前系统用 C++20 编译 Compiler/ObrCompiler。`);
     }
     mkdirSync(outputDir, { recursive: true });
     for (const job of jobs) {
@@ -243,7 +243,7 @@ function obrFirmwarePlugin(): Plugin {
     configureServer(server): void {
       compile();
       const watched = jobs.flatMap((job): readonly string[] => job.sources);
-      watched.push(path.resolve(gpuHeader, "gpu.mr"), path.resolve(driverHeader, "gl.mr"), path.resolve(boardHeader, "board.mr"), path.resolve(memoryHeader, "memory.mr"), path.resolve(productRoot, "Boot/firmware.mr"), path.resolve(repoRoot, "Compiler/Obr/lib/obr.widget.mr"));
+      watched.push(path.resolve(gpuHeader, "gpu.mr"), path.resolve(driverHeader, "gl.mr"), path.resolve(boardHeader, "board.mr"), path.resolve(memoryHeader, "memory.mr"), path.resolve(productRoot, "Boot/firmware.mr"), path.resolve(repoRoot, "Compiler/ObrCompiler/lib/obr.widget.mr"));
       server.watcher.add(watched);
     },
     resolveId(id: string): string | null {

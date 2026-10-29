@@ -120,6 +120,11 @@ export namespace ZerOS {
         return data as Record<string, unknown>;
       }
 
+      /** Array.isArray 的元素是 any。收成 unknown 之后再按字段辨认，避免把 any 传进后面的判断。 */
+      function isUnknownList(value: unknown): value is readonly unknown[] {
+        return Array.isArray(value);
+      }
+
       function waitMessage(
         worker: Worker,
         accept: (record: Record<string, unknown>) => boolean,
@@ -191,7 +196,7 @@ export namespace ZerOS {
        */
       function acceptSpanCap(data: unknown): void {
         const record = asRecord(data);
-        if (record === null || record["kind"] !== "span-cap") {
+        if (record?.["kind"] !== "span-cap") {
           return;
         }
         const bytes = record["bytes"];
@@ -835,9 +840,6 @@ export namespace ZerOS {
 
       function onCoreExec(port: MessagePort, data: unknown): void {
         const record = asRecord(data);
-        const arrived = record?.["kind"];
-        if (typeof arrived === "string") {
-        }
         if (record?.["kind"] === "inbox") {
           const word = pullInbox();
           port.postMessage({
@@ -890,7 +892,7 @@ export namespace ZerOS {
         if (record?.["kind"] === "store-spans") {
           const addresses = record["addresses"];
           const parts = record["parts"];
-          if (!Array.isArray(addresses) || !Array.isArray(parts) || addresses.length !== parts.length || addresses.length < 2 || addresses.length > 128) {
+          if (!isUnknownList(addresses) || !isUnknownList(parts) || addresses.length !== parts.length || addresses.length < 2 || addresses.length > 128) {
             port.postMessage({ kind: "store-spans-result", ok: false, message: `${seatPrefix} native store failed` });
             return;
           }
@@ -905,10 +907,8 @@ export namespace ZerOS {
             runs.push({ address, bytes });
           }
           void (async (): Promise<void> => {
-            let octets = 0;
             try {
               for (const run of runs) {
-                octets += run.bytes.length;
                 await demandBytes(run.address, run.bytes.length);
                 sharedMemoryLink().writeSpan(run.address, run.bytes);
                 noteDebugSpan(run.address, run.bytes);

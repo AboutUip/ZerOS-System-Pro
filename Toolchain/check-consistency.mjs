@@ -28,10 +28,10 @@ function mentions(text, id) {
 
 /** Cursor 路径只是本地联接。左边是仓库里维护的那一份。 */
 const cursorLinks = [
-  ["Documents/SKILLS/ProtocolDocumentAuthoring", ".cursor/skills/protocol-document-authoring"],
-  ["Documents/SKILLS/CodingStandards", ".cursor/skills/coding-standards"],
-  ["Documents/SKILLS/ObrLanguage", ".cursor/skills/obr-language"],
-  ["Documents/RULES", ".cursor/rules"],
+  ["Documents/Skills/ProtocolDocumentAuthoring", ".cursor/skills/protocol-document-authoring"],
+  ["Documents/Skills/CodingStandards", ".cursor/skills/coding-standards"],
+  ["Documents/Skills/ObrLanguage", ".cursor/skills/obr-language"],
+  ["Documents/Rules", ".cursor/rules"],
 ];
 
 function syncCursorLinks() {
@@ -135,10 +135,10 @@ function checkProtocols() {
 }
 
 function checkCompilerOutput() {
-  const cmake = readText("Compiler/Obr/CMakeLists.txt");
+  const cmake = readText("Compiler/ObrCompiler/CMakeLists.txt");
   const vite = readText("Toolchain/vite.config.ts");
-  if (!vite.includes('path.resolve(repoRoot, "Compiler/Obr", fileName)')) {
-    fail("vite.config.ts 不再从 Compiler/Obr 读取 obrc");
+  if (!vite.includes('path.resolve(repoRoot, "Compiler/ObrCompiler", fileName)')) {
+    fail("vite.config.ts 不再从 Compiler/ObrCompiler 读取 obrc");
   }
   const configs = ["", "_DEBUG", "_RELEASE", "_RELWITHDEBINFO", "_MINSIZEREL"];
   for (const config of configs) {
@@ -150,7 +150,7 @@ function checkCompilerOutput() {
 }
 
 function checkExamples() {
-  const dir = path.join(repoRoot, "Compiler/Obr/examples");
+  const dir = path.join(repoRoot, "Compiler/ObrCompiler/examples");
   if (existsSync(path.join(dir, "ui-meter-bad.obr"))) {
     fail("ui-meter-bad.obr 仍在。运行时失败的例子不能使用 bad- 前缀");
   }

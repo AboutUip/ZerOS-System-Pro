@@ -120,10 +120,10 @@ build_source() {
     --exclude='./Toolchain/Dist' \
     --exclude='./Toolchain/Zap' \
     --exclude='./ZerOS-PRO/Hardware/Nas/Root' \
-    --exclude='./Compiler/Obr/build' \
+    --exclude='./Compiler/ObrCompiler/build' \
     --exclude='./Compiler/BuildSystem/build' \
     --exclude='./Compiler/BuildSystem/out' \
-    --exclude='./Compiler/Obr/obrc' \
+    --exclude='./Compiler/ObrCompiler/obrc' \
     --exclude='*.exe' \
     --exclude='*.o' \
     --exclude='*.obj' \
@@ -145,7 +145,7 @@ tar -tzf "$SRC_TAR" > "$SRC_LIST" || die "could not list source archive"
 for path in \
   ./Compiler/BuildSystem/Installer/target-install.sh \
   ./Compiler/BuildSystem/build.sh \
-  ./Compiler/Obr/src/obrc.cpp \
+  ./Compiler/ObrCompiler/src/obrc.cpp \
   ./ZerOS-PRO/Hardware/Nas/Server/build-guest.mjs \
   ./ZerOS-PRO/Resource/Bin/pwd.obr \
   ./ZerOS-PRO/Resource/Font/sarasa-mono-sc.ttf \
@@ -158,7 +158,7 @@ for path in \
 done
 
 if grep -qE \
-    '(^|/)node_modules/|^\./ZerOS-PRO/Hardware/Nas/Root/|^\./Toolchain/(Dist|Zap)/|^\./Compiler/Obr/build/|^\./Compiler/BuildSystem/(build|out)/|^\./Compiler/BuildSystem/Installer/(work|out)/' \
+    '(^|/)node_modules/|^\./ZerOS-PRO/Hardware/Nas/Root/|^\./Toolchain/(Dist|Zap)/|^\./Compiler/ObrCompiler/build/|^\./Compiler/BuildSystem/(build|out)/|^\./Compiler/BuildSystem/Installer/(work|out)/' \
     "$SRC_LIST"; then
   die "source archive contains ignored build output"
 fi

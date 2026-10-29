@@ -84,7 +84,7 @@ export namespace ZerOS {
        */
       export function openBoardWorker(): Worker {
         /* 查询用来躲开上一次主板线程的模块缓存。改了座位上的搬运就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("./BoardDispatch.ts")}?board=21`;
+        const moduleUrl = `${resolveModuleUrl("./BoardDispatch.ts")}?board=22`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Motherboard.acceptBoardMessage",
@@ -108,7 +108,7 @@ export namespace ZerOS {
       /** 打开 CPU 主体线程。核心 Worker 另开，不在这里创建。 */
       export function openCpuWorker(): Worker {
         /* 查询只用来躲开浏览器对上一次核心图的缓存。改了 CpuDispatch 的依赖就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=79`;
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=80`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCpuMessage",
@@ -119,7 +119,7 @@ export namespace ZerOS {
       /** 打开一个核心线程。主板每挂载一个核心调用一次。 */
       export function openCoreWorker(): Worker {
         /* 和 CPU 主体一样，查询用来躲开上一次核心线程的模块缓存。 */
-        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts")}?core=14`;
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts")}?core=15`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCoreMessage",
@@ -130,7 +130,7 @@ export namespace ZerOS {
       /** 打开显卡线程。帧存储在那条线程里，不在主板线程里。 */
       export function openGpuWorker(): Worker {
         /* 查询用来躲开上一次显卡线程的模块缓存。改了呈现记账就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("../../Gpu/Host/GpuDispatch.ts")}?gpu=8`;
+        const moduleUrl = `${resolveModuleUrl("../../Gpu/Host/GpuDispatch.ts")}?gpu=9`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Gpu.acceptGpuMessage",

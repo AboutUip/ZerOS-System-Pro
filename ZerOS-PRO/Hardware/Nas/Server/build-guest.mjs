@@ -17,8 +17,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../../../..");
 const product = path.resolve(repo, "ZerOS-PRO");
 const root = path.resolve(here, "../Root");
-const compiler = path.resolve(repo, "Compiler/Obr", process.platform === "win32" ? "obrc.exe" : "obrc");
-const lib = path.resolve(repo, "Compiler/Obr/lib");
+const compiler = path.resolve(repo, "Compiler/ObrCompiler", process.platform === "win32" ? "obrc.exe" : "obrc");
+const lib = path.resolve(repo, "Compiler/ObrCompiler/lib");
 const memory = path.resolve(product, "Hardware/Memory");
 const board = path.resolve(product, "Hardware/Motherboard");
 

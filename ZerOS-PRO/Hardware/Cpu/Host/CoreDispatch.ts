@@ -110,6 +110,11 @@ export namespace ZerOS {
         return data as Record<string, unknown>;
       }
 
+      /** Array.isArray 的元素是 any。收成 unknown 之后再按字段辨认，避免把 any 传进后面的判断。 */
+      function isUnknownList(value: unknown): value is readonly unknown[] {
+        return Array.isArray(value);
+      }
+
       let quiet = false;
       let quietFault = "";
       let program: readonly Record<string, unknown>[] | null = null;
@@ -3119,7 +3124,13 @@ export namespace ZerOS {
           depositParts = null;
           depositAddresses = null;
           const storedOk = record?.["ok"] !== false;
-          if (!storedOk || parts === null || addresses === null || parts.length !== addresses.length) {
+          if (!storedOk || parts === null || addresses === null) {
+            keepOnStore = false;
+            const storedMessage = record?.["message"];
+            finishDeposit(false, typeof storedMessage === "string" ? storedMessage : `${corePrefix} native store failed`);
+            return;
+          }
+          if (parts.length !== addresses.length) {
             keepOnStore = false;
             const storedMessage = record?.["message"];
             finishDeposit(false, typeof storedMessage === "string" ? storedMessage : `${corePrefix} native store failed`);
@@ -4641,7 +4652,7 @@ export namespace ZerOS {
         addresses: unknown,
         parts: unknown,
       ): { readonly addresses: bigint[]; readonly parts: Uint8Array[] } | null {
-        if (!Array.isArray(addresses) || !Array.isArray(parts) || addresses.length !== parts.length) {
+        if (!isUnknownList(addresses) || !isUnknownList(parts) || addresses.length !== parts.length) {
           return null;
         }
         if (addresses.length < 2 || addresses.length > 128) {

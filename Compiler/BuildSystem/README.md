@@ -1,12 +1,12 @@
 # Compiler BuildSystem
 
-`Compiler/Obr` 的宿主编译器构建入口，以及 ISO 安装盘构建。构建相关的东西都收在这里；语言编译器源码仍在 `../Obr`，不在这里改。
+`Compiler/ObrCompiler` 的宿主编译器构建入口，以及 ISO 安装盘构建。构建相关的东西都收在这里；语言编译器源码仍在 `../ObrCompiler`，不在这里改。
 
 ## 边界
 
-- `../Obr` 的源码和 `CMakeLists.txt` 保持原样。
+- `../ObrCompiler` 的源码和 `CMakeLists.txt` 保持原样。
 - CMake 生成物只在 `build/<preset>/`。
-- `obrc` 仍按仓库既有约定写到 `../Obr/obrc.exe`（Linux 是 `../Obr/obrc`），因为 `vite.config.ts` 固定从这个位置取编译器。
+- `obrc` 仍按仓库既有约定写到 `../ObrCompiler/obrc.exe`（Linux 是 `../ObrCompiler/obrc`），因为 `vite.config.ts` 固定从这个位置取编译器。
 - `native-encode-check` 和冒烟测试产物留在 `build/<preset>/`。
 - ISO 安装盘在 `Installer/`：构建脚本、preseed、目标安装脚本；`Installer/work/` 和 `Installer/out/` 是生成物。
 
@@ -45,7 +45,7 @@ Linux / WSL：
 ```text
 Preset:  windows-mingw
 Build:   build/windows-mingw
-obrc:    ../Obr/obrc.exe
+obrc:    ../ObrCompiler/obrc.exe
 ```
 
 ## 选项
@@ -57,7 +57,7 @@ obrc:    ../Obr/obrc.exe
 | 丢弃 CMake 缓存后重新配置 | `-Fresh` | `--fresh` |
 | 只构建，不跑测试 | `-NoTest` | `--no-test` |
 
-`-Clean` / `--clean` 只删除 `build/<preset>/`，不会碰 `../Obr` 源码。
+`-Clean` / `--clean` 只删除 `build/<preset>/`，不会碰 `../ObrCompiler` 源码。
 
 ## 预设
 
@@ -71,11 +71,11 @@ obrc:    ../Obr/obrc.exe
 ## 测试
 
 - `native-encode-check`：原生编码样例自检。
-- `obrc-smoke`：实际编译 `../Obr/examples/arith.obr`，确认能产出程序映像。
+- `obrc-smoke`：实际编译 `../ObrCompiler/examples/arith.obr`，确认能产出程序映像。
 
 ## 不使用绝对路径
 
 - 脚本用 `$PSScriptRoot` / `dirname` 定位自己。
-- CMake 用 `../Obr` 和 `${sourceDir}` 宏。
+- CMake 用 `../ObrCompiler` 和 `${sourceDir}` 宏。
 - 编译器从 `PATH` 找 `c++.exe` / `c++`。
 - `windows-mingw` 把 `TMP` / `TEMP` 指向 `build/`，避开中文用户名路径导致的 MinGW 汇编临时文件失败。

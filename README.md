@@ -21,11 +21,13 @@ ZerOS-System-Pro/
 │       ├── Cpu/  Gpu/  Memory/
 │       ├── Display/  Keyboard/  Pointer/  Sandbox/  Nas/
 ├── Driver/                   # Display、Gpu、Pointer。默认宽高在 Display/panel
-├── Compiler/Obr/             # 宿主编译器，.obr → ZAP
+├── Compiler/ObrCompiler/     # 宿主编译器，.obr → ZAP
+├── Compiler/ObrExtension/    # 编辑器扩展，.obr / .mr / .zap
 ├── Toolchain/                # Vite、TypeScript、ESLint；不放产品源码
 └── Documents/
     ├── Protocol/             # 对外协议，兼容性权威
-    └── SKILLS/               # 协议写作与编码规范的技能源
+    ├── Rules/                # 预览、内核语言、引导失败说明
+    └── Skills/               # 协议写作、编码规范与 Obr 语法
 ```
 
 各硬件目录里的 `Docs/` 只描述这一份官方实现。`ActiveProvider/` 是当前插头，换实现只换这个目录。
@@ -41,11 +43,11 @@ npm run dev
 
 页面只开 [http://localhost:5173/](http://localhost:5173/)。Vite 锁死这个端口；端口被占用时先结束占用进程，再启动，不要改到别的端口。
 
-开发服会调用本机的宿主编译器。需要 C++20。Windows 上是 `Compiler/Obr/obrc.exe`，其它系统是 `Compiler/Obr/obrc`。CMake 把这个可执行文件直接写到 `Compiler/Obr/`，不写进 `build/` 子目录。先编出这个文件，再启动预览。
+开发服会调用本机的宿主编译器。需要 C++20。Windows 上是 `Compiler/ObrCompiler/obrc.exe`，其它系统是 `Compiler/ObrCompiler/obrc`。CMake 把这个可执行文件直接写到 `Compiler/ObrCompiler/`，不写进 `build/` 子目录。先编出这个文件，再启动预览。
 
 ```bash
-cmake -S Compiler/Obr -B Compiler/Obr/build
-cmake --build Compiler/Obr/build
+cmake -S Compiler/ObrCompiler -B Compiler/ObrCompiler/build
+cmake --build Compiler/ObrCompiler/build
 ```
 
 | 命令 | 作用 |
@@ -86,7 +88,8 @@ cmake --build Compiler/Obr/build
 | CPU / GPU / 内存 | 同名目录 | 官方插头在各自的 `ActiveProvider/` |
 | 显示器 / 键盘 / 鼠标 / 沙盒 / NAS | 同名目录 | 显示器不经插座；键盘、鼠标、沙盒和 NAS 坐在扩展口上。NAS 进程要单独启动 |
 | 驱动 | `Driver/` | 显示器默认宽高在 `Display/panel`。`Gpu/` 是固件调用的 OpenGL 切片 |
-| 语言 | `Compiler/Obr/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。语法见 [编译器说明](./Compiler/Obr/README.md) |
+| 语言 | `Compiler/ObrCompiler/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。语法见 [编译器说明](./Compiler/ObrCompiler/README.md) |
+| 编辑器 | `Compiler/ObrExtension/` | `.obr`、`.mr`、`.zap` 的着色和诊断。诊断调用旁边的 `obrc` |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
 | 系统 | `System/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`Shell/sh.obr` 客路径 `/os/sh`。`Bin/` 编成 `/bin`，第一条是 `pwd` |
 
@@ -104,12 +107,12 @@ NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO
 
 | 技能 | 权威源 | 用来 |
 |------|--------|------|
-| 协议文档 | [Documents/SKILLS](./Documents/SKILLS/README.md) | 写和审 `Documents/Protocol/` |
+| 协议文档 | [Documents/Skills](./Documents/Skills/README.md) | 写和审 `Documents/Protocol/` |
 | 编码规范 | 同上 | 写 `ZerOS-PRO/` |
-| Obr 语法 | [Documents/SKILLS/ObrLanguage](./Documents/SKILLS/ObrLanguage/SKILL.md) | 改编译器表面，或写 `.obr` / `.mr` |
-| 项目规则 | [Documents/RULES](./Documents/RULES/) | 预览端口、内核语言、引导失败说明 |
+| Obr 语法 | [Documents/Skills/ObrLanguage](./Documents/Skills/ObrLanguage/SKILL.md) | 改编译器表面，或写 `.obr` / `.mr` |
+| 项目规则 | [Documents/Rules](./Documents/Rules/) | 预览端口、内核语言、引导失败说明 |
 
-Cursor 从 `.cursor/skills/` 和 `.cursor/rules/` 加载。这两处是本地链接，正文只在 `Documents/SKILLS/` 和 `Documents/RULES/`。克隆后在 `Toolchain` 执行 `npm run skills:sync` 接上链接。`npm test` 确认链接指向这两处。
+Cursor 从 `.cursor/skills/` 和 `.cursor/rules/` 加载。这两处是本地链接，正文只在 `Documents/Skills/` 和 `Documents/Rules/`。克隆后在 `Toolchain` 执行 `npm run skills:sync` 接上链接。`npm test` 确认链接指向这两处。
 
 ## 相关链接
 

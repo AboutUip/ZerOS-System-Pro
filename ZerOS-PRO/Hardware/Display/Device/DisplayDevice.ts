@@ -116,10 +116,7 @@ export namespace ZerOS {
         /** 方标已经交接给终端或设置画面。 */
         private settled = false;
 
-        /** 只用来抽样即将贴上的位图。主画布保持硬件加速，避免每一帧整幅读回。 */
-        private eye: HTMLCanvasElement | null = null;
-
-        /** 抽样画布的上下文。按频繁读回创建，读到的是刚画上的那一格。 */
+        /** 抽样画布的上下文。按频繁读回创建，读到的是刚画上的那一格。画布由这个上下文留着。 */
         private eyeContext: CanvasRenderingContext2D | null = null;
 
         /** 当前宽度。 */
@@ -319,7 +316,6 @@ export namespace ZerOS {
           if (context === null) {
             return null;
           }
-          this.eye = canvas;
           this.eyeContext = context;
           return context;
         }

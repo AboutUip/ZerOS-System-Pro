@@ -1,6 +1,6 @@
 /**
  * ZNB1 原生映像。魔数 5A 4E 42 31。
- * 编码和 Compiler/Obr/src/image/NativeImage.cpp 一致：
+ * 编码和 Compiler/ObrCompiler/src/image/NativeImage.cpp 一致：
  * 入口 10 个八位组把 rsp 设到界面区，随后是已登记的原生指令。
  * 文本寄存器 r0–r7 对应 rax、rdi、rsi、rdx、rcx、r8、r9、r10。
  */
