@@ -27,6 +27,7 @@ import { ZerOS as GpuSeatRoot } from "../Seat/GpuSeat";
 import { ZerOS as MemorySeatRoot } from "../Seat/MemorySeat";
 import { ZerOS as BoardSelfCheckRoot } from "../Test/BoardSelfCheck";
 import { ZerOS as ClockRoot } from "../../Clock/Bootstrap/HostClock";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -43,19 +44,28 @@ export namespace ZerOS {
         if (seated) {
           return;
         }
+        const markBoot = BootTraceRoot.Hardware.Debug.markBoot;
+        /* 每一段结束再打点。差值就是这一段自己的耗时，不含下一段。 */
+        markBoot("board");
         ClockRoot.Hardware.Clock.startClock();
         QueryRoot.Hardware.Motherboard.openQueryPage();
         BoardSelfCheckRoot.Hardware.Motherboard.runBoardSelfCheck();
         await GpuSeatRoot.Hardware.Motherboard.seatGpu();
+        markBoot("gpu");
         await CpuSeatRoot.Hardware.Motherboard.seatCpu();
+        markBoot("cpu");
         await MemorySeatRoot.Hardware.Motherboard.seatMemory();
+        markBoot("memory");
         if (logo instanceof Uint8Array) {
           await CpuSeatRoot.Hardware.Motherboard.runInstructionBinary(logo);
         } else {
           await CpuSeatRoot.Hardware.Motherboard.runInstructionLines(logo);
         }
+        markBoot("logo");
         await CpuSeatRoot.Hardware.Motherboard.probeCpu();
+        markBoot("probe");
         ExpansionSeatRoot.Hardware.Motherboard.bootExpansionPorts();
+        markBoot("ports");
         seated = true;
       }
     }

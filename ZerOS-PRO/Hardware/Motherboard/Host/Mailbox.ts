@@ -125,6 +125,11 @@ export namespace ZerOS {
         DebugRun: "debug-run",
         /** 固件把调试开关写成 0 或 1。页面据此挂上或摘掉入口，并写入 /boot/debug。不是协议字段。 */
         DebugSwitch: "debug-switch",
+        /**
+         * 引导阶段打点。name 是阶段名，at 是宿主绝对毫秒。
+         * 只在主板线程和页面之间走，客程序看不见。不是协议字段。
+         */
+        BootMark: "boot-mark",
         /** 上一次调试运行的结果。开关关闭时不会出现。 */
         DebugResult: "debug-run-result",
         /**

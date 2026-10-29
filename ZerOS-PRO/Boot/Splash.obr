@@ -1,0 +1,123 @@
+/* 加载画面。四块方标和一段拖影。
+   不管 Starting 的字，不管设置页。6080 和 6144 的含义记在 Bios.obr。 */
+import firmware;
+import obr.ui;
+
+/* 圆周上 24 个整点，半径 14。相邻两点靠得比笔触窄，叠起来是一段实心弧，不是散点。 */
+deRfun orbit(long slot, long* dx, long* dy): void {
+  long turn = slot;
+  if (turn < 0L) {
+    turn = 0L;
+  }
+  if (turn > 23L) {
+    turn = 23L;
+  }
+  if (turn == 0L) { *dx = 14L; *dy = 0L; }
+  else if (turn == 1L) { *dx = 14L; *dy = 4L; }
+  else if (turn == 2L) { *dx = 12L; *dy = 7L; }
+  else if (turn == 3L) { *dx = 10L; *dy = 10L; }
+  else if (turn == 4L) { *dx = 7L; *dy = 12L; }
+  else if (turn == 5L) { *dx = 4L; *dy = 14L; }
+  else if (turn == 6L) { *dx = 0L; *dy = 14L; }
+  else if (turn == 7L) { *dx = 0L - 4L; *dy = 14L; }
+  else if (turn == 8L) { *dx = 0L - 7L; *dy = 12L; }
+  else if (turn == 9L) { *dx = 0L - 10L; *dy = 10L; }
+  else if (turn == 10L) { *dx = 0L - 12L; *dy = 7L; }
+  else if (turn == 11L) { *dx = 0L - 14L; *dy = 4L; }
+  else if (turn == 12L) { *dx = 0L - 14L; *dy = 0L; }
+  else if (turn == 13L) { *dx = 0L - 14L; *dy = 0L - 4L; }
+  else if (turn == 14L) { *dx = 0L - 12L; *dy = 0L - 7L; }
+  else if (turn == 15L) { *dx = 0L - 10L; *dy = 0L - 10L; }
+  else if (turn == 16L) { *dx = 0L - 7L; *dy = 0L - 12L; }
+  else if (turn == 17L) { *dx = 0L - 4L; *dy = 0L - 14L; }
+  else if (turn == 18L) { *dx = 0L; *dy = 0L - 14L; }
+  else if (turn == 19L) { *dx = 4L; *dy = 0L - 14L; }
+  else if (turn == 20L) { *dx = 7L; *dy = 0L - 12L; }
+  else if (turn == 21L) { *dx = 10L; *dy = 0L - 10L; }
+  else if (turn == 22L) { *dx = 12L; *dy = 0L - 7L; }
+  else { *dx = 14L; *dy = 0L - 4L; }
+}
+
+/* 从尾画到头。每颗都盖住前一颗的边，透明度往后收，连成一段拖影。头在最上面。 */
+deRfun smear(long cx, long cy, long head, long fade): void {
+  if (fade < 1L) {
+    return;
+  }
+  long ink = obr::ui::rgb(236L, 242L, 248L);
+  long step = 9L;
+  while (step >= 0L) {
+    long slot = head - step;
+    if (slot < 0L) {
+      slot = slot + 24L;
+    }
+    long dx = 0L;
+    long dy = 0L;
+    orbit(slot, &dx, &dy);
+    /* 靠近头的几颗全不透明，叠成实心。再往后才收成拖影。 */
+    long alpha = 255L;
+    if (step > 2L) {
+      alpha = obr::ui::ease(255L, 0L, step - 2L, 7L);
+    }
+    alpha = alpha * fade / 255L;
+    if (alpha > 0L) {
+      obr::ui::ellipse(cx + dx - 4L, cy + dy - 4L, 8L, 8L, ink, alpha);
+    }
+    step = step - 1L;
+  }
+}
+
+/* 四块同样的蓝色圆角方标，中间留一道缝。alpha 用来做淡入。 */
+deRfun panes(long left, long top, long alpha): void {
+  if (alpha < 1L) {
+    return;
+  }
+  long blue = obr::ui::rgb(0L, 120L, 212L);
+  long n = 26L;
+  long jump = 34L;
+  obr::ui::round(left, top, n, n, 3L, blue, alpha);
+  obr::ui::round(left + jump, top, n, n, 3L, blue, alpha);
+  obr::ui::round(left, top + jump, n, n, 3L, blue, alpha);
+  obr::ui::round(left + jump, top + jump, n, n, 3L, blue, alpha);
+}
+
+/* 黑底。方标在上，实心拖影在下，整组居中。
+   6144 是过渡拍，0 到 20：方标先淡入并上移，拖影晚几拍再淡入。
+   6080 是拖影头部，0 到 23。客核心不发显卡。 */
+deRfun loading(): void {
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long* phase = (long*)6080;
+  long* intro = (long*)6144;
+  long head = *phase;
+  if (head < 0L || head > 23L) {
+    head = 0L;
+    *phase = 0L;
+  }
+  long rise = *intro;
+  if (rise < 0L) {
+    rise = 0L;
+  }
+  if (rise > 12L) {
+    rise = 12L;
+  }
+  long logoA = obr::ui::ease(0L, 255L, rise, 12L);
+  long lift = obr::ui::ease(14L, 0L, rise, 12L);
+  long spinA = 0L;
+  if (*intro > 8L) {
+    long gone = *intro - 8L;
+    if (gone > 12L) {
+      gone = 12L;
+    }
+    spinA = obr::ui::ease(0L, 255L, gone, 12L);
+  }
+  long block = 60L;
+  long gap = 80L;
+  long radius = 14L;
+  long thick = 8L;
+  long total = block + gap + radius * 2L + thick;
+  long top = (high - total) / 2L;
+  obr::ui::clear(0L, 255L);
+  panes((wide - block) / 2L, top + lift, logoA);
+  smear(wide / 2L, top + block + gap + radius + thick / 2L, head, spinA);
+  obr::ui::present();
+}

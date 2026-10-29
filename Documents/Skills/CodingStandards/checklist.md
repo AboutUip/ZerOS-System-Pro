@@ -16,6 +16,7 @@
 - [ ] 文件头含中文「职责」与「组织顺序」
 - [ ] **未**在子系统根目录平铺枚举/结构/类（Memory 须落在 `Config|Enum|Structure|Unit|Controller|Bootstrap`）
 - [ ] 枚举量在 `Enum/`（或同构目录）、结构/工厂在 `Structure/`（或同构目录），一责一文件
+- [ ] Obr 没有把另一项职责追加进已有文件（`Documents/Rules/source-isolation.mdc`）
 - [ ] 跨子目录引用路径正确
 
 ## C. 注释

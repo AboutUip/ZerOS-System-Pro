@@ -1,0 +1,25 @@
+/* 键盘交给监督核。停笔之后、且不在设置里时，把按下写入 6528 起的环。
+   不管设置页自己怎么处理方向键。格子地址记在 Bios.obr，这里不另抄一张表。 */
+import firmware;
+
+/* 停笔之后把这一次按下交给监督核。设置画面自己留着用，不写入环。
+   先写两个字，再增加次数，读的一侧才不会拿到写了一半的槽。 */
+deRfun keyOffer(): void {
+  if (*(long*)4096 == 2L || *(long*)6336 == 0L) {
+    return;
+  }
+  long count = *(long*)6528;
+  long slot = count % 5L;
+  long at = 6656L + slot * 128L;
+  long unit = *(long*)4992;
+  long mods = *(long*)4928;
+  if (unit < 0L) {
+    unit = 0L;
+  }
+  while (unit >= 65536L) {
+    unit = unit - 65536L;
+  }
+  *(long*)at = unit + mods * 65536L;
+  *(long*)(at + 64L) = *(long*)4864;
+  *(long*)6528 = count + 1L;
+}

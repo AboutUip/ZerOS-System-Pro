@@ -66,6 +66,13 @@ deRfun obr::proc::readdir(long home, long index, long capacity): long {
   return obr::os::svc(9L);
 }
 
+/* 一次最多交回 131072 个八位组，剩下的半扇留给调用方在写出之前把记录挪走。 */
+deRfun obr::proc::list(long home, long index): long {
+  memory::store64(index, home + 128L);
+  memory::store64(131072L, home + 192L);
+  return obr::os::svc(34L);
+}
+
 deRfun obr::proc::mkdir(long home): long {
   return obr::os::svc(10L);
 }

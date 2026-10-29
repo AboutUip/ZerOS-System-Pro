@@ -1,4 +1,5 @@
-/* ZNP1 的客侧。每个字 8 个八位组，由插头去问 NAS 进程。 */
+/* ZNP1 的客侧。查看、打开、关闭、列目录、创建、删除和改名各用一次 offer。
+   读取仍用 carry。写入和探活仍用 8 个八位组的 xchg。列目录在监督核槽尾记住一窗。 */
 import board;
 import memory;
 
@@ -202,6 +203,285 @@ deRfun nasPath(string path, long slot): long {
   return nasKeep(slot);
 }
 
+/* 监督核槽尾的 90176 个八位组。前面是程序映像，这里留给目录窗，映像上限要让出同样的长度。
+   64 个八位组记窗口，第 7 个字是刚取出的修改时间。8192 个记路径，65536 个放应答，16384 个放请求。 */
+deRfun nasHold(): long {
+  return 1024L * 1024L + 2L * 268435456L + 137904128L + ((268435456L - 137904128L) / 8L - 90176L) * 8L;
+}
+
+deRfun nasMeta(long word): long {
+  return nasHold() + word * 64L;
+}
+
+deRfun nasSavedPath(): long {
+  return nasHold() + 512L;
+}
+
+deRfun nasReplyAt(): long {
+  return nasSavedPath() + 8192L * 8L;
+}
+
+deRfun nasAskAt(): long {
+  return nasReplyAt() + 65536L * 8L;
+}
+
+deRfun nasArm(): void {
+  static long armed = 0L;
+  if (armed == 0L) {
+    memory::store64(0L, nasMeta(0L));
+    armed = 1L;
+  }
+}
+
+deRfun nasDrop(): void {
+  nasArm();
+  memory::store64(0L, nasMeta(0L));
+}
+
+deRfun nasU8(long at): long {
+  long value = memory::loadOctet(at);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun nasPut(long index, long value): void {
+  long octet = value;
+  if (octet < 0L) {
+    octet = octet + 256L;
+  }
+  memory::storeOctet(octet, nasAskAt() + index * 8L);
+}
+
+deRfun nasHead(long verb, long mode, long start, long span): void {
+  nasPut(0L, verb);
+  nasPut(1L, mode);
+  nasPut(2L, start % 256L);
+  nasPut(3L, (start / 256L) % 256L);
+  nasPut(4L, (start / 65536L) % 256L);
+  nasPut(5L, (start / 16777216L) % 256L);
+  nasPut(6L, span % 256L);
+  nasPut(7L, (span / 256L) % 256L);
+}
+
+deRfun nasPutCounted(long at, long bytes, long count): long {
+  nasPut(at, count % 256L);
+  nasPut(at + 1L, (count / 256L) % 256L);
+  long index = 0L;
+  while (index < count) {
+    nasPut(at + 2L + index, nasU8(bytes + index * 8L));
+    index = index + 1L;
+  }
+  return at + 2L + count;
+}
+
+deRfun nasPutString(long at, string path): long {
+  long count = length(path);
+  nasPut(at, count % 256L);
+  nasPut(at + 1L, (count / 256L) % 256L);
+  long index = 0L;
+  while (index < count) {
+    long value = path[index];
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    nasPut(at + 2L + index, value);
+    index = index + 1L;
+  }
+  return at + 2L + count;
+}
+
+deRfun nasSubmit(long reqLen, long replyMax): long {
+  nasDrop();
+  return offer(2L, nasAskAt(), reqLen, nasReplyAt(), replyMax);
+}
+
+deRfun nasReadKind(): long {
+  return nasU8(nasReplyAt());
+}
+
+deRfun nasReadSize(): long {
+  return nasU8(nasReplyAt() + 8L) + nasU8(nasReplyAt() + 16L) * 256L + nasU8(nasReplyAt() + 24L) * 65536L + nasU8(nasReplyAt() + 32L) * 16777216L;
+}
+
+/* 从 base 起读 8 个小端八位组，按二进制补码收成有符号毫秒。最高八位组从 128 起表示负数。 */
+deRfun nasReadSigned(long base): long {
+  long value = nasU8(base);
+  value = value + nasU8(base + 8L) * 256L;
+  value = value + nasU8(base + 16L) * 65536L;
+  value = value + nasU8(base + 24L) * 16777216L;
+  value = value + nasU8(base + 32L) * 4294967296L;
+  value = value + nasU8(base + 40L) * 1099511627776L;
+  value = value + nasU8(base + 48L) * 281474976710656L;
+  long high = nasU8(base + 56L);
+  long place = 72057594037927936L;
+  if (high >= 128L) {
+    value = value + (high - 256L) * place;
+  } else {
+    value = value + high * place;
+  }
+  return value;
+}
+
+deRfun nasKeepStamp(): void {
+  memory::store64(nasReadSigned(nasReplyAt() + 40L), nasMeta(7L));
+}
+
+deRfun nasReadHandle(): long {
+  return nasU8(nasReplyAt()) + nasU8(nasReplyAt() + 8L) * 256L;
+}
+
+deRfun nasKeepPath(long bytes, long count): void {
+  memory::store64(count, nasMeta(4L));
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(nasU8(bytes + index * 8L), nasSavedPath() + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 把一项的起始字节写成两个小端八位组。请求缓冲在这次应答落下之后才空出来。 */
+deRfun nasPutOff(long slot, long cursor): void {
+  long at = nasAskAt() + slot * 16L;
+  memory::storeOctet(cursor % 256L, at);
+  memory::storeOctet((cursor / 256L) % 256L, at + 8L);
+}
+
+deRfun nasOff(long slot): long {
+  long at = nasAskAt() + slot * 16L;
+  return nasU8(at) + nasU8(at + 8L) * 256L;
+}
+
+/* 走一遍应答，记下每一项的字节偏移。一项是 15 个八位组再加名字。对不齐时返回 -1。
+   应答本身不得超过一次目录读取的 65535。更大的长度是坏返回值，不能拿来空转。 */
+deRfun nasCount(long total): long {
+  if (total < 0L || total > 65535L) {
+    return -1L;
+  }
+  long cursor = 0L;
+  long at = 0L;
+  while (cursor + 15L <= total) {
+    long base = nasReplyAt() + cursor * 8L;
+    long nameLen = nasU8(base + 104L) + nasU8(base + 112L) * 256L;
+    if (cursor + 15L + nameLen > total) {
+      return -1L;
+    }
+    if (at >= 8192L) {
+      return -1L;
+    }
+    nasPutOff(at, cursor);
+    cursor = cursor + 15L + nameLen;
+    at = at + 1L;
+  }
+  if (cursor != total) {
+    return -1L;
+  }
+  return at;
+}
+
+deRfun nasStoreDir(long index, long bytes, long count, long total): long {
+  long entries = nasCount(total);
+  if (entries < 1L) {
+    return 8L;
+  }
+  memory::store64(index, nasMeta(1L));
+  memory::store64(entries, nasMeta(2L));
+  memory::store64(total, nasMeta(3L));
+  nasKeepPath(bytes, count);
+  memory::store64(1L, nasMeta(0L));
+  return 0L;
+}
+
+deRfun nasDirHit(long bytes, long count, long index): long {
+  nasArm();
+  if (count < 0L || count > 8192L) {
+    return 0L;
+  }
+  if (memory::load64(nasMeta(0L)) != 1L) {
+    return 0L;
+  }
+  if (memory::load64(nasMeta(4L)) != count) {
+    return 0L;
+  }
+  long cursor = 0L;
+  while (cursor < count) {
+    if (nasU8(nasSavedPath() + cursor * 8L) != nasU8(bytes + cursor * 8L)) {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  long start = memory::load64(nasMeta(1L));
+  long entries = memory::load64(nasMeta(2L));
+  if (index < start || index >= start + entries) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun nasDirHitString(string path, long index): long {
+  nasArm();
+  long count = length(path);
+  if (count < 0L || count > 8192L) {
+    return 0L;
+  }
+  if (memory::load64(nasMeta(0L)) != 1L || memory::load64(nasMeta(4L)) != count) {
+    return 0L;
+  }
+  long cursor = 0L;
+  while (cursor < count) {
+    long value = path[cursor];
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    if (nasU8(nasSavedPath() + cursor * 8L) != value) {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  long start = memory::load64(nasMeta(1L));
+  long entries = memory::load64(nasMeta(2L));
+  if (index < start || index >= start + entries) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 下标换成装窗时记下的字节偏移，不再从应答开头重扫。 */
+deRfun nasTake(long index, long address, long capacity, long* got): long {
+  long total = memory::load64(nasMeta(3L));
+  long entries = memory::load64(nasMeta(2L));
+  long start = memory::load64(nasMeta(1L));
+  long slot = index - start;
+  if (slot < 0L || slot >= entries) {
+    return 2L;
+  }
+  long cursor = nasOff(slot);
+  if (cursor + 15L > total) {
+    return 8L;
+  }
+  long base = nasReplyAt() + cursor * 8L;
+  long kind = nasU8(base);
+  long size = nasU8(base + 8L) + nasU8(base + 16L) * 256L + nasU8(base + 24L) * 65536L + nasU8(base + 32L) * 16777216L;
+  long nameLen = nasU8(base + 104L) + nasU8(base + 112L) * 256L;
+  if (cursor + 15L + nameLen > total) {
+    return 8L;
+  }
+  if (nameLen > capacity) {
+    return 7L;
+  }
+  long step = 0L;
+  while (step < nameLen) {
+    memory::storeOctet(nasU8(base + 120L + step * 8L), address + step * 8L);
+    step = step + 1L;
+  }
+  *got = nameLen;
+  memory::store64(kind, nasMeta(5L));
+  memory::store64(size, nasMeta(6L));
+  memory::store64(nasReadSigned(base + 40L), nasMeta(7L));
+  return 0L;
+}
+
 deRfun obr::nas::ready(): long {
   long back = nasTalk(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
   long status = nasOctet(back, 0L);
@@ -214,21 +494,23 @@ deRfun obr::nas::ready(): long {
 deRfun obr::nas::stat(string path, long* kind, long* size): long {
   *kind = 0L;
   *size = 0L;
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long count = length(path);
+  if (count > 8192L) {
+    return 7L;
   }
-  long kept = nasPath(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
+  nasHead(1L, 0L, 0L, 0L);
+  long end = nasPutString(8L, path);
+  long n = nasSubmit(end, 13L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long back = nasTalk(6L, 1L, 0L, 0L, 0L, 0L, 0L, 0L);
-  long status = nasOctet(back, 0L);
-  if (status == 0L) {
-    *kind = nasOctet(back, 1L);
-    *size = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L + nasOctet(back, 4L) * 65536L + nasOctet(back, 5L) * 16777216L;
+  if (n != 13L) {
+    return 8L;
   }
-  return nasFinish(status);
+  *kind = nasReadKind();
+  *size = nasReadSize();
+  nasKeepStamp();
+  return 0L;
 }
 
 deRfun obr::nas::open(string path, long mode, long* handle): long {
@@ -236,36 +518,33 @@ deRfun obr::nas::open(string path, long mode, long* handle): long {
   if (mode < 0L || mode > 3L) {
     return 13L;
   }
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long count = length(path);
+  if (count > 8192L) {
+    return 7L;
   }
-  long kept = nasPath(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
+  nasHead(2L, mode, 0L, 0L);
+  long end = nasPutString(8L, path);
+  long n = nasSubmit(end, 8L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long back = nasTalk(6L, 2L, mode, 0L, 0L, 0L, 0L, 0L);
-  long status = nasOctet(back, 0L);
-  if (status == 0L) {
-    *handle = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+  if (n < 2L) {
+    return 8L;
   }
-  return nasFinish(status);
+  *handle = nasReadHandle();
+  return 0L;
 }
 
 deRfun obr::nas::close(long handle): long {
   if (handle < 1L || handle > 65535L) {
     return 5L;
   }
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  nasHead(3L, 0L, handle, 0L);
+  long n = nasSubmit(8L, 0L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long placed = nasHandle(handle);
-  if (placed != 0L) {
-    return nasFinish(placed);
-  }
-  long back = nasTalk(6L, 3L, 0L, 0L, 0L, 0L, 0L, 0L);
-  return nasFinish(nasOctet(back, 0L));
+  return 0L;
 }
 
 deRfun obr::nas::read(long handle, long offset, long address, long count, long* got): long {
@@ -301,6 +580,7 @@ deRfun obr::nas::write(long handle, long offset, long address, long count, long*
   if (count > 268435456L) {
     return 7L;
   }
+  nasDrop();
   long done = 0L;
   while (done < count) {
     long piece = count - done;
@@ -358,87 +638,107 @@ deRfun obr::nas::write(long handle, long offset, long address, long count, long*
   return 0L;
 }
 
+deRfun obr::nas::readdirKind(): long {
+  nasArm();
+  return memory::load64(nasMeta(5L));
+}
+
+deRfun obr::nas::readdirSize(): long {
+  nasArm();
+  return memory::load64(nasMeta(6L));
+}
+
+deRfun obr::nas::readdirStamp(): long {
+  nasArm();
+  return memory::load64(nasMeta(7L));
+}
+
+deRfun obr::nas::statStamp(): long {
+  nasArm();
+  return memory::load64(nasMeta(7L));
+}
+
 deRfun obr::nas::readdir(string path, long index, long address, long capacity, long* got): long {
   *got = 0L;
   if (index < 0L || index > 4294967295L || capacity < 0L) {
     return 13L;
   }
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long count = length(path);
+  if (count > 8192L) {
+    return 7L;
   }
-  long kept = nasPath(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
+  if (nasDirHitString(path, index) == 1L) {
+    return nasTake(index, address, capacity, got);
   }
-  long ranged = nasRange(index, 0L);
-  if (ranged != 0L) {
-    return nasFinish(ranged);
+  nasHead(9L, 0L, index, 65535L);
+  long end = nasPutString(8L, path);
+  long n = nasSubmit(end, 65535L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long back = nasTalk(6L, 9L, 0L, 0L, 0L, 0L, 0L, 0L);
-  long status = nasOctet(back, 0L);
-  if (status != 0L) {
-    return nasFinish(status);
+  long stored = nasStoreDir(index, nasAskAt() + 80L, count, n);
+  if (stored != 0L) {
+    return stored;
   }
-  long expect = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
-  if (expect > capacity) {
-    long drained = nasDrain(expect);
-    if (drained != 0L) {
-      return nasFinish(drained);
-    }
-    return nasFinish(7L);
+  return nasTake(index, address, capacity, got);
+}
+
+deRfun nasVerbString(long verb, string path): long {
+  long count = length(path);
+  if (count > 8192L) {
+    return 7L;
   }
-  if (expect == 0L) {
-    return nasFinish(0L);
+  nasHead(verb, 0L, 0L, 0L);
+  long end = nasPutString(8L, path);
+  long n = nasSubmit(end, 0L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long pulled = nasPull(address, expect, got);
-  return nasFinish(pulled);
+  return 0L;
 }
 
 deRfun obr::nas::mkdir(string path): long {
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
-  }
-  long kept = nasPath(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
-  }
-  long back = nasTalk(6L, 6L, 0L, 0L, 0L, 0L, 0L, 0L);
-  return nasFinish(nasOctet(back, 0L));
+  return nasVerbString(6L, path);
 }
 
 deRfun obr::nas::unlink(string path): long {
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  return nasVerbString(7L, path);
+}
+
+deRfun nasVerbAt(long verb, long path): long {
+  long raw = memory::load64(path);
+  if (raw < 0L || raw > 8192L) {
+    return 7L;
   }
-  long kept = nasPath(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
+  nasHead(verb, 0L, 0L, 0L);
+  long end = nasPutCounted(8L, path + 64L, raw);
+  long n = nasSubmit(end, 0L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long back = nasTalk(6L, 7L, 0L, 0L, 0L, 0L, 0L, 0L);
-  return nasFinish(nasOctet(back, 0L));
+  return 0L;
 }
 
 deRfun obr::nas::statAt(long path, long* kind, long* size): long {
   *kind = 0L;
   *size = 0L;
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long raw = memory::load64(path);
+  if (raw < 0L || raw > 8192L) {
+    return 7L;
   }
-  long kept = nasPathAt(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
+  nasHead(1L, 0L, 0L, 0L);
+  long end = nasPutCounted(8L, path + 64L, raw);
+  long n = nasSubmit(end, 13L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long back = nasTalk(6L, 1L, 0L, 0L, 0L, 0L, 0L, 0L);
-  long status = nasOctet(back, 0L);
-  if (status == 0L) {
-    *kind = nasOctet(back, 1L);
-    *size = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L + nasOctet(back, 4L) * 65536L + nasOctet(back, 5L) * 16777216L;
+  if (n != 13L) {
+    return 8L;
   }
-  return nasFinish(status);
+  *kind = nasReadKind();
+  *size = nasReadSize();
+  nasKeepStamp();
+  return 0L;
 }
 
 deRfun obr::nas::openAt(long path, long mode, long* handle): long {
@@ -446,20 +746,21 @@ deRfun obr::nas::openAt(long path, long mode, long* handle): long {
   if (mode < 0L || mode > 3L) {
     return 13L;
   }
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long raw = memory::load64(path);
+  if (raw < 0L || raw > 8192L) {
+    return 7L;
   }
-  long kept = nasPathAt(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
+  nasHead(2L, mode, 0L, 0L);
+  long end = nasPutCounted(8L, path + 64L, raw);
+  long n = nasSubmit(end, 8L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long back = nasTalk(6L, 2L, mode, 0L, 0L, 0L, 0L, 0L);
-  long status = nasOctet(back, 0L);
-  if (status == 0L) {
-    *handle = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
+  if (n < 2L) {
+    return 8L;
   }
-  return nasFinish(status);
+  *handle = nasReadHandle();
+  return 0L;
 }
 
 deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, long* got): long {
@@ -467,94 +768,63 @@ deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, l
   if (index < 0L || index > 4294967295L || capacity < 0L) {
     return 13L;
   }
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long raw = memory::load64(path);
+  if (raw < 0L || raw > 8192L) {
+    return 7L;
   }
-  long kept = nasPathAt(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
+  long bytes = path + 64L;
+  if (nasDirHit(bytes, raw, index) == 1L) {
+    return nasTake(index, address, capacity, got);
   }
-  long ranged = nasRange(index, 0L);
-  if (ranged != 0L) {
-    return nasFinish(ranged);
+  nasHead(9L, 0L, index, 65535L);
+  long end = nasPutCounted(8L, bytes, raw);
+  long n = nasSubmit(end, 65535L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long back = nasTalk(6L, 9L, 0L, 0L, 0L, 0L, 0L, 0L);
-  long status = nasOctet(back, 0L);
-  if (status != 0L) {
-    return nasFinish(status);
+  long stored = nasStoreDir(index, bytes, raw, n);
+  if (stored != 0L) {
+    return stored;
   }
-  long expect = nasOctet(back, 2L) + nasOctet(back, 3L) * 256L;
-  if (expect > capacity) {
-    long drained = nasDrain(expect);
-    if (drained != 0L) {
-      return nasFinish(drained);
-    }
-    return nasFinish(7L);
-  }
-  if (expect == 0L) {
-    return nasFinish(0L);
-  }
-  long pulled = nasPull(address, expect, got);
-  return nasFinish(pulled);
+  return nasTake(index, address, capacity, got);
 }
 
 deRfun obr::nas::mkdirAt(long path): long {
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
-  }
-  long kept = nasPathAt(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
-  }
-  long back = nasTalk(6L, 6L, 0L, 0L, 0L, 0L, 0L, 0L);
-  return nasFinish(nasOctet(back, 0L));
+  return nasVerbAt(6L, path);
 }
 
 deRfun obr::nas::unlinkAt(long path): long {
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
-  }
-  long kept = nasPathAt(path, 0L);
-  if (kept != 0L) {
-    return nasFinish(kept);
-  }
-  long back = nasTalk(6L, 7L, 0L, 0L, 0L, 0L, 0L, 0L);
-  return nasFinish(nasOctet(back, 0L));
+  return nasVerbAt(7L, path);
 }
 
 deRfun obr::nas::rename(string from, string to): long {
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long left = length(from);
+  long right = length(to);
+  if (left > 8192L || right > 8192L) {
+    return 7L;
   }
-  long source = nasPath(from, 0L);
-  if (source != 0L) {
-    return nasFinish(source);
+  nasHead(8L, 0L, 0L, 0L);
+  long mid = nasPutString(8L, from);
+  long end = nasPutString(mid, to);
+  long n = nasSubmit(end, 0L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long dest = nasPath(to, 1L);
-  if (dest != 0L) {
-    return nasFinish(dest);
-  }
-  long back = nasTalk(6L, 8L, 0L, 0L, 0L, 0L, 0L, 0L);
-  return nasFinish(nasOctet(back, 0L));
+  return 0L;
 }
 
 deRfun obr::nas::renameAt(long from, long to): long {
-  long opened = nasBegin();
-  if (opened != 0L) {
-    return opened;
+  long left = memory::load64(from);
+  long right = memory::load64(to);
+  if (left < 0L || right < 0L || left > 8192L || right > 8192L) {
+    return 7L;
   }
-  long source = nasPathAt(from, 0L);
-  if (source != 0L) {
-    return nasFinish(source);
+  nasHead(8L, 0L, 0L, 0L);
+  long mid = nasPutCounted(8L, from + 64L, left);
+  long end = nasPutCounted(mid, to + 64L, right);
+  long n = nasSubmit(end, 0L);
+  if (n < 0L) {
+    return 0L - n;
   }
-  long dest = nasPathAt(to, 1L);
-  if (dest != 0L) {
-    return nasFinish(dest);
-  }
-  long back = nasTalk(6L, 8L, 0L, 0L, 0L, 0L, 0L, 0L);
-  return nasFinish(nasOctet(back, 0L));
+  return 0L;
 }

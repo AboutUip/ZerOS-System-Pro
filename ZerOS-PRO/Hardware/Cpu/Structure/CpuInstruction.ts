@@ -109,6 +109,7 @@ export namespace ZerOS {
         | { readonly Op: "xchg"; readonly Port: number; readonly Direction: number; readonly Data: number }
         | { readonly Op: "fill"; readonly Destination: number; readonly Port: number; readonly Address: number; readonly Count: number }
         | { readonly Op: "carry"; readonly Destination: number; readonly Port: number; readonly Handle: number; readonly Offset: number; readonly Address: number; readonly Count: number }
+        | { readonly Op: "offer"; readonly Destination: number; readonly Port: number; readonly Request: number; readonly Length: number; readonly Reply: number; readonly Limit: number }
         | { readonly Op: "port.state"; readonly Destination: number; readonly Port: number }
         | { readonly Op: "port.char"; readonly Destination: number; readonly Port: number; readonly Offset: number }
         | { readonly Op: "port.byte"; readonly Destination: number; readonly Port: number; readonly Field: number; readonly Offset: number }
@@ -488,6 +489,18 @@ export namespace ZerOS {
           }
           return { Op: "carry", Destination: destination, Port: port, Handle: handle, Offset: offset, Address: address, Count: count };
         }
+        if (head === "offer" && parts.length === 7) {
+          const destination = registerOf(parts[1] ?? "");
+          const port = registerOf(parts[2] ?? "");
+          const request = registerOf(parts[3] ?? "");
+          const length = registerOf(parts[4] ?? "");
+          const reply = registerOf(parts[5] ?? "");
+          const limit = registerOf(parts[6] ?? "");
+          if (destination === null || port === null || request === null || length === null || reply === null || limit === null) {
+            throw new Error(`[ZerOS.Hardware.Cpu.CpuInstruction] 无法解析 ${trimmed}`);
+          }
+          return { Op: "offer", Destination: destination, Port: port, Request: request, Length: length, Reply: reply, Limit: limit };
+        }
         if (head === "port.state" && parts.length === 3) {
           const destination = registerOf(parts[1] ?? "");
           const port = registerOf(parts[2] ?? "");
@@ -840,6 +853,9 @@ export namespace ZerOS {
         }
         if (instruction.Op === "carry") {
           return `carry r${String(instruction.Destination)}, r${String(instruction.Port)}, r${String(instruction.Handle)}, r${String(instruction.Offset)}, r${String(instruction.Address)}, r${String(instruction.Count)}`;
+        }
+        if (instruction.Op === "offer") {
+          return `offer r${String(instruction.Destination)}, r${String(instruction.Port)}, r${String(instruction.Request)}, r${String(instruction.Length)}, r${String(instruction.Reply)}, r${String(instruction.Limit)}`;
         }
         if (instruction.Op === "install") {
           return `install r${String(instruction.Core)}, r${String(instruction.Address)}, r${String(instruction.Length)}`;

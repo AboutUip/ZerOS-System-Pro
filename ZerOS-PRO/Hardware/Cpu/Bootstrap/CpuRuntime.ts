@@ -1159,6 +1159,7 @@ export namespace ZerOS {
           || op === "inbox"
           || op === "fill"
           || op === "carry"
+          || op === "offer"
           || op === "mmap"
           || op === "munmap"
           || op === "mem.hertz"
@@ -1809,6 +1810,12 @@ export namespace ZerOS {
             write: registerBit(step.Destination),
           };
         }
+        if (step.Op === "offer") {
+          return {
+            read: registerBit(step.Port) | registerBit(step.Request) | registerBit(step.Length) | registerBit(step.Reply) | registerBit(step.Limit),
+            write: registerBit(step.Destination),
+          };
+        }
         if (step.Op === "port.state") {
           return { read: registerBit(step.Port), write: registerBit(step.Destination) };
         }
@@ -1988,6 +1995,12 @@ export namespace ZerOS {
         }
         if (hostFault === "carry-length") {
           fail("carry length is out of range");
+        }
+        if (hostFault === "offer-align") {
+          fail("offer address is not aligned");
+        }
+        if (hostFault === "offer-length") {
+          fail("offer length is out of range");
         }
         if (hostFault === "guest") {
           fail("privileged instruction");
@@ -2364,6 +2377,53 @@ export namespace ZerOS {
             offset: 3,
             address: 4,
             count: 5,
+          });
+          return await borrowRegister(ordinal, 0);
+        } finally {
+          await restoreBorrowed(ordinal, saved);
+        }
+      }
+
+      /**
+       * 把请求八位组交给扩展口，应答写到另一段位地址。
+       * 成功时结果是写下的个数。失败时是设备状态的相反数，并且不应答。
+       */
+      export async function nativeOffer(
+        ordinal: number,
+        port: bigint,
+        request: bigint,
+        length: bigint,
+        reply: bigint,
+        limit: bigint,
+      ): Promise<bigint> {
+        refuseGuest(ordinal, "offer");
+        if (request < 0n || request % 8n !== 0n || reply < 0n || reply % 8n !== 0n) {
+          fail("offer address is not aligned");
+        }
+        if (length < 0n || length > 268435456n || limit < 0n || limit > 268435456n) {
+          fail("offer length is out of range");
+        }
+        if (length > 0n) {
+          withinBound(ordinal, request, Number(length) * 8);
+        }
+        if (limit > 0n) {
+          withinBound(ordinal, reply, Number(limit) * 8);
+        }
+        const saved = await readRegisters(ordinal);
+        try {
+          await place(ordinal, 1, port);
+          await place(ordinal, 2, request);
+          await place(ordinal, 3, length);
+          await place(ordinal, 4, reply);
+          await place(ordinal, 5, limit);
+          await beginCommand(ordinal, {
+            kind: "offer",
+            destination: 0,
+            port: 1,
+            request: 2,
+            length: 3,
+            reply: 4,
+            limit: 5,
           });
           return await borrowRegister(ordinal, 0);
         } finally {
@@ -4316,6 +4376,32 @@ export namespace ZerOS {
               offset: step.Offset,
               address: step.Address,
               count: step.Count,
+            });
+          } else if (step.Op === "offer") {
+            const request = await peekRegister(ordinal, step.Request);
+            const length = await peekRegister(ordinal, step.Length);
+            const reply = await peekRegister(ordinal, step.Reply);
+            const limit = await peekRegister(ordinal, step.Limit);
+            if (request < 0n || request % 8n !== 0n || reply < 0n || reply % 8n !== 0n) {
+              fail("offer address is not aligned");
+            }
+            if (length < 0n || length > 268435456n || limit < 0n || limit > 268435456n) {
+              fail("offer length is out of range");
+            }
+            if (length > 0n) {
+              withinBound(ordinal, request, Number(length) * 8);
+            }
+            if (limit > 0n) {
+              withinBound(ordinal, reply, Number(limit) * 8);
+            }
+            await beginCommand(ordinal, {
+              kind: "offer",
+              destination: step.Destination,
+              port: step.Port,
+              request: step.Request,
+              length: step.Length,
+              reply: step.Reply,
+              limit: step.Limit,
             });
           } else if (step.Op === "port.state") {
             await beginCommand(ordinal, { kind: "port-state", destination: step.Destination, port: step.Port });

@@ -1,0 +1,417 @@
+/* 引导。装驱动、1 号任务和空闲任务，并在空闲的用户核上推进下一份。
+   不管映像怎么解码，不管参数布局。 */
+#LINK /start.obr, /spawn.obr
+import proc;
+import fs;
+import exec;
+import sched;
+import board;
+import memory;
+import obr.nas;
+import obr.os;
+
+deRfun putDrv(long index, long value): void {
+  memory::storeOctet(value, drvPath() + 64L + index * 8L);
+}
+
+deRfun fillDrv(long nameLen): long {
+  long prefix = 12L;
+  long total = prefix + nameLen;
+  if (total > 240L) {
+    return 7L;
+  }
+  memory::store64(total, drvPath());
+  putDrv(0L, 47L);
+  putDrv(1L, 107L);
+  putDrv(2L, 101L);
+  putDrv(3L, 114L);
+  putDrv(4L, 110L);
+  putDrv(5L, 101L);
+  putDrv(6L, 108L);
+  putDrv(7L, 47L);
+  putDrv(8L, 100L);
+  putDrv(9L, 114L);
+  putDrv(10L, 118L);
+  putDrv(11L, 47L);
+  long index = 0L;
+  while (index < nameLen) {
+    long value = memory::loadOctet(drvName() + index * 8L);
+    putDrv(prefix + index, value);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun nameHasDot(long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (memory::loadOctet(drvName() + index * 8L) == 46L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 3 以及 4 至 7 可以装用户程序。0 是固件画面，2 是监督核。1 的数据窗留给沙盒客程序。 */
+deRfun userCore(long core): long {
+  if (core == 3L) {
+    return 1L;
+  }
+  if (core >= 4L && core <= 7L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun freeCore(long core): long {
+  if (userCore(core) == 0L) {
+    return 0L;
+  }
+  if (taskCount(core) != 0L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 表里还有空位，下一份任务才装得下。 */
+deRfun taskRoom(): long {
+  long index = 0L;
+  while (index < taskLimit()) {
+    if (taskAt(index).pid == 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 这颗核上还有空位，并且当前任务已经因为时间片停住。这时才能在装入前把旧任务抄进槽。 */
+deRfun stoppedForSlice(long core): long {
+  if (userCore(core) == 0L) {
+    return 0L;
+  }
+  /* 已经停住时，只有时间片或让出才能再装一份。正在跑的可以，装入会先停在指令边界。 */
+  if (query(1L, 5L, core) == 0L && query(1L, 11L, core) != 1L) {
+    return 0L;
+  }
+  long count = taskCount(core);
+  if (count < 1L) {
+    return 0L;
+  }
+  long index = taskFind(core);
+  if (index < 0L) {
+    return 0L;
+  }
+  if (taskAt(index).state != TaskState::Running) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 11904 起六个字：1 号所在核心，还没放行的驱动个数，然后最多四颗核心。
+   紧挨在 pid 字 12416 前面。驱动先调度起来，但放行字是 0，只按 30 Hz 空转，
+   不发系统调用，免得和 1 号抢同一个保持位。放行字在该核心窗口 +960。 */
+deRfun holdAt(long index): long {
+  return 537931392L + index * 64L;
+}
+
+/* 驱动也是 1 号的子任务。它们的核心记在 holdAt(2) 起，最多四颗。shell 不在这张表里。 */
+deRfun termDriver(long core): long {
+  long count = memory::load64(holdAt(1L));
+  long index = 0L;
+  while (index < count && index < 4L) {
+    if (memory::load64(holdAt(2L + index)) == core) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 1 号直接派生的、又不是驱动的那份任务。还没有时是 0。空槽和僵尸不算。 */
+deRfun termShell(): long {
+  long index = 0L;
+  while (index < taskLimit()) {
+    Task* task = taskAt(index);
+    if (task.pid > 1L && task.ppid == 1L && task.state != TaskState::Empty && task.state != TaskState::Zombie && termDriver(task.core) == 0L) {
+      return task.pid;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun bootDriver(long core): long {
+  long pid = taskSpawn(core, nextPid(), 0L, 0L, 0L, TaskState::Ready);
+  if (pid == 0L) {
+    return 0L;
+  }
+    obr::os::hertz(core, 30L);
+    memory::store64(0L, kArena(core) + 960L);
+    long count = memory::load64(holdAt(1L));
+  if (count < 4L) {
+    memory::store64(core, holdAt(2L + count));
+    memory::store64(count + 1L, holdAt(1L));
+  }
+  return pid;
+}
+
+deRfun drvLoad(): void {
+  memory::store64(0L, holdAt(0L));
+  memory::store64(0L, holdAt(1L));
+  if (obr::nas::ready() != 1L) {
+    return;
+  }
+  long index = 0L;
+  long core = 4L;
+  while (index < 8L && core < 8L) {
+    long got = 0L;
+    long status = obr::nas::readdir("/kernel/drv", index, drvName(), 32L, &got);
+    if (status != 0L) {
+      return;
+    }
+    index = index + 1L;
+    if (got < 1L || nameHasDot(got) == 1L) {
+      continue;
+    }
+    if (fillDrv(got) != 0L) {
+      continue;
+    }
+    while (core < 8L && freeCore(core) == 0L) {
+      core = core + 1L;
+    }
+    if (core >= 8L) {
+      return;
+    }
+    if (placeAt(drvPath(), core) == 0L) {
+      long pid = bootDriver(core);
+      if (pid != 0L) {
+        devPublish(core, pid, drvName(), got);
+        commPut(taskByPid(pid), drvName(), got);
+      }
+      core = core + 1L;
+    }
+  }
+}
+
+/* 清屏之后再拉起。映像在 /kernel/init，固定 pid 1，父任务是 0。uid 0，没有管理权。
+   驱动已经占掉的核心跳过。没有空核心或读不到映像时，引导继续，只是没有 1 号。 */
+deRfun bootInit(): void {
+  bootMark(19L);
+  if (obr::nas::ready() != 1L) {
+    return;
+  }
+  long core = 4L;
+  while (core < 8L && freeCore(core) == 0L) {
+    core = core + 1L;
+  }
+  if (core >= 8L) {
+    return;
+  }
+  long size = 0L;
+  if (pull("/kernel/init", &size) != 0L) {
+    return;
+  }
+  bootMark(47L);
+  obr::os::install(core, imageAt(), size);
+  obr::os::bound(core, kArena(core), kSlot());
+  clearArgs(query(1L, 8L, core));
+  long pid = taskSpawn(core, 1L, 0L, 0L, 0L, TaskState::Ready);
+  if (pid == 0L) {
+    return;
+  }
+  taskAt(taskByPid(1L)).ppid = 0L;
+  commNamed(taskByPid(1L), 0L);
+  memory::store64(core, holdAt(0L));
+  /* 30 太慢，写一行要等好几秒。这里拉高，字马上出来。 */
+  obr::os::hertz(core, 1000000L);
+  schedWake(core);
+  bootMark(20L);
+}
+
+/* /os/sh 是交互壳，起来就是前台。子任务默认继承父任务的档。 */
+deRfun isShell(long path): long {
+  if (memory::load64(path) != 6L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 64L) != 47L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 72L) != 111L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 80L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 88L) != 47L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 96L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 104L) != 104L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun isSession(long path): long {
+  if (memory::load64(path) != 11L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 64L) != 47L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 72L) != 111L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 80L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 88L) != 47L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 96L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 104L) != 101L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 112L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 120L) != 115L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 128L) != 105L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 136L) != 111L) {
+    return 0L;
+  }
+  if (memory::loadOctet(path + 144L) != 110L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* 装入程序停下之后，给没有任务的核心装上 /kernel/idle 并调度。30 Hz，保持执行中。 */
+deRfun seatIdle(long core, long size): void {
+  if (taskCount(core) != 0L) {
+    return;
+  }
+  if (query(1L, 5L, core) != 0L) {
+    return;
+  }
+  obr::os::install(core, imageAt(), size);
+  obr::os::bound(core, kArena(core), kSlot());
+  obr::os::hertz(core, 30L);
+  obr::os::schedule(core);
+}
+
+deRfun bootIdle(): void {
+  bootMark(21L);
+  while (query(1L, 5L, 3L) != 0L) {
+  }
+  bootMark(22L);
+  long size = 0L;
+  if (pull("/kernel/idle", &size) != 0L) {
+    return;
+  }
+  seatIdle(1L, size);
+  seatIdle(3L, size);
+  long core = 4L;
+  while (core < 8L) {
+    seatIdle(core, size);
+    core = core + 1L;
+  }
+  bootMark(23L);
+}
+
+/* 驱动已经装好，放行字是 0。这里只调度，让它们按 30 Hz 空转。 */
+deRfun bootArm(): void {
+  long index = 0L;
+  long count = memory::load64(holdAt(1L));
+  while (index < count) {
+    obr::os::schedule(memory::load64(holdAt(2L + index)));
+    index = index + 1L;
+  }
+}
+
+/* 1 号还没进入等待时先不放行驱动。它停在 wait 里，或根本没有 1 号，再逐个把放行字写成 1。
+   结果写在 537931776：1 表示刚调度了驱动，调用方这时不要让出。
+   任务表在 537985024，每份 1216 位，共 512 份，与 taskLimit 相同。状态在 +128。Sleeping 是 3。 */
+deRfun bootPump(): void {
+  __zap__ {
+    load.64 r0, 537931456
+    place r2, 1
+    lt r1, r0, r2
+    jnz r1, pumpNo
+    load.64 r3, 537931392
+    place r2, 0
+    eq r1, r3, r2
+    jnz r1, pumpGo
+    place r4, 0
+    pumpScan:
+    place r2, 512
+    lt r1, r4, r2
+    jz r1, pumpGo
+    place r2, 1216
+    mul r0, r4, r2
+    place r2, 537985024
+    add r5, r0, r2
+    ldi.64 r0, r5
+    place r2, 1
+    eq r1, r0, r2
+    jnz r1, pumpHit
+    place r2, 1
+    add r4, r4, r2
+    place r2, 1
+    jnz r2, pumpScan
+    pumpHit:
+    place r2, 128
+    add r5, r5, r2
+    ldi.64 r0, r5
+    place r2, 3
+    eq r1, r0, r2
+    jz r1, pumpNo
+    pumpGo:
+    place r0, 0
+    store.64 r0, 537931840
+    pumpLoop:
+    load.64 r6, 537931840
+    load.64 r7, 537931456
+    lt r0, r6, r7
+    jz r0, pumpDone
+    place r2, 64
+    mul r0, r6, r2
+    place r2, 537931520
+    add r0, r0, r2
+    ldi.64 r1, r0
+    place r2, 268435456
+    mul r3, r1, r2
+    place r2, 1048576
+    add r3, r3, r2
+    place r2, 960
+    add r3, r3, r2
+    place r0, 1
+    sti.64 r0, r3
+    load.64 r6, 537931840
+    place r2, 1
+    add r6, r6, r2
+    store.64 r6, 537931840
+    place r2, 1
+    jnz r2, pumpLoop
+    pumpDone:
+    place r0, 0
+    store.64 r0, 537931456
+    place r0, 1
+    place r2, 1
+    jnz r2, pumpEnd
+    pumpNo:
+    place r0, 0
+    pumpEnd:
+    store.64 r0, 537931776
+  }
+}

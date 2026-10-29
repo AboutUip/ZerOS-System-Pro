@@ -168,6 +168,8 @@ export namespace ZerOS {
       export const ProgramBinaryMunmap = 83;
       /** 三个寄存器：目标核心、描述符的线性位地址、描述符八位组数。描述符必须是 32。 */
       export const ProgramBinaryAdmit = 84;
+      /** 六个寄存器：目的、扩展口、请求位地址、请求长度、应答位地址、应答上限。 */
+      export const ProgramBinaryOffer = 85;
 
       /** 立即数标记。0 用有符号 64 位读回，1 用无符号 64 位读回。 */
       export const ProgramBinaryImmediateSigned = 0;

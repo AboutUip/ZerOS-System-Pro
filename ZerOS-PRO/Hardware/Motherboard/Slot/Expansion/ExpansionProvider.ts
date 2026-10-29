@@ -52,6 +52,12 @@ export namespace ZerOS {
            * 没有它时，carry 在这块主板上失败。
            */
           Carry?(handle: number, offset: number, count: number): Promise<{ readonly status: number; readonly bytes: Uint8Array }>;
+          /**
+           * 把一段请求交给这个口，取回应答。这不是 ZXP1 的必选方法。
+           * 没有它时，offer 在这块主板上失败。
+           * status 为 0 时 bytes 是应答；否则不得把 bytes 当成已经写下的结果。
+           */
+          Offer?(request: Uint8Array, replyMax: number): Promise<{ readonly status: number; readonly bytes: Uint8Array }>;
         }
       }
     }

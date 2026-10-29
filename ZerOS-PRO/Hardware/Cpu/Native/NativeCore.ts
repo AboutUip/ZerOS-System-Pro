@@ -84,6 +84,7 @@ export namespace ZerOS {
       const nativeBoundFree = RuntimeRoot.Hardware.Cpu.nativeBoundFree;
       const nativeExchange = RuntimeRoot.Hardware.Cpu.nativeExchange;
       const nativeCarry = RuntimeRoot.Hardware.Cpu.nativeCarry;
+      const nativeOffer = RuntimeRoot.Hardware.Cpu.nativeOffer;
       const nativeFill = RuntimeRoot.Hardware.Cpu.nativeFill;
       const nativePortState = RuntimeRoot.Hardware.Cpu.nativePortState;
       const nativePortChar = RuntimeRoot.Hardware.Cpu.nativePortChar;
@@ -131,6 +132,7 @@ export namespace ZerOS {
       const NativeEscapeAccel = EscapeRoot.Hardware.Cpu.NativeEscapeAccel;
       const NativeEscapeExchange = EscapeRoot.Hardware.Cpu.NativeEscapeExchange;
       const NativeEscapeCarry = EscapeRoot.Hardware.Cpu.NativeEscapeCarry;
+      const NativeEscapeOffer = EscapeRoot.Hardware.Cpu.NativeEscapeOffer;
       const NativeEscapePortState = EscapeRoot.Hardware.Cpu.NativeEscapePortState;
       const NativeEscapePortChar = EscapeRoot.Hardware.Cpu.NativeEscapePortChar;
       const NativeEscapePortByte = EscapeRoot.Hardware.Cpu.NativeEscapePortByte;
@@ -467,6 +469,20 @@ export namespace ZerOS {
             return "fault";
           }
           state.reg[dest] = await nativeCarry(ordinal, port, handle, offset, address, count);
+          state.rip = escape.next;
+          return "cont";
+        }
+        if (escape.opcode === NativeEscapeOffer) {
+          const dest = regs[0];
+          const port = readReg(state, regs, 1);
+          const request = readReg(state, regs, 2);
+          const length = readReg(state, regs, 3);
+          const reply = readReg(state, regs, 4);
+          const limit = readReg(state, regs, 5);
+          if (dest === undefined || port === null || request === null || length === null || reply === null || limit === null) {
+            return "fault";
+          }
+          state.reg[dest] = await nativeOffer(ordinal, port, request, length, reply, limit);
           state.rip = escape.next;
           return "cont";
         }
@@ -1113,6 +1129,7 @@ export namespace ZerOS {
               || opcode === NativeEscapeCharacter
               || opcode === NativeEscapeExchange
               || opcode === NativeEscapeCarry
+              || opcode === NativeEscapeOffer
               || opcode === NativeEscapeFill
               || opcode === NativeEscapeInstall
               || opcode === NativeEscapeAdmit
@@ -1230,7 +1247,7 @@ export namespace ZerOS {
                 const nextBudget = nativePaceBudget(ordinal);
                 coastArm[ordinal] = previousBudget > 1 && nextBudget === 1 ? 1 : 0;
               }
-              if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill) {
+              if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill || outcome.opcode === NativeEscapeOffer) {
                 const addressSlot = outcome.opcode === NativeEscapeFill ? 2 : 4;
                 const countSlot = outcome.opcode === NativeEscapeFill ? 3 : 5;
                 const address = readReg(state, outcome.regs, addressSlot);

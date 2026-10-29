@@ -3,3 +3,10 @@ deRfun main(): int;
 deRfun clear(): void;
 deRfun poll(): int;
 deRfun onkey(): void;
+/* 停笔后写入键盘环。设置页的按键处理仍是 onkey。 */
+deRfun keyOffer(): void;
+/* 四块方标和拖影。Starting 的字不在这里。 */
+deRfun loading(): void;
+/* 把当前档位交给显示器，或从 /boot/display 读回。 */
+deRfun commitPanel(): void;
+deRfun loadPanel(): void;

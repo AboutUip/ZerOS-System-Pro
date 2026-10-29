@@ -89,6 +89,7 @@ export namespace ZerOS {
       const AccessExchange = 4;
       const AccessFill = 5;
       const AccessCarry = 6;
+      const AccessOffer = 10;
       const AccessPortState = 7;
       const AccessPortChar = 8;
       const AccessPortByte = 9;
@@ -376,13 +377,27 @@ export namespace ZerOS {
       let KeptTable = 0n;
       let KeptTableEnd = 0n;
       /**
-       * 监督核的终端格子。只在 2 号核心上启用。
-       * 客程序碰不到这块，字体绘制又只读本核心刚写下的格子。
-       * 留在核心里之后，打一个字不必再为光标和格子各走一趟内存。
-       * 起点是 kArena(2) 上 vfs 内存文件之后的格子，长度到 253952 位。布局变了就退回内存，不会写错别的核。
+       * 监督核的索引节点、目录项和名字。紧挨任务表，只在 2 号核心上启用。
+       * 客程序碰不到。列目录和查找都在这里逐字比较，留在核心里才不会每个字都问一次主板。
+       * 起点是任务表末尾。长度是 128×704 + 256×256 + 256×4096。内存文件正文和管道不在这里。
+       */
+      let KeptMeta = 0n;
+      let KeptMetaEnd = 0n;
+      /**
+       * 目录窗的头、路径和应答。请求缓冲不在这里，下一次 offer 会把它整段换掉。
+       * 起点按 nasHold：kFloor + 2×kSlot + kSpan + 让出映像尾的那一截。
+       */
+      let KeptNas = 0n;
+      let KeptNasEnd = 0n;
+      /**
+       * 监督核的终端格子。只在 2 号核心上启用，而且只在内核把起点写到布局字之后。
+       * 长度固定 253952 位。写来的起点越出本核心、或盖住任务表、目录表、目录窗时，整段不缓存。
+       * 客程序碰不到这块。字体绘制只读本核心刚写下的格子。
        */
       let KeptGrid = 0n;
       let KeptGridEnd = 0n;
+      /** 这颗核心的槽号。只有 2 号公布的格子起点才启用上面的格子缓存。 */
+      let slotOrdinal = 0;
       let frameWord: bigint | null = null;
       /** 装入正在按八位组把一段映像读走。这不是下一条取指。字体面读文件时也用这一段。 */
       let spanActive = false;
@@ -644,7 +659,9 @@ export namespace ZerOS {
         const inHeapPtr = address >= KeptHeapPtr && address < KeptHeapPtrEnd;
         const inStatic = address >= KeptStatic && address < KeptStaticEnd;
         const inTable = address >= KeptTable && address < KeptTableEnd;
-        const inGrid = address >= KeptGrid && address < KeptGridEnd;
+        const inMeta = address >= KeptMeta && address < KeptMetaEnd;
+        const inNas = address >= KeptNas && address < KeptNasEnd;
+        const inGrid = KeptGrid !== 0n && address >= KeptGrid && address < KeptGridEnd;
         const last = address + BigInt((width - 1) * 8);
         if (inLow && last >= KeptLowEnd) {
           return { kind: "leave" };
@@ -667,10 +684,16 @@ export namespace ZerOS {
         if (inTable && last >= KeptTableEnd) {
           return { kind: "leave" };
         }
+        if (inMeta && last >= KeptMetaEnd) {
+          return { kind: "leave" };
+        }
+        if (inNas && last >= KeptNasEnd) {
+          return { kind: "leave" };
+        }
         if (inGrid && last >= KeptGridEnd) {
           return { kind: "leave" };
         }
-        if (!inLow && !inStack && !inHeap && !inSp && !inHeapPtr && !inStatic && !inTable && !inGrid) {
+        if (!inLow && !inStack && !inHeap && !inSp && !inHeapPtr && !inStatic && !inTable && !inMeta && !inNas && !inGrid) {
           /* 客程序的栈和读写区不都落在编译器那几段里。界内的读写先留在这一次执行的缓存。
              调用窗口里的个数和要写出去的字节也留在这里。系统调用前 publishDirty 一次交上主板。
              监督核取出时读到的是已经交出去的字节，个数不会停在 0。 */
@@ -2388,6 +2411,50 @@ export namespace ZerOS {
         };
       }
 
+      function buildOffer(step: Record<string, unknown>, checkBound: boolean): AccessBuild {
+        if (guestCore) {
+          return { kind: "fault", message: "", hostFault: "guest" };
+        }
+        const destination = registerIndex(step["Destination"]);
+        const index = registerIndex(step["Port"]);
+        const requestRegister = registerIndex(step["Request"]);
+        const lengthRegister = registerIndex(step["Length"]);
+        const replyRegister = registerIndex(step["Reply"]);
+        const limitRegister = registerIndex(step["Limit"]);
+        if (destination === null || index === null || requestRegister === null || lengthRegister === null || replyRegister === null || limitRegister === null) {
+          return { kind: "fault", message: `${corePrefix} offer command is incomplete`, hostFault: "" };
+        }
+        const request = readRegister(requestRegister);
+        const reply = readRegister(replyRegister);
+        const lengthWord = readRegister(lengthRegister);
+        const limitWord = readRegister(limitRegister);
+        if (request < 0n || request % 8n !== 0n || reply < 0n || reply % 8n !== 0n) {
+          return { kind: "fault", message: "", hostFault: "offer-align" };
+        }
+        if (lengthWord < 0n || lengthWord > 268435456n || limitWord < 0n || limitWord > 268435456n) {
+          return { kind: "fault", message: "", hostFault: "offer-length" };
+        }
+        const length = Number(lengthWord);
+        const limit = Number(limitWord);
+        if (length > 0 && hitsBound(request, length * 8, checkBound)) {
+          return { kind: "fault", message: `${request.toString()}+${String(length * 8)}`, hostFault: "bound" };
+        }
+        if (limit > 0 && hitsBound(reply, limit * 8, checkBound)) {
+          return { kind: "fault", message: `${reply.toString()}+${String(limit * 8)}`, hostFault: "bound" };
+        }
+        const portNumber = readNumber(index);
+        if (portNumber === null) {
+          return { kind: "fault", message: `${corePrefix} offer command integer is out of range`, hostFault: "" };
+        }
+        return {
+          kind: "item",
+          built: {
+            wire: wireOf(AccessOffer, 0, request, reply, portNumber, length, limit, 0),
+            meta: blankMeta("port", destination),
+          },
+        };
+      }
+
       function buildExchange(step: Record<string, unknown>): AccessBuild {
         if (guestCore) {
           return { kind: "fault", message: "", hostFault: "guest" };
@@ -2479,6 +2546,9 @@ export namespace ZerOS {
         if (op === "carry") {
           return buildCarry(step, checkBound);
         }
+        if (op === "offer") {
+          return buildOffer(step, checkBound);
+        }
         if (op === "port.state") {
           return buildPortRead(step, AccessPortState, "port state command is incomplete", "port ordinal is out of range");
         }
@@ -2559,7 +2629,13 @@ export namespace ZerOS {
         if (address >= KeptTable && address < KeptTableEnd) {
           return KeptTableEnd;
         }
-        if (address >= KeptGrid && address < KeptGridEnd) {
+        if (address >= KeptMeta && address < KeptMetaEnd) {
+          return KeptMetaEnd;
+        }
+        if (address >= KeptNas && address < KeptNasEnd) {
+          return KeptNasEnd;
+        }
+        if (KeptGrid !== 0n && address >= KeptGrid && address < KeptGridEnd) {
           return KeptGridEnd;
         }
         return null;
@@ -3647,6 +3723,33 @@ export namespace ZerOS {
         port.postMessage({ kind: "carry", port: portNumber, handle, offset, address, count });
       }
 
+      function onOffer(record: Record<string, unknown>): void {
+        const port = board;
+        const destination = registerIndex(record["destination"]);
+        const index = registerIndex(record["port"]);
+        const requestRegister = registerIndex(record["request"]);
+        const lengthRegister = registerIndex(record["length"]);
+        const replyRegister = registerIndex(record["reply"]);
+        const limitRegister = registerIndex(record["limit"]);
+        if (port === null || destination === null || index === null || requestRegister === null || lengthRegister === null || replyRegister === null || limitRegister === null) {
+          fail("offer command is incomplete");
+          return;
+        }
+        const portNumber = readNumber(index);
+        const request = readRegister(requestRegister);
+        const length = readNumber(lengthRegister);
+        const reply = readRegister(replyRegister);
+        const limit = readNumber(limitRegister);
+        if (portNumber === null || length === null || limit === null || request < 0n || reply < 0n || request % 8n !== 0n || reply % 8n !== 0n || length < 0 || limit < 0 || length > 268435456 || limit > 268435456) {
+          fail("offer command integer is out of range");
+          return;
+        }
+        pendingRegister = destination;
+        waiting = true;
+        carriedSpan = { start: reply / 8n, count: limit };
+        port.postMessage({ kind: "offer", port: portNumber, request, length, reply, limit });
+      }
+
       function onPortState(record: Record<string, unknown>): void {
         const port = board;
         const destination = registerIndex(record["destination"]);
@@ -3781,6 +3884,10 @@ export namespace ZerOS {
         const data = readRegister(register);
         if (opcode === Store64 && address === FrameAddress) {
           frameWord = data;
+        }
+        /* 格子起点只在监督核上公布。对不上的值整段不缓存。 */
+        if (opcode === Store64 && address === 537932864n) {
+          adoptGrid(data);
         }
         waiting = true;
         port.postMessage({ kind: "exec", opcode, address, data });
@@ -4405,7 +4512,7 @@ export namespace ZerOS {
         if (kind === "pass" || kind === "take") {
           return;
         }
-        if (kind !== "place" && kind !== "add" && kind !== "eq" && kind !== "sub" && kind !== "udiv" && kind !== "umod" && kind !== "mul" && kind !== "div" && kind !== "mod" && kind !== "and" && kind !== "or" && kind !== "xor" && kind !== "shl" && kind !== "shr" && kind !== "lt" && kind !== "le" && kind !== "gt" && kind !== "ge" && kind !== "not" && kind !== "itof" && kind !== "fadd" && kind !== "fsub" && kind !== "fmul" && kind !== "fdiv" && kind !== "fpow" && kind !== "fmod" && kind !== "feq" && kind !== "load" && kind !== "store" && kind !== "gpu" && kind !== "inbox" && kind !== "xchg" && kind !== "fill" && kind !== "carry" && kind !== "mmap" && kind !== "munmap" && kind !== "port-state" && kind !== "port-char" && kind !== "port-byte" && kind !== "query" && kind !== "mem-hertz" && kind !== "mem-metric") {
+        if (kind !== "place" && kind !== "add" && kind !== "eq" && kind !== "sub" && kind !== "udiv" && kind !== "umod" && kind !== "mul" && kind !== "div" && kind !== "mod" && kind !== "and" && kind !== "or" && kind !== "xor" && kind !== "shl" && kind !== "shr" && kind !== "lt" && kind !== "le" && kind !== "gt" && kind !== "ge" && kind !== "not" && kind !== "itof" && kind !== "fadd" && kind !== "fsub" && kind !== "fmul" && kind !== "fdiv" && kind !== "fpow" && kind !== "fmod" && kind !== "feq" && kind !== "load" && kind !== "store" && kind !== "gpu" && kind !== "inbox" && kind !== "xchg" && kind !== "fill" && kind !== "carry" && kind !== "offer" && kind !== "mmap" && kind !== "munmap" && kind !== "port-state" && kind !== "port-char" && kind !== "port-byte" && kind !== "query" && kind !== "mem-hertz" && kind !== "mem-metric") {
           return;
         }
         if (!running) {
@@ -4476,6 +4583,10 @@ export namespace ZerOS {
           onCarry(record);
           return;
         }
+        if (kind === "offer") {
+          onOffer(record);
+          return;
+        }
         if (kind === "mmap") {
           onMmap(record);
           return;
@@ -4524,6 +4635,7 @@ export namespace ZerOS {
         if (!Number.isInteger(ordinal) || ordinal <= 0 || ordinal > 255) {
           return;
         }
+        slotOrdinal = ordinal;
         const delta = BigInt(ordinal) * BigInt(RelocateSlotBits);
         FrameAddress += delta;
         ScratchBase += delta;
@@ -4541,9 +4653,45 @@ export namespace ZerOS {
         if (ordinal === 2) {
           KeptTable = 537985024n;
           KeptTableEnd = 538607616n;
-          KeptGrid = 594698304n;
-          KeptGridEnd = 594952256n;
+          KeptMeta = 538607616n;
+          KeptMetaEnd = 539811840n;
+          KeptNas = 805633536n;
+          KeptNasEnd = 806223872n;
+          KeptGrid = 0n;
+          KeptGridEnd = 0n;
         }
+      }
+
+      /**
+       * 内核把格子起点写到 kArena(2)+13376。
+       * 长度是 253952 位。起点不是 8 的倍数、越出 2 号槽，或盖住任务表、目录表、目录窗时，整段留在主板上。
+       */
+      function adoptGrid(base: bigint): void {
+        const empty = (): void => {
+          KeptGrid = 0n;
+          KeptGridEnd = 0n;
+        };
+        if (slotOrdinal !== 2 || base === 0n || base % 8n !== 0n) {
+          empty();
+          return;
+        }
+        const span = 253952n;
+        const end = base + span;
+        const origin = 537919488n;
+        const limit = 806354944n;
+        if (base < origin || end > limit) {
+          empty();
+          return;
+        }
+        const hits = (from: bigint, to: bigint): boolean => {
+          return to > from && base < to && end > from;
+        };
+        if (hits(KeptTable, KeptTableEnd) || hits(KeptMeta, KeptMetaEnd) || hits(KeptNas, KeptNasEnd)) {
+          empty();
+          return;
+        }
+        KeptGrid = base;
+        KeptGridEnd = end;
       }
 
       /**

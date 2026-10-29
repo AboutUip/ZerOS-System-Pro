@@ -17,12 +17,14 @@ import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
 import { ZerOS as SurfaceRoot } from "../../Debug/Host/DebugSurface";
 import { type ZerOS as FaultRoot } from "../../Cpu/Structure/FaultRecord";
 import { type ZerOS as StopRoot } from "../../Cpu/Structure/CoreStop";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
 
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Display {
       /** 找到唯一画布，启动显示器，然后才允许机器加电。 */
       function openDisplayPage(): void {
+        BootTraceRoot.Hardware.Debug.markBoot("page");
         const canvas = document.querySelector("canvas");
         if (!(canvas instanceof HTMLCanvasElement)) {
           throw new Error("[ZerOS.Hardware.Display.PageHost] 页面没有画布");
@@ -48,9 +50,12 @@ export namespace ZerOS {
           /* 面板已经换成这一档，再把宽高落进 NAS 的 /boot/display。 */
           void saveDisplaySize(width, height);
         });
-        page.WhenFrame((frameWidth, frameHeight, pixels, bitmap, originX, originY): void => {
+        page.WhenFrame((frameWidth, frameHeight, pixels, bitmap, originX, originY, scroll): void => {
           try {
             if (bitmap !== null) {
+              if (scroll !== undefined && scroll.length >= 4) {
+                display.ShiftBands(scroll);
+              }
               acceptGpuBitmap(frameWidth, frameHeight, bitmap, originX ?? 0, originY ?? 0);
               return;
             }

@@ -2,7 +2,7 @@
 
 浏览器里的教学向虚拟机。分层可以拆开看，兼容性以协议为准，实现代码不是规范。
 
-与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件。1 号任务和 shell 在 `ZerOS-PRO/System/`，命令源码在 `ZerOS-PRO/Resource/Bin/`，客路径是 `/bin`。内核映像放在 NAS 的 `/kernel/`，由固件在倒计时结束时装到核心 2。
+与 [ZerOS-System](https://github.com/AboutUip/ZerOS-System) 并存：前作侧重桌面；本仓库从引导走到硬件。1 号任务在 `ZerOS-PRO/System/`，shell 在 `ZerOS-PRO/Resource/App/sh/`，命令源码在 `ZerOS-PRO/Resource/Bin/`，客路径是 `/bin`。内核映像放在 NAS 的 `/kernel/`，由固件在倒计时结束时装到核心 2。
 
 许可证：[GNU Affero GPL v3](./LICENSE)（AGPLv3）。
 
@@ -13,9 +13,10 @@ ZerOS-System-Pro/
 ├── ZerOS-PRO/
 │   ├── Boot/                 # 固件源码：Logo、Bios、Load。上电在主板
 │   ├── Kernel/               # 内核 .obr，编译进 NAS 的 /kernel/
-│   ├── System/               # 用户态。Init 是 1 号，Shell 是 /os/sh
+│   ├── System/               # 用户态。Init 是 1 号，客路径 /kernel/init
 │   ├── Resource/Font/        # 字体源。编译时拷到 NAS 的 /font，副本只读
 │   ├── Resource/Bin/         # 命令源。编译时写成 NAS 的 /bin
+│   ├── Resource/App/         # 应用程序源。sh 编成客路径 /os/sh
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板、插座、上电入口
 │       ├── Cpu/  Gpu/  Memory/
@@ -91,7 +92,7 @@ cmake --build Compiler/ObrCompiler/build
 | 语言 | `Compiler/ObrCompiler/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。语法见 [编译器说明](./Compiler/ObrCompiler/README.md) |
 | 编辑器 | `Compiler/ObrExtension/` | `.obr`、`.mr`、`.zap` 的着色和诊断。诊断调用旁边的 `obrc` |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
-| 系统 | `System/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`Shell/sh.obr` 客路径 `/os/sh`。`Bin/` 编成 `/bin`，第一条是 `pwd` |
+| 系统 | `System/`、`Resource/App/`、`Resource/Bin/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`App/sh` 编成 `/os/sh`。`Bin/` 编成 `/bin`，第一条是 `pwd` |
 
 设置画面可以改显示器宽高和调试开关，分别写进 `/boot/display` 和 `/boot/debug`。其余行只展示查询得到的状态。内核由固件在倒计时结束时装入，不从设置画面进入。
 

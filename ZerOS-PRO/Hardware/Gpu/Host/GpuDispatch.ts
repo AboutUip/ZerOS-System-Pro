@@ -33,6 +33,7 @@ export namespace ZerOS {
     export namespace Gpu {
       const provider = ActiveRoot.Hardware.Gpu.ActiveGpuProvider;
       const viewOrigin = AccelRoot.Hardware.Gpu.viewOrigin;
+      const takeViewBands = AccelRoot.Hardware.Gpu.takeViewBands;
       const stageFontBytes = FontBytesRoot.Hardware.Gpu.stageFontBytes;
       const adoptOrigin = ClockRoot.Hardware.Gpu.adoptOrigin;
       const GpuSlot = GpuSlotRoot.Hardware.Motherboard.Slot.GpuSlot;
@@ -131,6 +132,7 @@ export namespace ZerOS {
         const frameHeight = provider.FrameHeight;
         const hertz = provider.Hertz();
         const executed = provider.Executed();
+        const scroll = takeViewBands();
         if (view instanceof ImageBitmap) {
           const origin = viewOrigin();
           globalThis.postMessage(
@@ -140,6 +142,7 @@ export namespace ZerOS {
               frameHeight,
               originX: origin.x,
               originY: origin.y,
+              scroll,
               hertz,
               executed,
               bitmap: view,

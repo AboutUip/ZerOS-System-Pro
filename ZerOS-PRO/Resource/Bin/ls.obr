@@ -1393,7 +1393,6 @@ deRfun fillDir(long home, long opt, long frame, long dir, long dirLen, long head
   long indices = memory::load64(opt + 1408L);
   long namePool = memory::load64(opt + 1472L);
   long grab = memory::load64(opt + 2432L);
-  long scratch = memory::load64(opt + 1216L);
   long nameCap = 1024L * 512L * 8L;
   long nameUsed = 0L;
   long n = 0L;
@@ -1401,7 +1400,7 @@ deRfun fillDir(long home, long opt, long frame, long dir, long dirLen, long head
   long reading = 1L;
   while (reading == 1L) {
     plant(home, dir, dirLen);
-    long listed = obr::proc::readdir(home, index, 512L);
+    long listed = obr::proc::list(home, index);
     if (listed == 2L) {
       reading = 0L;
     } else if (listed != 0L) {
@@ -1409,45 +1408,50 @@ deRfun fillDir(long home, long opt, long frame, long dir, long dirLen, long head
       memory::store64(1L, opt + 960L);
       return 1L;
     } else {
-      long nameLen = obr::proc::slot(home, 256L);
-      if (nameLen == 0L) {
+      long count = obr::proc::slot(home, 256L);
+      if (count < 1L) {
         reading = 0L;
-      } else if (nameLen < 0L || nameLen > 512L) {
-        blame(home, dir, dirLen, ": cannot read\n");
-        memory::store64(1L, opt + 960L);
-        return 1L;
       } else {
-        copySpan(obr::proc::bytes(home), grab, nameLen);
-        index = index + 1L;
-        if (hiddenName(grab, nameLen, memory::load64(opt + 64L)) == 0L) {
-          if (n >= 1024L || nameUsed + nameLen * 8L > nameCap) {
-            blame(home, dir, dirLen, ": too many entries\n");
+        long at = obr::proc::bytes(home);
+        long item = 0L;
+        while (item < count) {
+          long nameLen = memory::load64(at);
+          long kind = memory::load64(at + 64L);
+          long size = memory::load64(at + 128L);
+          long mode = memory::load64(at + 192L);
+          long uid = memory::load64(at + 256L);
+          long gid = memory::load64(at + 320L);
+          long stamp = memory::load64(at + 448L);
+          long which = memory::load64(opt + 2368L);
+          if (which == 1L) {
+            stamp = memory::load64(at + 512L);
+          } else if (which == 2L) {
+            stamp = memory::load64(at + 384L);
+          }
+          if (nameLen < 0L || nameLen > 512L) {
+            blame(home, dir, dirLen, ": cannot read\n");
             memory::store64(1L, opt + 960L);
             return 1L;
           }
-          long joined = joinPath(dir, dirLen, grab, nameLen, scratch);
-          if (joined < 0L) {
-            writeErr(home, "ls: path too long\n");
-            memory::store64(1L, opt + 960L);
-            return 1L;
-          }
-          long kind = 0L;
-          long size = 0L;
-          long mode = 0L;
-          long uid = 0L;
-          long gid = 0L;
-          long stamp = 0L;
-          long status = statOf(home, scratch, joined, &kind, &size, &mode, &uid, &gid, memory::load64(opt + 2368L), &stamp);
-          if (status != 0L) {
-            blameWhy(home, scratch, joined, status);
-            memory::store64(1L, opt + 960L);
-          } else {
+          copySpan(at + 576L, grab, nameLen);
+          if (hiddenName(grab, nameLen, memory::load64(opt + 64L)) == 0L) {
+            if (n >= 1024L || nameUsed + nameLen * 8L > nameCap) {
+              blame(home, dir, dirLen, ": too many entries\n");
+              memory::store64(1L, opt + 960L);
+              return 1L;
+            }
+            if (size < 0L) {
+              size = 0L;
+            }
             copySpan(grab, namePool + nameUsed, nameLen);
             putEntry(entryAt(entries, n), namePool + nameUsed, nameLen, kind, size, mode, uid, gid, stamp);
             nameUsed = nameUsed + nameLen * 8L;
             n = n + 1L;
           }
+          at = at + 576L + nameLen * 8L;
+          item = item + 1L;
         }
+        index = index + count;
       }
     }
   }

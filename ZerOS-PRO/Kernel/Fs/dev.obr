@@ -1,0 +1,313 @@
+/* 设备环。登记、摘掉、沿环搬字节，以及 /dev 下按目录项列名字。
+   不管路径怎么走，也不管终端格子。 */
+#LINK /vfs.obr, /exec.obr, /task.obr, /boot.obr
+import fs;
+import proc;
+import sched;
+import trap;
+import board;
+import memory;
+
+deRfun devBytes(long index, long which): long {
+  if (which == 0L) {
+    return devUp(index);
+  }
+  return devDown(index);
+}
+
+deRfun devLive(Dev* dev): long {
+  if (dev.used == 0L || dev.pid == 0L) {
+    return 0L;
+  }
+  if (taskByPid(dev.pid) < 0L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+/* into 为 0 时从环里取出，为 1 时放进环。which 为 0 是发给用户的那条，为 1 是用户发来的那条。 */
+deRfun ringMove(Dev* dev, long index, long which, long addr, long count, long into): long {
+  long got = 0L;
+  while (got < count) {
+    long have = dev.upCount;
+    long head = dev.upHead;
+    if (which == 1L) {
+      have = dev.downCount;
+      head = dev.downHead;
+    }
+    if (into == 0L && have < 1L) {
+      return got;
+    }
+    if (into == 1L && have >= ringRoom()) {
+      return got;
+    }
+    long at = head;
+    if (into == 1L) {
+      at = head + have;
+      if (at >= ringRoom()) {
+        at = at - ringRoom();
+      }
+      memory::storeOctet(memory::loadOctet(addr + got * 8L), devBytes(index, which) + at * 8L);
+      have = have + 1L;
+    } else {
+      memory::storeOctet(memory::loadOctet(devBytes(index, which) + at * 8L), addr + got * 8L);
+      head = head + 1L;
+      if (head == ringRoom()) {
+        head = 0L;
+      }
+      have = have - 1L;
+    }
+    if (which == 0L) {
+      dev.upHead = head;
+      dev.upCount = have;
+    } else {
+      dev.downHead = head;
+      dev.downCount = have;
+    }
+    got = got + 1L;
+  }
+  return got;
+}
+
+/* 有字节或有空位时，把堵着的那一端放行。一次调用至多搬满一条环。 */
+deRfun devWake(long index): void {
+  long pass = 0L;
+  while (pass < 2L) {
+    Dev* dev = devAt(index);
+    if (dev.userReadWait >= 0L && dev.upCount > 0L) {
+      long waiter = dev.userReadWait;
+      dev.userReadWait = -1L;
+      long home = query(1L, 8L, waiter);
+      long got = ringMove(dev, index, 0L, byteAt(home), memory::load64(home + 256L), 0L);
+      memory::store64(got, home + 320L);
+      reply(waiter, 0L);
+    }
+    dev = devAt(index);
+    if (dev.drvRecvWait >= 0L && dev.downCount > 0L) {
+      long waiter = dev.drvRecvWait;
+      dev.drvRecvWait = -1L;
+      long home = query(1L, 8L, waiter);
+      long got = ringMove(dev, index, 1L, byteAt(home), memory::load64(home + 256L), 0L);
+      memory::store64(got, home + 320L);
+      reply(waiter, 0L);
+    }
+    dev = devAt(index);
+    if (dev.userWriteWait >= 0L && dev.downCount < ringRoom()) {
+      long waiter = dev.userWriteWait;
+      dev.userWriteWait = -1L;
+      long home = query(1L, 8L, waiter);
+      long got = ringMove(dev, index, 1L, byteAt(home), memory::load64(home + 256L), 1L);
+      memory::store64(got, home + 320L);
+      reply(waiter, 0L);
+    }
+    dev = devAt(index);
+    if (dev.drvSendWait >= 0L && dev.upCount < ringRoom()) {
+      long waiter = dev.drvSendWait;
+      dev.drvSendWait = -1L;
+      long home = query(1L, 8L, waiter);
+      long got = ringMove(dev, index, 0L, byteAt(home), memory::load64(home + 256L), 1L);
+      memory::store64(got, home + 320L);
+      reply(waiter, 0L);
+    }
+    pass = pass + 1L;
+  }
+}
+
+/* waitKind：1 用户读，2 用户写，3 驱动取，4 驱动送。into 与 ringMove 相同。 */
+deRfun devMove(long index, long home, long which, long into, long caller, long waitKind): long {
+  if (index < 0L || index >= devCount()) {
+    return 5L;
+  }
+  Dev* dev = devAt(index);
+  if (dev.used == 0L) {
+    return 5L;
+  }
+  long count = memory::load64(home + 256L);
+  if (count < 0L) {
+    return 13L;
+  }
+  if (into == 1L && waitKind == 2L && devLive(dev) == 0L) {
+    return 5L;
+  }
+  long got = ringMove(dev, index, which, byteAt(home), count, into);
+  memory::store64(got, home + 320L);
+  devWake(index);
+  dev = devAt(index);
+  if (got > 0L || count == 0L) {
+    return 0L;
+  }
+  if (waitKind < 3L && devLive(dev) == 0L) {
+    if (waitKind == 2L) {
+      return 5L;
+    }
+    return 0L;
+  }
+  long waiting = dev.userReadWait;
+  if (waitKind == 2L) {
+    waiting = dev.userWriteWait;
+  }
+  if (waitKind == 3L) {
+    waiting = dev.drvRecvWait;
+  }
+  if (waitKind == 4L) {
+    waiting = dev.drvSendWait;
+  }
+  if (waiting >= 0L) {
+    return 11L;
+  }
+  if (waitKind == 1L) {
+    dev.userReadWait = caller;
+  }
+  if (waitKind == 2L) {
+    dev.userWriteWait = caller;
+  }
+  if (waitKind == 3L) {
+    dev.drvRecvWait = caller;
+  }
+  if (waitKind == 4L) {
+    dev.drvSendWait = caller;
+  }
+  schedSleep(caller);
+  return -2L;
+}
+
+deRfun devIo(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  if (taskIndex < 0L) {
+    return -1L;
+  }
+  long pid = taskAt(taskIndex).pid;
+  long index = 0L;
+  while (index < devCount() && (devAt(index).used == 0L || devAt(index).pid != pid)) {
+    index = index + 1L;
+  }
+  if (index >= devCount()) {
+    return -1L;
+  }
+  long dir = memory::load64(home + 128L);
+  if (dir == 0L) {
+    return devMove(index, home, 1L, 0L, caller, 3L);
+  }
+  if (dir == 1L) {
+    return devMove(index, home, 0L, 1L, caller, 4L);
+  }
+  return 13L;
+}
+
+deRfun devList(long dent, long home): long {
+  long nth = memory::load64(home + 128L);
+  long cap = memory::load64(home + 192L);
+  if (nth < 0L || cap < 0L) {
+    return 13L;
+  }
+  long seen = 0L;
+  long index = 1L;
+  while (index < dentryCount()) {
+    Dentry* entry = dentryAt(index);
+    if (entry.used == 1L && entry.parent == dent) {
+      if (seen == nth) {
+        if (cap < entry.nameLen) {
+          return 6L;
+        }
+        long step = 0L;
+        while (step < entry.nameLen) {
+          memory::storeOctet(memory::loadOctet(nameAt(index) + step * 8L), byteAt(home) + step * 8L);
+          step = step + 1L;
+        }
+        memory::store64(entry.nameLen, home + 256L);
+        return 0L;
+      }
+      seen = seen + 1L;
+    }
+    index = index + 1L;
+  }
+  memory::store64(0L, home + 256L);
+  return 0L;
+}
+
+/* 引导时第一个目录项就是 /dev。 */
+deRfun devDir(): long {
+  return 1L;
+}
+
+/* 导出是为了让 conPublish 的机器码能按名字调用。标号挡住内联，避免再复制一份。 */
+export deRfun devPublish(long core, long pid, long name, long nameLen): long {
+  __zap__ {
+    conKeep:
+  }
+  if (pid < 1L || nameLen < 1L || nameLen > 32L) {
+    return 6L;
+  }
+  if (core != 2L && (core < 4L || core > 7L)) {
+    return 6L;
+  }
+  long dir = devDir();
+  if (dir < 0L) {
+    return 7L;
+  }
+  scratchClear();
+  memory::store64(nameLen, scratch());
+  long step = 0L;
+  while (step < nameLen) {
+    memory::storeOctet(memory::loadOctet(name + step * 8L), scratch() + 64L + step * 8L);
+    step = step + 1L;
+  }
+  if (findChild(dir, scratch(), 0L, nameLen) >= 0L) {
+    scratchClear();
+    return 0L;
+  }
+  long slot = 0L;
+  while (slot < devCount() && devAt(slot).used == 1L) {
+    slot = slot + 1L;
+  }
+  if (slot >= devCount()) {
+    scratchClear();
+    return 7L;
+  }
+  long dent = takeChild(dir, scratch(), 0L, nameLen, 3L, 0L, 0L, 0L, modeDev());
+  scratchClear();
+  if (dent < 0L) {
+    return 7L;
+  }
+  Dev* dev = devAt(slot);
+  dev.used = 1L;
+  dev.core = core;
+  dev.pid = pid;
+  dev.ino = dentryAt(dent).ino;
+  dev.upHead = 0L;
+  dev.upCount = 0L;
+  dev.downHead = 0L;
+  dev.downCount = 0L;
+  dev.userReadWait = -1L;
+  dev.userWriteWait = -1L;
+  dev.drvRecvWait = -1L;
+  dev.drvSendWait = -1L;
+  return 0L;
+}
+
+deRfun devDrop(long pid): void {
+  if (pid < 1L) {
+    return;
+  }
+  long index = 0L;
+  while (index < devCount()) {
+    Dev* dev = devAt(index);
+    if (dev.used == 1L && dev.pid == pid) {
+      if (dev.userReadWait >= 0L) {
+        long waiter = dev.userReadWait;
+        dev.userReadWait = -1L;
+        memory::store64(0L, query(1L, 8L, waiter) + 320L);
+        reply(waiter, 0L);
+      }
+      if (dev.userWriteWait >= 0L) {
+        long waiter = dev.userWriteWait;
+        dev.userWriteWait = -1L;
+        reply(waiter, 5L);
+      }
+      dev.drvRecvWait = -1L;
+      dev.drvSendWait = -1L;
+      dev.pid = 0L;
+    }
+    index = index + 1L;
+  }
+}

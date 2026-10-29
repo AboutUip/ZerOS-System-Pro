@@ -25,6 +25,7 @@ import { ZerOS as WindowCheckRoot } from "../../Cpu/Test/KernelWindowCheck";
 import { ZerOS as GlassCheckRoot } from "../Test/FaultGlassCheck";
 import { ZerOS as MotherboardRoot } from "./Motherboard";
 import { ZerOS as SevereRoot } from "../../Debug/Host/SevereConsole";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
 import { biosProgram, biosProgramSites, loadProgram, loadProgramSites, logoProgram, logoProgramSites } from "zeros-boot-firmware";
 
 export namespace ZerOS {
@@ -53,9 +54,12 @@ export namespace ZerOS {
        * 失败帧核对要等调试入口回答，所以通电放在那次核对之后。
        */
       export function powerFirmware(): void {
+        const markBoot = BootTraceRoot.Hardware.Debug.markBoot;
+        markBoot("power");
         runKernelWindowCheck();
         void runFaultGlassCheck().then(
           (): void => {
+            markBoot("glass");
             Board.SetLogo(Logo);
             Board.SetDrive(Drive);
             Board.SetLoader(Loader);

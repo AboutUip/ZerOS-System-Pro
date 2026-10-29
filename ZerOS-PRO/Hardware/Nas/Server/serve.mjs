@@ -110,7 +110,7 @@ function readFrames(store, socket) {
       try {
         parsed = JSON.parse(payload.toString("utf8"));
       } catch {
-        sendFrame(socket, 0x1, Buffer.from(JSON.stringify({ status: 13, kind: 0, size: 0, handle: 0, name: "", data: "", length: 0 }), "utf8"));
+        sendFrame(socket, 0x1, Buffer.from(JSON.stringify({ status: 13, kind: 0, size: 0, handle: 0, name: "", data: "", length: 0, mtime: 0 }), "utf8"));
         continue;
       }
       sendFrame(socket, 0x1, Buffer.from(JSON.stringify(store.call(parsed)), "utf8"));

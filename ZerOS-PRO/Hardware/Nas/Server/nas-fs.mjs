@@ -28,7 +28,23 @@ const KindFile = 1;
 const KindDirectory = 2;
 
 function emptyReply(status) {
-  return { status, kind: 0, size: 0, handle: 0, name: "", data: "", length: 0 };
+  return { status, kind: 0, size: 0, handle: 0, name: "", data: "", length: 0, mtime: 0 };
+}
+
+/**
+ * 宿主 mtimeMs 收成整数毫秒。小数朝 0 丢掉。
+ * 不是有限数，或不是 JavaScript 能精确保存的整数时，调用方按内部失败处理。
+ */
+function wholeMillis(info) {
+  const ms = info.mtimeMs;
+  if (typeof ms !== "number" || !Number.isFinite(ms)) {
+    return null;
+  }
+  const whole = Math.trunc(ms);
+  if (!Number.isSafeInteger(whole)) {
+    return null;
+  }
+  return whole;
 }
 
 function mapError(error) {
@@ -101,14 +117,18 @@ function look(target) {
   if (info.isSymbolicLink()) {
     return { status: StatusIo };
   }
+  const mtime = wholeMillis(info);
+  if (mtime === null) {
+    return { status: StatusIo };
+  }
   if (info.isDirectory()) {
-    return { status: StatusOk, kind: KindDirectory, size: 0, info };
+    return { status: StatusOk, kind: KindDirectory, size: 0, mtime, info };
   }
   if (info.isFile()) {
     if (info.size > 0xffffffff) {
       return { status: StatusTooLong };
     }
-    return { status: StatusOk, kind: KindFile, size: info.size, info };
+    return { status: StatusOk, kind: KindFile, size: info.size, mtime, info };
   }
   return { status: StatusIo };
 }
@@ -117,6 +137,66 @@ export function createStore(root) {
   const base = path.resolve(root);
   fs.mkdirSync(base, { recursive: true });
   const handles = new Map();
+  /** 同一条目录路径的种类、大小和修改时间。改名、删除、创建或写入之后丢掉。 */
+  let snap = null;
+
+  function dropSnap() {
+    snap = null;
+  }
+
+  /**
+   * 这一层的记录。同一路径再次列目录时不再 readdir，也不再对每一项 lstat。
+   * 失败时带 status，成功时带 entries。
+   */
+  function loadSnap(dirPath) {
+    if (snap !== null && snap.path === dirPath) {
+      return snap;
+    }
+    let names;
+    try {
+      names = fs.readdirSync(dirPath, { withFileTypes: true });
+    } catch (error) {
+      return { status: mapError(error) };
+    }
+    const entries = [];
+    for (const entry of names) {
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+      if (!entry.isFile() && !entry.isDirectory()) {
+        continue;
+      }
+      let seen;
+      try {
+        seen = fs.lstatSync(path.join(dirPath, entry.name));
+      } catch (error) {
+        return { status: mapError(error) };
+      }
+      if (seen.isSymbolicLink()) {
+        return { status: StatusIo };
+      }
+      const mtime = wholeMillis(seen);
+      if (mtime === null) {
+        return { status: StatusIo };
+      }
+      let kind = KindFile;
+      let size = 0;
+      if (seen.isDirectory()) {
+        kind = KindDirectory;
+      } else if (seen.isFile()) {
+        if (!Number.isSafeInteger(seen.size) || seen.size < 0 || seen.size > 0xffffffff) {
+          return { status: StatusTooLong };
+        }
+        size = seen.size;
+      } else {
+        return { status: StatusIo };
+      }
+      entries.push({ name: entry.name, kind, size, mtime });
+    }
+    entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
+    snap = { path: dirPath, entries };
+    return snap;
+  }
 
   function allocHandle(fd, mode) {
     if (handles.size >= HandleMax) {
@@ -150,6 +230,45 @@ export function createStore(root) {
     return { status: StatusOk, open };
   }
 
+  /**
+   * 从 index 起装进 limit 个八位组。
+   * 一项是种类、4 字节小端大小、8 字节小端修改时间、2 字节小端名字长度、名字。
+   * 目录大小写 0，修改时间仍是该目录自己的。第一项就放不下时状态是 7。起点已经越过末尾时状态是 2。
+   */
+  function readBatch(entries, index, limit) {
+    if (limit > 65535) {
+      return emptyReply(StatusBadArgument);
+    }
+    const chunks = [];
+    let used = 0;
+    for (let at = index; at < entries.length; at += 1) {
+      const entry = entries[at];
+      const nameBytes = Buffer.from(entry.name);
+      if (nameBytes.length > 65535) {
+        return emptyReply(StatusTooLong);
+      }
+      const record = 15 + nameBytes.length;
+      if (used + record > limit) {
+        if (chunks.length === 0) {
+          return emptyReply(StatusTooLong);
+        }
+        break;
+      }
+      const head = Buffer.alloc(15);
+      head[0] = entry.kind;
+      head.writeUInt32LE(entry.size, 1);
+      head.writeBigInt64LE(BigInt(entry.mtime), 5);
+      head.writeUInt16LE(nameBytes.length, 13);
+      chunks.push(head, nameBytes);
+      used += record;
+    }
+    if (chunks.length === 0) {
+      return emptyReply(StatusNotFound);
+    }
+    const body = Buffer.concat(chunks);
+    return { ...emptyReply(StatusOk), data: body.toString("base64"), length: body.length };
+  }
+
   function call(request) {
     if (typeof request !== "object" || request === null) {
       return emptyReply(StatusBadArgument);
@@ -168,7 +287,7 @@ export function createStore(root) {
         if (seen.status !== StatusOk) {
           return emptyReply(seen.status);
         }
-        return { ...emptyReply(StatusOk), kind: seen.kind, size: seen.size };
+        return { ...emptyReply(StatusOk), kind: seen.kind, size: seen.size, mtime: seen.mtime };
       }
       if (op === "mkdir") {
         try {
@@ -176,6 +295,7 @@ export function createStore(root) {
         } catch (error) {
           return emptyReply(mapError(error));
         }
+        dropSnap();
         return emptyReply(StatusOk);
       }
       if (op === "remove") {
@@ -192,6 +312,7 @@ export function createStore(root) {
         } catch (error) {
           return emptyReply(mapError(error));
         }
+        dropSnap();
         return emptyReply(StatusOk);
       }
       if (op === "readdir") {
@@ -206,31 +327,22 @@ export function createStore(root) {
         if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
           return emptyReply(StatusBadArgument);
         }
-        let names;
-        try {
-          names = fs.readdirSync(located.path, { withFileTypes: true });
-        } catch (error) {
-          return emptyReply(mapError(error));
+        const loaded = loadSnap(located.path);
+        if (loaded.status !== undefined) {
+          return emptyReply(loaded.status);
         }
-        const listed = [];
-        for (const entry of names) {
-          if (entry.isSymbolicLink()) {
-            continue;
-          }
-          if (!entry.isFile() && !entry.isDirectory()) {
-            continue;
-          }
-          listed.push(entry.name);
+        const limit = request.limit;
+        if (typeof limit === "number" && Number.isInteger(limit) && limit > 0) {
+          return readBatch(loaded.entries, index, limit);
         }
-        listed.sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
-        const name = listed[index];
-        if (name === undefined) {
+        const entry = loaded.entries[index];
+        if (entry === undefined) {
           return emptyReply(StatusNotFound);
         }
-        if (Buffer.byteLength(name) > PathMax) {
+        if (Buffer.byteLength(entry.name) > PathMax) {
           return emptyReply(StatusTooLong);
         }
-        return { ...emptyReply(StatusOk), name, length: Buffer.byteLength(name) };
+        return { ...emptyReply(StatusOk), name: entry.name, length: Buffer.byteLength(entry.name) };
       }
       const mode = request.mode;
       if (typeof mode !== "number" || !Number.isInteger(mode) || mode < 0 || mode > 3) {
@@ -257,6 +369,10 @@ export function createStore(root) {
       if (id === 0) {
         fs.closeSync(fd);
         return emptyReply(StatusTooLong);
+      }
+      /* 写打开会创建或截断，目录快照里的名字和大小不再可信。只读打开不动它。 */
+      if (mode !== 0) {
+        dropSnap();
       }
       return { ...emptyReply(StatusOk), handle: id };
     }
@@ -331,6 +447,7 @@ export function createStore(root) {
       } catch (error) {
         return emptyReply(mapError(error));
       }
+      dropSnap();
       return { ...emptyReply(StatusOk), length: filled };
     }
     if (op === "rename") {
@@ -369,6 +486,7 @@ export function createStore(root) {
       } catch (error) {
         return emptyReply(mapError(error));
       }
+      dropSnap();
       return emptyReply(StatusOk);
     }
     return emptyReply(StatusBadArgument);

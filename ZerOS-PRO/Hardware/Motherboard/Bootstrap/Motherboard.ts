@@ -28,6 +28,7 @@ import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
 import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
 import { ZerOS as FaultRecordRoot } from "../../Cpu/Structure/FaultRecord";
 import { ZerOS as SevereRoot } from "../../Debug/Host/SevereConsole";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -41,6 +42,7 @@ export namespace ZerOS {
       const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
       const debugEnabled = FlagRoot.Hardware.Debug.debugEnabled;
       const reportSevere = SevereRoot.Hardware.Debug.reportSevere;
+      const acceptBootMark = BootTraceRoot.Hardware.Debug.acceptBootMark;
       type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
 
       /** 主板线程。第一次上电时创建。 */
@@ -63,6 +65,7 @@ export namespace ZerOS {
         bitmap: ImageBitmap | null,
         originX?: number,
         originY?: number,
+        scroll?: readonly number[],
       ) => void) | null = null;
 
       /** 显卡换成新的帧尺寸时调用。页面再把同一组宽高交给显示器。 */
@@ -113,6 +116,15 @@ export namespace ZerOS {
         if (kind === MailMessage.Trace) {
           return;
         }
+        if (kind === MailMessage.BootMark) {
+          const name = record["name"];
+          const at = record["at"];
+          /* 主板线程打的点送到这里才进表。页面自己打的点不走这条消息。 */
+          if (typeof name === "string" && typeof at === "number") {
+            acceptBootMark(name, at);
+          }
+          return;
+        }
         if (kind === MailMessage.CoreStop) {
           const ordinal = record["ordinal"];
           const reason = record["reason"];
@@ -153,6 +165,7 @@ export namespace ZerOS {
           const bitmap = record["bitmap"];
           const originX = record["originX"];
           const originY = record["originY"];
+          const scroll = record["scroll"];
           const listener = frameListener;
           if (typeof frameWidth !== "number" || typeof frameHeight !== "number" || listener === null) {
             if (bitmap instanceof ImageBitmap) {
@@ -168,6 +181,7 @@ export namespace ZerOS {
               bitmap,
               typeof originX === "number" ? originX : 0,
               typeof originY === "number" ? originY : 0,
+              Array.isArray(scroll) ? scroll.filter((item): item is number => typeof item === "number") : [],
             );
             return;
           }
@@ -315,6 +329,7 @@ export namespace ZerOS {
           bitmap: ImageBitmap | null,
           originX?: number,
           originY?: number,
+          scroll?: readonly number[],
         ) => void): void {
           frameListener = listener;
         },

@@ -82,6 +82,8 @@ description: >-
 | `Structure/MemoryException.ts` 只含结构 + create 工厂 | 在 `MemoryController.ts` 内再定义一遍异常类型 |
 | `Controller/MemoryController.ts` 只含总控类 | `Memory/` 根下十几份平级文件无子目录 |
 
+`Boot/`、`Kernel/`、`System/` 的 Obr 同样一责一文件。新职责新建 `.obr`，禁止追加进已有大文件。细则在 `Documents/Rules/source-isolation.mdc`。
+
 ## 文件头与代码组织
 
 每个 `.ts` 文件顶部必须有中文文件头，至少包含：
@@ -164,6 +166,7 @@ npm run check
 - 函数/方法内部无步骤注释（逻辑非平凡时）
 - **在 `Hardware/Memory/` 根目录平铺枚举/结构/类**，或不按 `Config|Enum|Structure|…` 归类
 - **单文件塞满**枚举 + 多结构 + 类 + 工厂
+- 把控制台、管道、设备、设置页或加载画面追加进已经负责别的事的 `.obr`
 - `as any`、`!` 非空断言连环、空 catch
 
 ## 交付自检

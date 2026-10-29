@@ -1,0 +1,130 @@
+/* 任务的命令名。紧挨终端格子存放，起点向格子要，不自己算布局。
+   不管绘制，不管键盘。 */
+#LINK /start.obr, /exec.obr, /task.obr, /boot.obr, /spawn.obr
+import fs;
+import proc;
+import memory;
+
+/* 命令名不进任务的 19 个字。终端格子用到 +253952，这里从 +262144 起，中间留一截。
+   每份先是长度字，再 32 个八位组。512 份大约 16 万位，仍在编译器栈 +67125248 之前。 */
+deRfun commBase(long index): long {
+  return gridBase() + 262144L + index * 320L;
+}
+
+deRfun commClear(long index): void {
+  if (index < 0L || index >= taskLimit()) {
+    return;
+  }
+  memory::store64(0L, commBase(index));
+}
+
+deRfun commPut(long index, long addr, long count): void {
+  if (index < 0L || index >= taskLimit()) {
+    return;
+  }
+  if (count < 0L) {
+    count = 0L;
+  }
+  if (count > 32L) {
+    count = 32L;
+  }
+  long at = commBase(index);
+  memory::store64(count, at);
+  long step = 0L;
+  while (step < count) {
+    long value = memory::loadOctet(addr + step * 8L);
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    memory::storeOctet(value, at + 64L + step * 8L);
+    step = step + 1L;
+  }
+}
+
+/* 路径是计数字符串。去掉末尾的斜杠，只留下最后一段，超长就留末尾 32 个八位组。 */
+deRfun commFromPath(long index, long path): void {
+  long len = memory::load64(path);
+  if (len < 1L || len > 8192L) {
+    commClear(index);
+    return;
+  }
+  long end = len;
+  while (end > 0L) {
+    long value = memory::loadOctet(path + 64L + (end - 1L) * 8L);
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    if (value != 47L) {
+      break;
+    }
+    end = end - 1L;
+  }
+  long start = end;
+  while (start > 0L) {
+    long value = memory::loadOctet(path + 64L + (start - 1L) * 8L);
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    if (value == 47L) {
+      break;
+    }
+    start = start - 1L;
+  }
+  long count = end - start;
+  if (count > 32L) {
+    start = end - 32L;
+    count = 32L;
+  }
+  commPut(index, path + 64L + start * 8L, count);
+}
+
+deRfun commNamed(long index, long which): void {
+  long at = commBase(index);
+  if (index < 0L || index >= taskLimit()) {
+    return;
+  }
+  if (which == 0L) {
+    memory::store64(4L, at);
+    memory::storeOctet(105L, at + 64L);
+    memory::storeOctet(110L, at + 72L);
+    memory::storeOctet(105L, at + 80L);
+    memory::storeOctet(116L, at + 88L);
+    return;
+  }
+  if (which == 1L) {
+    memory::store64(5L, at);
+    memory::storeOctet(112L, at + 64L);
+    memory::storeOctet(117L, at + 72L);
+    memory::storeOctet(108L, at + 80L);
+    memory::storeOctet(115L, at + 88L);
+    memory::storeOctet(101L, at + 96L);
+    return;
+  }
+  memory::store64(0L, at);
+}
+
+deRfun commLen(long index): long {
+  if (index < 0L || index >= taskLimit()) {
+    return 0L;
+  }
+  long count = memory::load64(commBase(index));
+  if (count < 0L) {
+    return 0L;
+  }
+  if (count > 32L) {
+    return 32L;
+  }
+  return count;
+}
+
+deRfun commByte(long index, long at): long {
+  if (index < 0L || index >= taskLimit() || at < 0L || at >= commLen(index)) {
+    return 0L;
+  }
+  long value = memory::loadOctet(commBase(index) + 64L + at * 8L);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+

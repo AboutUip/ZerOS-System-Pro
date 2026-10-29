@@ -58,6 +58,7 @@ const EscapeForm kEscape[] = {
     {"gpu.character", 0x12, 5},
     {"gpu.accel", 0x13, 6},
     {"carry", 0x15, 6},
+    {"offer", 0x1F, 6},
 };
 
 const WideForm kWide[] = {

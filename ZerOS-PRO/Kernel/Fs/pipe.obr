@@ -1,0 +1,199 @@
+/* 管道。两端的描述符仍由文件层分配，数据环在这里。
+   不管路径、目录项和终端。 */
+#LINK /vfs.obr
+import fs;
+import proc;
+import sched;
+import trap;
+import board;
+import memory;
+
+deRfun pipeShut(long index, long flags): void {
+  Pipe* pipe = pipeAt(index);
+  if (flags == 0L && pipe.readers > 0L) {
+    pipe.readers = pipe.readers - 1L;
+  }
+  if (flags != 0L && pipe.writers > 0L) {
+    pipe.writers = pipe.writers - 1L;
+  }
+  if (pipe.readers > 0L || pipe.writers > 0L) {
+    pipeFinish(index);
+  }
+  if (pipe.writers == 0L && pipe.readWait >= 0L && pipe.count == 0L) {
+    long waiter = pipe.readWait;
+    pipe.readWait = -1L;
+    memory::store64(0L, query(1L, 8L, waiter) + 320L);
+    reply(waiter, 0L);
+  }
+  if (pipe.readers == 0L && pipe.writeWait >= 0L) {
+    long waiter = pipe.writeWait;
+    pipe.writeWait = -1L;
+    reply(waiter, 5L);
+  }
+  if (pipe.readers == 0L && pipe.writers == 0L) {
+    pipe.used = 0L;
+    pipe.count = 0L;
+    pipe.readWait = -1L;
+    pipe.writeWait = -1L;
+  }
+}
+
+/* 又有一个描述符握住这条管道端。关闭只减一份，最后一份才把端拆掉。 */
+deRfun pipeHold(long index, long flags): void {
+  Pipe* pipe = pipeAt(index);
+  if (flags == 0L) {
+    pipe.readers = pipe.readers + 1L;
+  }
+  if (flags != 0L) {
+    pipe.writers = pipe.writers + 1L;
+  }
+}
+
+/* 把已经堵在这条管道上的另一端放行。读端要有字节才醒，写端要有空位才醒。 */
+deRfun pipeFinish(long slot): void {
+  long pass = 0L;
+  while (pass < 2L) {
+    Pipe* pipe = pipeAt(slot);
+    if (pipe.readWait >= 0L && pipe.count > 0L) {
+      long waiter = pipe.readWait;
+      pipe.readWait = -1L;
+      long home = query(1L, 8L, waiter);
+      long count = memory::load64(home + 256L);
+      long got = 0L;
+      while (got < count && pipe.count > 0L) {
+        long value = memory::loadOctet(pipeData(slot) + pipe.head * 8L);
+        memory::storeOctet(value, byteAt(home) + got * 8L);
+        pipe.head = pipe.head + 1L;
+        if (pipe.head == pipeRoom()) {
+          pipe.head = 0L;
+        }
+        pipe.count = pipe.count - 1L;
+        got = got + 1L;
+      }
+      memory::store64(got, home + 320L);
+      reply(waiter, 0L);
+    }
+    pipe = pipeAt(slot);
+    if (pipe.writeWait >= 0L && pipe.count < pipeRoom() && pipe.readers > 0L) {
+      long waiter = pipe.writeWait;
+      pipe.writeWait = -1L;
+      long home = query(1L, 8L, waiter);
+      long count = memory::load64(home + 256L);
+      long got = 0L;
+      while (got < count && pipe.count < pipeRoom()) {
+        long value = memory::loadOctet(byteAt(home) + got * 8L);
+        long at = pipe.head + pipe.count;
+        if (at >= pipeRoom()) {
+          at = at - pipeRoom();
+        }
+        memory::storeOctet(value, pipeData(slot) + at * 8L);
+        pipe.count = pipe.count + 1L;
+        got = got + 1L;
+      }
+      memory::store64(got, home + 320L);
+      reply(waiter, 0L);
+    }
+    pass = pass + 1L;
+  }
+}
+
+deRfun pipeCopy(File* file, long home, long writing, long caller): long {
+  Pipe* pipe = pipeAt(file.handle);
+  if (pipe.used == 0L) {
+    return 5L;
+  }
+  long count = memory::load64(home + 256L);
+  if (count < 0L) {
+    return 13L;
+  }
+  long got = 0L;
+  if (writing == 0L) {
+    while (got < count && pipe.count > 0L) {
+      long value = memory::loadOctet(pipeData(file.handle) + pipe.head * 8L);
+      memory::storeOctet(value, byteAt(home) + got * 8L);
+      pipe.head = pipe.head + 1L;
+      if (pipe.head == pipeRoom()) {
+        pipe.head = 0L;
+      }
+      pipe.count = pipe.count - 1L;
+      got = got + 1L;
+    }
+  } else {
+    if (pipe.readers == 0L) {
+      return 5L;
+    }
+    while (got < count && pipe.count < pipeRoom()) {
+      long value = memory::loadOctet(byteAt(home) + got * 8L);
+      long at = pipe.head + pipe.count;
+      if (at >= pipeRoom()) {
+        at = at - pipeRoom();
+      }
+      memory::storeOctet(value, pipeData(file.handle) + at * 8L);
+      pipe.count = pipe.count + 1L;
+      got = got + 1L;
+    }
+  }
+  memory::store64(got, home + 320L);
+  pipeFinish(file.handle);
+  if (writing == 0L && got == 0L && pipeAt(file.handle).writers > 0L) {
+    if (pipeAt(file.handle).readWait >= 0L) {
+      return 11L;
+    }
+    pipeAt(file.handle).readWait = caller;
+    schedSleep(caller);
+    return -2L;
+  }
+  if (writing == 1L && got == 0L && count > 0L && pipeAt(file.handle).readers > 0L) {
+    if (pipeAt(file.handle).writeWait >= 0L) {
+      return 11L;
+    }
+    pipeAt(file.handle).writeWait = caller;
+    schedSleep(caller);
+    return -2L;
+  }
+  return 0L;
+}
+
+deRfun doPipe(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  long slot = 0L;
+  while (slot < pipeCount() && pipeAt(slot).used == 1L) {
+    slot = slot + 1L;
+  }
+  if (slot >= pipeCount()) {
+    return 7L;
+  }
+  long readFd = allocFd(taskIndex);
+  if (readFd < 0L) {
+    return 7L;
+  }
+  File* reading = fileAt(slotOf(taskIndex, readFd));
+  reading.used = 1L;
+  long writeFd = allocFd(taskIndex);
+  if (writeFd < 0L) {
+    reading.used = 0L;
+    return 7L;
+  }
+  Pipe* pipe = pipeAt(slot);
+  pipe.used = 1L;
+  pipe.readers = 1L;
+  pipe.writers = 1L;
+  pipe.head = 0L;
+  pipe.count = 0L;
+  pipe.readWait = -1L;
+  pipe.writeWait = -1L;
+  reading.ino = -1L;
+  reading.offset = 0L;
+  reading.flags = 0L;
+  reading.handle = slot;
+  File* writing = fileAt(slotOf(taskIndex, writeFd));
+  writing.used = 1L;
+  writing.ino = -1L;
+  writing.offset = 0L;
+  writing.flags = 1L;
+  writing.handle = slot;
+  memory::store64(readFd, home + 128L);
+  memory::store64(writeFd, home + 192L);
+  return 0L;
+}
+

@@ -37,6 +37,8 @@ deRfun below(long top, long size): long;
 deRfun hit(long x, long y, long left, long top, long width, long height): long;
 /* 把加速颜色目标清成这个颜色。透明度也是 0 到 255。 */
 deRfun clear(long color, long alpha): void;
+/* 把颜色目标里一条横带从 srcY 抄到 dstY。宽为 0 时用整帧宽。不清除空出来的像素。 */
+deRfun shift(long srcY, long dstY, long height, long width): void;
 /* 屏幕像素矩形。左上是原点，y 向下。会加上当前局部原点。 */
 deRfun rect(long x, long y, long width, long height, long color, long alpha): void;
 /* 圆角矩形。半径收到不超过较短边的一半，0 是直角。 */

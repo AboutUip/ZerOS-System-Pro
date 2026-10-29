@@ -1,4 +1,4 @@
-/* 进程层。任务、凭证、地址和信号。堆、调度、文件、执行和入口按 #LINK 调用。 */
+/* 进程层。任务表在 task.obr，客核堆池在 pool.obr，信号和等待在 sig.obr。 */
 
 /* 一颗核心上的任务。空、正在跑、时间片用尽、等着、已经停机、等父任务收尸。 */
 enum TaskState: long { Empty, Running, Ready, Sleeping, Stopped, Zombie }
@@ -41,6 +41,10 @@ deRfun slotLimit(): long;
 deRfun slotPick(long index): long;
 deRfun slotHold(long index): long;
 deRfun poolGrow(long core, long extra): long;
+deRfun poolGive(long core, long origin, long span): void;
+deRfun heapOf(long core): long;
+deRfun taskRelease(long index): void;
+deRfun taskScanEnd(): long;
 deRfun kSpan(): long;
 deRfun kSlot(): long;
 deRfun kArena(long core): long;

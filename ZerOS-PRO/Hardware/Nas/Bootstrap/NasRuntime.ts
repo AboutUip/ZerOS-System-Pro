@@ -131,6 +131,7 @@ export namespace ZerOS {
           length: 0,
           index: 0,
           data: "",
+          limit: 0,
         };
       }
 
@@ -216,6 +217,7 @@ export namespace ZerOS {
         const handle = record["handle"];
         const name = record["name"];
         const data = record["data"];
+        const mtime = record["mtime"];
         return {
           status,
           kind: typeof kind === "number" ? kind : 0,
@@ -224,6 +226,7 @@ export namespace ZerOS {
           name: typeof name === "string" ? name : "",
           data: typeof data === "string" ? data : "",
           length: typeof record["length"] === "number" ? record["length"] : 0,
+          mtime: typeof mtime === "number" && Number.isSafeInteger(mtime) ? mtime : Number.NaN,
         };
       }
 
@@ -813,6 +816,182 @@ export namespace ZerOS {
               /* 连接已经断了，句柄随服务进程收掉。 */
             }
           }
+        }
+      }
+
+      /** 从请求里取出一条计数字符串。放不下或不是 UTF-8 时返回空。 */
+      function takePath(request: Uint8Array, at: number): { readonly text: string; readonly next: number } | null {
+        if (at + 2 > request.length) {
+          return null;
+        }
+        const count = u16(request[at] ?? 0, request[at + 1] ?? 0);
+        if (count > PathMax || at + 2 + count > request.length) {
+          return null;
+        }
+        const slice: number[] = [];
+        for (let index = 0; index < count; index += 1) {
+          slice.push(request[at + 2 + index] ?? 0);
+        }
+        const text = textFromOctets(slice);
+        if (text === null) {
+          return null;
+        }
+        return { text, next: at + 2 + count };
+      }
+
+      /**
+       * 把有符号毫秒写成 8 个小端八位组。
+       * 不是安全整数时返回 false，调用方按内部失败处理，不得写成 0。
+       */
+      function writeSigned(bytes: Uint8Array, offset: number, value: number): boolean {
+        if (!Number.isSafeInteger(value)) {
+          return false;
+        }
+        let rest = BigInt(value);
+        if (rest < 0n) {
+          rest += 1n << 64n;
+        }
+        for (let index = 0; index < 8; index += 1) {
+          bytes[offset + index] = Number(rest & 255n);
+          rest >>= 8n;
+        }
+        return true;
+      }
+
+      /**
+       * 把服务答复收成 offer 的应答八位组。
+       * 查看是种类、4 个小端大小、8 个小端修改时间，一共 13 个八位组。
+       * 打开是 2 个小端句柄。列目录是服务已经排好的记录。其余成功操作没有应答。
+       */
+      function replyBytes(verb: number, reply: NasReply): Uint8Array | null {
+        if (verb === NasVerbStat) {
+          if (reply.kind !== NasKindFile && reply.kind !== NasKindDirectory) {
+            return null;
+          }
+          if (!Number.isInteger(reply.size) || reply.size < 0 || reply.size > 0xffffffff) {
+            return null;
+          }
+          const bytes = new Uint8Array(13);
+          bytes[0] = reply.kind;
+          bytes[1] = reply.size & 255;
+          bytes[2] = (reply.size >>> 8) & 255;
+          bytes[3] = (reply.size >>> 16) & 255;
+          bytes[4] = (reply.size >>> 24) & 255;
+          if (!writeSigned(bytes, 5, reply.mtime)) {
+            return null;
+          }
+          return bytes;
+        }
+        if (verb === NasVerbOpen) {
+          if (!Number.isInteger(reply.handle) || reply.handle < 1 || reply.handle > 0xffff) {
+            return null;
+          }
+          return Uint8Array.of(reply.handle & 255, (reply.handle >>> 8) & 255);
+        }
+        if (verb === NasVerbClose || verb === NasVerbMkdir || verb === NasVerbRemove || verb === NasVerbRename) {
+          return new Uint8Array(0);
+        }
+        if (verb === NasVerbReaddir) {
+          const bytes = decodeBase64(reply.data);
+          if (bytes === null) {
+            return null;
+          }
+          if (bytes.length !== reply.length) {
+            return null;
+          }
+          return bytes;
+        }
+        return null;
+      }
+
+      /**
+       * 一次完成一条带路径的操作。请求布局见 ZNP1。
+       * 这不是新的操作码。返回前不留下会话。失败时 bytes 为空。
+       */
+      export async function offerCall(request: Uint8Array, replyMax: number): Promise<{ readonly status: number; readonly bytes: Uint8Array }> {
+        const empty = new Uint8Array(0);
+        if (!Number.isInteger(replyMax) || replyMax < 0 || replyMax > 268435456) {
+          return { status: NasStatusBadArgument, bytes: empty };
+        }
+        if (request.length < 8 || request.length > 8 + 2 + PathMax + 2 + PathMax) {
+          return { status: NasStatusBadArgument, bytes: empty };
+        }
+        if (live.locked) {
+          return { status: NasStatusBusy, bytes: empty };
+        }
+        const verb = request[0] ?? 0;
+        const mode = request[1] ?? 0;
+        const start = u32(request[2] ?? 0, request[3] ?? 0, request[4] ?? 0, request[5] ?? 0);
+        const span = u16(request[6] ?? 0, request[7] ?? 0);
+        let path0 = "";
+        let path1 = "";
+        const withPath = verb === NasVerbStat || verb === NasVerbOpen || verb === NasVerbMkdir || verb === NasVerbRemove || verb === NasVerbRename || verb === NasVerbReaddir;
+        if (withPath) {
+          const first = takePath(request, 8);
+          if (first === null) {
+            return { status: NasStatusBadName, bytes: empty };
+          }
+          path0 = first.text;
+          if (verb === NasVerbRename) {
+            const second = takePath(request, first.next);
+            if (second === null) {
+              return { status: NasStatusBadName, bytes: empty };
+            }
+            if (second.next !== request.length) {
+              return { status: NasStatusBadName, bytes: empty };
+            }
+            path1 = second.text;
+          } else if (first.next !== request.length) {
+            return { status: NasStatusBadArgument, bytes: empty };
+          }
+        } else if (verb !== NasVerbClose || request.length !== 8) {
+          return { status: NasStatusBadArgument, bytes: empty };
+        }
+        if (verb === NasVerbOpen && (mode < ModeRead || mode > ModeAppend)) {
+          return { status: NasStatusBadArgument, bytes: empty };
+        }
+        if (verb === NasVerbClose && (start < 1 || start > 0xffff)) {
+          return { status: NasStatusBadHandle, bytes: empty };
+        }
+        if (verb === NasVerbReaddir && (span < 1 || span > 65535)) {
+          return { status: NasStatusTooLong, bytes: empty };
+        }
+        const asked: NasRequest = {
+          ...emptyRequest(),
+          op: verb === NasVerbStat ? "stat"
+            : verb === NasVerbOpen ? "open"
+              : verb === NasVerbClose ? "close"
+                : verb === NasVerbMkdir ? "mkdir"
+                  : verb === NasVerbRemove ? "remove"
+                    : verb === NasVerbRename ? "rename"
+                      : "readdir",
+          path: path0,
+          from: path0,
+          to: path1,
+          handle: start,
+          mode,
+          index: start,
+          limit: verb === NasVerbReaddir ? span : 0,
+        };
+        wipe(live);
+        live.locked = true;
+        try {
+          const fetched = await postNas(asked);
+          if (fetched.status !== NasStatusOk) {
+            return { status: fetched.status, bytes: empty };
+          }
+          const bytes = replyBytes(verb, fetched);
+          if (bytes === null) {
+            return { status: NasStatusIo, bytes: empty };
+          }
+          if (bytes.length > replyMax) {
+            return { status: NasStatusTooLong, bytes: empty };
+          }
+          return { status: NasStatusOk, bytes };
+        } catch {
+          return { status: NasStatusNotReady, bytes: empty };
+        } finally {
+          live.locked = false;
         }
       }
 

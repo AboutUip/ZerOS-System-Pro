@@ -1,7 +1,7 @@
 /* 调度。用户核上的任务数不再按核封顶。同一核上前台优先：更高档立刻抢占，同一档轮转。
    后台只有在没有更高档就绪时才换上。前台自己停住或时间片让出之后，后台马上可以上。
    停在系统调用里的不换。停机的交给进程层。领不到槽的不换。跨核的让法在宿主，不在这一圈。 */
-#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr
+#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr, /pipe.obr, /dev.obr, /sig.obr, /boot.obr, /spawn.obr
 import proc;
 import board;
 import obr.os;

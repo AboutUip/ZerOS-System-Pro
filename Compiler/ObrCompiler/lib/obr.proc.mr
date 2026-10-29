@@ -39,6 +39,10 @@ deRfun dup2(long home, long from, long to): long;
 deRfun stat(long home): long;
 /* 服务 9。路径在 +16384。名字八位组写到 +131072，个数在 +256。 */
 deRfun readdir(long home, long index, long capacity): long;
+/* 服务 34。从下标起把这一层放得进字节区的记录一次交回。+256 是条数，+320 是八位组数。
+   每条先是 9 个字：名字长度、种类、大小、权限、属主、属组、访问时间、修改时间、状态时间，随后是名字。
+   下一条紧跟名字。下标已经越过末尾时状态是 2。 */
+deRfun list(long home, long index): long;
 /* 服务 10。路径在 +16384。 */
 deRfun mkdir(long home): long;
 /* 服务 11。路径在 +16384。 */

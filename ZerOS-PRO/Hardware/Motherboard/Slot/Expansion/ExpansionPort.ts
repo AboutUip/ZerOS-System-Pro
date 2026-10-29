@@ -271,6 +271,30 @@ export namespace ZerOS {
             seated.busy = false;
           }
         }
+
+        /**
+         * 把一段请求交给这个口。插头没有 Offer 时返回 null。
+         * 忙着交换时失败。进行中占住这个口，结束时放开。
+         */
+        export async function Offer(index: number, request: Uint8Array, replyMax: number): Promise<{ readonly status: number; readonly bytes: Uint8Array } | null> {
+          requireIndex(index);
+          const seated = ports[index];
+          if (seated?.state !== PortStateBooted) {
+            fail("expansion port is not ready");
+          }
+          if (seated.busy) {
+            fail("expansion port is busy");
+          }
+          if (seated.provider.Offer === undefined) {
+            return null;
+          }
+          seated.busy = true;
+          try {
+            return await seated.provider.Offer(request, replyMax);
+          } finally {
+            seated.busy = false;
+          }
+        }
       }
     }
   }

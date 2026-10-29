@@ -37,6 +37,7 @@ import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 import { ZerOS as QueryRoot } from "../Host/HardwareQuery";
 import { ZerOS as SandboxRuntimeRoot } from "../../Sandbox/Bootstrap/SandboxRuntime";
 import { ZerOS as QueuedRoot } from "../Host/QueuedWorker";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -58,6 +59,7 @@ export namespace ZerOS {
       const Exchange = PortRoot.Hardware.Motherboard.Slot.Exchange;
       const Drain = PortRoot.Hardware.Motherboard.Slot.Drain;
       const Carry = PortRoot.Hardware.Motherboard.Slot.Carry;
+      const Offer = PortRoot.Hardware.Motherboard.Slot.Offer;
       const Identity = PortRoot.Hardware.Motherboard.Slot.Identity;
       const FieldChar = PortRoot.Hardware.Motherboard.Slot.FieldChar;
       const State = PortRoot.Hardware.Motherboard.Slot.State;
@@ -70,6 +72,134 @@ export namespace ZerOS {
       const MemoryOpcodeStore64 = OpcodeRoot.Hardware.Motherboard.MemoryOpcodeStore64;
       /** 固件调试开关。BIOS 用整字写成 0 或 1。不是协议字段。 */
       const DebugSwitchAddress = 8128n;
+      /**
+       * 引导探针。键盘环五个槽停在这个字前面，显示器尺寸从 7360 起。
+       * 装入程序、固件和监督核按阶段写入编号。不是协议字段。
+       */
+      const BootProbeAddress = 7296n;
+      /** 启动结束标志。核心 2 或 3 写成 1。和探针一样从邮箱段里认。 */
+      const SharedBootFlag = 5952n;
+      /** 准备完成。1 号进入等待后写成 1。 */
+      const SharedInstallWord = 6208n;
+      /** 监督核请固件停笔。 */
+      const SharedStopWord = 6272n;
+      /** 固件已经停笔。 */
+      const SharedStopAck = 6336n;
+      const markGuestStage = BootTraceRoot.Hardware.Debug.markGuestStage;
+      const markBoot = BootTraceRoot.Hardware.Debug.markBoot;
+      /** 这四个字在引导之后仍会被反复写成 1。只记第一次。 */
+      let sawBootFlag = false;
+      let sawInstallFlag = false;
+      let sawStopFlag = false;
+      let sawAckFlag = false;
+
+      /** 共享标志从 0 变成 1 的那一次。后面的重复写入不再入表。 */
+      function noteFlagOnce(which: "done" | "install" | "stop" | "ack"): void {
+        if (which === "done") {
+          if (sawBootFlag) {
+            return;
+          }
+          sawBootFlag = true;
+          markBoot("flag-done");
+          return;
+        }
+        if (which === "install") {
+          if (sawInstallFlag) {
+            return;
+          }
+          sawInstallFlag = true;
+          markBoot("flag-install");
+          return;
+        }
+        if (which === "stop") {
+          if (sawStopFlag) {
+            return;
+          }
+          sawStopFlag = true;
+          markBoot("flag-stop");
+          return;
+        }
+        if (sawAckFlag) {
+          return;
+        }
+        sawAckFlag = true;
+        markBoot("flag-ack");
+      }
+
+      /**
+       * 整字编号才对上阶段名。
+       * 超出 0 到 64 仍记下原值，避免一次写错把后面的阶段全部丢掉。
+       */
+      function noteBootProbe(value: bigint): void {
+        if (value >= 0n && value <= 64n) {
+          markGuestStage(Number(value));
+          return;
+        }
+        markBoot("raw-" + value.toString());
+      }
+
+      /** 整字落在共享标志上时记下宿主时刻。值为 1 才算这一段结束。 */
+      function noteFirmwareWord(address: bigint, value: bigint): void {
+        if (address === BootProbeAddress) {
+          noteBootProbe(value);
+        }
+        if (address === SharedBootFlag && value === 1n) {
+          noteFlagOnce("done");
+        }
+        if (address === SharedInstallWord && value === 1n) {
+          noteFlagOnce("install");
+        }
+        if (address === SharedStopWord && value === 1n) {
+          noteFlagOnce("stop");
+        }
+        if (address === SharedStopAck && value === 1n) {
+          noteFlagOnce("ack");
+        }
+      }
+
+      /**
+       * 从一段里取出对齐的 64 位小端整数。
+       * 盖不住目标字时返回 null。原生核一次送出的邮箱里常常夹着这个字。
+       */
+      function spanWord(address: bigint, bytes: Uint8Array, target: bigint): bigint | null {
+        const bits = BigInt(bytes.length) * 8n;
+        if (address > target || address + bits < target + 64n) {
+          return null;
+        }
+        const offset = Number((target - address) / 8n);
+        if (!Number.isInteger(offset) || offset < 0 || offset + 8 > bytes.length) {
+          return null;
+        }
+        let value = 0n;
+        for (let index = 0; index < 8; index += 1) {
+          value |= BigInt(bytes[offset + index] ?? 0) << BigInt(index * 8);
+        }
+        return value;
+      }
+
+      /** 原生核整段写回时，探针和四格共享标志都在这里认。 */
+      function noteFirmwareSpan(address: bigint, bytes: Uint8Array): void {
+        const probe = spanWord(address, bytes, BootProbeAddress);
+        if (probe !== null) {
+          noteBootProbe(probe);
+        }
+        const done = spanWord(address, bytes, SharedBootFlag);
+        if (done === 1n) {
+          noteFlagOnce("done");
+        }
+        const install = spanWord(address, bytes, SharedInstallWord);
+        if (install === 1n) {
+          noteFlagOnce("install");
+        }
+        const stop = spanWord(address, bytes, SharedStopWord);
+        if (stop === 1n) {
+          noteFlagOnce("stop");
+        }
+        const ack = spanWord(address, bytes, SharedStopAck);
+        if (ack === 1n) {
+          noteFlagOnce("ack");
+        }
+      }
 
       /** 整字是 0 或 1 时告诉页面。其它值不改开关。 */
       function noteDebugWord(value: bigint): void {
@@ -242,6 +372,7 @@ export namespace ZerOS {
         bitmap: ImageBitmap | null,
         originX = 0,
         originY = 0,
+        scroll: readonly number[] = [],
       ): boolean {
         if (bitmap !== null) {
           globalThis.postMessage(
@@ -251,6 +382,7 @@ export namespace ZerOS {
               frameHeight,
               originX,
               originY,
+              scroll,
               bitmap,
             },
             { transfer: [bitmap] },
@@ -309,7 +441,7 @@ export namespace ZerOS {
                 return;
               }
               const frame = await presentSurface();
-              if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, frame.bitmap, frame.originX, frame.originY)) {
+              if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, frame.bitmap, frame.originX, frame.originY, frame.scroll)) {
                 replyCore(port, false, true, 0n, `${seatPrefix} the frame copy could not be transferred`);
                 return;
               }
@@ -482,6 +614,44 @@ export namespace ZerOS {
               }
             }).catch((error: unknown) => {
               const message = error instanceof Error ? error.message : `${seatPrefix} a handle read failed`;
+              port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
+            });
+            return;
+          }
+          if (kind === "offer") {
+            const index = record["port"];
+            const requestAddress = record["request"];
+            const requestLength = record["length"];
+            const replyAddress = record["reply"];
+            const replyMax = record["limit"];
+            if (typeof index !== "number" || typeof requestAddress !== "bigint" || typeof requestLength !== "number" || typeof replyAddress !== "bigint" || typeof replyMax !== "number") {
+              throw new Error(`${seatPrefix} offer command is incomplete`);
+            }
+            if (requestLength < 0 || replyMax < 0 || requestLength > 268435456 || replyMax > 268435456) {
+              throw new Error(`${seatPrefix} offer length is out of range`);
+            }
+            const request = requestLength === 0 ? new Uint8Array(0) : sharedMemoryLink().readSpan(requestAddress, requestLength);
+            void Offer(index, request, replyMax).then((offered) => {
+              if (offered === null) {
+                port.postMessage({ kind: "port-result", ok: false, value: 0n, message: `${seatPrefix} this port cannot offer` });
+                return;
+              }
+              if (offered.status !== 0 || offered.bytes.length > replyMax) {
+                const status = offered.status !== 0 ? offered.status : 7;
+                port.postMessage({ kind: "port-result", ok: true, value: BigInt(-status), message: "" });
+                return;
+              }
+              try {
+                if (offered.bytes.length > 0) {
+                  sharedMemoryLink().writeSpan(replyAddress, offered.bytes);
+                }
+                port.postMessage({ kind: "port-result", ok: true, value: BigInt(offered.bytes.length), message: "" });
+              } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : `${seatPrefix} an offer failed`;
+                port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
+              }
+            }).catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : `${seatPrefix} an offer failed`;
               port.postMessage({ kind: "port-result", ok: false, value: 0n, message });
             });
             return;
@@ -687,6 +857,9 @@ export namespace ZerOS {
           if (opcode === MemoryOpcodeStore64 && address === DebugSwitchAddress) {
             noteDebugWord(data);
           }
+          if (opcode === MemoryOpcodeStore64) {
+            noteFirmwareWord(address, data);
+          }
           return { value: 0n, found: 0, span: null };
         }
         if (tag === 2) {
@@ -748,6 +921,24 @@ export namespace ZerOS {
           }
           sharedMemoryLink().writeSpan(address, carried.bytes);
           return { value: BigInt(carried.bytes.length), found: 0, span: null };
+        }
+        if (tag === 10) {
+          if (!Number.isInteger(b) || !Number.isInteger(c) || b < 0 || c < 0 || b > 268435456 || c > 268435456) {
+            throw new Error(`${seatPrefix} offer length is out of range`);
+          }
+          const request = b === 0 ? new Uint8Array(0) : sharedMemoryLink().readSpan(address, b);
+          const offered = await Offer(a, request, c);
+          if (offered === null) {
+            throw new Error(`${seatPrefix} this port cannot offer`);
+          }
+          if (offered.status !== 0 || offered.bytes.length > c) {
+            const status = offered.status !== 0 ? offered.status : 7;
+            return { value: BigInt(-status), found: 0, span: null };
+          }
+          if (offered.bytes.length > 0) {
+            sharedMemoryLink().writeSpan(data, offered.bytes);
+          }
+          return { value: BigInt(offered.bytes.length), found: 0, span: null };
         }
         if (tag === 7) {
           return { value: BigInt(State(a)), found: 0, span: null };
@@ -853,7 +1044,7 @@ export namespace ZerOS {
           onCoreMemoryClock(port, record);
           return;
         }
-        if (record?.["kind"] === "xchg" || record?.["kind"] === "fill" || record?.["kind"] === "carry" || record?.["kind"] === "mmap" || record?.["kind"] === "munmap" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query" || record?.["kind"] === "query-span") {
+        if (record?.["kind"] === "xchg" || record?.["kind"] === "fill" || record?.["kind"] === "carry" || record?.["kind"] === "offer" || record?.["kind"] === "mmap" || record?.["kind"] === "munmap" || record?.["kind"] === "port-state" || record?.["kind"] === "port-char" || record?.["kind"] === "port-byte" || record?.["kind"] === "query" || record?.["kind"] === "query-span") {
           onCorePort(port, record);
           return;
         }
@@ -881,6 +1072,7 @@ export namespace ZerOS {
               await demandBytes(address, bytes.length);
               sharedMemoryLink().writeSpan(address, bytes);
               noteDebugSpan(address, bytes);
+              noteFirmwareSpan(address, bytes);
               port.postMessage({ kind: "store-span-result", ok: true, message: "" });
             } catch (error: unknown) {
               const message = error instanceof Error ? error.message : `${seatPrefix} native store failed`;
@@ -912,6 +1104,7 @@ export namespace ZerOS {
                 await demandBytes(run.address, run.bytes.length);
                 sharedMemoryLink().writeSpan(run.address, run.bytes);
                 noteDebugSpan(run.address, run.bytes);
+                noteFirmwareSpan(run.address, run.bytes);
               }
               port.postMessage({ kind: "store-spans-result", ok: true, message: "" });
             } catch (error: unknown) {
@@ -969,6 +1162,9 @@ export namespace ZerOS {
             ExecuteStore(instruction);
             if (opcode === MemoryOpcodeStore64 && address === DebugSwitchAddress) {
               noteDebugWord(word);
+            }
+            if (opcode === MemoryOpcodeStore64) {
+              noteFirmwareWord(address, word);
             }
             port.postMessage({ kind: "exec-result", ok: true, isStore: true, value: 0n, message: "" });
           } catch (error: unknown) {

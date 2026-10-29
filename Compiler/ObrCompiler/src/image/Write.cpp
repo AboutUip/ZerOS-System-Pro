@@ -98,6 +98,7 @@ const NamedCode kNamed[] = {
     {"core", 75, 1},
     {"fill", 76, 4},
     {"carry", 77, 6},
+    {"offer", 85, 6},
     {"capture", 78, 2},
     {"restore", 79, 2},
     {"attach", 80, 4},

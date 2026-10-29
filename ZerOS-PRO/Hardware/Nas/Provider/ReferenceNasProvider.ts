@@ -32,6 +32,7 @@ export namespace ZerOS {
       const exchangeWord = RuntimeRoot.Hardware.Nas.exchangeWord;
       const drainPull = RuntimeRoot.Hardware.Nas.drainPull;
       const readHandle = RuntimeRoot.Hardware.Nas.readHandle;
+      const offerCall = RuntimeRoot.Hardware.Nas.offerCall;
       const runNasSelfCheck = SelfCheckRoot.Hardware.Nas.runNasSelfCheck;
 
       /**
@@ -57,6 +58,9 @@ export namespace ZerOS {
         },
         Carry(handle: number, offset: number, count: number): Promise<{ readonly status: number; readonly bytes: Uint8Array }> {
           return readHandle(handle, offset, count);
+        },
+        Offer(request: Uint8Array, replyMax: number): Promise<{ readonly status: number; readonly bytes: Uint8Array }> {
+          return offerCall(request, replyMax);
         },
       };
     }

@@ -225,3 +225,4 @@
 | ZGP1 | `Corner`、`Round`、`Ellipse`、`Frame`。圆角、内切椭圆，以及颜色目标的宽高 |
 | ZGP1 | `FontFace`、`FontSelect`、`FontDraw`。TrueType 子集与像素中心着墨见 Font.md。封闭点阵不增加码点 |
 | ZGP1 | Font.md 把字体文件长度上界改为 `33554432`。像素个数上限仍是 `16777216` |
+| ZGP1 | `CopyBand` 把颜色目标里一条横带从源 y 抄到目的 y。重叠时按调用前的像素抄写。见 AccelRegistry |

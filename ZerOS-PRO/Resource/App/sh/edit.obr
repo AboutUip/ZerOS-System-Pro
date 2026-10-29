@@ -3,6 +3,7 @@
    一行最多 240 个八位组。历史 32 条，空行和与上一条相同的不记。
    字 0 长度，1 光标，2 历史条数，3 历史游标（-1 是正在打的新行），4 暂存长度，5 转义状态。
    字 6 为 1 时正在收 here-document 正文：换行不进历史，制表符写进行。
+   其余时候制表符返回 5，行本身不变，由壳去补路径。上下方向键走历史。
    正文从 +4096 起。暂存从 +6144 起。历史从 +8192 起，每条 64 位长度加 256 个八位组。
    << 与 <<- 的结束词放在命令区后面、暂存前面。这一轮正文不做参数展开、命令替换和算术展开。 */
 #LINK /sh.obr, /edit-check.obr
@@ -147,6 +148,37 @@ deRfun editDrop(long state, long from, long to): void {
   }
   memory::store64(len - gap, state);
   memory::store64(from, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+/* 用 src 的 srcLen 个八位组换掉行内 [at, at+span)。光标落到换进去的末尾。放不下就不动。 */
+deRfun editSplice(long state, long at, long span, long src, long srcLen): void {
+  long len = editLen(state);
+  if (at < 0L || span < 0L || srcLen < 0L || at + span > len) {
+    return;
+  }
+  long next = len - span + srcLen;
+  if (next > 240L) {
+    return;
+  }
+  long line = lineAt(state);
+  long tail = len - (at + span);
+  if (srcLen > span) {
+    long index = tail;
+    while (index > 0L) {
+      index = index - 1L;
+      putByte(line, at + srcLen + index, editAt(state, at + span + index));
+    }
+  } else if (srcLen < span) {
+    long index = 0L;
+    while (index < tail) {
+      putByte(line, at + srcLen + index, editAt(state, at + span + index));
+      index = index + 1L;
+    }
+  }
+  copyBytes(src, line + at * 8L, srcLen);
+  memory::store64(next, state);
+  memory::store64(at + srcLen, state + 64L);
   memory::store64(-1L, state + 192L);
 }
 
@@ -323,7 +355,7 @@ deRfun delForward(long state): void {
   }
 }
 
-/* 0 继续。1 提交。2 空行上的 Ctrl-D。3 Ctrl-C。4 Ctrl-L。 */
+/* 0 继续。1 提交。2 空行上的 Ctrl-D。3 Ctrl-C。4 Ctrl-L。5 制表符，调用方补路径。 */
 deRfun editFeed(long state, long unit): long {
   if (unit < 0L) {
     unit = unit + 256L;
@@ -417,8 +449,9 @@ deRfun editFeed(long state, long unit): long {
   if (unit == 9L) {
     if (editBody(state) == 1L) {
       editInsert(state, 9L);
+      return 0L;
     }
-    return 0L;
+    return 5L;
   }
   if (unit >= 32L && unit < 127L) {
     editInsert(state, unit);

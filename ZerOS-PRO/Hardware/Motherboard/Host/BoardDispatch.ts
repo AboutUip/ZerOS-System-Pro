@@ -32,6 +32,7 @@ import { ZerOS as MailboxRoot } from "./Mailbox";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 import { ZerOS as PointerConfigRoot } from "../../Pointer/Config/PointerConfig";
 import { ZerOS as QueryRoot } from "./HardwareQuery";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -396,8 +397,10 @@ export namespace ZerOS {
               };
               /* 核心 3 与 Load.obr 的 -slot、固件的 schedule(3) 是同一个编号。先装上，等固件自己启动。 */
               await seatBinary(3, loader);
+              BootTraceRoot.Hardware.Debug.markBoot("loader");
               /* 引导画面已经结束。0 号核心接下来跑的是固件循环，源位置改对这份程序。 */
               siteMaps.set(0, driveSites);
+              BootTraceRoot.Hardware.Debug.markBoot("bios");
               if (drive instanceof Uint8Array) {
                 startResidentBinary(drive, onFault);
               } else {

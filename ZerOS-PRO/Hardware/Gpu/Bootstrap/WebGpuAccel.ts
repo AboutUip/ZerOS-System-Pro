@@ -257,6 +257,11 @@ struct Vout {
       let viewGroup: GPUBindGroup | null = null;
       /** 这一帧真正改过的像素。下一次位图只交这块，不再整帧读回。 */
       let inkLeft = 0;
+      /**
+       * 这一次提交里的横带。页面先按同样的矩形挪已经画上的像素，再贴脏块。
+       * 每条是源 y、目的 y、高、宽。
+       */
+      const viewBands: number[] = [];
       let inkTop = 0;
       let inkRight = 0;
       let inkBottom = 0;
@@ -338,7 +343,15 @@ struct Vout {
         first: number;
         /** 这一段的顶点个数。 */
         count: number;
+        /** 为真时这一段不画顶点，只把颜色目标里的一条横带从 srcY 抄到 dstY。 */
+        band: boolean;
+        srcY: number;
+        dstY: number;
+        bandH: number;
+        bandW: number;
       }
+      /** 横带拷贝的中转。和颜色目标同尺寸，颜色目标换掉时一起丢掉。 */
+      let bandScratch: GPUTexture | null = null;
       const screenPasses: ScreenPass[] = [];
       /**
        * 屏幕顶点写在这一块里。每个角再 new 一个短数组的话，CPU 页一帧有几百个字形，
@@ -391,6 +404,7 @@ struct Vout {
         scissorH = nextHeight;
         color = null;
         depth = null;
+        bandScratch = null;
         dropTargetViews();
         readback = null;
         viewCanvas = null;
@@ -456,7 +470,7 @@ struct Vout {
         color = active.createTexture({
           size: { width, height },
           format: "rgba8unorm",
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
         });
         depth = active.createTexture({
           size: { width, height },
@@ -924,7 +938,7 @@ struct Vout {
       /** 还没有图元时开一段。这一段记下当时的清除色，隐式清屏不会被后面的改色带走。 */
       function screenTail(): ScreenPass {
         const last = screenPasses[screenPasses.length - 1];
-        if (last !== undefined) {
+        if (last !== undefined && !last.band) {
           return last;
         }
         const created: ScreenPass = {
@@ -937,6 +951,11 @@ struct Vout {
           z: clearZ,
           first: screenUsed / screenFloats,
           count: 0,
+          band: false,
+          srcY: 0,
+          dstY: 0,
+          bandH: 0,
+          bandW: 0,
         };
         screenDepthPending = false;
         screenPasses.push(created);
@@ -1059,7 +1078,7 @@ struct Vout {
         /* 清颜色会改整帧。这一次位图必须把整幅交出去，不能只交后面画上的那一行。 */
         markFull();
         const last = screenPasses[screenPasses.length - 1];
-        if (last?.count === 0) {
+        if (last?.count === 0 && !last.band) {
           last.clearColor = true;
           last.red = clearRed;
           last.green = clearGreen;
@@ -1082,6 +1101,11 @@ struct Vout {
           z: clearZ,
           first: screenUsed / screenFloats,
           count: 0,
+          band: false,
+          srcY: 0,
+          dstY: 0,
+          bandH: 0,
+          bandW: 0,
         });
         screenDepthPending = false;
       }
@@ -1121,6 +1145,22 @@ struct Vout {
        * 把记下的屏幕图元一次提交。
        * 每一段清除是一个渲染通道，顶点在通道之间按顺序画，队列只收这一份命令。
        */
+      /** 横带先落到这张中转纹理，再写回颜色目标，源和目的重叠时也不会读到已经盖掉的像素。 */
+      function scratchBand(active: GPUDevice, source: GPUTexture): GPUTexture {
+        if (bandScratch !== null && bandScratch.width === source.width && bandScratch.height === source.height) {
+          return bandScratch;
+        }
+        if (bandScratch !== null) {
+          bandScratch.destroy();
+        }
+        bandScratch = active.createTexture({
+          size: { width: source.width, height: source.height },
+          format: "rgba8unorm",
+          usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+        });
+        return bandScratch;
+      }
+
       export async function flushScreen(): Promise<void> {
         const passes = screenPasses.splice(0);
         const used = screenUsed;
@@ -1138,6 +1178,11 @@ struct Vout {
             z: clearZ,
             first: 0,
             count: 0,
+            band: false,
+            srcY: 0,
+            dstY: 0,
+            bandH: 0,
+            bandW: 0,
           });
           screenDepthPending = false;
         }
@@ -1190,6 +1235,22 @@ struct Vout {
           const pass = passes[index];
           const draw = draws[index];
           if (pass === undefined || draw === undefined) {
+            continue;
+          }
+          if (pass.band) {
+            const scratch = scratchBand(active, color);
+            encoder.copyTextureToTexture(
+              { texture: color, origin: { x: 0, y: pass.srcY, z: 0 } },
+              { texture: scratch, origin: { x: 0, y: 0, z: 0 } },
+              { width: pass.bandW, height: pass.bandH, depthOrArrayLayers: 1 },
+            );
+            encoder.copyTextureToTexture(
+              { texture: scratch, origin: { x: 0, y: 0, z: 0 } },
+              { texture: color, origin: { x: 0, y: pass.dstY, z: 0 } },
+              { width: pass.bandW, height: pass.bandH, depthOrArrayLayers: 1 },
+            );
+            painted = true;
+            colorReady = true;
             continue;
           }
           const clearColor = pass.clearColor || (!colorReady && draw.count > 0);
@@ -1288,6 +1349,7 @@ struct Vout {
       /** 这些操作只改屏幕列表或它的状态，不能把已经记下的图元提前提交。 */
       function screenHolds(op: number): boolean {
         return op === Op.Fill
+          || op === Op.CopyBand
           || op === Op.ScreenGlyph
           || op === Op.Color
           || op === Op.Corner
@@ -1354,6 +1416,43 @@ struct Vout {
             fail("圆角半径是负数");
           }
           cornerRadius = radius;
+          return 0;
+        }
+        if (op === Op.CopyBand) {
+          const srcY = iarg(a);
+          const dstY = iarg(b);
+          const bandH = iarg(c);
+          const bandW = iarg(d);
+          if (srcY < 0 || dstY < 0 || bandH < 0 || bandW < 0) {
+            fail("横带坐标或宽高是负数");
+          }
+          if (bandH === 0) {
+            return 0;
+          }
+          const span = bandW === 0 ? width : bandW;
+          if (srcY + bandH > height || dstY + bandH > height || span > width) {
+            fail("横带越出颜色目标");
+          }
+          screenPasses.push({
+            clearColor: false,
+            red: clearRed,
+            green: clearGreen,
+            blue: clearBlue,
+            alpha: clearAlpha,
+            clearDepth: false,
+            z: clearZ,
+            first: screenUsed / screenFloats,
+            count: 0,
+            band: true,
+            srcY,
+            dstY,
+            bandH,
+            bandW: span,
+          });
+          /* 页面画布不会自己跟着颜色目标挪。这一帧把源和目的都交出去，贴上的就是挪完的像素。 */
+          const top = srcY < dstY ? srcY : dstY;
+          const bottom = srcY + bandH > dstY + bandH ? srcY + bandH : dstY + bandH;
+          markInk(0, top, span, bottom - top);
           return 0;
         }
         if (op === Op.Frame) {
@@ -1665,6 +1764,15 @@ struct Vout {
       /** 最近一次位图相对整帧的左上角。整幅时是 0,0。 */
       export function viewOrigin(): { readonly x: number; readonly y: number } {
         return { x: postedX, y: postedY };
+      }
+
+      /**
+       * 取走这一帧的横带。颜色目标的横带已经算进脏矩形，这里通常是空的。
+       */
+      export function takeViewBands(): readonly number[] {
+        const copy = viewBands.slice();
+        viewBands.length = 0;
+        return copy;
       }
 
       /**
