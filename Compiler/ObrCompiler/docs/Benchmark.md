@@ -29,7 +29,7 @@ Apple M1 Pro/arm64，macOS26.1(25B78)/Darwin25.1.0，Node24.21.0，AppleClang17�
 
 ## 动态计量与通过的检查
 
-旧逻辑访存-9.55%漏掉私有缓存的ldi/sti，已经撤回。校准fixture的直接和间接私有访问均明确为1次load、1次store、返回42，物理请求另列。相同旧队列34对正常ZAP执行的修正访存中位-13.90%；扩展校准队列36对为-13.34%，步数-5.63%。两队列不混同，见 [logical-counter-cohorts.json](measurements/logical-counter-cohorts.json)。Native35对的步数中位-6.73%、数据八位组-8.63%；不是访存指令次数，不与ZAP单位混用。只比较双方同格式且正常halt的配对，不把修复旧故障的短路径当作性能收益。
+旧逻辑访存-9.55%漏掉私有缓存的ldi/sti，已经撤回。校准fixture的直接和间接私有访问均明确为1次load、1次store、返回42，物理请求另列。相同旧队列有34对正常ZAP执行，其中32对基线访存非零，可计算的修正访存变化中位数为-13.90%；扩展校准队列有36对执行，其中34对可计算访存比例，中位数为-13.34%，36对的步数变化中位数为-5.63%。每队列另两例的基线访存为零，比例未定义，保留原始零计数但不纳入访存比例中位数；它们仍参与步数统计。两队列不混同，见 [logical-counter-cohorts.json](measurements/logical-counter-cohorts.json)。Native35对的步数中位-6.73%、数据八位组-8.63%；不是访存指令次数，不与ZAP单位混用。只比较双方同格式且正常halt的配对，不把修复旧故障的短路径当作性能收益。
 
 - 默认差分480组合、323732断言、0失败；重排`dce,load-forward,fold,dce`480组合、324508断言、0失败。
 - 契约221项通过；slot0..7、PIE/shared、attach/import/export、参数块、递归/ABI、shell editor、sandbox、CLI与debug等具名样本见原始记录。

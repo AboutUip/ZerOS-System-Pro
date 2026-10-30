@@ -1,0 +1,30 @@
+{
+  "verificationKind": "offline archive and original-result verification; no new browser run",
+  "candidateCompilerSha256": "b0de7d58b86698b8afcef1c8b9fe9dc628d2b926ce5397251222cc8446a23efb",
+  "pr": "https://github.com/AboutUip/ZerOS-System-Pro/pull/2",
+  "prHeadBeforeDocumentationUpdate": "2f2bc8542e3387166aeb77fa7fc4a22195a470ce",
+  "prDraftVerified": true,
+  "checks": 4040,
+  "failures": 46,
+  "failuresExactlyEqualPriorReport": true,
+  "coverage": {
+    "required": 39,
+    "observed": 39,
+    "commandComplete": 36,
+    "timeouts": 3
+  },
+  "archives": {
+    "v3": {
+      "runs": 33,
+      "bytes": 9073845,
+      "sha256": "4ae1293d727a847154a6dc2bc02f622862c1d6a607fd962694165804ee64cc66",
+      "matchesCommittedArchive": true
+    },
+    "v5": {
+      "runs": 47,
+      "bytes": 138648353,
+      "sha256": "6a6f660ca1e9630ab3e0e4b67b1aa4012d0e661e961885d4e5ebfc93fd508f25",
+      "matchesCommittedArchive": true
+    }
+  }
+}
