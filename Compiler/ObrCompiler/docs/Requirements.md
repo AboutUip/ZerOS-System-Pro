@@ -1,5 +1,7 @@
 # 需求 v1.0 验证矩阵
 
+2026-10-31 后续检查点：私有地址/别名修复已完成具名回归、最终480组合差分、221契约及全59项N5，见 [CorrectnessFollowup.md](CorrectnessFollowup.md)。其编译器 SHA 为 `d7b0a7e…`，与下表原完整集成候选不同；不能把旧浏览器记录或旧性能百分比直接转移给新身份。本轮另发现上游main已推进至 `28ae11e`，同步该版本后的结果待重新验证。
+
 当前作为 Draft PR，尚未满足全部 Definition of Done。最终候选为 `b0de7d58b86698b8afcef1c8b9fe9dc628d2b926ce5397251222cc8446a23efb`。真实管道路径发现 O1/O2 新增 native fault，历史 Starting 根因仍未闭环；不能将有限通过解读为全部 MUST 已验收。
 
 实现基线、测量方法、未达项及风险见 [Benchmark.md](Benchmark.md)；实现边界见 [Optimization.md](Optimization.md)。以下“通过”仅覆盖明确列出的检查，不是对任意程序正确性的数学证明。性能期望按需求第 13 节的回答处理；未新增镜像、native PIE、协议或运行时变更。
@@ -44,6 +46,6 @@
 | R-BENCH-05 | 已提交 Draft PR | scripts、measurements JSON 和全部逐程序表已提交至 [PR #2](https://github.com/AboutUip/ZerOS-System-Pro/pull/2)；仍有合并阻断项，未标记为完成验收 |
 | R-DOC-01..04 | 已交付 | README、语言 skill、设计、基准、验证矩阵；未把参考观测写成协议常量 |
 
-键盘、鼠标、显示、NAS与sandbox有具名smoke；设备原图和可信事件已独立检查，不代表持续60FPS。跨版本、多宿主与维护者验收未完成。public Faults只保证最后观察快照，不证明barrier终点新鲜度。新增native fault阻断合并，历史Starting限制和指标边界见Benchmark。
+键盘、鼠标、显示、NAS与sandbox有具名smoke，属于需求第10.1节设备覆盖；设备原图和可信事件已独立检查。跨版本、多宿主与维护者验收未完成。public Faults只保证最后观察快照，不证明barrier终点新鲜度。新增native fault阻断合并，历史Starting限制和指标边界见Benchmark。
 
 2026-10-31 [归档复核](measurements/archive-reverification-20261031.json)：从已提交的 v5/v3 逐 run gzip 归档恢复全部原始 JSON，原文件 SHA256 均一致；独立校验再次得到 4040 项检查、46 项失败，失败详情与已提交报告逐项一致。这是对既有采集结果的可复核性检查，没有新增浏览器运行样本，也没有关闭上述阻断项。

@@ -1,0 +1,49 @@
+Start testing: Oct 31 01:42 CST
+----------------------------------------------------------
+1/3 Testing: native-encode-check
+1/3 Test: native-encode-check
+Command: "/Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-build/ObrCompiler/native-encode-check"
+Directory: /Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-build
+"native-encode-check" start time: Oct 31 01:42 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"native-encode-check" end time: Oct 31 01:42 CST
+"native-encode-check" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/3 Testing: peephole-check
+2/3 Test: peephole-check
+Command: "/Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-build/ObrCompiler/peephole-check"
+Directory: /Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-build
+"peephole-check" start time: Oct 31 01:42 CST
+Output:
+----------------------------------------------------------
+peephole-check: 3115 assertions passed
+<end of output>
+Test time =   0.53 sec
+----------------------------------------------------------
+Test Passed.
+"peephole-check" end time: Oct 31 01:42 CST
+"peephole-check" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/3 Testing: obrc-smoke
+3/3 Test: obrc-smoke
+Command: "/Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-snapshot/Compiler/ObrCompiler/obrc" "/Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-snapshot/Compiler/BuildSystem/../ObrCompiler/examples/arith.obr" "-o" "/Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-build/obrc-smoke"
+Directory: /Users/a1/Documents/Codex/2026-10-24/1/work/obr-compiler-optimization/Toolchain/CompilerCheck/compiler-only-bisect-20261031/alias-final-build
+"obrc-smoke" start time: Oct 31 01:42 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"obrc-smoke" end time: Oct 31 01:42 CST
+"obrc-smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 31 01:42 CST

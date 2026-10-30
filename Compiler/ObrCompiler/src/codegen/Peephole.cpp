@@ -176,6 +176,14 @@ bool numericId(const std::string& id, int64_t& number) {
   return parseImm(id.substr(2), number);
 }
 
+/** 私有性约束整个访问区间；没有数值范围证明的符号指针不能仅凭来源获得转发资格。 */
+bool privateSpan(const Reg& pointer, int width) {
+  if (!pointer.privateAddress || width <= 0) return false;
+  int64_t address = 0;
+  if (!numericId(pointer.addr, address)) return false;
+  return address >= kStack && address <= static_cast<int64_t>(kUi) - width;
+}
+
 /** 从一次装入长出来的指针：v:序号:来源#位偏移。序号不同表示不是同一次装入。 */
 bool slotId(const std::string& id, int& serial, int64_t& offset) {
   if (id.size() < 5 || id[0] != 'v' || id[1] != ':') return false;
@@ -200,7 +208,8 @@ bool spanOverlap(int64_t left, int leftWidth, int64_t right, int rightWidth) {
 /**
  * 地址按位。同一条装入推出来的两个槽，区间相交才冲突。
  * 另一次装入、或槽和绝对地址，都可能指到同一处，按冲突处理。
- * 绝对地址只和同一类（会重定位、小立即数、大负数）比区间；类不同就不会是同一格。
+ * 重定位分类描述的是地址来源，不是互斥地址空间：算术可将高地址移到小地址区，
+ * PIE 的窗口位移也可能改变两种来源的相对关系。分类不同且无法证明位移时，保守按冲突处理。
  */
 bool overlap(const std::string& left, int leftWidth, const std::string& right, int rightWidth) {
   if (left.empty() || right.empty()) return true;
@@ -218,7 +227,7 @@ bool overlap(const std::string& left, int leftWidth, const std::string& right, i
   int64_t leftNumber = 0;
   int64_t rightNumber = 0;
   if (!numericId(left, leftNumber) || !numericId(right, rightNumber)) return true;
-  if (left[0] != right[0]) return false;
+  if (left[0] != right[0]) return true;
   return spanOverlap(leftNumber, leftWidth, rightNumber, rightWidth);
 }
 
@@ -626,7 +635,8 @@ bool takeLoad(Machine& machine, const std::string& addr, int width, int dest, Li
   next.memWidth = width;
   next.hasAddr = true;
   next.addr = "v:" + std::to_string(machine.serial) + ":" + addr + ":" + std::to_string(width) + "#0";
-  next.privateAddress = addr == immAddr(kSp) || addr == immAddr(kFrame);
+  // 从帧/栈指针字加载只证明值的来源，不证明加载宽度、实际指针或完整访问范围。
+  // 尤其窄加载可能只剩低位并落入共享区。无数值范围证明时只保留符号别名关系。
   machine.serial += 1;
   if (fact != nullptr && fact->emitOk && fact->width == width) {
     next.emitOk = true;
@@ -706,7 +716,7 @@ void forward(std::vector<Line>& input, std::vector<Line>& output, const Optimiza
         output.push_back(std::move(line));
       } else {
         const std::string addr = machine.regs[pointer].addr;
-        takeLoad(machine, addr, width, dest, line, output, options.loadForward && machine.regs[pointer].privateAddress);
+        takeLoad(machine, addr, width, dest, line, output, options.loadForward && privateSpan(machine.regs[pointer], width));
       }
       continue;
     }
@@ -715,7 +725,7 @@ void forward(std::vector<Line>& input, std::vector<Line>& output, const Optimiza
       if (!machine.regs[pointer].hasAddr) machine.clearMem();
       else {
         const std::string addr = machine.regs[pointer].addr;
-        machine.rememberStore(addr, width, view.regs[0], options.loadForward && machine.regs[pointer].privateAddress);
+        machine.rememberStore(addr, width, view.regs[0], options.loadForward && privateSpan(machine.regs[pointer], width));
       }
       output.push_back(std::move(line));
       continue;
@@ -829,6 +839,16 @@ void forward(std::vector<Line>& input, std::vector<Line>& output, const Optimiza
         next.addr = std::move(moved);
         next.privateAddress = (left.hasAddr && left.privateAddress && right.emitOk)
             || (head == "add" && right.hasAddr && right.privateAddress && left.emitOk);
+        // 来源是私有指针不代表算术结果仍然私有。绝对位置一旦离开栈区，
+        // 之后的读取必须保留，写入也不能再建立可复用的私有槽事实。
+        int64_t address = 0;
+        if (numericId(next.addr, address)) {
+          if (address < kStack || address >= kUi) next.privateAddress = false;
+        } else if (next.addr != left.addr && next.addr != right.addr) {
+          // 帧/栈指针的运行时值没有可用的上下界。偏移改变后无法证明访问仍在私有区，
+          // 先撤销转发资格；不能把符号来源当作任意偏移都安全的证明。
+          next.privateAddress = false;
+        }
       }
       machine.regs[dest] = next;
       output.push_back(std::move(line));
