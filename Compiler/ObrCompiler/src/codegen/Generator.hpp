@@ -4,6 +4,7 @@
 #include "../Ast.hpp"
 #include "../Diagnostic.hpp"
 #include "../image/Debug.hpp"
+#include "../Optimization.hpp"
 
 #include <map>
 #include <sstream>
@@ -15,9 +16,12 @@ namespace obr {
 
 class Generator {
  public:
+  explicit Generator(const OptimizationOptions& options) : options_(options) {}
   Generated run(Unit& unit);
 
  private:
+  OptimizationOptions options_;
+  bool nativeTarget_ = false;
   std::ostringstream out_;
   DebugSite site_;
   std::vector<DebugSite> sites_;
@@ -86,7 +90,7 @@ class Generator {
   int keep(int reg);
   void bump();
   void emitString(const std::string& text);
-  void boxChar();
+  void boxChar(int codeReg);
   void concat();
   void emitConcatRoutine();
   void emitCopyRoutine();

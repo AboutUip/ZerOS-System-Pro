@@ -2,6 +2,7 @@
 
 #include "../Ast.hpp"
 #include "Debug.hpp"
+#include "../Optimization.hpp"
 
 #include <string>
 #include <vector>
@@ -14,6 +15,6 @@ namespace obr {
  * 动态库，或带导入、导出的程序，在指令后面写版本 2 的链接目录。
  * sites 与 ZAP 的每一行对齐。非空时在路径旁再写一份 `.debug`，不改二进制的任何一个字节。
  */
-void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit, const std::vector<DebugSite>* sites);
+void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit, const std::vector<DebugSite>* sites, const OptimizationOptions& options = {});
 
 }  // namespace obr

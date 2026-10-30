@@ -515,7 +515,7 @@ void rewriteJump(std::string& line, const std::vector<int>& map) {
   line = head + " " + parts[1] + ", " + std::to_string(landed(map, targetOf(parts[2])));
 }
 
-void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit, const std::vector<DebugSite>* sites) {
+void writeProgramBinary(const std::string& path, const std::string& zapText, const Unit& unit, const std::vector<DebugSite>* sites, const OptimizationOptions& options) {
   const Expanded image = expand(zapText, sites);
   if (sites != nullptr && image.sites.size() != image.lines.size()) fail("对照表和指令条数不一致");
   std::vector<LinkSite> exports;
@@ -548,10 +548,16 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
   }
   if (exports.size() > 256 || imports.size() > 256) fail("符号太多");
   if (relocs.size() > 8192) fail("重定位太多");
+  if (!options.nativeReport.empty()) {
+    const std::string selection = unit.pie ? "ZPB1: PIE requires existing version-2 loader"
+        : unit.shared ? "ZPB1: shared library" : !imports.empty() ? "ZPB1: imports"
+        : !relocs.empty() ? "ZPB1: relocations" : "native candidate (all lines must encode)";
+    writeNativeCoverage(options.nativeReport, image.lines, selection);
+  }
   if (!unit.pie && !unit.shared && imports.empty() && relocs.empty() && nativeReady(image.lines)) {
     std::vector<NativeSymbol> symbols;
     for (const LinkSite& item : exports) symbols.push_back(NativeSymbol{item.name, item.index});
-    writeNativeProgram(path, image.lines, symbols, sites == nullptr ? nullptr : &image.sites);
+    writeNativeProgram(path, image.lines, symbols, sites == nullptr ? nullptr : &image.sites, options);
     return;
   }
   for (const std::string& line : image.lines) {

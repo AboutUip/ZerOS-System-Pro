@@ -1,0 +1,479 @@
+{
+  "rawSha256": "6a6f660ca1e9630ab3e0e4b67b1aa4012d0e661e961885d4e5ebfc93fd508f25",
+  "rawBytes": 138648353,
+  "top": {
+    "updated": "2026-10-30T11:45:46.465Z"
+  },
+  "entries": [
+    {
+      "file": "000-46a1733d-a950-49cc-af55-40acf9efff17.json.gz",
+      "run": "46a1733d-a950-49cc-af55-40acf9efff17",
+      "variant": "O1",
+      "command": "pwd",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "e9add79fec1353ac956ec6d4fc8208d0d0ac4cae20ed6b39d4436472590def83",
+      "compressedSha256": "cc1814a21e22f3be454c1ca4e6dbe0fbc8fd90f44a910c595fffe3419b170b39"
+    },
+    {
+      "file": "001-55e909d0-70ed-4cca-860e-ab9a35171fcc.json.gz",
+      "run": "55e909d0-70ed-4cca-860e-ab9a35171fcc",
+      "variant": "baseline",
+      "command": "pwd",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "8998d4b2a8f30a4588d56b6920120a0838fc22d2d6947a65b2de176d9cb3e26a",
+      "compressedSha256": "6434312fe7b6a3f6188656c2b698128d7682b9a8366dd0fb1bbb6214e978c6f3"
+    },
+    {
+      "file": "002-a57debe3-376c-42ae-b83b-64dd3a1ee9da.json.gz",
+      "run": "a57debe3-376c-42ae-b83b-64dd3a1ee9da",
+      "variant": "O1",
+      "command": "pwd",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "5b6f8dc1d9f3dbf658909d08a722aad648083c91ddf2be825e7cde6b4826e1b7",
+      "compressedSha256": "59a5613c787e0fa0ac23e1db1d8c62a804d2b4b33a9478e190505f5873d48bd2"
+    },
+    {
+      "file": "003-39439014-2fb7-4253-a773-640a2cefeb62.json.gz",
+      "run": "39439014-2fb7-4253-a773-640a2cefeb62",
+      "variant": "O2",
+      "command": "pwd",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "500a6a166e091a182ba9b9972b341b6fbb2e069590f051c1a34b03903d4c108c",
+      "compressedSha256": "e84b70dd43e12b921a49792d945f953641d742f8b18eafc611cea3d5d5ea8dde"
+    },
+    {
+      "file": "004-7011dc5c-05a7-4d60-b370-88c8976fb69a.json.gz",
+      "run": "7011dc5c-05a7-4d60-b370-88c8976fb69a",
+      "variant": "baseline",
+      "command": "ls",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "ea63870b591ab2575740ef2236ac04ede8fef9d1f4b07e4c5e670ae462959985",
+      "compressedSha256": "9226e0be3f5e72ea17b22b8269346ab7dafae3782e717dec69d8ae886340c71b"
+    },
+    {
+      "file": "005-748dc612-4458-4418-aff0-16158afb7eda.json.gz",
+      "run": "748dc612-4458-4418-aff0-16158afb7eda",
+      "variant": "O1",
+      "command": "ls",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "20cb28b361fca059225c308eec39e31ab79c8b3deb92ed911c47a40c740a5685",
+      "compressedSha256": "7400946c1e3015804abb86589deea49b5bd72cff73cdfaef6e054d0c7b784fd9"
+    },
+    {
+      "file": "006-b2f9a971-ae9c-454c-8a91-1dbe1be5684f.json.gz",
+      "run": "b2f9a971-ae9c-454c-8a91-1dbe1be5684f",
+      "variant": "O2",
+      "command": "ls",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "e234338e3e6937fd11c33123df50ad708fd67e45099afdb2898abd87314ccdb0",
+      "compressedSha256": "1626f938ab52a4176751dcd1cc3739d60c9edbb2b82a38108432ff9ae5947def"
+    },
+    {
+      "file": "007-ae72e5e5-74dd-422f-b335-4b823dff4994.json.gz",
+      "run": "ae72e5e5-74dd-422f-b335-4b823dff4994",
+      "variant": "baseline",
+      "command": "cat /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "e5b916e68fa7e0e0acc734f40b1edeb85e3b407c0e526626dc8b2e5c92ce6168",
+      "compressedSha256": "c0906de4dd3c15de2a1b6b904fc3c469311fd124ad393c858458f50a76620851"
+    },
+    {
+      "file": "008-8c4aefb5-8b2c-4613-bee9-bd75c4d7c6ea.json.gz",
+      "run": "8c4aefb5-8b2c-4613-bee9-bd75c4d7c6ea",
+      "variant": "O1",
+      "command": "cat /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "d5be520157c059791bfd54745393f6f5b2d440af991849fe5f618c47836fd058",
+      "compressedSha256": "77e024c92edbbf533c7c5297b63c1ab839e5e67fe2f3db0df62dcb70426f4397"
+    },
+    {
+      "file": "009-89498903-46e0-4c75-956e-e3a135182069.json.gz",
+      "run": "89498903-46e0-4c75-956e-e3a135182069",
+      "variant": "O2",
+      "command": "cat /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "d4c534503cb12fd99c8fa9dc9b211dc41d7c3b48c2d230256af6c36f371c3aad",
+      "compressedSha256": "d563cef651a3d9af0442cfab7793ae97ac94ee723dab9fbbf6ec07c6c5afd157"
+    },
+    {
+      "file": "010-7e4968d5-d911-4f15-ae06-75e071f4be50.json.gz",
+      "run": "7e4968d5-d911-4f15-ae06-75e071f4be50",
+      "variant": "baseline",
+      "command": "grep beta /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "86b404f8c8d2b12aae2f329dfcdd4490af719e1b6fc3cc41745feed6d1106bad",
+      "compressedSha256": "cb118158a7e894b380960ad6b2580bd5051a69e5ce84b0226229326f5caf4dc0"
+    },
+    {
+      "file": "011-92aacc72-71fa-4eac-b7d7-5df0cc409a7e.json.gz",
+      "run": "92aacc72-71fa-4eac-b7d7-5df0cc409a7e",
+      "variant": "O1",
+      "command": "grep beta /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "0e09f4a6fba80599ebccaf5173094e78a203f1f57750f3636853e718fd8901a9",
+      "compressedSha256": "52ec7bce4b83c4dff42b5450ed173181a54de635c5acd4d269f47ff5fc0584d4"
+    },
+    {
+      "file": "012-f91de457-baa4-42fc-a617-1adde07e7cf7.json.gz",
+      "run": "f91de457-baa4-42fc-a617-1adde07e7cf7",
+      "variant": "O2",
+      "command": "grep beta /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "a6fda0fc79a6601a03c7d857ead0076432bc63b66925ac56db1eaf0920b88ffb",
+      "compressedSha256": "83ff958b543812657c638ac781b3db330ec5b258d8b488c75b25c8ebe17c05a9"
+    },
+    {
+      "file": "013-aee211a9-5e45-4a77-a0a7-a8d9a7f8182a.json.gz",
+      "run": "aee211a9-5e45-4a77-a0a7-a8d9a7f8182a",
+      "variant": "baseline",
+      "command": "cp /boot/compiler-input /boot/compiler-out",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "c3e0fbd84a75c8384c1fc7d838776d951b99d91cf1648ba55512b7b8da321079",
+      "compressedSha256": "b7f070cef7a45e40d9e8b5076efc4c0eeb1c965e5b573c2e086d407d843db164"
+    },
+    {
+      "file": "014-dc83107f-9967-45e3-89fa-a942103d5dd3.json.gz",
+      "run": "dc83107f-9967-45e3-89fa-a942103d5dd3",
+      "variant": "O1",
+      "command": "cp /boot/compiler-input /boot/compiler-out",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "1dc97471f65ed9ff0b79aedef964d9ebb71a795524c1ca5cd4f6636a746091ef",
+      "compressedSha256": "e075ca4201ab70240b12ff2694f7bbbe97dfb2db8bd0ff8651a26d881ce5c1cd"
+    },
+    {
+      "file": "015-540e690b-ae2e-429f-98b1-0096e406a09b.json.gz",
+      "run": "540e690b-ae2e-429f-98b1-0096e406a09b",
+      "variant": "O2",
+      "command": "cp /boot/compiler-input /boot/compiler-out",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "054f550b965c45ece5184c14e7f83dac5319c741a58c0aaf60e7b9657497f107",
+      "compressedSha256": "4c8caba84bc4f63cb25f1b59c4e978eb995906e15988c8db7198c440037ea2ef"
+    },
+    {
+      "file": "016-fb6a96cb-f50f-45d0-a04d-4c9a010fdf16.json.gz",
+      "run": "fb6a96cb-f50f-45d0-a04d-4c9a010fdf16",
+      "variant": "baseline",
+      "command": "find /boot",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "4e7775871afa7e976e9624c9a13fd586b268fb76352ff5b06d04c72d39813ed2",
+      "compressedSha256": "5d408bdf20f2a381c0871428b0bda0f5855f9133513003cc17b6e20670c81c53"
+    },
+    {
+      "file": "017-44f83225-1528-4648-b396-540c67844ea0.json.gz",
+      "run": "44f83225-1528-4648-b396-540c67844ea0",
+      "variant": "O1",
+      "command": "find /boot",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "24e151790e84344fad3b1d4a6863f1f7a1e5ac9a7a54e8d8a93b42b725f5190d",
+      "compressedSha256": "c81a79a8781ab2f128421057745b8f48b7775a2d3da2419c5394bd1eaf2a8be8"
+    },
+    {
+      "file": "018-736ce0b5-7edf-475c-8b65-79150150b741.json.gz",
+      "run": "736ce0b5-7edf-475c-8b65-79150150b741",
+      "variant": "O2",
+      "command": "find /boot",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "3f7f59c9799a3364740150167b361a856769e96cb3b3906b74a51480754e3eb5",
+      "compressedSha256": "3ad06e173880298962d7f9ecb80c44b6f731317609f2a7dffaea7631cd056608"
+    },
+    {
+      "file": "019-c2df05db-da74-4895-bafd-ebb656fde44f.json.gz",
+      "run": "c2df05db-da74-4895-bafd-ebb656fde44f",
+      "variant": "baseline",
+      "command": "sort /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "c0924314da61d58602be91463395e21b8e8a12bbb6e8e4215b697de1e6670cf7",
+      "compressedSha256": "3948d77ff12db9d1084265a841a860f24cf0bb0ca591892a43ba155e65093202"
+    },
+    {
+      "file": "020-6469fec7-ede7-4bc9-b9f3-854824df684e.json.gz",
+      "run": "6469fec7-ede7-4bc9-b9f3-854824df684e",
+      "variant": "O1",
+      "command": "sort /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "8f4125d54fc9456c1d952df8dc9f0a0a5ce0b8f6825e9db9e3439a17a279eb8e",
+      "compressedSha256": "989b9b4be906fc66817b0938da16f9d3a400c7c9210694f67ed19098478302d3"
+    },
+    {
+      "file": "021-7ff07a68-7816-44cb-bf74-99b43b503ad2.json.gz",
+      "run": "7ff07a68-7816-44cb-bf74-99b43b503ad2",
+      "variant": "O2",
+      "command": "sort /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "8ddd6cd69e93028f1d4dbc3bd94dcfb55ab5e4cad7f7aa0504e078c79bf461f4",
+      "compressedSha256": "5359910f2a21c603129691e8913fb47c36932c7f58b4e4b5ad98f2db971cb73d"
+    },
+    {
+      "file": "022-159837e4-a24d-4494-a7a8-4d7328768933.json.gz",
+      "run": "159837e4-a24d-4494-a7a8-4d7328768933",
+      "variant": "baseline",
+      "command": "head /boot/compiler-input",
+      "mode": "smoke",
+      "status": "incomplete",
+      "rawSha256": "ddf3e481a2abf58c1b6736a7fb97c106d71558436f1e2ad4b7041d729077f8ab",
+      "compressedSha256": "58fa707ce6eee618a636c163fb9e24b9dc042554fdb0fb58ba9a4a49f34fe6e6"
+    },
+    {
+      "file": "023-22140741-e0be-4323-a1a7-20165b83a21a.json.gz",
+      "run": "22140741-e0be-4323-a1a7-20165b83a21a",
+      "variant": "baseline",
+      "command": "head /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "b1115c46e4a27954dc7b299b75c3f9b589367001eb9c9d0699ab0535505bd692",
+      "compressedSha256": "b11bc14acd581ae0cddaa8c8dddd73cdf77128e1c195dd3e74d519092b6315d9"
+    },
+    {
+      "file": "024-9f0359e0-1cf0-4ba6-a803-1dacbe1cd57a.json.gz",
+      "run": "9f0359e0-1cf0-4ba6-a803-1dacbe1cd57a",
+      "variant": "O1",
+      "command": "head /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "50ddea290d67f2540b04bc76ca59da280532d3f7d47922991a1483a9509ddf87",
+      "compressedSha256": "8ec0e6f21b69d455bd7acc8d2f3a0f6c2756754bbb6caadd8852e1d41b81a3a4"
+    },
+    {
+      "file": "025-e03927b1-98da-4781-89e4-a6c36f714e94.json.gz",
+      "run": "e03927b1-98da-4781-89e4-a6c36f714e94",
+      "variant": "O2",
+      "command": "head /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "27b927d7e8c3d8ee55846ead747b457147e6a77f6e87c9efe4cb06f99b46b3f2",
+      "compressedSha256": "72935707e1eace1ac147e0c99f47b8eb19f1b1b1b7d6330d2e619eee17233b5e"
+    },
+    {
+      "file": "026-bff4328a-8823-4c7e-86a1-0b3b7f7580dd.json.gz",
+      "run": "bff4328a-8823-4c7e-86a1-0b3b7f7580dd",
+      "variant": "baseline",
+      "command": "wc /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "565b746c2993338c7ebcbf227f6f529bcd50905b9aedb7bdece912179d8b10d9",
+      "compressedSha256": "1b4cdbaf0abf7088ad9bdf7a4c44d8e462a347dd241c8a99c6ca351aeee08466"
+    },
+    {
+      "file": "027-c0478014-7990-4db8-aa1d-1b6999064447.json.gz",
+      "run": "c0478014-7990-4db8-aa1d-1b6999064447",
+      "variant": "O1",
+      "command": "wc /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "3f702f47f84878d3c1a75b014c53a56895ab9cf22fb3cac1e9e59a95c47082cd",
+      "compressedSha256": "61e5c670d90a6657bd6a837598e158fdca08a72c213cd6101babf002c354552c"
+    },
+    {
+      "file": "028-bfbec15a-0d83-4b58-bde2-06aaab6610e5.json.gz",
+      "run": "bfbec15a-0d83-4b58-bde2-06aaab6610e5",
+      "variant": "O2",
+      "command": "wc /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "5842560b91e7f10812cc863ca5ebbf4ddb601a194e9fa84fe454a8d4dad4f11b",
+      "compressedSha256": "d9a2537da7e8435405dc6228a502fd91c582ba6f92881dd8f94bd1ff4c95c655"
+    },
+    {
+      "file": "029-ed72ce97-2638-4672-956f-519065d25bac.json.gz",
+      "run": "ed72ce97-2638-4672-956f-519065d25bac",
+      "variant": "baseline",
+      "command": "echo compiler-ok",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "44ee3e333ca3be6fe4f2fb94a1050dd829b684bcff3452c76cc457c36f2f1f9e",
+      "compressedSha256": "0c72d261df25c7b624c46cfca9c318a21dd80198284e6d6f70dded58094c0aed"
+    },
+    {
+      "file": "030-46923c21-cd2b-4260-85ab-982be333844f.json.gz",
+      "run": "46923c21-cd2b-4260-85ab-982be333844f",
+      "variant": "O1",
+      "command": "echo compiler-ok",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "b3abfc070337fb561a99a88c8c1bd8b7dc1b208769e668ef3dd130a4fa209c43",
+      "compressedSha256": "02a48e37f20efb784c5a3e8fb07ea7eceebac3e95801fc0afd6fcb9ab960ca2f"
+    },
+    {
+      "file": "031-e8cf5bf3-e298-4d8d-902d-06230793790a.json.gz",
+      "run": "e8cf5bf3-e298-4d8d-902d-06230793790a",
+      "variant": "O2",
+      "command": "echo compiler-ok",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "e2e721d23020167ab8bed8598fdfd4ef8c945c0a529224f71f53dcb7a5000a66",
+      "compressedSha256": "49943000b6b03713e70d70d9228b099ee593bc52b36ae6388e5699016e4c67bf"
+    },
+    {
+      "file": "032-51c7734f-f280-4170-abcd-087a279f0813.json.gz",
+      "run": "51c7734f-f280-4170-abcd-087a279f0813",
+      "variant": "baseline",
+      "command": "cat /boot/compiler-input | xargs echo",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "93a97a5c1a4113146794c0a43b1a496a9253a52e50d597b04092b8f3e7498b81",
+      "compressedSha256": "7c68a68094bc1f2436f815cbffba333bcbf0dbebf670fce25287ccf3d7b3dad9"
+    },
+    {
+      "file": "033-782fc0f2-d3e5-4962-8bc7-8e2df155d518.json.gz",
+      "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518",
+      "variant": "O1",
+      "command": "cat /boot/compiler-input | xargs echo",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "cbe8113a29a21218c8a5b6df6d23318d12f28a3a80471758f9329bce41ae7ae6",
+      "compressedSha256": "c8f2c0688bb2440a7460b84ef38683bc2aa3856eadb42e32578b011803e52b91"
+    },
+    {
+      "file": "034-ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087.json.gz",
+      "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087",
+      "variant": "O2",
+      "command": "cat /boot/compiler-input | xargs echo",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "7f56fd374854e15813df2f9f9f0d3b464656b633d9a370f8fbc74614a65ae477",
+      "compressedSha256": "b6d763ea52be66469a133238214ae439b6138dc9d4306aacb759f41058af9fa3"
+    },
+    {
+      "file": "035-f451d952-8fd3-4ef2-aced-cb2c1c5b7b13.json.gz",
+      "run": "f451d952-8fd3-4ef2-aced-cb2c1c5b7b13",
+      "variant": "baseline",
+      "command": "xargs echo < /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "da81ab22d38f44bc0934867e55495bf9b922aa42d89761076afceac1782813f4",
+      "compressedSha256": "16921c8c9dc39af5b51ca5ac5c240d2c86c5393096ea138aa5a6733dfa579598"
+    },
+    {
+      "file": "036-ca7aebb7-5f89-4238-8bef-d48cbfda5823.json.gz",
+      "run": "ca7aebb7-5f89-4238-8bef-d48cbfda5823",
+      "variant": "O1",
+      "command": "xargs echo < /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "88e64742db7ef9260c7917e1753b381a38e8554de89b7de23be9e724e3badacb",
+      "compressedSha256": "5d87603139162497e4ef8363c361f3a7c643697efde19c49c8f1de68714b5ec9"
+    },
+    {
+      "file": "037-86bd7f15-0e3d-49b2-8a49-2150a9b541c2.json.gz",
+      "run": "86bd7f15-0e3d-49b2-8a49-2150a9b541c2",
+      "variant": "O2",
+      "command": "xargs echo < /boot/compiler-input",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "3864e3d506a8b19da127ffada088b3354c7b0cf7974423c6e3689f64cf19a532",
+      "compressedSha256": "609a30e49fb85c24a9849c20ca5e27ee725bf8c747ab568942a866fcd9564a54"
+    },
+    {
+      "file": "038-5ff13f73-db1d-41ff-b066-3efa32af5351.json.gz",
+      "run": "5ff13f73-db1d-41ff-b066-3efa32af5351",
+      "variant": "baseline",
+      "command": "/bin/compiler-signal-smoke",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "0dd862601e9848d8c9bccf6668cccd387c35ad5459826ffb8b374c6ededc523b",
+      "compressedSha256": "325424230aae54edd530366620f2c6f9dbcc3bf18518959c54d3874bff944248"
+    },
+    {
+      "file": "039-d5fb4e04-659a-4676-b361-41f4914c5375.json.gz",
+      "run": "d5fb4e04-659a-4676-b361-41f4914c5375",
+      "variant": "O1",
+      "command": "/bin/compiler-signal-smoke",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "187842cdb6f0429f477181f3026646cc71e1e2f5ddfa71210dc696fe7d3f0395",
+      "compressedSha256": "48067986eb5207fcb7d053985138ea5c8bdacdf51ca3e37eb730389e8dd2ecae"
+    },
+    {
+      "file": "040-d58a5e57-0136-48b0-ba2c-71465229bfe2.json.gz",
+      "run": "d58a5e57-0136-48b0-ba2c-71465229bfe2",
+      "variant": "O2",
+      "command": "/bin/compiler-signal-smoke",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "15795dccb3ba76c18199edbf0580cbd0a2b158bd521373ea8669012fb278760c",
+      "compressedSha256": "62dd4a8f3706ad5b0a64fd503f31a069bce6a73f1e3fb079a4c4e1803332094b"
+    },
+    {
+      "file": "041-1a0f090d-29d6-4396-bb6e-e80710746a18.json.gz",
+      "run": "1a0f090d-29d6-4396-bb6e-e80710746a18",
+      "variant": "baseline",
+      "command": "/bin/compiler-signal-smoke",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "7292e8a423ed01698c82579778e5927996b0780a58a9a5684416d4708f6c8a5d",
+      "compressedSha256": "645d4e657f6b6c2874d2e9c2b9412c46270d261043117ae2ea5d8415151e8af4"
+    },
+    {
+      "file": "042-086706cc-23d0-4359-b040-c7bef3494306.json.gz",
+      "run": "086706cc-23d0-4359-b040-c7bef3494306",
+      "variant": "O1",
+      "command": "/bin/compiler-signal-smoke",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "13b0e9e35704389cfecd855f58cc5b5ce6804fda4ac4707d496b689c2aae9d73",
+      "compressedSha256": "91fdd8f68181a36fd5c2806b4cd5869ff251461bd1a68bde6ec0c17a297498ba"
+    },
+    {
+      "file": "043-dbfd6dd6-e405-4e4c-94bf-744dc152eed0.json.gz",
+      "run": "dbfd6dd6-e405-4e4c-94bf-744dc152eed0",
+      "variant": "O2",
+      "command": "/bin/compiler-signal-smoke",
+      "mode": "smoke",
+      "status": "command-complete",
+      "rawSha256": "5a161f9a9a5db533c07a751a136b06006e3200d0995bb22b2cc75c2890c611b4",
+      "compressedSha256": "eb4dc3ea0497ecd0c8ecdb460777783ed0d8583ea3f8502a0a6438c2be6ea4c5"
+    },
+    {
+      "file": "044-1be7de3b-c5f4-4b0c-964d-e6eee05b7fbc.json.gz",
+      "run": "1be7de3b-c5f4-4b0c-964d-e6eee05b7fbc",
+      "variant": "O1",
+      "command": "",
+      "mode": "bios-manual",
+      "status": "booted",
+      "rawSha256": "941be72402d06cad3fac5834f05d2b1763abab1e04a6d75be223a0eedd1150ca",
+      "compressedSha256": "b6c864bf653d5805b05d354f63ca5ebc74307531db8a4c3adefa39b21e5c2fc9"
+    },
+    {
+      "file": "045-b323b560-9f0c-4e1f-a6bf-757ef6f8a051.json.gz",
+      "run": "b323b560-9f0c-4e1f-a6bf-757ef6f8a051",
+      "variant": "O1",
+      "command": "",
+      "mode": "bios-manual",
+      "status": "booted",
+      "rawSha256": "c4308f03d1559f7cba38655e1590388085d6871771d1b7126b26180cacab7d8d",
+      "compressedSha256": "47135dadb3eb7cf7ebf15b1d5398480bc622506ffacf9174f6260034c850e07c"
+    },
+    {
+      "file": "046-66405a1a-619d-4241-a742-d652c8a8dbf1.json.gz",
+      "run": "66405a1a-619d-4241-a742-d652c8a8dbf1",
+      "variant": "O1",
+      "command": "",
+      "mode": "bios-manual",
+      "status": "incomplete",
+      "rawSha256": "a2b8bfc3b092c1cd9450f4825b148c49da24701d1c0f9eb51a2ccf7ca3216633",
+      "compressedSha256": "f91790e439fa1b575657ad18f57c5ec3b7259bf39bb4d97b1f6ad0ee5c054ff1"
+    }
+  ]
+}

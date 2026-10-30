@@ -1,9 +1,48 @@
 #include "Generator.hpp"
 
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 
 namespace obr {
+namespace {
+// 只扩展无调用、无循环、无地址逃逸的小叶函数，避免递归和嵌套内联放大。
+bool smallExpr(const Expr& expr) {
+  if (expr.kind == Expr::Kind::Call || expr.kind == Expr::Kind::New
+      || expr.kind == Expr::Kind::Await
+      || (expr.kind == Expr::Kind::Unary && expr.op == Tok::BitAnd)) return false;
+  for (const Expr& kid : expr.kids) if (!smallExpr(kid)) return false;
+  return true;
+}
+int smallCost(const std::vector<Stmt>& body) {
+  int cost = 0;
+  for (const Stmt& stmt : body) {
+    if (stmt.kind == Stmt::Kind::While || stmt.kind == Stmt::Kind::For
+        || stmt.kind == Stmt::Kind::Goto || stmt.kind == Stmt::Kind::Label
+        || stmt.kind == Stmt::Kind::Zap || stmt.isStatic || !smallExpr(stmt.expr)) return 1000000;
+    cost += 1 + smallCost(stmt.body) + smallCost(stmt.other);
+    if (cost > 8) return 1000000;
+  }
+  return cost;
+}
+int expressionCost(const Expr& expr) {
+  int cost = 1 + (expr.kind == Expr::Kind::LitString ? static_cast<int>(std::min<std::size_t>(expr.text.size(), 1000000)) : 0);
+  for (const Expr& kid : expr.kids) {
+    cost += expressionCost(kid);
+    if (cost > 1000000) return 1000000;
+  }
+  return cost;
+}
+int bodyCost(const std::vector<Stmt>& body) {
+  int cost = 0;
+  for (const Stmt& stmt : body) {
+    cost += std::max(1, stmt.words) + expressionCost(stmt.expr) + bodyCost(stmt.body) + bodyCost(stmt.other);
+    if (cost > 1000000) return 1000000;
+  }
+  return cost;
+}
+}  // namespace
+
 
 bool Generator::calm(const Expr& expr) const {
     if (expr.kind == Expr::Kind::LitInt || expr.kind == Expr::Kind::LitBool || expr.kind == Expr::Kind::LitChar || expr.kind == Expr::Kind::LitNull || expr.kind == Expr::Kind::LitUndefined || expr.kind == Expr::Kind::Name) return true;
@@ -76,7 +115,22 @@ void Generator::prepareInline() {
         if (callee >= 0 && callee < count) sites[static_cast<std::size_t>(callee)] += 1;
       }
     }
+    const bool multiInline = options_.level >= 2 && options_.inlineSmall;
+    int totalCost = 0;
+    if (multiInline) for (const Function& function : *functions_) totalCost = std::min(1000000, totalCost + bodyCost(function.body));
+    // 成本包含表达式节点、字符串长度和结构体字数。新增重复体最多总成本的 20%，且至多 512 单位。
+    int growthBudget = inlineGrowthBudget(totalCost);
     for (int index = 0; index < count; index += 1) {
+      const auto at = static_cast<std::size_t>(index);
+      if (multiInline && zap[at] == 0 && cyclic[at] == 0 && !(*functions_)[at].exported && sites[at] > 1 && sites[at] <= 96) {
+        const int cost = smallCost((*functions_)[at].body);
+        const int nodes = bodyCost((*functions_)[at].body);
+        const int growth = cost <= 8 && nodes <= 64 ? (sites[at] - 1) * nodes : 1000000;
+        if (growth <= 128 && growth <= growthBudget) {
+          inlineOk_[at] = 1;
+          growthBudget -= growth;
+        }
+      }
       if (zap[static_cast<std::size_t>(index)] == 0 && cyclic[static_cast<std::size_t>(index)] == 0 && sites[static_cast<std::size_t>(index)] == 1) {
         inlineOk_[static_cast<std::size_t>(index)] = 1;
       }

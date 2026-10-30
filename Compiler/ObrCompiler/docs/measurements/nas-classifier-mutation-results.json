@@ -1,0 +1,42 @@
+{
+  "created": "2026-10-30T10:54:10.879Z",
+  "passed": true,
+  "results": [
+    {
+      "case": "real valid loader size change",
+      "passed": true
+    },
+    {
+      "case": "wrong loader read length",
+      "detected": true
+    },
+    {
+      "case": "unexpected loader read payload",
+      "detected": true
+    },
+    {
+      "case": "unexpected loader read field",
+      "detected": true
+    },
+    {
+      "case": "wrong close handle",
+      "detected": true
+    },
+    {
+      "case": "missing close",
+      "detected": true
+    },
+    {
+      "case": "changed application file read",
+      "detected": true
+    },
+    {
+      "case": "extra application request",
+      "detected": true
+    },
+    {
+      "case": "manifest disagrees with actual image byte",
+      "detected": true
+    }
+  ]
+}

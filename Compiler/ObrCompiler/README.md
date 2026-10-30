@@ -1,6 +1,12 @@
 # Obr 编译器
 
+本分支处于严格复核/Draft阶段：管道路径新增native fault尚未关闭，不能据此标为完整验收或合并。当前结果与回退边界见 [严格报告](docs/Benchmark.md)。
+
 本目录是宿主编译器 `obrc`。编辑器扩展在 `Compiler/ObrExtension`。
+
+默认使用 `-O1`。`-O0` 关闭新优化并保留旧生成路径（保留字符装箱等正确性修复）；`-O2` 额外允许有界小叶函数的多调用内联。`-fno-peephole`、`-fno-fold`、`-fno-load-forward`、`-fno-dce`、`-fno-native-compact`、`-fno-scaled` 和 `-fno-inline-small` 可独立定位；`-passes` 接受 `forward`、`fold`、`load-forward`、`dce`，可排序和重复最多八项，默认 `forward,dce` 将前向折叠和装入转发合为一次扫描；`-native-report 文件` 输出逐行 native 覆盖诊断。默认不生成 `.zap` 的行为不变。设计、预算、保守边界、测试命令与回退方法见 [优化说明](docs/Optimization.md)。
+
+固定提交的实测、原始数据、未达期望和现有系统问题见 [优化基准报告](docs/Benchmark.md)及[需求验证矩阵](docs/Requirements.md)。内核镜像 O1 缩小 24.97%，真实 PIE 语料中位数缩小 5.31%；这不是对整机帧率或任意程序性能的保证。
 
 语法规则写在 `Documents/Skills/ObrLanguage/SKILL.md`。Cursor 经 `.cursor/skills/obr-language/SKILL.md` 读到同一份。改语言表面时，编译器、该技能和本文一起改。
 
@@ -20,7 +26,7 @@
 | `codegen/Layout.hpp` | 栈、帧、静态区和堆的位地址 |
 | `codegen/Emit.cpp` | 印出一行，并记住帧基址还在不在 `r4` |
 | `codegen/Fold.cpp` | 常量指针收成绝对地址 |
-| `codegen/Inline.cpp` | 只调用一次的函数在那一处展开；没有循环、连同嵌进去的小函数不超过 8 条语句、调用不超过 96 处的也在每一处展开 |
+| `codegen/Inline.cpp` | 既有单调用内联；O2 有成本上限的小叶函数多调用内联 |
 | `codegen/Lower.cpp` | 表达式和语句落到寄存器 |
 | `codegen/Runtime.cpp` | 字符串复制和拼接 |
 | `codegen/Collect.cpp` | 数组、列表、集合和映射的堆运行时 |
@@ -38,7 +44,7 @@
 
 `deRfun`、`import`、`.mr` 函数头、`namespace` 与 `::`、多个 `.obr` 一次链接。某个 `.obr` 写了 `import` 时，和已导入头文件签名相同的 `deRfun` 是该声明的实现；对不上头文件的函数仍属于本文件。没有 `import` 的文件仍可单独编译，函数只在该文件内可见。`.mr` 里还可以写 `struct` 和 `enum`，导入后与源文件里的类型放在一起，名字不能重复。
 
-不递归、不含 `__zap__` 的函数，只被调用一次时在那一处展开，不另输出函数体。没有循环、没有 `goto` 和标号、没有 `static`、调用不超过 96 处，连同嵌进去的小函数合计不超过 8 条语句的，每次调用都展开。更长或带循环、又被调用多次的，只输出一份，调用处用 `call`。`main` 和 `export` 的函数始终输出。
+不递归、不含 `__zap__` 的函数，只被调用一次时在那一处展开，不另输出函数体。`-O2` 可进一步展开无循环、无调用/new/await/地址逃逸、无 goto/标号/static 的小叶函数；至多 8 条语句、64 成本单位、96 个调用点，每函数增加成本不超过 128，整单元不超过 20% 且至多 512。预算计入字符串长度和结构体字数，exported 函数不做这一扩展。更长或带循环、又被调用多次的，只输出一份，调用处用 `call`。`main` 和 `export` 的函数始终输出。
 
 `byte` / `short` / `int` / `long` / `float` / `double` / `boolean` / `char` / `string` / `void`、一层 `类型*` 指针、`array[元素]` / `list[元素]` / `set[元素]` / `map[键, 值]`、`&` 取变量地址、`*` 读写真值、`(long*)4096` 以及 `(结构体*)地址`、`(枚举*)地址` 这种把整数当成位地址的转换（来源必须是整数；类名不能再加 `*`）、`if` / `else`、`while`、`break` / `continue`、`goto 标号` 与单独成句的 `标号:`（同一函数内，可向前或向后跳）、`?:`、赋值和复合赋值、`++` / `--`、算术、关系、相等、位运算、移位、`**`、逻辑短路、字符串拼接和引用相等、`length(字符串)` 与 `length(集合)`、`字符串[下标]`（一个码点，结果是 `char`；`length` 计标量，堆上从 +64 位起每 32 位一个小端标量，源文件按 UTF-8 解开）、数组和列表的下标、`static` 变量、`var[类型]`、超过 6 个的参数（从第 7 个起放在栈上）、浮点 `%`（`fmod`）、递归、`0x` 整数字面量（放不进 `int` 或带 `L` 时是 `long`）。
 
@@ -46,7 +52,7 @@
 
 `__zap__ {` 与 `}` 之间的每一行原样成为 ZAP。`export deRfun` 的标号就是函数名，`__zap__` 里可以 `call` 这个名字。普通 Obr 调用仍按函数解析，不增加新的 CPU 指令。`main` 的函数体如果只有一条 `__zap__`，这段指令原样放在开头，其余函数仍会输出，没有 `call main` 和栈帧。
 
-头文件里名字与参数和下面这张表一致的声明，调用时收成一条已有指令，不建栈帧，也不能再写函数体：`gpu::box`、`gpu::text`、`gpu::align`、`gpu::paint`、`gpu::glyph`、`gpu::character`、`gpu::drop`、`gpu::compose`、`gpu::present`、`gpu::accel`、`port::state`、`port::char`、`query`、`xchg`、`bulk`、`carry`、`halt`、`obr::os::schedule`、`obr::os::slice`、`obr::os::pass`、`obr::os::take`、`obr::os::svc`、`obr::os::bound`、`obr::os::gate`、`obr::os::release`、`obr::os::yield`、`obr::os::dwell`、`obr::os::mmap`、`obr::os::munmap`、`obr::os::core`、`obr::os::install`、`obr::os::admit`、`obr::os::hertz`、`obr::os::capture`、`obr::os::restore`、`obr::os::attach`，以及 `memory::loadOctet`、`memory::load16`、`memory::load32`、`memory::load64`、`memory::loadFloat32`、`memory::loadFloat64`、`memory::storeOctet`、`memory::store16`、`memory::store32`、`memory::store64`、`memory::storeFloat32`、`memory::storeFloat64`、`memory::hertz`、`memory::metric`。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double` 以外，参数都是 `long`。读出的数在 `r0`，地址在 `r1`。写入时值在 `r0`、地址在 `r1`，对应 `sti` 的值、地址顺序。`memory::loadFloat32` 读回的是二进制 32 的位型，仍放在 `long` 里。`inbox(long* word): long` 发出 `inbox`，把读到的字写进指针，返回是否读到。`obr::os::dwell(long milliseconds): void` 发出 `dwell r0`。寄存器里的毫秒必须是 `0` 至 `1000`，等待时核心保持执行中。`obr::os::mmap(long port, long handle, long length): long` 发出 `mmap r0, r1, r2, r3`，返回的起始位地址在 `r0`。`obr::os::munmap(long address, long length): void` 发出 `munmap r0, r1`。客核心执行这两条失败。六个输入的 `gpu::box` 把新编号放进 `r6` 再拷回 `r0`，因为 `r0` 到 `r5` 已被输入占满。`gpu::accel(long op, double a, double b, double c, double d): long` 同样把结果放进 `r6` 再拷回 `r0`，发出 `gpu.accel r6, r0, r1, r2, r3, r4`。`gpu::character(long x, long y, long code, long foreground, long background): void` 发出 `gpu.character r0, r1, r2, r3, r4`，直接改帧上的 8×8 字形。整数字面量配到 `double` 参数时先 `itof`，不再把整数本身当成位型。`char` 可以加宽成 `int` 或 `long`，用来把字符交给 `gpu::glyph`。寄存器之间的拷贝用一条 `or rD, rS, rS`。帧基址还在 `r4` 里时不再从固定地址重读。立即数和不会冲掉 `r1`–`r3` 的参数直接放进指令用的寄存器。常量指针直接用 `load` / `store` 的绝对地址，不再先放进栈槽再间接读写。只被调用一次、不递归、不含 `__zap__` 的函数在那一处展开，不再另外输出一份函数体。被调用两次或以上的函数只输出一份，调用处用 `call`。`main` 和 `export` 的函数始终输出。
+头文件里名字与参数和下面这张表一致的声明，调用时收成一条已有指令，不建栈帧，也不能再写函数体：`gpu::box`、`gpu::text`、`gpu::align`、`gpu::paint`、`gpu::glyph`、`gpu::character`、`gpu::drop`、`gpu::compose`、`gpu::present`、`gpu::accel`、`port::state`、`port::char`、`query`、`xchg`、`bulk`、`carry`、`halt`、`obr::os::schedule`、`obr::os::slice`、`obr::os::pass`、`obr::os::take`、`obr::os::svc`、`obr::os::bound`、`obr::os::gate`、`obr::os::release`、`obr::os::yield`、`obr::os::dwell`、`obr::os::mmap`、`obr::os::munmap`、`obr::os::core`、`obr::os::install`、`obr::os::admit`、`obr::os::hertz`、`obr::os::capture`、`obr::os::restore`、`obr::os::attach`，以及 `memory::loadOctet`、`memory::load16`、`memory::load32`、`memory::load64`、`memory::loadFloat32`、`memory::loadFloat64`、`memory::storeOctet`、`memory::store16`、`memory::store32`、`memory::store64`、`memory::storeFloat32`、`memory::storeFloat64`、`memory::hertz`、`memory::metric`。除 `memory::loadFloat64` 返回 `double`、`memory::storeFloat64` 的第一个参数是 `double`、`gpu::accel` 的后四个参数是 `double` 以外，参数都是 `long`。读出的数在 `r0`，地址在 `r1`。写入时值在 `r0`、地址在 `r1`，对应 `sti` 的值、地址顺序。`memory::loadFloat32` 读回的是二进制 32 的位型，仍放在 `long` 里。`inbox(long* word): long` 发出 `inbox`，把读到的字写进指针，返回是否读到。`obr::os::dwell(long milliseconds): void` 发出 `dwell r0`。寄存器里的毫秒必须是 `0` 至 `1000`，等待时核心保持执行中。`obr::os::mmap(long port, long handle, long length): long` 发出 `mmap r0, r1, r2, r3`，返回的起始位地址在 `r0`。`obr::os::munmap(long address, long length): void` 发出 `munmap r0, r1`。客核心执行这两条失败。六个输入的 `gpu::box` 把新编号放进 `r6` 再拷回 `r0`，因为 `r0` 到 `r5` 已被输入占满。`gpu::accel(long op, double a, double b, double c, double d): long` 同样把结果放进 `r6` 再拷回 `r0`，发出 `gpu.accel r6, r0, r1, r2, r3, r4`。`gpu::character(long x, long y, long code, long foreground, long background): void` 发出 `gpu.character r0, r1, r2, r3, r4`，直接改帧上的 8×8 字形。整数字面量配到 `double` 参数时先 `itof`，不再把整数本身当成位型。`char` 可以加宽成 `int` 或 `long`，用来把字符交给 `gpu::glyph`。寄存器之间的拷贝用一条 `or rD, rS, rS`。帧基址还在 `r4` 里时不再从固定地址重读。立即数和不会冲掉 `r1`–`r3` 的参数直接放进指令用的寄存器。常量指针直接用 `load` / `store` 的绝对地址，不再先放进栈槽再间接读写。只被调用一次、不递归、不含 `__zap__` 的函数在那一处展开，不再另外输出一份函数体。O0/O1 被调用两次或以上的函数只输出一份，调用处用 `call`；O2 受上述小叶函数预算限制。`main` 和 `export` 的函数始终输出。
 
 `struct 名字 { 字段; }` 是值。每个标量字段占 64 位，嵌套结构体就地排开，局部变量是连续栈槽，未写的字段为 0。`变量.字段` 按偏移读写。整份赋值只在两个同类型变量之间复制这些槽。结构体没有方法、不能继承、不能 `new`、不能作参数或返回值、不能 `static`、不能写在声明初值里，也不能把自身嵌进自身。`结构体*` 是指针，字段写成 `指针.字段`。类字段不能内嵌结构体。
 

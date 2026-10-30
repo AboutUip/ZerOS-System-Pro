@@ -1,0 +1,60 @@
+/* 独立测试guest：仅使用现有进程ABI，不修改内核、CPU或协议。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun report(long home, string text): void {
+  long count=length(text);
+  long index=0L;
+  while(index<count) {
+    memory::storeOctet(text[index],obr::proc::bytes(home)+index*8L);
+    index=index+1L;
+  }
+  obr::proc::write(home,1L,0L,count);
+}
+
+deRfun finish(long home,long code): int {
+  if(code==0L) { report(home,"signal-ok 10 12 0\n"); }
+  else { report(home,"signal-fail\n"); }
+  obr::proc::exit(home,code);
+  return 0;
+}
+
+/* 服务33快照含pid/ppid/state/core；只选择本核心正在运行的任务。 */
+deRfun ownPid(long home): long {
+  long core=obr::os::core();
+  long start=0L;
+  while(start<4096L) {
+    if(obr::proc::task(home,start)!=0L) { return -1L; }
+    long at=obr::proc::bytes(home);
+    long pid=memory::load64(at);
+    long state=memory::load64(at+128L);
+    long current=memory::load64(at+192L);
+    if(state==1L && current==core) { return pid; }
+    long next=obr::proc::slot(home,320L);
+    if(next<=start) { return -1L; }
+    start=next;
+  }
+  return -1L;
+}
+
+deRfun main(): int {
+  long home=obr::proc::home();
+  long pid=ownPid(home);
+  if(pid<=1L) { return finish(home,10L); }
+  if(obr::proc::sigtake()!=0L) { return finish(home,11L); }
+  if(obr::proc::kill(home,pid,0L)!=0L) { return finish(home,12L); }
+  if(obr::proc::kill(home,pid,32L)!=-1L) { return finish(home,13L); }
+  if(obr::proc::kill(home,9223372036854775807L,0L)!=2L) { return finish(home,14L); }
+  if(obr::proc::kill(home,pid,12L)!=0L) { return finish(home,15L); }
+  if(obr::proc::kill(home,pid,10L)!=0L) { return finish(home,16L); }
+  if(obr::proc::kill(home,pid,10L)!=0L) { return finish(home,17L); }
+  if(obr::proc::kill(home,pid,0L)!=0L) { return finish(home,18L); }
+  long first=obr::proc::sigtake();
+  long second=obr::proc::sigtake();
+  long third=obr::proc::sigtake();
+  if(first!=10L) { return finish(home,19L); }
+  if(second!=12L) { return finish(home,20L); }
+  if(third!=0L) { return finish(home,21L); }
+  return finish(home,0L);
+}

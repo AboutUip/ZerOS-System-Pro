@@ -19,19 +19,20 @@ void Generator::bump() {
     const std::string ready = fresh("e");
     emit("load.64 r4, " + std::to_string(kHeapPtr));
     emit("place r5, 0");
-    emit("eq r1, r4, r5");
-    emit("jz r1, " + ready);
+    emit("eq r0, r4, r5");
+    emit("jz r0, " + ready);
     emit("place r4, " + std::to_string(kHeap));
     emit(ready + ":");
     copy(0, 4);
     const int dest = words_ + temp_;
     hold();
     storeSlot(dest, TypeKind::Long);
-    loadSlot(size, TypeKind::Long);
-    copy(5, 0);
-    emit("add r4, r4, r5");
+    // storeSlot 会把 r4 换成帧基址。分配器必须从仍在 r0 的堆指针推进，
+    // 并保留 r1/r2 中尚待拼接的另一操作数。保留原私有写入/读取的失败顺序。
+    address(size);
+    emit("ldi.64 r5, r5");
+    emit("add r4, r0, r5");
     emit("store.64 r4, " + std::to_string(kHeapPtr));
-    loadSlot(dest, TypeKind::Long);
     release();
   }
 
@@ -59,7 +60,7 @@ void Generator::emitString(const std::string& text) {
     }
   }
 
-void Generator::boxChar() {
+void Generator::boxChar(int codeReg) {
     const int code = words_ + temp_;
     hold();
     storeSlot(code, TypeKind::Long);
@@ -73,13 +74,13 @@ void Generator::boxChar() {
     hold();
     storeSlot(dest, TypeKind::Long);
     loadSlot(code, TypeKind::Long);
-    copy(1, 0);
+    copy(codeReg, 0);
     loadSlot(dest, TypeKind::Long);
-    emit("place r2, 1");
-    emit("sti.64 r2, r0");
+    emit("place r5, 1");
+    emit("sti.64 r5, r0");
     emit("place r5, 64");
     emit("add r5, r0, r5");
-    emit("sti.32 r1, r5");
+    emit("sti.32 r" + std::to_string(codeReg) + ", r5");
     loadSlot(dest, TypeKind::Long);
     release();
     release();

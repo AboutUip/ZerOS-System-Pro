@@ -1,0 +1,17 @@
+[
+  {
+    "run": "5ff13f73-db1d-41ff-b066-3efa32af5351",
+    "reason": "Superseded invalid signal fixture used max signed long as a PID; the existing PIE relocation rule treated that immediate as an address. Baseline also failed. Corrected fixture uses nonexistent pid 999999; original timeout remains in raw data.",
+    "manifest": "signal-build/manifest-invalid-max-int.json"
+  },
+  {
+    "run": "d5fb4e04-659a-4676-b361-41f4914c5375",
+    "reason": "Superseded invalid signal fixture used max signed long as a PID; baseline and both candidates failed. Corrected fixture source and images have different recorded hashes; original timeout remains in raw data.",
+    "manifest": "signal-build/manifest-invalid-max-int.json"
+  },
+  {
+    "run": "d58a5e57-0136-48b0-ba2c-71465229bfe2",
+    "reason": "Superseded invalid signal fixture used max signed long as a PID; baseline and both candidates failed. Corrected fixture source and images have different recorded hashes; original timeout remains in raw data.",
+    "manifest": "signal-build/manifest-invalid-max-int.json"
+  }
+]

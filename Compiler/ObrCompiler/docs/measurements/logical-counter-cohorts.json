@@ -1,0 +1,1442 @@
+[
+  {
+    "cohort": "old-labels",
+    "variant": "O1",
+    "pairs": 34,
+    "memoryPairs": 32,
+    "medianMemoryChange": -0.13901515151515154,
+    "medianStepChange": -0.062267022414009,
+    "rows": [
+      {
+        "label": "example/arg4.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 18,
+        "afterLoads": 5,
+        "afterStores": 18,
+        "change": -0.23333333333333328,
+        "stepChange": -0.13186813186813184
+      },
+      {
+        "label": "example/arith.obr",
+        "pie": true,
+        "beforeLoads": 18,
+        "beforeStores": 17,
+        "afterLoads": 9,
+        "afterStores": 17,
+        "change": -0.2571428571428571,
+        "stepChange": -0.3950617283950617
+      },
+      {
+        "label": "example/async.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 31,
+        "afterLoads": 13,
+        "afterStores": 31,
+        "change": -0.16981132075471694,
+        "stepChange": -0.09859154929577463
+      },
+      {
+        "label": "example/bound.obr",
+        "pie": true,
+        "beforeLoads": 61,
+        "beforeStores": 52,
+        "afterLoads": 60,
+        "afterStores": 52,
+        "change": -0.008849557522123908,
+        "stepChange": 0
+      },
+      {
+        "label": "example/collect.obr",
+        "pie": true,
+        "beforeLoads": 3947,
+        "beforeStores": 2615,
+        "afterLoads": 3873,
+        "afterStores": 2615,
+        "change": -0.01127704967997567,
+        "stepChange": -0.007674919833885352
+      },
+      {
+        "label": "example/concat.obr",
+        "pie": true,
+        "beforeLoads": 40,
+        "beforeStores": 40,
+        "afterLoads": 38,
+        "afterStores": 40,
+        "change": -0.025000000000000022,
+        "stepChange": -0.009433962264150941
+      },
+      {
+        "label": "example/edge.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 41,
+        "afterLoads": 41,
+        "afterStores": 41,
+        "change": -0.03529411764705881,
+        "stepChange": -0.017804154302670572
+      },
+      {
+        "label": "example/fib.obr",
+        "pie": true,
+        "beforeLoads": 241,
+        "beforeStores": 271,
+        "afterLoads": 165,
+        "afterStores": 271,
+        "change": -0.1484375,
+        "stepChange": -0.04225352112676062
+      },
+      {
+        "label": "example/goto.obr",
+        "pie": true,
+        "beforeLoads": 15,
+        "beforeStores": 12,
+        "afterLoads": 13,
+        "afterStores": 12,
+        "change": -0.07407407407407407,
+        "stepChange": -0.010752688172043001
+      },
+      {
+        "label": "example/index.obr",
+        "pie": true,
+        "beforeLoads": 28,
+        "beforeStores": 23,
+        "afterLoads": 25,
+        "afterStores": 23,
+        "change": -0.05882352941176472,
+        "stepChange": -0.08045977011494254
+      },
+      {
+        "label": "example/lang.obr",
+        "pie": true,
+        "beforeLoads": 34,
+        "beforeStores": 33,
+        "afterLoads": 23,
+        "afterStores": 33,
+        "change": -0.16417910447761197,
+        "stepChange": -0.13684210526315788
+      },
+      {
+        "label": "example/logic.obr",
+        "pie": true,
+        "beforeLoads": 11,
+        "beforeStores": 11,
+        "afterLoads": 8,
+        "afterStores": 11,
+        "change": -0.13636363636363635,
+        "stepChange": -0.125
+      },
+      {
+        "label": "example/loop.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 17,
+        "afterLoads": 34,
+        "afterStores": 17,
+        "change": -0.16393442622950816,
+        "stepChange": -0.06792452830188678
+      },
+      {
+        "label": "example/main.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/math.obr",
+        "pie": true,
+        "beforeLoads": 38,
+        "beforeStores": 26,
+        "afterLoads": 24,
+        "afterStores": 26,
+        "change": -0.21875,
+        "stepChange": -0.23750000000000004
+      },
+      {
+        "label": "example/more.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 23,
+        "afterLoads": 12,
+        "afterStores": 23,
+        "change": -0.18604651162790697,
+        "stepChange": -0.11428571428571432
+      },
+      {
+        "label": "example/neststr.obr",
+        "pie": true,
+        "beforeLoads": 73,
+        "beforeStores": 68,
+        "afterLoads": 72,
+        "afterStores": 68,
+        "change": -0.007092198581560294,
+        "stepChange": 0
+      },
+      {
+        "label": "example/program.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/ptr.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 20,
+        "afterLoads": 14,
+        "afterStores": 20,
+        "change": -0.15000000000000002,
+        "stepChange": -0.09459459459459463
+      },
+      {
+        "label": "example/recur.obr",
+        "pie": true,
+        "beforeLoads": 66,
+        "beforeStores": 66,
+        "afterLoads": 49,
+        "afterStores": 66,
+        "change": -0.12878787878787878,
+        "stepChange": -0.04533333333333334
+      },
+      {
+        "label": "example/sticky.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 30,
+        "afterLoads": 19,
+        "afterStores": 30,
+        "change": -0.05769230769230771,
+        "stepChange": 0
+      },
+      {
+        "label": "example/struct-cast.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 13,
+        "afterLoads": 8,
+        "afterStores": 13,
+        "change": -0.16000000000000003,
+        "stepChange": -0.18055555555555558
+      },
+      {
+        "label": "example/type.obr",
+        "pie": true,
+        "beforeLoads": 24,
+        "beforeStores": 27,
+        "afterLoads": 18,
+        "afterStores": 27,
+        "change": -0.11764705882352944,
+        "stepChange": -0.12716763005780352
+      },
+      {
+        "label": "example/zapcall.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 19,
+        "afterLoads": 10,
+        "afterStores": 19,
+        "change": -0.06451612903225812,
+        "stepChange": 0
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": false,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": true,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "fixture/wide-scaled",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 14,
+        "afterLoads": 4,
+        "afterStores": 14,
+        "change": -0.25,
+        "stepChange": -0.34883720930232553
+      },
+      {
+        "label": "fixture/shared-alias",
+        "pie": true,
+        "beforeLoads": 5,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.06666666666666665,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/loop-alias",
+        "pie": true,
+        "beforeLoads": 509,
+        "beforeStores": 211,
+        "afterLoads": 407,
+        "afterStores": 211,
+        "change": -0.14166666666666672,
+        "stepChange": -0.06001791579575988
+      },
+      {
+        "label": "fixture/fold-reloc",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 13,
+        "afterLoads": 7,
+        "afterStores": 13,
+        "change": -0.13043478260869568,
+        "stepChange": -0.06451612903225812
+      },
+      {
+        "label": "fixture/numeric-jump",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/numeric-jump-hex",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/raw-clobber",
+        "pie": true,
+        "beforeLoads": 7,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.17647058823529416,
+        "stepChange": -0.052631578947368474
+      },
+      {
+        "label": "fixture/inline-small",
+        "pie": true,
+        "beforeLoads": 101,
+        "beforeStores": 141,
+        "afterLoads": 51,
+        "afterStores": 141,
+        "change": -0.20661157024793386,
+        "stepChange": -0.13787638668779711
+      }
+    ]
+  },
+  {
+    "cohort": "old-labels",
+    "variant": "O2",
+    "pairs": 34,
+    "memoryPairs": 32,
+    "medianMemoryChange": -0.13901515151515154,
+    "medianStepChange": -0.062267022414009,
+    "rows": [
+      {
+        "label": "example/arg4.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 18,
+        "afterLoads": 5,
+        "afterStores": 18,
+        "change": -0.23333333333333328,
+        "stepChange": -0.13186813186813184
+      },
+      {
+        "label": "example/arith.obr",
+        "pie": true,
+        "beforeLoads": 18,
+        "beforeStores": 17,
+        "afterLoads": 9,
+        "afterStores": 17,
+        "change": -0.2571428571428571,
+        "stepChange": -0.3950617283950617
+      },
+      {
+        "label": "example/async.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 31,
+        "afterLoads": 7,
+        "afterStores": 15,
+        "change": -0.5849056603773585,
+        "stepChange": -0.5
+      },
+      {
+        "label": "example/bound.obr",
+        "pie": true,
+        "beforeLoads": 61,
+        "beforeStores": 52,
+        "afterLoads": 60,
+        "afterStores": 52,
+        "change": -0.008849557522123908,
+        "stepChange": 0
+      },
+      {
+        "label": "example/collect.obr",
+        "pie": true,
+        "beforeLoads": 3947,
+        "beforeStores": 2615,
+        "afterLoads": 3873,
+        "afterStores": 2615,
+        "change": -0.01127704967997567,
+        "stepChange": -0.007674919833885352
+      },
+      {
+        "label": "example/concat.obr",
+        "pie": true,
+        "beforeLoads": 40,
+        "beforeStores": 40,
+        "afterLoads": 38,
+        "afterStores": 40,
+        "change": -0.025000000000000022,
+        "stepChange": -0.009433962264150941
+      },
+      {
+        "label": "example/edge.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 41,
+        "afterLoads": 41,
+        "afterStores": 41,
+        "change": -0.03529411764705881,
+        "stepChange": -0.017804154302670572
+      },
+      {
+        "label": "example/fib.obr",
+        "pie": true,
+        "beforeLoads": 241,
+        "beforeStores": 271,
+        "afterLoads": 165,
+        "afterStores": 271,
+        "change": -0.1484375,
+        "stepChange": -0.04225352112676062
+      },
+      {
+        "label": "example/goto.obr",
+        "pie": true,
+        "beforeLoads": 15,
+        "beforeStores": 12,
+        "afterLoads": 13,
+        "afterStores": 12,
+        "change": -0.07407407407407407,
+        "stepChange": -0.010752688172043001
+      },
+      {
+        "label": "example/index.obr",
+        "pie": true,
+        "beforeLoads": 28,
+        "beforeStores": 23,
+        "afterLoads": 25,
+        "afterStores": 23,
+        "change": -0.05882352941176472,
+        "stepChange": -0.08045977011494254
+      },
+      {
+        "label": "example/lang.obr",
+        "pie": true,
+        "beforeLoads": 34,
+        "beforeStores": 33,
+        "afterLoads": 23,
+        "afterStores": 33,
+        "change": -0.16417910447761197,
+        "stepChange": -0.13684210526315788
+      },
+      {
+        "label": "example/logic.obr",
+        "pie": true,
+        "beforeLoads": 11,
+        "beforeStores": 11,
+        "afterLoads": 8,
+        "afterStores": 11,
+        "change": -0.13636363636363635,
+        "stepChange": -0.125
+      },
+      {
+        "label": "example/loop.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 17,
+        "afterLoads": 34,
+        "afterStores": 17,
+        "change": -0.16393442622950816,
+        "stepChange": -0.06792452830188678
+      },
+      {
+        "label": "example/main.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/math.obr",
+        "pie": true,
+        "beforeLoads": 38,
+        "beforeStores": 26,
+        "afterLoads": 24,
+        "afterStores": 26,
+        "change": -0.21875,
+        "stepChange": -0.23750000000000004
+      },
+      {
+        "label": "example/more.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 23,
+        "afterLoads": 12,
+        "afterStores": 23,
+        "change": -0.18604651162790697,
+        "stepChange": -0.11428571428571432
+      },
+      {
+        "label": "example/neststr.obr",
+        "pie": true,
+        "beforeLoads": 73,
+        "beforeStores": 68,
+        "afterLoads": 72,
+        "afterStores": 68,
+        "change": -0.007092198581560294,
+        "stepChange": 0
+      },
+      {
+        "label": "example/program.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/ptr.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 20,
+        "afterLoads": 14,
+        "afterStores": 20,
+        "change": -0.15000000000000002,
+        "stepChange": -0.09459459459459463
+      },
+      {
+        "label": "example/recur.obr",
+        "pie": true,
+        "beforeLoads": 66,
+        "beforeStores": 66,
+        "afterLoads": 49,
+        "afterStores": 66,
+        "change": -0.12878787878787878,
+        "stepChange": -0.04533333333333334
+      },
+      {
+        "label": "example/sticky.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 30,
+        "afterLoads": 19,
+        "afterStores": 30,
+        "change": -0.05769230769230771,
+        "stepChange": 0
+      },
+      {
+        "label": "example/struct-cast.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 13,
+        "afterLoads": 8,
+        "afterStores": 13,
+        "change": -0.16000000000000003,
+        "stepChange": -0.18055555555555558
+      },
+      {
+        "label": "example/type.obr",
+        "pie": true,
+        "beforeLoads": 24,
+        "beforeStores": 27,
+        "afterLoads": 18,
+        "afterStores": 27,
+        "change": -0.11764705882352944,
+        "stepChange": -0.12716763005780352
+      },
+      {
+        "label": "example/zapcall.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 19,
+        "afterLoads": 10,
+        "afterStores": 19,
+        "change": -0.06451612903225812,
+        "stepChange": 0
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": false,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": true,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "fixture/wide-scaled",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 14,
+        "afterLoads": 4,
+        "afterStores": 14,
+        "change": -0.25,
+        "stepChange": -0.34883720930232553
+      },
+      {
+        "label": "fixture/shared-alias",
+        "pie": true,
+        "beforeLoads": 5,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.06666666666666665,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/loop-alias",
+        "pie": true,
+        "beforeLoads": 509,
+        "beforeStores": 211,
+        "afterLoads": 407,
+        "afterStores": 211,
+        "change": -0.14166666666666672,
+        "stepChange": -0.06001791579575988
+      },
+      {
+        "label": "fixture/fold-reloc",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 13,
+        "afterLoads": 7,
+        "afterStores": 13,
+        "change": -0.13043478260869568,
+        "stepChange": -0.06451612903225812
+      },
+      {
+        "label": "fixture/numeric-jump",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/numeric-jump-hex",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/raw-clobber",
+        "pie": true,
+        "beforeLoads": 7,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.17647058823529416,
+        "stepChange": -0.052631578947368474
+      },
+      {
+        "label": "fixture/inline-small",
+        "pie": true,
+        "beforeLoads": 101,
+        "beforeStores": 141,
+        "afterLoads": 51,
+        "afterStores": 141,
+        "change": -0.20661157024793386,
+        "stepChange": -0.13787638668779711
+      }
+    ]
+  },
+  {
+    "cohort": "extended",
+    "variant": "O1",
+    "pairs": 36,
+    "memoryPairs": 34,
+    "medianMemoryChange": -0.13339920948616601,
+    "medianStepChange": -0.05632474737156418,
+    "rows": [
+      {
+        "label": "example/arg4.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 18,
+        "afterLoads": 5,
+        "afterStores": 18,
+        "change": -0.23333333333333328,
+        "stepChange": -0.13186813186813184
+      },
+      {
+        "label": "example/arith.obr",
+        "pie": true,
+        "beforeLoads": 18,
+        "beforeStores": 17,
+        "afterLoads": 9,
+        "afterStores": 17,
+        "change": -0.2571428571428571,
+        "stepChange": -0.3950617283950617
+      },
+      {
+        "label": "example/async.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 31,
+        "afterLoads": 13,
+        "afterStores": 31,
+        "change": -0.16981132075471694,
+        "stepChange": -0.09859154929577463
+      },
+      {
+        "label": "example/bound.obr",
+        "pie": true,
+        "beforeLoads": 61,
+        "beforeStores": 52,
+        "afterLoads": 60,
+        "afterStores": 52,
+        "change": -0.008849557522123908,
+        "stepChange": 0
+      },
+      {
+        "label": "example/collect.obr",
+        "pie": true,
+        "beforeLoads": 3947,
+        "beforeStores": 2615,
+        "afterLoads": 3873,
+        "afterStores": 2615,
+        "change": -0.01127704967997567,
+        "stepChange": -0.007674919833885352
+      },
+      {
+        "label": "example/concat.obr",
+        "pie": true,
+        "beforeLoads": 40,
+        "beforeStores": 40,
+        "afterLoads": 38,
+        "afterStores": 40,
+        "change": -0.025000000000000022,
+        "stepChange": -0.009433962264150941
+      },
+      {
+        "label": "example/edge.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 41,
+        "afterLoads": 41,
+        "afterStores": 41,
+        "change": -0.03529411764705881,
+        "stepChange": -0.017804154302670572
+      },
+      {
+        "label": "example/fib.obr",
+        "pie": true,
+        "beforeLoads": 241,
+        "beforeStores": 271,
+        "afterLoads": 165,
+        "afterStores": 271,
+        "change": -0.1484375,
+        "stepChange": -0.04225352112676062
+      },
+      {
+        "label": "example/goto.obr",
+        "pie": true,
+        "beforeLoads": 15,
+        "beforeStores": 12,
+        "afterLoads": 13,
+        "afterStores": 12,
+        "change": -0.07407407407407407,
+        "stepChange": -0.010752688172043001
+      },
+      {
+        "label": "example/index.obr",
+        "pie": true,
+        "beforeLoads": 28,
+        "beforeStores": 23,
+        "afterLoads": 25,
+        "afterStores": 23,
+        "change": -0.05882352941176472,
+        "stepChange": -0.08045977011494254
+      },
+      {
+        "label": "example/lang.obr",
+        "pie": true,
+        "beforeLoads": 34,
+        "beforeStores": 33,
+        "afterLoads": 23,
+        "afterStores": 33,
+        "change": -0.16417910447761197,
+        "stepChange": -0.13684210526315788
+      },
+      {
+        "label": "example/logic.obr",
+        "pie": true,
+        "beforeLoads": 11,
+        "beforeStores": 11,
+        "afterLoads": 8,
+        "afterStores": 11,
+        "change": -0.13636363636363635,
+        "stepChange": -0.125
+      },
+      {
+        "label": "example/loop.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 17,
+        "afterLoads": 34,
+        "afterStores": 17,
+        "change": -0.16393442622950816,
+        "stepChange": -0.06792452830188678
+      },
+      {
+        "label": "example/main.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/math.obr",
+        "pie": true,
+        "beforeLoads": 38,
+        "beforeStores": 26,
+        "afterLoads": 24,
+        "afterStores": 26,
+        "change": -0.21875,
+        "stepChange": -0.23750000000000004
+      },
+      {
+        "label": "example/more.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 23,
+        "afterLoads": 12,
+        "afterStores": 23,
+        "change": -0.18604651162790697,
+        "stepChange": -0.11428571428571432
+      },
+      {
+        "label": "example/neststr.obr",
+        "pie": true,
+        "beforeLoads": 73,
+        "beforeStores": 68,
+        "afterLoads": 72,
+        "afterStores": 68,
+        "change": -0.007092198581560294,
+        "stepChange": 0
+      },
+      {
+        "label": "example/program.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/ptr.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 20,
+        "afterLoads": 14,
+        "afterStores": 20,
+        "change": -0.15000000000000002,
+        "stepChange": -0.09459459459459463
+      },
+      {
+        "label": "example/recur.obr",
+        "pie": true,
+        "beforeLoads": 66,
+        "beforeStores": 66,
+        "afterLoads": 49,
+        "afterStores": 66,
+        "change": -0.12878787878787878,
+        "stepChange": -0.04533333333333334
+      },
+      {
+        "label": "example/sticky.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 30,
+        "afterLoads": 19,
+        "afterStores": 30,
+        "change": -0.05769230769230771,
+        "stepChange": 0
+      },
+      {
+        "label": "example/struct-cast.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 13,
+        "afterLoads": 8,
+        "afterStores": 13,
+        "change": -0.16000000000000003,
+        "stepChange": -0.18055555555555558
+      },
+      {
+        "label": "example/type.obr",
+        "pie": true,
+        "beforeLoads": 24,
+        "beforeStores": 27,
+        "afterLoads": 18,
+        "afterStores": 27,
+        "change": -0.11764705882352944,
+        "stepChange": -0.12716763005780352
+      },
+      {
+        "label": "example/zapcall.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 19,
+        "afterLoads": 10,
+        "afterStores": 19,
+        "change": -0.06451612903225812,
+        "stepChange": 0
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": false,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": true,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "fixture/counter-direct",
+        "pie": true,
+        "beforeLoads": 1,
+        "beforeStores": 1,
+        "afterLoads": 1,
+        "afterStores": 1,
+        "change": 0,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/counter-indirect",
+        "pie": true,
+        "beforeLoads": 1,
+        "beforeStores": 1,
+        "afterLoads": 1,
+        "afterStores": 1,
+        "change": 0,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/wide-scaled",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 14,
+        "afterLoads": 4,
+        "afterStores": 14,
+        "change": -0.25,
+        "stepChange": -0.34883720930232553
+      },
+      {
+        "label": "fixture/shared-alias",
+        "pie": true,
+        "beforeLoads": 5,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.06666666666666665,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/loop-alias",
+        "pie": true,
+        "beforeLoads": 509,
+        "beforeStores": 211,
+        "afterLoads": 407,
+        "afterStores": 211,
+        "change": -0.14166666666666672,
+        "stepChange": -0.06001791579575988
+      },
+      {
+        "label": "fixture/fold-reloc",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 13,
+        "afterLoads": 7,
+        "afterStores": 13,
+        "change": -0.13043478260869568,
+        "stepChange": -0.06451612903225812
+      },
+      {
+        "label": "fixture/numeric-jump",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/numeric-jump-hex",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/raw-clobber",
+        "pie": true,
+        "beforeLoads": 7,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.17647058823529416,
+        "stepChange": -0.052631578947368474
+      },
+      {
+        "label": "fixture/inline-small",
+        "pie": true,
+        "beforeLoads": 101,
+        "beforeStores": 141,
+        "afterLoads": 51,
+        "afterStores": 141,
+        "change": -0.20661157024793386,
+        "stepChange": -0.13787638668779711
+      }
+    ]
+  },
+  {
+    "cohort": "extended",
+    "variant": "O2",
+    "pairs": 36,
+    "memoryPairs": 34,
+    "medianMemoryChange": -0.13339920948616601,
+    "medianStepChange": -0.05632474737156418,
+    "rows": [
+      {
+        "label": "example/arg4.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 18,
+        "afterLoads": 5,
+        "afterStores": 18,
+        "change": -0.23333333333333328,
+        "stepChange": -0.13186813186813184
+      },
+      {
+        "label": "example/arith.obr",
+        "pie": true,
+        "beforeLoads": 18,
+        "beforeStores": 17,
+        "afterLoads": 9,
+        "afterStores": 17,
+        "change": -0.2571428571428571,
+        "stepChange": -0.3950617283950617
+      },
+      {
+        "label": "example/async.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 31,
+        "afterLoads": 7,
+        "afterStores": 15,
+        "change": -0.5849056603773585,
+        "stepChange": -0.5
+      },
+      {
+        "label": "example/bound.obr",
+        "pie": true,
+        "beforeLoads": 61,
+        "beforeStores": 52,
+        "afterLoads": 60,
+        "afterStores": 52,
+        "change": -0.008849557522123908,
+        "stepChange": 0
+      },
+      {
+        "label": "example/collect.obr",
+        "pie": true,
+        "beforeLoads": 3947,
+        "beforeStores": 2615,
+        "afterLoads": 3873,
+        "afterStores": 2615,
+        "change": -0.01127704967997567,
+        "stepChange": -0.007674919833885352
+      },
+      {
+        "label": "example/concat.obr",
+        "pie": true,
+        "beforeLoads": 40,
+        "beforeStores": 40,
+        "afterLoads": 38,
+        "afterStores": 40,
+        "change": -0.025000000000000022,
+        "stepChange": -0.009433962264150941
+      },
+      {
+        "label": "example/edge.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 41,
+        "afterLoads": 41,
+        "afterStores": 41,
+        "change": -0.03529411764705881,
+        "stepChange": -0.017804154302670572
+      },
+      {
+        "label": "example/fib.obr",
+        "pie": true,
+        "beforeLoads": 241,
+        "beforeStores": 271,
+        "afterLoads": 165,
+        "afterStores": 271,
+        "change": -0.1484375,
+        "stepChange": -0.04225352112676062
+      },
+      {
+        "label": "example/goto.obr",
+        "pie": true,
+        "beforeLoads": 15,
+        "beforeStores": 12,
+        "afterLoads": 13,
+        "afterStores": 12,
+        "change": -0.07407407407407407,
+        "stepChange": -0.010752688172043001
+      },
+      {
+        "label": "example/index.obr",
+        "pie": true,
+        "beforeLoads": 28,
+        "beforeStores": 23,
+        "afterLoads": 25,
+        "afterStores": 23,
+        "change": -0.05882352941176472,
+        "stepChange": -0.08045977011494254
+      },
+      {
+        "label": "example/lang.obr",
+        "pie": true,
+        "beforeLoads": 34,
+        "beforeStores": 33,
+        "afterLoads": 23,
+        "afterStores": 33,
+        "change": -0.16417910447761197,
+        "stepChange": -0.13684210526315788
+      },
+      {
+        "label": "example/logic.obr",
+        "pie": true,
+        "beforeLoads": 11,
+        "beforeStores": 11,
+        "afterLoads": 8,
+        "afterStores": 11,
+        "change": -0.13636363636363635,
+        "stepChange": -0.125
+      },
+      {
+        "label": "example/loop.obr",
+        "pie": true,
+        "beforeLoads": 44,
+        "beforeStores": 17,
+        "afterLoads": 34,
+        "afterStores": 17,
+        "change": -0.16393442622950816,
+        "stepChange": -0.06792452830188678
+      },
+      {
+        "label": "example/main.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/math.obr",
+        "pie": true,
+        "beforeLoads": 38,
+        "beforeStores": 26,
+        "afterLoads": 24,
+        "afterStores": 26,
+        "change": -0.21875,
+        "stepChange": -0.23750000000000004
+      },
+      {
+        "label": "example/more.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 23,
+        "afterLoads": 12,
+        "afterStores": 23,
+        "change": -0.18604651162790697,
+        "stepChange": -0.11428571428571432
+      },
+      {
+        "label": "example/neststr.obr",
+        "pie": true,
+        "beforeLoads": 73,
+        "beforeStores": 68,
+        "afterLoads": 72,
+        "afterStores": 68,
+        "change": -0.007092198581560294,
+        "stepChange": 0
+      },
+      {
+        "label": "example/program.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 16,
+        "afterLoads": 15,
+        "afterStores": 16,
+        "change": -0.1842105263157895,
+        "stepChange": -0.08450704225352113
+      },
+      {
+        "label": "example/ptr.obr",
+        "pie": true,
+        "beforeLoads": 20,
+        "beforeStores": 20,
+        "afterLoads": 14,
+        "afterStores": 20,
+        "change": -0.15000000000000002,
+        "stepChange": -0.09459459459459463
+      },
+      {
+        "label": "example/recur.obr",
+        "pie": true,
+        "beforeLoads": 66,
+        "beforeStores": 66,
+        "afterLoads": 49,
+        "afterStores": 66,
+        "change": -0.12878787878787878,
+        "stepChange": -0.04533333333333334
+      },
+      {
+        "label": "example/sticky.obr",
+        "pie": true,
+        "beforeLoads": 22,
+        "beforeStores": 30,
+        "afterLoads": 19,
+        "afterStores": 30,
+        "change": -0.05769230769230771,
+        "stepChange": 0
+      },
+      {
+        "label": "example/struct-cast.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 13,
+        "afterLoads": 8,
+        "afterStores": 13,
+        "change": -0.16000000000000003,
+        "stepChange": -0.18055555555555558
+      },
+      {
+        "label": "example/type.obr",
+        "pie": true,
+        "beforeLoads": 24,
+        "beforeStores": 27,
+        "afterLoads": 18,
+        "afterStores": 27,
+        "change": -0.11764705882352944,
+        "stepChange": -0.12716763005780352
+      },
+      {
+        "label": "example/zapcall.obr",
+        "pie": true,
+        "beforeLoads": 12,
+        "beforeStores": 19,
+        "afterLoads": 10,
+        "afterStores": 19,
+        "change": -0.06451612903225812,
+        "stepChange": 0
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": false,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "firmware/Logo",
+        "pie": true,
+        "beforeLoads": 1390,
+        "beforeStores": 463,
+        "afterLoads": 1376,
+        "afterStores": 463,
+        "change": -0.007555315704263377,
+        "stepChange": -0.01122313106334416
+      },
+      {
+        "label": "fixture/counter-direct",
+        "pie": true,
+        "beforeLoads": 1,
+        "beforeStores": 1,
+        "afterLoads": 1,
+        "afterStores": 1,
+        "change": 0,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/counter-indirect",
+        "pie": true,
+        "beforeLoads": 1,
+        "beforeStores": 1,
+        "afterLoads": 1,
+        "afterStores": 1,
+        "change": 0,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/wide-scaled",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 14,
+        "afterLoads": 4,
+        "afterStores": 14,
+        "change": -0.25,
+        "stepChange": -0.34883720930232553
+      },
+      {
+        "label": "fixture/shared-alias",
+        "pie": true,
+        "beforeLoads": 5,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.06666666666666665,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/loop-alias",
+        "pie": true,
+        "beforeLoads": 509,
+        "beforeStores": 211,
+        "afterLoads": 407,
+        "afterStores": 211,
+        "change": -0.14166666666666672,
+        "stepChange": -0.06001791579575988
+      },
+      {
+        "label": "fixture/fold-reloc",
+        "pie": true,
+        "beforeLoads": 10,
+        "beforeStores": 13,
+        "afterLoads": 7,
+        "afterStores": 13,
+        "change": -0.13043478260869568,
+        "stepChange": -0.06451612903225812
+      },
+      {
+        "label": "fixture/numeric-jump",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/numeric-jump-hex",
+        "pie": true,
+        "beforeLoads": 0,
+        "beforeStores": 0,
+        "afterLoads": 0,
+        "afterStores": 0,
+        "change": null,
+        "stepChange": 0
+      },
+      {
+        "label": "fixture/raw-clobber",
+        "pie": true,
+        "beforeLoads": 7,
+        "beforeStores": 10,
+        "afterLoads": 4,
+        "afterStores": 10,
+        "change": -0.17647058823529416,
+        "stepChange": -0.052631578947368474
+      },
+      {
+        "label": "fixture/inline-small",
+        "pie": true,
+        "beforeLoads": 101,
+        "beforeStores": 141,
+        "afterLoads": 51,
+        "afterStores": 141,
+        "change": -0.20661157024793386,
+        "stepChange": -0.13787638668779711
+      }
+    ]
+  }
+]

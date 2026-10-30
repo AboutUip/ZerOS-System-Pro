@@ -1,0 +1,325 @@
+{
+  "variant": "O0",
+  "provenance": {
+    "base": "7bf78874240d695ff384cbf75efc1a3198036677",
+    "baseline": "f4c5697da8ac93094f3176e8b7acbabfa68b683fd22b44df04bebc01a41dca3c",
+    "candidate": "b671ce193549a37de26201cd8d8e2fa3cdc90e9ec1bae4d4eba9768998018359",
+    "observer": "1ea6eb9b36cba81e1a9c25b3c161eebab533c635ed2a61e74ac8abb49440b61e",
+    "plugin": "8b76943280cf3122713649bf32e2489dcf4fb69e43d720f5430d228645b6c9f7",
+    "counter": "403fb1e16fdf87a9e25fddaf32dd92003f88206da75631306defd78cc38d4a06",
+    "node": "v24.21.0",
+    "os": "25.1.0",
+    "cpu": "Apple M1 Pro"
+  },
+  "programs": [
+    {
+      "name": "kernel/start",
+      "sha256": "5f2ac6747881d46c0844b20ec251a91447b3ccfe1ad274211e0fe4382a8c32e9",
+      "bytes": 672933
+    },
+    {
+      "name": "kernel/init",
+      "sha256": "3ecbc2c965e44b2b34f781599d66e7d4538e168305857b9daed6b1a97fff664f",
+      "bytes": 21672
+    },
+    {
+      "name": "os/sh",
+      "sha256": "179f179e3aae49704fbb483bcc64adafde62144b997da4e351c7c90c281dc04b",
+      "bytes": 391860
+    },
+    {
+      "name": "os/session",
+      "sha256": "499dae7d239ce84f6aece3a1008b69b0198b4fc48b31a8e143bdd16a260902b8",
+      "bytes": 18982
+    },
+    {
+      "name": "kernel/idle",
+      "sha256": "21bcf81a6999023207febc06ce733de566503ec41c80ac387e1d7d025e55c5a7",
+      "bytes": 462
+    },
+    {
+      "name": "kernel/drv/pulse",
+      "sha256": "8ab15098e0ddfe0e34669c80be64d5d2d91b5937b14b134d0582e7aeb4d235e1",
+      "bytes": 2133
+    },
+    {
+      "name": "bin/basename",
+      "sha256": "becba7f664f73991ea2456820dee456d7a73add8b96f1bf8a32e388732e5566e",
+      "bytes": 43857
+    },
+    {
+      "name": "bin/cat",
+      "sha256": "686e013a98f732c2247840fe2452795fdbb16ea0d9a467e21b6153c917bb9a1e",
+      "bytes": 53971
+    },
+    {
+      "name": "bin/chmod",
+      "sha256": "d0b11c75d6ffe5f6bcbf29d546142f150d2386004d1ac6b47a16d7c408db81b8",
+      "bytes": 92872
+    },
+    {
+      "name": "bin/chown",
+      "sha256": "af575fc71a9725ae547ab05e799461f4f9fcaf93bad00f878b12518d41a3bd1a",
+      "bytes": 89549
+    },
+    {
+      "name": "bin/cksum",
+      "sha256": "643f04e95d53de4c1ed77a2ce372963541510f6f52c3be90680bded65a47a346",
+      "bytes": 69731
+    },
+    {
+      "name": "bin/cmp",
+      "sha256": "5fb4cc0088904bf2b0939daf3e5e95f73af6cd2b4f919f7474dd99a1ad77ab6a",
+      "bytes": 94170
+    },
+    {
+      "name": "bin/comm",
+      "sha256": "612fc75fbd58ebfcb3bf48c9112e52cf13f8086de49cb8fbbb9f977f28f24516",
+      "bytes": 97841
+    },
+    {
+      "name": "bin/cp",
+      "sha256": "66d1b1f7908370076d6e272f4235b3c756a433722641f5f994cfebe4a833c405",
+      "bytes": 189231
+    },
+    {
+      "name": "bin/cut",
+      "sha256": "93eb8f83d937225ad5b437c5c46fe38e6a59d7e9bbf10edd1d172d6c87d7b0bb",
+      "bytes": 134111
+    },
+    {
+      "name": "bin/date",
+      "sha256": "8bc916950767c486dc41f85f788e7a89dfa44c995b0db04b1f4e998c8ce92921",
+      "bytes": 160060
+    },
+    {
+      "name": "bin/dd",
+      "sha256": "52849ad3210b86fb92374cec8b28b6dad597b3c2ecbb473dc1f573872b58ff9f",
+      "bytes": 127025
+    },
+    {
+      "name": "bin/diff",
+      "sha256": "acb5061e21d9908fc2b68d14294b3d31073f46069314faa510bf1a52404ad53d",
+      "bytes": 99318
+    },
+    {
+      "name": "bin/dirname",
+      "sha256": "0986efeb4378b37ea4ee3a278aa42024cd77470ffe679082a8fdb76ac966371b",
+      "bytes": 41790
+    },
+    {
+      "name": "bin/du",
+      "sha256": "c3c710e9caf2461d9b0f44ff7b3ff0592cc591f315951a3623b8ae5e4914657f",
+      "bytes": 89865
+    },
+    {
+      "name": "bin/echo",
+      "sha256": "d4598799334b6ca02524a26a9fa9527e933be6c9efc26faf1b91361309e373cf",
+      "bytes": 31786
+    },
+    {
+      "name": "bin/env",
+      "sha256": "3eb31157da3b53c7ecfe7505a2a9b491285be68abc9f0897db88e15cc7c7db53",
+      "bytes": 131382
+    },
+    {
+      "name": "bin/expr",
+      "sha256": "b845824c567c05cce6bda260a919fc4b5742f40272137e3f8d99e6a783697876",
+      "bytes": 85300
+    },
+    {
+      "name": "bin/false",
+      "sha256": "466d4af3673066207270dcd9ea982ad73bc3c5d39c10ada2550d74c51e01537c",
+      "bytes": 27729
+    },
+    {
+      "name": "bin/find",
+      "sha256": "ea170893a2525e332e780e85fd9a7b805a22e010e8825b14e1044ccb3b026330",
+      "bytes": 240554
+    },
+    {
+      "name": "bin/fold",
+      "sha256": "772ae3f64688772e22e4cf42091266990ca7c566fe770082a11735f4bfd2af9f",
+      "bytes": 95188
+    },
+    {
+      "name": "bin/grep",
+      "sha256": "eb28593428f7a0128992e438aaafec8db432a3e7aee1057bbfbea012d6c67375",
+      "bytes": 396660
+    },
+    {
+      "name": "bin/head",
+      "sha256": "81b7f7d1a6f85c6c59cf02cbb34819c3393b3407bf810061bd0f21ec5ba0507a",
+      "bytes": 72664
+    },
+    {
+      "name": "bin/id",
+      "sha256": "184e2f16ba05783f7865756711aff087c8cbbda5f3f850d9b65b3beadf459997",
+      "bytes": 62470
+    },
+    {
+      "name": "bin/install",
+      "sha256": "63ab6eef4bff82ae5825d5812b9cd5be200931f1a81e914028fcacd431bd6f76",
+      "bytes": 92466
+    },
+    {
+      "name": "bin/kill",
+      "sha256": "3ff4bba027a3bd29f0b6ff5e6602118bf6c59bb3308d2e11b10a15dfb1d9e43e",
+      "bytes": 121170
+    },
+    {
+      "name": "bin/ls",
+      "sha256": "0c111948c3aa19c68fba32e813a1f0332ffa95e4ca07100273a7872ad7b01956",
+      "bytes": 271413
+    },
+    {
+      "name": "bin/mkdir",
+      "sha256": "80112f98a90c7e22f9edac8632de6880c7431387ebe86fd39b091c60968f96aa",
+      "bytes": 73702
+    },
+    {
+      "name": "bin/mktemp",
+      "sha256": "ec7fcfb75067a14e5bad602791835bd8ec89d3e31687bf23da6e6d2eacf6d130",
+      "bytes": 57011
+    },
+    {
+      "name": "bin/mv",
+      "sha256": "375a82ac916cd28303f3b095f1eafe6a0ca39eee42ac23fad33c06ef7df7fda6",
+      "bytes": 231186
+    },
+    {
+      "name": "bin/od",
+      "sha256": "9f5d0d82f469fee5a940ad498ca569b0fb70f65ffe5bbafa565b54771e2b52aa",
+      "bytes": 139879
+    },
+    {
+      "name": "bin/paste",
+      "sha256": "14995935183b53e84e368f34967fb63fd946fc8859818e29cee51ba3355f469c",
+      "bytes": 120550
+    },
+    {
+      "name": "bin/printf",
+      "sha256": "f823019f54b3b9f83f063b0f34092ee501c69d76eafb7a2ae2802fa324875c23",
+      "bytes": 153531
+    },
+    {
+      "name": "bin/ps",
+      "sha256": "1d0f90dc5f9560e2c56b346fc1b7da5968bb569e21ec3de388ee3931faed9886",
+      "bytes": 175424
+    },
+    {
+      "name": "bin/pwd",
+      "sha256": "bea7709d2b6ed3d2a4b4e70d54d63ea431460e90c4cccb82ad14eb538e5e8f73",
+      "bytes": 57078
+    },
+    {
+      "name": "bin/realpath",
+      "sha256": "b0ae2d420e9a0645680c4ad7f7bfd97bdacdff2cfe4619b4c9c81705d3aa734a",
+      "bytes": 66740
+    },
+    {
+      "name": "bin/rm",
+      "sha256": "0bbae1757811932a53694107115f0d1befb539b182838f567644280375bac307",
+      "bytes": 120746
+    },
+    {
+      "name": "bin/rmdir",
+      "sha256": "9ac585c42e455f3f170cccd1f43a97d16a0abc1898a1301cfa68a2ddc7a55b76",
+      "bytes": 74588
+    },
+    {
+      "name": "bin/seq",
+      "sha256": "6c22819600e3b09b71e9dc0a19eb7fcfa382acecb81508c0d09d21bbf8bf5cee",
+      "bytes": 66721
+    },
+    {
+      "name": "bin/sleep",
+      "sha256": "594002ea5a986d246028f7dc4e0453d41e8ee75decedbfed5a6c6df91a80c700",
+      "bytes": 44581
+    },
+    {
+      "name": "bin/sort",
+      "sha256": "b1b694e9eea25acabfbace84a01ac4dc6743cb1cf336c71e5f0c70ae6f4cbe6f",
+      "bytes": 183100
+    },
+    {
+      "name": "bin/tail",
+      "sha256": "2d49d845ecccc503f0098595ecfc69b306a1913b4481f1768380eed78b133c11",
+      "bytes": 93070
+    },
+    {
+      "name": "bin/tee",
+      "sha256": "d2eb10d3062fd0a6f224cd56c95ee9c95c356424e330a7cedfcbe804bfde68e0",
+      "bytes": 66555
+    },
+    {
+      "name": "bin/test",
+      "sha256": "5eadac62af30641e75f9435ef793bdb2ad9563384e102fd5f9bcd8dc9d4b391c",
+      "bytes": 124572
+    },
+    {
+      "name": "bin/touch",
+      "sha256": "0d4880e0c142b776dccca936ee6a65e4ce3e268e510cdc3883e6ac6c8c627068",
+      "bytes": 84031
+    },
+    {
+      "name": "bin/tr",
+      "sha256": "18f9675c6aa03989bd2aa91c6324e6fc13efde06ee2efd253fe259e2ec920679",
+      "bytes": 141460
+    },
+    {
+      "name": "bin/true",
+      "sha256": "86186a42b54f7534669933be49c2a80026202cb4181f639914cf752d46666cff",
+      "bytes": 27924
+    },
+    {
+      "name": "bin/uname",
+      "sha256": "53f7d1cf1e6b0b521f25ecec08a8030e588c39749f26bd844cf883264f87de48",
+      "bytes": 46260
+    },
+    {
+      "name": "bin/uniq",
+      "sha256": "7bf9430d341475b20c7afdfa0486c1db5765edf5f44f7cfdeaddb77654eb6bd3",
+      "bytes": 106228
+    },
+    {
+      "name": "bin/wc",
+      "sha256": "08e4b8cb3f37e0327c32109229b93be465cc5e1acc3bb011a3467bd611183a39",
+      "bytes": 91870
+    },
+    {
+      "name": "bin/which",
+      "sha256": "920d44d613b9ab6b1b3a4e789f7f9753b408df74cf132c8763c260a57e69355d",
+      "bytes": 71925
+    },
+    {
+      "name": "bin/whoami",
+      "sha256": "db2460325ce0fc61d87b9713db8ca2c6603c99595c00a023f44a3fa1fd61fb0a",
+      "bytes": 41768
+    },
+    {
+      "name": "bin/xargs",
+      "sha256": "d2c181e374963ef960cc88ba5a1f3286befbb2e92fd8fe4a2a06721a7541551c",
+      "bytes": 111901
+    },
+    {
+      "name": "bin/yes",
+      "sha256": "15f7b0b332a17eb310b4253639ce6ca74c5712361eb4dc070144f9f37dc5197b",
+      "bytes": 48022
+    }
+  ],
+  "firmware": [
+    {
+      "name": "Bios",
+      "sha256": "e3c1c9d300b201f88e90389595b1b60b14dbd5d66349e98fe69afca58df8c968"
+    },
+    {
+      "name": "Logo",
+      "sha256": "8d4c53782be2d31d3964ded6a0eb40a01817f25e7daf69a966192ceab8c58dc1"
+    },
+    {
+      "name": "Load",
+      "sha256": "1a23062f730d63b76bdfc8626f2047da51a8a7cbdd463789fc8137a9fcbeb78c"
+    }
+  ]
+}

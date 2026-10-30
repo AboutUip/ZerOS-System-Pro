@@ -83,8 +83,34 @@ int main(int argc, char** argv) {
     bool pie = false;
     bool writeZap = false;
     bool debug = false;
+    obr::OptimizationOptions options;
     for (int index = 1; index < argc; index += 1) {
       const std::string arg = argv[index];
+      if (arg == "-O0" || arg == "-O1" || arg == "-O2") {
+        options.level = arg[2] - '0';
+        continue;
+      }
+      if (arg.rfind("-O", 0) == 0) obr::fail("优化级别只能是 -O0、-O1、-O2");
+      if (arg == "-fno-peephole") { options.peephole = false; continue; }
+      if (arg == "-fno-fold") { options.fold = false; continue; }
+      if (arg == "-fno-load-forward") { options.loadForward = false; continue; }
+      if (arg == "-fno-dce") { options.deadCode = false; continue; }
+      if (arg == "-fno-native-compact") { options.compactNative = false; continue; }
+      if (arg == "-fno-scaled") { options.scaled = false; continue; }
+      if (arg == "-fno-inline-small") { options.inlineSmall = false; continue; }
+      if (arg == "-native-report" && index + 1 < argc) { options.nativeReport = argv[++index]; continue; }
+      if (arg == "-passes" && index + 1 < argc) {
+        std::istringstream sequence(argv[++index]);
+        std::string pass;
+        options.passes.clear();
+        while (std::getline(sequence, pass, ',')) {
+          const auto parsed = obr::optimizationPass(pass);
+          if (!parsed) obr::fail("未知优化 pass " + pass);
+          options.passes.push_back(*parsed);
+        }
+        if (options.passes.empty() || options.passes.size() > 8) obr::fail("-passes 需要 1 到 8 个 pass");
+        continue;
+      }
       if (arg == "-shared") {
         shared = true;
         continue;
@@ -124,6 +150,10 @@ int main(int argc, char** argv) {
     }
     if (inputs.empty() || output.empty()) {
       std::cerr << "用法: obrc 文件.obr [更多.obr ...] [-I 头文件目录 ...] [-slot 核心号] [-shared] [-pie] [-zap] [-debug] -o 程序\n";
+      std::cerr << "      -O0 关闭新优化；默认 -O1；-O2 增加有界小函数内联。\n";
+      std::cerr << "      -passes fold,load-forward,dce 指定机器 IR 顺序，可重复（最多 8 次）；forward 合并两项前向变换。\n";
+      std::cerr << "      -native-report 路径 写覆盖报告。\n";
+      std::cerr << "      -fno-{peephole,fold,load-forward,dce,native-compact,scaled,inline-small} 关闭相应优化。\n";
       std::cerr << "      默认只写无扩展名二进制。-zap 才在旁边写文本，用来对照调试。\n";
       std::cerr << "      -debug 在二进制旁边再写 .debug 对照表。二进制与不加 -debug 时逐字节相同。\n";
       std::cerr << "      -shared 编动态库，必须 -slot 0，并且不能有 main。\n";
@@ -177,12 +207,12 @@ int main(int argc, char** argv) {
     unit.shared = shared;
     unit.pie = pie;
     obr::check(unit);
-    const obr::Generated generated = obr::generate(unit);
+    const obr::Generated generated = obr::generate(unit, options);
     const bool namedZap = output.size() >= 4 && output.compare(output.size() - 4, 4, ".zap") == 0;
     const std::string zapPath = namedZap ? output : output + ".zap";
     const std::string binaryPath = namedZap ? output.substr(0, output.size() - 4) : output;
     if (namedZap || writeZap) writeFile(zapPath, generated.text);
-    obr::writeProgramBinary(binaryPath, generated.text, unit, debug ? &generated.sites : nullptr);
+    obr::writeProgramBinary(binaryPath, generated.text, unit, debug ? &generated.sites : nullptr, options);
     return 0;
   } catch (const obr::Error& error) {
     std::cerr << error.what() << "\n";

@@ -1,0 +1,11 @@
+{
+  "base": "7bf78874240d695ff384cbf75efc1a3198036677",
+  "baseline": "f4c5697da8ac93094f3176e8b7acbabfa68b683fd22b44df04bebc01a41dca3c",
+  "candidate": "b671ce193549a37de26201cd8d8e2fa3cdc90e9ec1bae4d4eba9768998018359",
+  "observer": "1ea6eb9b36cba81e1a9c25b3c161eebab533c635ed2a61e74ac8abb49440b61e",
+  "plugin": "8b76943280cf3122713649bf32e2489dcf4fb69e43d720f5430d228645b6c9f7",
+  "counter": "403fb1e16fdf87a9e25fddaf32dd92003f88206da75631306defd78cc38d4a06",
+  "node": "v24.21.0",
+  "os": "25.1.0",
+  "cpu": "Apple M1 Pro"
+}
