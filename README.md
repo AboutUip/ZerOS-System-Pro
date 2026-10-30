@@ -26,6 +26,7 @@ ZerOS-System-Pro/
 ├── Compiler/ObrExtension/    # 编辑器扩展，.obr / .mr / .zap
 ├── Toolchain/                # Vite、TypeScript、ESLint；不放产品源码
 └── Documents/
+    ├── Debug/                # 标准调试、观测设施与记录
     ├── Protocol/             # 对外协议，兼容性权威
     ├── Rules/                # 预览、内核语言、引导失败说明
     └── Skills/               # 协议写作、编码规范与 Obr 语法
@@ -74,8 +75,8 @@ cmake --build Compiler/ObrCompiler/build
 | **ZCP1** | CPU 与 ZAP | [Cpu](./Documents/Protocol/PhysicalHardware/Cpu/README.md) |
 | **ZGP1** | 显卡 | [Gpu](./Documents/Protocol/PhysicalHardware/Gpu/README.md) |
 | **ZDP1** | 显示器 | [Display](./Documents/Protocol/PhysicalHardware/Display/README.md) |
-| **ZKP1** | 键盘 | [Keyboard](./Documents/Protocol/PhysicalHardware/Keyboard/README.md) |
-| **ZPP1** | 鼠标 | [Pointer](./Documents/Protocol/PhysicalHardware/Pointer/README.md) |
+| **ZKP1** | 键盘（7 字 + 关联号） | [Keyboard](./Documents/Protocol/PhysicalHardware/Keyboard/README.md) |
+| **ZPP1** | 鼠标（7 字 + 关联号） | [Pointer](./Documents/Protocol/PhysicalHardware/Pointer/README.md) |
 | **ZXP1 / ZXD1** | 扩展口与交换 | [Expansion](./Documents/Protocol/PhysicalHardware/Expansion/README.md) |
 | **ZSP1** | 沙盒 | [Sandbox](./Documents/Protocol/PhysicalHardware/Sandbox/README.md) |
 | **ZNP1** | NAS | [Nas](./Documents/Protocol/PhysicalHardware/Nas/README.md) |
@@ -112,6 +113,7 @@ NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO
 | 编码规范 | 同上 | 写 `ZerOS-PRO/` |
 | Obr 语法 | [Documents/Skills/ObrLanguage](./Documents/Skills/ObrLanguage/SKILL.md) | 改编译器表面，或写 `.obr` / `.mr` |
 | 项目规则 | [Documents/Rules](./Documents/Rules/) | 预览端口、内核语言、引导失败说明 |
+| 标准调试 | [Documents/Debug](./Documents/Debug/README.md) | 性能复现、观测、回归与记录 |
 
 Cursor 从 `.cursor/skills/` 和 `.cursor/rules/` 加载。这两处是本地链接，正文只在 `Documents/Skills/` 和 `Documents/Rules/`。克隆后在 `Toolchain` 执行 `npm run skills:sync` 接上链接。`npm test` 确认链接指向这两处。
 

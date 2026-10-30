@@ -488,6 +488,9 @@ deRfun paintPrompt(long home, long work): void {
   at = putText(paint, at, "# ");
   writeSpan(home, paint, at);
   memory::store64(columns(paint, at), prevAt(work));
+  /* 提示符画完，发一次 no-op 服务 35。宿主在 svc 边界记 prompt 事件；
+     不是协议字段，也不写保留地址。 */
+  obr::proc::prompt(home);
 }
 
 deRfun writeMissing(long home, string lead, long addr, long count, string tail): void {
@@ -1550,6 +1553,8 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
 
 /* out 里已经是拆好的命令。here-document 的正文在 body，一份 4096 个八位组。 */
 deRfun runParsed(long home, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long {
+  /* 这一行开始执行。宿主在 svc 边界开命令 span，提示符再关。 */
+  obr::proc::command(home);
   long status = previous;
   long lists = listCount(out);
   long index = 0L;

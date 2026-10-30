@@ -23,6 +23,7 @@
 import { ZerOS as FlagRoot } from "../Config/DebugFlag";
 import { type ZerOS as FaultRoot } from "../../Cpu/Structure/FaultRecord";
 import { type ZerOS as StopRoot } from "../../Cpu/Structure/CoreStop";
+import { type ZerOS as EntryRoot } from "../../Diagnostics/Structure/TraceEntry";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -30,6 +31,7 @@ export namespace ZerOS {
       const debugEnabled = FlagRoot.Hardware.Debug.debugEnabled;
       type FaultRecord = FaultRoot.Hardware.Cpu.FaultRecord;
       type CoreStop = StopRoot.Hardware.Cpu.CoreStop;
+      type TraceEntry = EntryRoot.Hardware.Diagnostics.TraceEntry;
 
       /* ------------------------------------------------------------------ */
       /* 2. 入口                                                             */
@@ -42,6 +44,10 @@ export namespace ZerOS {
         readonly stop: (ordinal: number) => CoreStop | null;
         readonly exchange: (index: number, direction: number, word: bigint) => Promise<bigint>;
         readonly run: (lines: readonly string[]) => Promise<string>;
+        readonly report: () => string;
+        readonly dump: () => readonly TraceEntry[];
+        readonly clear: () => void;
+        readonly status: () => { readonly Records: number; readonly Pending: number; readonly Dropped: number; readonly Prompts: number };
       }
 
       /**
@@ -68,6 +74,14 @@ export namespace ZerOS {
               return Promise.resolve("debug is off");
             }
             return hooks.run(lines);
+          },
+          trace: {
+            report: (): string => hooks.report(),
+            dump: (): readonly TraceEntry[] => hooks.dump(),
+            clear: (): void => {
+              hooks.clear();
+            },
+            status: (): { readonly Records: number; readonly Pending: number; readonly Dropped: number; readonly Prompts: number } => hooks.status(),
           },
         };
         Object.defineProperty(target, "ZerOSDebug", {

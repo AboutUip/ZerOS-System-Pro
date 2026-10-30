@@ -34,6 +34,8 @@ import { ZerOS as ConfigRoot } from "../Config/CpuConfig";
 import { ZerOS as MailboxRoot } from "../../Motherboard/Host/Mailbox";
 import { ZerOS as MemoryConfigRoot } from "../../Memory/Config/MemoryConfig";
 import { ZerOS as MetricPageRoot } from "../../Motherboard/Host/MetricPage";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -45,6 +47,13 @@ export namespace ZerOS {
       const UnitSizeBytes = MemoryConfigRoot.Hardware.Memory.Config.UnitSizeBytes;
       const readMetric = MetricPageRoot.Hardware.Motherboard.readMetric;
       const attachMetricPage = MetricPageRoot.Hardware.Motherboard.attachMetricPage;
+      const attachTracePage = TracePageRoot.Hardware.Diagnostics.attachTracePage;
+      const traceSpanBegin = TracePageRoot.Hardware.Diagnostics.traceSpanBegin;
+      const traceSpanEnd = TracePageRoot.Hardware.Diagnostics.traceSpanEnd;
+      const traceSpanEvent = TracePageRoot.Hardware.Diagnostics.traceSpanEvent;
+      const traceMem = TracePageRoot.Hardware.Diagnostics.traceMem;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
       const packProgram = CompactRoot.Hardware.Cpu.packProgram;
       const RegisterStride = CompactRoot.Hardware.Cpu.RegisterStride;
       const RegisterMissing = CompactRoot.Hardware.Cpu.RegisterMissing;
@@ -98,6 +107,20 @@ export namespace ZerOS {
       let board: MessagePort | null = null;
       let cpu: MessagePort | null = null;
       let waiting = false;
+      /** 正在等主板回复的端口 span；一条核心同期只有一条出核命令。 */
+      let portTrace = 0;
+      /** 当前局部执行拍的父 span。 */
+      let burstTrace = 0;
+      /** 一段出核访问的汇总。 */
+      let accessBatchStart = 0;
+      let accessCount = 0;
+      let accessTotal = 0;
+      let accessMax = 0;
+      /** 端口 span 的种类，写在 A0 的高 8 位。 */
+      const PortXchg = 1;
+      const PortFill = 2;
+      const PortCarry = 3;
+      const PortOffer = 4;
       /** 读访存回来之后要写入的寄存器。写访存不使用。 */
       let pendingRegister: number | null = null;
       /** inbox 还要把“是否取到”写入另一个寄存器。 */
@@ -323,8 +346,13 @@ export namespace ZerOS {
        * 落在固件格子里。若只留在 0 号核心的缓存，主板看不见这次写入，页面也就挂不上入口。
        */
       const SharedDebugWord = 8128n;
+      /**
+       * 任务诊断字。固件格子表记在 4416，不在键盘环 6528 到 7360 里面。
+       * 核心 2 的 store.64 必须出核心，主板才认得到这一字。
+       */
+      const SharedTaskDiag = 4416n;
 
-      /** 这次访存是否盖住结束标志、模式字、准备完成标记、停笔握手、键盘环或调试开关。bitWidth 是这次访问的位数。 */
+      /** 这次访存是否盖住结束标志、模式字、准备完成标记、停笔握手、键盘环、任务诊断字或调试开关。bitWidth 是这次访问的位数。 */
       function touchesSharedFirmware(address: bigint, bitWidth: bigint): boolean {
         const end = address + bitWidth;
         if (address < SharedBootFlag + 64n && end > SharedBootFlag) {
@@ -346,6 +374,9 @@ export namespace ZerOS {
           return true;
         }
         if (address < SharedDebugWord + 64n && end > SharedDebugWord) {
+          return true;
+        }
+        if (address < SharedTaskDiag + 64n && end > SharedTaskDiag) {
           return true;
         }
         return false;
@@ -1105,6 +1136,47 @@ export namespace ZerOS {
       /** 这颗核心自己的编号。客核心只能读自己的字段 5 至 12。 */
       let selfOrdinal = 0;
 
+      /** 开一条端口 span。父编号由 CPU 线程随命令带进来，父为 0 时是孤儿。 */
+      function beginPortTrace(record: Record<string, unknown>, kind: number, port: number, size: number): void {
+        const parent = record["trace"];
+        const parentSpan = typeof parent === "number" ? parent : 0;
+        portTrace = traceSpanBegin(TraceOp.Port, TraceLayer.Protocol, selfOrdinal, parentSpan, port + kind * 256, size);
+      }
+
+      function endPortTrace(): void {
+        if (portTrace === 0) {
+          return;
+        }
+        traceSpanEnd(TraceOp.PortEnd, TraceLayer.Protocol, selfOrdinal, portTrace, 0, 0);
+        portTrace = 0;
+      }
+
+      /** 一个访存批次完成时只累加，不逐批打点。 */
+      function finishAccessBatchTrace(): void {
+        if (accessBatchStart === 0) {
+          return;
+        }
+        const duration = Math.max(0, Math.floor((performance.now() - accessBatchStart) * 1000));
+        accessCount += 1;
+        accessTotal += duration;
+        if (duration > accessMax) {
+          accessMax = duration;
+        }
+        accessBatchStart = 0;
+      }
+
+      /** 一段出核访问结束时累加到全局计数，不写记录环。 */
+      function emitAccessTrace(): void {
+        if (accessCount === 0) {
+          return;
+        }
+        traceMem(accessCount, accessTotal, accessMax);
+        accessCount = 0;
+        accessTotal = 0;
+        accessMax = 0;
+        accessBatchStart = 0;
+      }
+
       function outsideBound(address: bigint, bits: bigint): boolean {
         if (boundLength < 0n) {
           return false;
@@ -1740,6 +1812,10 @@ export namespace ZerOS {
           executed += 1;
         }
         quiet = false;
+        if (burstTrace !== 0 && executed > 0) {
+          /* B1：一拍一条范围样本，A0 是起始指令号，A1 是执行条数。 */
+          traceSpanEvent(TraceOp.Insn, TraceLayer.Core, selfOrdinal, burstTrace, 0, start, executed);
+        }
         const stopped = cursor < steps.length ? steps[cursor]?.["Op"] : undefined;
         const hold = quietFault === "" && typeof stopped === "string" && isMemoryOp(stopped);
         const stop = typeof stopped === "string" ? stopped : "";
@@ -2563,6 +2639,9 @@ export namespace ZerOS {
 
       function finishAccess(ok: boolean, message: string, hostFault: string): void {
         const job = accessJob;
+        if (job !== null) {
+          emitAccessTrace();
+        }
         accessJob = null;
         const port = cpu;
         if (job === null || port === null) {
@@ -2599,6 +2678,7 @@ export namespace ZerOS {
           d.push(wire.d);
           index += 1;
         }
+        accessBatchStart = performance.now();
         port.postMessage({ kind: "access-batch", tag, opcode, address, data, a, b, c, d });
       }
 
@@ -2897,6 +2977,7 @@ export namespace ZerOS {
 
       /** 主板按顺序做完一批。成功的写回寄存器，失败的那一条不写结果，后面的丢掉。 */
       function settleAccessBatch(record: Record<string, unknown>): void {
+        finishAccessBatchTrace();
         const job = accessJob;
         if (job === null) {
           return;
@@ -3265,6 +3346,9 @@ export namespace ZerOS {
         if (kind !== "exec-result" && kind !== "inbox-result" && kind !== "port-result") {
           return;
         }
+        if (kind === "port-result") {
+          endPortTrace();
+        }
         if (kind === "port-result" && carriedSpan !== null) {
           const span = carriedSpan;
           carriedSpan = null;
@@ -3629,6 +3713,7 @@ export namespace ZerOS {
           fail("exchange command integer is out of range");
           return;
         }
+        beginPortTrace(record, PortXchg, portNumber, directionNumber);
         pendingRegister = data;
         waiting = true;
         port.postMessage({ kind: "xchg", port: portNumber, direction: directionNumber, data: word });
@@ -3691,6 +3776,7 @@ export namespace ZerOS {
           fail("carry command integer is out of range");
           return;
         }
+        beginPortTrace(record, PortFill, portNumber, count);
         pendingRegister = destination;
         waiting = true;
         port.postMessage({ kind: "fill", port: portNumber, address, count });
@@ -3717,6 +3803,7 @@ export namespace ZerOS {
           fail("fill command integer is out of range");
           return;
         }
+        beginPortTrace(record, PortCarry, portNumber, count);
         pendingRegister = destination;
         waiting = true;
         carriedSpan = { start: address / 8n, count };
@@ -3744,6 +3831,7 @@ export namespace ZerOS {
           fail("offer command integer is out of range");
           return;
         }
+        beginPortTrace(record, PortOffer, portNumber, length);
         pendingRegister = destination;
         waiting = true;
         carriedSpan = { start: reply / 8n, count: limit };
@@ -4174,6 +4262,7 @@ export namespace ZerOS {
           boundOrigin = typeof origin === "bigint" ? origin : 0n;
           boundLength = typeof length === "bigint" ? length : -1n;
           guestCore = record["guest"] === true;
+          burstTrace = typeof record["trace"] === "number" ? record["trace"] : 0;
           if (guestCore) {
             queryCache.clear();
           }
@@ -4248,6 +4337,10 @@ export namespace ZerOS {
             });
             return;
           }
+          accessCount = 0;
+          accessTotal = 0;
+          accessMax = 0;
+          accessBatchStart = 0;
           const end = start + count;
           accessJob = {
             origin: start,
@@ -4836,6 +4929,10 @@ export namespace ZerOS {
         const metrics = record["metrics"];
         if (metrics instanceof SharedArrayBuffer) {
           attachMetricPage(metrics);
+        }
+        const trace = record["trace"];
+        if (trace instanceof SharedArrayBuffer) {
+          attachTracePage(trace);
         }
         const boardPort = record["boardPort"];
         const cpuPort = record["cpuPort"];

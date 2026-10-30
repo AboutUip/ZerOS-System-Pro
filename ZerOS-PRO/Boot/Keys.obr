@@ -19,7 +19,11 @@ deRfun keyOffer(): void {
   while (unit >= 65536L) {
     unit = unit - 65536L;
   }
-  *(long*)at = unit + mods * 65536L;
+  /* 低 16 位是键值，接着 16 位是修饰位；高 32 位放 ZKP1 关联号。
+     内核只读低 32 位，高 32 位对终端透明。 */
+  *(long*)at = unit + mods * 65536L + *(long*)5120 * 4294967296L;
   *(long*)(at + 64L) = *(long*)4864;
+  /* 发布栅栏在 6592。地址记在 Bios.obr。先写这格，再让 6528 的新次数可见。 */
+  *(long*)6592 = 0L;
   *(long*)6528 = count + 1L;
 }

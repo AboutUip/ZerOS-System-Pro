@@ -7,6 +7,8 @@
  * Resource/App 的每个子目录是一个程序：带 main 的那份是入口，同目录其余 .obr 链进去。
  * sh 的客路径仍是 /os/sh。其它程序写成 /app/目录名。*-check.obr 只在宿主编过，不装进客根。
  * 不写 .zap。编完再跑 provision.mjs，已有的 /boot/display 和 /boot/debug 不覆盖。
+ * 默认不生成 .debug；需要 B2 源行映射时显式加 --debug-maps。
+ * 普通构建会删除旧的 kernel/start.debug 和 os/sh.debug，避免用旧表错误归属源行。
  */
 
 import { spawnSync } from "node:child_process";
@@ -23,6 +25,16 @@ const compiler = path.resolve(repo, "Compiler/ObrCompiler", process.platform ===
 const lib = path.resolve(repo, "Compiler/ObrCompiler/lib");
 const memory = path.resolve(product, "Hardware/Memory");
 const board = path.resolve(product, "Hardware/Motherboard");
+const debugMaps = process.argv.includes("--debug-maps");
+const debugFiles = [
+  path.resolve(root, "kernel/start.debug"),
+  path.resolve(root, "os/sh.debug"),
+];
+if (!debugMaps) {
+  for (const file of debugFiles) {
+    fs.rmSync(file, { force: true });
+  }
+}
 
 const kernelIncludes = [
   "Init",
@@ -81,7 +93,7 @@ compile(
     path.resolve(lib, "obr.nas.obr"),
   ],
   path.resolve(root, "kernel/start"),
-  ["-slot", "2", ...kernelIncludes.flatMap((dir) => ["-I", dir]), "-I", memory, "-I", board],
+  [...(debugMaps ? ["-debug"] : []), "-slot", "2", ...kernelIncludes.flatMap((dir) => ["-I", dir]), "-I", memory, "-I", board],
 );
 
 const userIncludes = ["-pie", "-slot", "0", "-I", memory, "-I", board];
@@ -118,7 +130,8 @@ for (const entry of fs.readdirSync(appRoot, { withFileTypes: true })) {
   }
   if (mainFile !== null) {
     const guest = entry.name === "sh" ? path.resolve(root, "os/sh") : path.resolve(root, "app", entry.name);
-    compile([mainFile, ...extras, proc], guest, [...userIncludes, "-I", dir]);
+    const debug = debugMaps && entry.name === "sh" ? ["-debug"] : [];
+    compile([mainFile, ...extras, proc], guest, [...debug, ...userIncludes, "-I", dir]);
   }
   for (const name of checks) {
     const checkDir = fs.mkdtempSync(path.join(os.tmpdir(), "zeros-app-"));

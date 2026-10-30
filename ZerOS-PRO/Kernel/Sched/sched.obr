@@ -12,6 +12,10 @@ export deRfun schedWake(long core): void {
     return;
   }
   Task* task = taskAt(index);
+  /* 4 = 调度唤醒；只有确实在睡的任务才是一条唤醒边。 */
+  if (task.state == TaskState::Sleeping) {
+    diagTask(4L, task.pid, core, 0L);
+  }
   task.state = TaskState::Running;
   rankPublish(core);
   obr::os::schedule(core);
@@ -22,6 +26,8 @@ deRfun schedSleep(long core): void {
   if (index < 0L) {
     return;
   }
+  /* 3 = 调度睡眠；a 是任务 pid，b 是核心。 */
+  diagTask(3L, taskAt(index).pid, core, 0L);
   taskAt(index).state = TaskState::Sleeping;
 }
 

@@ -176,8 +176,10 @@ deRfun execSpawn(long caller, long home): long {
   rankSet(taskByPid(pid), rank);
   commFromPath(taskByPid(pid), home + 16384L);
   vfsHand(taskIndex, taskByPid(pid));
-  /* handArgs 会盖住整段参数区，不必先按字清零。 */
-  handArgs(home, query(1L, 8L, core));
+  /* handArgs 会盖住整段参数区，不必先按字清零。
+     用子任务所在核心的窗口起点，而不是 query(1,8,core)：子任务还没调度时，
+     那颗核心上的 home 仍是上一个任务，参数会抄到旧窗口。 */
+  handArgs(home, kArena(core));
   /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。
      再拉到 100000000 测过，按键仍是大约一秒，时间不在客程序的节拍上。 */
   if (isSession(home + 16384L) == 1L) {

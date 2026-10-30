@@ -9,6 +9,8 @@ import { ZerOS as ConfigRoot } from "../../Pointer/Config/PointerConfig";
 import { ZerOS as KindRoot } from "../../Pointer/Enum/EventKind";
 import { ZerOS as ButtonRoot } from "../../Pointer/Enum/Button";
 import { ZerOS as MotherboardRoot } from "../../Motherboard/Bootstrap/Motherboard";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -25,6 +27,10 @@ export namespace ZerOS {
       const ButtonBack = ButtonRoot.Hardware.Pointer.ButtonBack;
       const ButtonForward = ButtonRoot.Hardware.Pointer.ButtonForward;
       const page = MotherboardRoot.Hardware.Motherboard.Motherboard;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
 
       /** 浏览器键号收成 ZPP1 的键。不认识的键不发布。 */
       function buttonOf(button: number): number | null {
@@ -131,8 +137,16 @@ export namespace ZerOS {
         return BigInt(vertical) | (BigInt(horizontal) << 16n);
       }
 
+      /** 关联号只在一次页面会话内唯一；16 位足够覆盖一次采集。 */
+      let nextCorrelation = 0;
+
+      function correlation(): number {
+        nextCorrelation = nextCorrelation % 65535 + 1;
+        return nextCorrelation;
+      }
+
       /**
-       * 收成 ZPP1 的 6 个字。
+       * 收成 ZPP1 的 6 个语义字。
        * 种类只说明浏览器触发了哪一种监听，不决定这个键做什么。
        */
       function packEvent(
@@ -153,7 +167,14 @@ export namespace ZerOS {
         if (point === null) {
           return;
         }
-        page.PublishPointer(packEvent(kind, button, point, modifiersOf(event), wheel));
+        const id = correlation();
+        /* 先交给主板；同步投递失败会由 sendBoard 记 HostReject page，这里不再记成功事件。 */
+        page.PublishPointer([...packEvent(kind, button, point, modifiersOf(event), wheel), BigInt(id)]);
+        /* pointermove 太密，只记按下/松开/滚轮，避免把环冲掉。 */
+        if (kind !== EventKindMove) {
+          traceInstant(TraceOp.Input, TraceLayer.Host, -1, id, kind);
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.PointerPage, kind);
+        }
       }
 
       /**

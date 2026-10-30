@@ -171,12 +171,18 @@ deRfun conScroll(): void {
   }
   long row = 0L;
   while (row + 1L < rows) {
+    /* 只搬这一行用到的格子。以前固定搬 160 列，空行也要搬一遍，
+       滚屏时 47×160 次读写全压在写路径上。 */
+    long len = conRowLen(row + 1L);
+    if (len > 160L) {
+      len = 160L;
+    }
     long col = 0L;
-    while (col < 160L) {
+    while (col < len) {
       memory::store32(memory::load32(conCell(row + 1L, col)), conCell(row, col));
       col = col + 1L;
     }
-    conSetRow(row, conRowLen(row + 1L));
+    conSetRow(row, len);
     row = row + 1L;
   }
   if (rows > 0L) {

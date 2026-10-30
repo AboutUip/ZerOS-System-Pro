@@ -777,6 +777,60 @@ export namespace ZerOS {
       }
 
       /**
+       * 读一个文本文件。只用于调试对照表；上限 16 MiB，失败返回 null。
+       * 分块读，避免一次把整份 JSON/WebSocket 帧撑大。
+       */
+      export async function readNasText(path: string): Promise<string | null> {
+        const limit = 16 * 1024 * 1024;
+        const chunk = 1024 * 1024;
+        let handle = 0;
+        try {
+          const looked = await postNas({ ...emptyRequest(), op: "stat", path });
+          if (looked.status !== NasStatusOk || looked.kind !== NasKindFile || !Number.isInteger(looked.size) || looked.size < 0 || looked.size > limit) {
+            return null;
+          }
+          const opened = await postNas({ ...emptyRequest(), op: "open", path, mode: ModeRead });
+          if (opened.status !== NasStatusOk || !Number.isInteger(opened.handle) || opened.handle < 1) {
+            return null;
+          }
+          handle = opened.handle;
+          const total = looked.size;
+          const out = new Uint8Array(total);
+          let offset = 0;
+          while (offset < total) {
+            const want = Math.min(chunk, total - offset);
+            const read = await postNas({
+              ...emptyRequest(),
+              op: "read",
+              handle,
+              offset,
+              length: want,
+            });
+            if (read.status !== NasStatusOk || read.length < 1) {
+              return null;
+            }
+            const bytes = decodeBase64(read.data);
+            if (bytes?.length !== read.length) {
+              return null;
+            }
+            out.set(bytes, offset);
+            offset += bytes.length;
+          }
+          return new TextDecoder().decode(out);
+        } catch {
+          return null;
+        } finally {
+          if (handle >= 1) {
+            try {
+              await postNas({ ...emptyRequest(), op: "close", handle });
+            } catch {
+              /* 连接已经断了，句柄随服务进程收掉。 */
+            }
+          }
+        }
+      }
+
+      /**
        * 把一个八位组写到客路径。目录不存在时先建 `/boot` 这一层。
        * 服务没起来、或这一笔失败时直接返回，不抛出。不进入客机会话。
        */

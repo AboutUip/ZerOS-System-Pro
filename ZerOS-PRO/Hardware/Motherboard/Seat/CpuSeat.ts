@@ -38,6 +38,8 @@ import { ZerOS as QueryRoot } from "../Host/HardwareQuery";
 import { ZerOS as SandboxRuntimeRoot } from "../../Sandbox/Bootstrap/SandboxRuntime";
 import { ZerOS as QueuedRoot } from "../Host/QueuedWorker";
 import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -87,6 +89,10 @@ export namespace ZerOS {
       const SharedStopAck = 6336n;
       const markGuestStage = BootTraceRoot.Hardware.Debug.markGuestStage;
       const markBoot = BootTraceRoot.Hardware.Debug.markBoot;
+      const traceBuffer = TracePageRoot.Hardware.Diagnostics.traceBuffer;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
       /** 这四个字在引导之后仍会被反复写成 1。只记第一次。 */
       let sawBootFlag = false;
       let sawInstallFlag = false;
@@ -138,8 +144,105 @@ export namespace ZerOS {
         markBoot("raw-" + value.toString());
       }
 
+      /**
+       * 任务级诊断字。4416 在固件格子表里，位于键盘完成次数 4352 和键盘口 4480 之间。
+       * 不占用引导探针 7296，也不伸进显示器尺寸 7360。
+       * 一个 64 位字装四个 16 位字段：种类、a、b、c；一次事件只写一个字。
+       * 见 Kernel/Proc/sig.obr。
+       */
+      const TaskDiagBase = 4416n;
+
+      /** 固件键盘环：6528 是写入次数，6656 起五个槽，每槽两个字加一个关联号。 */
+      const KeyRingCount = 6528n;
+      const KeyRingBase = 6656n;
+      const KeyRingStride = 128n;
+      const KeyRingSlots = 5n;
+      let lastKeyCount = -1n;
+
+      function readSharedWord(address: bigint): bigint {
+        const bytes = sharedMemoryLink().readSpan(address, 8);
+        if (bytes.length < 8) {
+          return 0n;
+        }
+        let value = 0n;
+        for (let index = 0; index < 8; index += 1) {
+          value |= BigInt(bytes[index] ?? 0) << BigInt(index * 8);
+        }
+        return value;
+      }
+
+      /** 键盘环次数增加时，按槽里的关联号发一条客侧消费事件。 */
+      function noteKeyRingCount(): void {
+        try {
+          const count = readSharedWord(KeyRingCount);
+          if (lastKeyCount < 0n) {
+            lastKeyCount = count > 0n ? count - 1n : 0n;
+          }
+          while (lastKeyCount < count) {
+            lastKeyCount += 1n;
+            const slot = (lastKeyCount - 1n) % KeyRingSlots;
+            const at = KeyRingBase + slot * KeyRingStride;
+            /* poll 在次数增加前把本次 ZKP1 关联号写到 5120；这里读同一个号。 */
+            const packed = readSharedWord(at);
+            const correlation = (packed / 4294967296n) & 0xffffn;
+            if (correlation === 0n) {
+              continue;
+            }
+            traceInstant(
+              TraceOp.KeyConsumed,
+              TraceLayer.Host,
+              -1,
+              Number(correlation & 0xffffn),
+              Number(packed % 65536n),
+            );
+          }
+        } catch {
+          /* 环不可读时不影响键盘。 */
+        }
+      }
+
+      function emitTaskDiagWord(word: bigint): void {
+        const kind = Number(word % 16n);
+        const a = Number((word / 16n) % 65536n);
+        const b = Number((word / 65536n) % 65536n);
+        const c = Number((word / 4294967296n) % 65536n);
+        if (kind === 1) {
+          traceInstant(TraceOp.TaskWait, TraceLayer.Sched, -1, a, b - 2);
+        } else if (kind === 2) {
+          traceInstant(TraceOp.TaskExit, TraceLayer.Sched, -1, a * 65536 + c, b);
+        } else if (kind === 3) {
+          traceInstant(TraceOp.TaskSleep, TraceLayer.Sched, -1, a, b);
+        } else if (kind === 4) {
+          traceInstant(TraceOp.TaskWake, TraceLayer.Sched, -1, a, b);
+        } else if (kind === 5) {
+          traceInstant(TraceOp.PointerConsumed, TraceLayer.Host, -1, a, b * 65536 + c);
+        }
+      }
+
+      /** 整字写诊断字。 */
+      function noteTaskDiagWord(address: bigint, value: bigint): void {
+        if (address === TaskDiagBase) {
+          emitTaskDiagWord(value);
+        }
+        if (address === KeyRingCount) {
+          noteKeyRingCount();
+        }
+      }
+
+      /** 原生核整段写回时，取出诊断字那一个整字。 */
+      function noteTaskDiagSpan(address: bigint, bytes: Uint8Array): void {
+        const word = spanWord(address, bytes, TaskDiagBase);
+        if (word !== null) {
+          emitTaskDiagWord(word);
+        }
+        if (spanWord(address, bytes, KeyRingCount) !== null) {
+          noteKeyRingCount();
+        }
+      }
+
       /** 整字落在共享标志上时记下宿主时刻。值为 1 才算这一段结束。 */
       function noteFirmwareWord(address: bigint, value: bigint): void {
+        noteTaskDiagWord(address, value);
         if (address === BootProbeAddress) {
           noteBootProbe(value);
         }
@@ -177,8 +280,9 @@ export namespace ZerOS {
         return value;
       }
 
-      /** 原生核整段写回时，探针和四格共享标志都在这里认。 */
+      /** 原生核整段写回时，探针、诊断块和四格共享标志都在这里认。 */
       function noteFirmwareSpan(address: bigint, bytes: Uint8Array): void {
+        noteTaskDiagSpan(address, bytes);
         const probe = spanWord(address, bytes, BootProbeAddress);
         if (probe !== null) {
           noteBootProbe(probe);
@@ -306,6 +410,7 @@ export namespace ZerOS {
         if (typeof ordinal !== "number" || typeof reason !== "number" || typeof index !== "number" || typeof op !== "string" || typeof detail !== "string") {
           return;
         }
+        traceInstant(TraceOp.CoreStop, TraceLayer.Sched, ordinal, reason, index);
         globalThis.postMessage({
           kind: MailMessage.CoreStop,
           ordinal,
@@ -1174,8 +1279,17 @@ export namespace ZerOS {
         })();
       }
 
+      /** 页面把诊断页交来时，转发给 CPU 线程。CPU 还没起来时，seatCpu 的 bind 会再带一次。 */
+      export function attachTrace(buffer: SharedArrayBuffer | null): void {
+        const worker = cpuWorker;
+        if (worker === null) {
+          return;
+        }
+        worker.postMessage({ kind: "trace", buffer });
+      }
+
       function mountOne(ordinal: number): void {
-        const worker = QueuedRoot.Hardware.Motherboard.openCoreWorker();
+        const worker = QueuedRoot.Hardware.Motherboard.openCoreWorker(ordinal);
         const boardChannel = new MessageChannel();
         const cpuChannel = new MessageChannel();
         const cpu = cpuWorker;
@@ -1193,6 +1307,7 @@ export namespace ZerOS {
             boardPort: boardChannel.port2,
             cpuPort: cpuChannel.port2,
             metrics: QueryRoot.Hardware.Motherboard.openQueryPage(),
+            trace: traceBuffer(),
           },
           [boardChannel.port2, cpuChannel.port2],
         );
@@ -1224,6 +1339,7 @@ export namespace ZerOS {
           supported,
           clockOrigin: ClockRoot.Hardware.Clock.clockOrigin(),
           metrics: QueryRoot.Hardware.Motherboard.openQueryPage(),
+          trace: traceBuffer(),
         });
         const seated = await waitMessage(
           worker,

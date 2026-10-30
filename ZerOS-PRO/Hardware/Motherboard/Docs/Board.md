@@ -15,7 +15,7 @@
 | 显卡 | `ZGP1` | 上电时坐 `Hardware/Gpu/ActiveProvider/`。帧宽高读那份实现的声明。主板只转交 `Present` 副本，不解释像素 |
 | 扩展口 | `ZXP1` / `ZXD1` | 固定 4 个口，编号 `0` 至 `3`。可以为空。非空则在收尾 logo 之前 `Load` 再 `Boot`。数据交换不解释八位组。官方键盘插头在引导前坐上口 `0`，官方鼠标插头坐上口 `3` |
 | 键盘 | `ZKP1` | 经扩展口交换。实现在 `Hardware/Keyboard/ActiveProvider/`。主板不识别按键 |
-| 鼠标 | `ZPP1` | 经扩展口交换。实现在 `Hardware/Pointer/ActiveProvider/`。官方标定坐在口 `3`。页面把六个字交给主板，主板写进口，不放进键盘的入站队列。主板不解释坐标 |
+| 鼠标 | `ZPP1` | 经扩展口交换。实现在 `Hardware/Pointer/ActiveProvider/`。官方标定坐在口 `3`。页面把七个字交给主板，主板写进口，不放进键盘的入站队列。主板不解释坐标 |
 | 沙盒 | `ZSP1` | 经扩展口交换。实现在 `Hardware/Sandbox/ActiveProvider/`。官方标定坐在口 `1`。程序失败留在设备状态里，不画成引导故障 |
 
 以后 CPU 协议再有一个版本，把新标识加进 `SupportedCpuProtocols`。核心之间怎么配合仍由 CPU 自己决定。

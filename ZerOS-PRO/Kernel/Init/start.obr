@@ -27,6 +27,10 @@ deRfun reply(long caller, long value): void {
      状态若留在调度之后，客程序看见的仍是上一次的停住。 */
   long index = taskFind(caller);
   if (index >= 0L) {
+    /* 4 = 调度唤醒；只有确实在睡的任务才是一条唤醒边。 */
+    if (taskAt(index).state == TaskState::Sleeping) {
+      diagTask(4L, taskAt(index).pid, caller, 0L);
+    }
     taskAt(index).state = TaskState::Running;
   }
   obr::os::pass(caller, value);
@@ -244,6 +248,16 @@ deRfun dispatch(long caller, long service): void {
   }
   if (service == 33L) {
     reply(caller, doTask(caller, home));
+    return;
+  }
+  /* 壳在提示符画完后调用；只回 0。宿主在 svc 边界记 prompt 事件。 */
+  if (service == 35L) {
+    reply(caller, 0L);
+    return;
+  }
+  /* 壳开始解析一行命令；只回 0。宿主在 svc 边界开命令 span。 */
+  if (service == 36L) {
+    reply(caller, 0L);
     return;
   }
   if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L || service == 29L || service == 31L || service == 34L) {

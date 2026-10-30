@@ -74,6 +74,8 @@ deRfun sigRaise(long caller, long pid, long sig): long;
 deRfun sigTake(long caller): long;
 deRfun sigPendingKill(long core): long;
 deRfun procExit(long core, long code): void;
+/* 宿主观测：把一个任务事件写成 4416 的单个 64 位诊断字。地址记在 Bios.obr。不改任务结构。 */
+deRfun diagTask(long kind, long a, long b, long c): void;
 deRfun procWait(long caller, long home): long;
 /* 有人正等子进程时停掉那个子进程并返回 1，否则返回 0。退出码 130。 */
 deRfun procBreak(): long;

@@ -33,6 +33,8 @@ import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 import { ZerOS as PointerConfigRoot } from "../../Pointer/Config/PointerConfig";
 import { ZerOS as QueryRoot } from "./HardwareQuery";
 import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -60,6 +62,17 @@ export namespace ZerOS {
       const readDebugSites = DebugMapRoot.Hardware.Debug.readDebugSites;
       const applySite = DebugMapRoot.Hardware.Debug.applySite;
       const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
+      const attachTracePage = TracePageRoot.Hardware.Diagnostics.attachTracePage;
+      const detachTracePage = TracePageRoot.Hardware.Diagnostics.detachTracePage;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const traceSpanBegin = TracePageRoot.Hardware.Diagnostics.traceSpanBegin;
+      const traceSpanEnd = TracePageRoot.Hardware.Diagnostics.traceSpanEnd;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
+      const TraceBoardKind = TraceOpRoot.Hardware.Diagnostics.TraceBoardKind;
+      const TraceRejectSource = TraceOpRoot.Hardware.Diagnostics.TraceRejectSource;
+      const TraceRejectReason = TraceOpRoot.Hardware.Diagnostics.TraceRejectReason;
       type DebugSiteRun = DebugMapRoot.Hardware.Debug.DebugSiteRun;
       type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
       let errorShown = false;
@@ -113,6 +126,7 @@ export namespace ZerOS {
         const incoming = record["lines"];
         const lines: string[] = [];
         if (!Array.isArray(incoming)) {
+          traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Debug, TraceRejectReason.Shape);
           globalThis.postMessage({ kind: MailMessage.DebugResult, ok: false, message: "debug run was refused" });
           return;
         }
@@ -130,6 +144,7 @@ export namespace ZerOS {
           globalThis.postMessage({ kind: MailMessage.DebugResult, ok: false, message: decision });
           return;
         }
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Debug, lines.length);
         requestDebugRun(lines, enabled);
       }
 
@@ -146,6 +161,53 @@ export namespace ZerOS {
           return null;
         }
         return value;
+      }
+
+      /** 板级生命周期消息编号；普通帧/输入/交换已有专门点，不在这里重复。 */
+      function boardEventCode(kind: string): number {
+        if (kind === MailMessage.Power) {
+          return TraceBoardKind.Power;
+        }
+        if (kind === MailMessage.Fault) {
+          return TraceBoardKind.Fault;
+        }
+        if (kind === MailMessage.Bind) {
+          return TraceBoardKind.Bind;
+        }
+        if (kind === MailMessage.Go) {
+          return TraceBoardKind.Go;
+        }
+        if (kind === MailMessage.Ready) {
+          return TraceBoardKind.Ready;
+        }
+        if (kind === MailMessage.Checked) {
+          return TraceBoardKind.Checked;
+        }
+        if (kind === MailMessage.Trace) {
+          return TraceBoardKind.Trace;
+        }
+        if (kind === MailMessage.TracePage) {
+          return TraceBoardKind.TracePage;
+        }
+        if (kind === MailMessage.Panel) {
+          return TraceBoardKind.Panel;
+        }
+        if (kind === MailMessage.DebugRun) {
+          return TraceBoardKind.DebugRun;
+        }
+        if (kind === MailMessage.DebugSwitch) {
+          return TraceBoardKind.DebugSwitch;
+        }
+        if (kind === MailMessage.DebugResult) {
+          return TraceBoardKind.DebugResult;
+        }
+        if (kind === MailMessage.FaultLog) {
+          return TraceBoardKind.FaultLog;
+        }
+        if (kind === MailMessage.BootMark) {
+          return TraceBoardKind.BootMark;
+        }
+        return 0;
       }
 
       /**
@@ -200,11 +262,13 @@ export namespace ZerOS {
 
       /** 显卡已经坐上之后才接受 Present。副本原样送回页面。 */
       function onPresent(): void {
+        const span = traceSpanBegin(TraceOp.Frame, TraceLayer.Host, -1, 0, 0, 0);
         void presentFrame().then(
           (frame): void => {
             const pixels = frame.pixels;
             const buffer = pixels.buffer;
             if (!(buffer instanceof ArrayBuffer)) {
+              traceSpanEnd(TraceOp.FrameEnd, TraceLayer.Host, -1, span, 0, 0);
               showError("gpu frame could not be transferred");
               return;
             }
@@ -217,8 +281,10 @@ export namespace ZerOS {
               },
               { transfer: [buffer] },
             );
+            traceSpanEnd(TraceOp.FrameEnd, TraceLayer.Host, -1, span, 0, 0);
           },
           (error: unknown): void => {
+            traceSpanEnd(TraceOp.FrameEnd, TraceLayer.Host, -1, span, 0, 0);
             const text = error instanceof Error ? error.message : "gpu did not present a frame";
             showError(text);
           },
@@ -233,15 +299,18 @@ export namespace ZerOS {
       function deliverPointer(record: Record<string, unknown>): void {
         const incoming = record["words"];
         if (!Array.isArray(incoming) || incoming.length !== 6) {
+          traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Pointer, TraceRejectReason.Shape);
           return;
         }
         const words: bigint[] = [];
         for (const word of incoming) {
           if (typeof word !== "bigint") {
+            traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Pointer, TraceRejectReason.Invalid);
             return;
           }
           words.push(word);
         }
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Pointer, words.length);
         try {
           for (const word of words) {
             const payload = new Uint8Array(8);
@@ -271,6 +340,7 @@ export namespace ZerOS {
         const direction = record["direction"];
         const word = record["word"];
         if (typeof index !== "number" || typeof direction !== "number" || typeof word !== "bigint") {
+          traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Exchange, TraceRejectReason.Shape);
           globalThis.postMessage({
             kind: MailMessage.ExchangeResult,
             word: 0n,
@@ -284,7 +354,9 @@ export namespace ZerOS {
           payload[octet] = Number(rest & 0xffn);
           rest >>= 8n;
         }
+        const span = traceSpanBegin(TraceOp.Exchange, TraceLayer.Protocol, -1, 0, index, direction);
         const deliver = (packed: bigint, message: string): void => {
+          traceSpanEnd(TraceOp.ExchangeReply, TraceLayer.Protocol, -1, span, index, direction);
           globalThis.postMessage({
             kind: MailMessage.ExchangeResult,
             word: packed,
@@ -326,6 +398,13 @@ export namespace ZerOS {
         if (record === null) {
           return;
         }
+        const incomingKind = readKind(record);
+        if (incomingKind !== null) {
+          const code = boardEventCode(incomingKind);
+          if (code !== 0) {
+            traceInstant(TraceOp.HostMessage, TraceLayer.Host, -1, code, 0);
+          }
+        }
         if (readKind(record) === MailMessage.Run) {
           onRun(record);
           return;
@@ -341,16 +420,23 @@ export namespace ZerOS {
         if (readKind(record) === MailMessage.Inbox) {
           const incoming = record["words"];
           if (!Array.isArray(incoming)) {
+            traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Inbox, TraceRejectReason.Shape);
             return;
           }
           const words: bigint[] = [];
           for (const word of incoming) {
             if (typeof word !== "bigint") {
+              traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Inbox, TraceRejectReason.Invalid);
               return;
             }
             words.push(word);
           }
-          pushInbox(words);
+          const pushed = pushInbox(words);
+          if (pushed === "ok") {
+            traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Inbox, words.length);
+          } else {
+            traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Inbox, pushed === "overflow" ? TraceRejectReason.Overflow : TraceRejectReason.Invalid);
+          }
           return;
         }
         if (readKind(record) === MailMessage.Exchange) {
@@ -362,12 +448,24 @@ export namespace ZerOS {
           const height = record["height"];
           const hertz = record["hertz"];
           if (typeof width === "number" && typeof height === "number" && typeof hertz === "number") {
+            traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Panel, width);
             notePanel(width, height, hertz);
           }
           return;
         }
         if (readKind(record) === MailMessage.DebugRun) {
           onDebugRun(record);
+          return;
+        }
+        if (readKind(record) === MailMessage.TracePage) {
+          const buffer = record["buffer"];
+          if (buffer instanceof SharedArrayBuffer) {
+            attachTracePage(buffer);
+            CpuSeatRoot.Hardware.Motherboard.attachTrace(buffer);
+          } else {
+            detachTracePage();
+            CpuSeatRoot.Hardware.Motherboard.attachTrace(null);
+          }
           return;
         }
         if (readKind(record) !== MailMessage.Power) {

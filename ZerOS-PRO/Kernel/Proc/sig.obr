@@ -9,6 +9,14 @@ import board;
 import memory;
 import obr.os;
 
+/* 任务级诊断字。4416 记在 Bios.obr：键盘完成次数和键盘口之间的空字。
+   一个 64 位字装下四个 16 位字段：种类、a、b、c。一次事件只写一个字。
+   这是宿主观测约定，不改任务结构，也不占用 7296 的引导探针。 */
+export deRfun diagTask(long kind, long a, long b, long c): void {
+  /* 最高位只为逼编译器按 64 位写；主板解码时忽略它。 */
+  *(long*)4416 = 4611686018427387904L + kind + a * 16L + b * 65536L + c * 4294967296L;
+}
+
 deRfun sigMask(long sig): long {
   long bit = 1L;
   long step = 1L;
@@ -138,6 +146,8 @@ deRfun procExit(long core, long code): void {
   long home = query(1L, 8L, parentCore);
   memory::store64(code, home + 192L);
   owner.waitFor = 0L;
+  /* 父任务真的从睡里被叫醒，才是一次完整的任务级 wait/wake。 */
+  diagTask(2L, pid, parent, code);
   reapIndex(index);
   reply(parentCore, pid);
 }
@@ -178,6 +188,8 @@ deRfun procWait(long caller, long home): long {
   } else {
     me.waitFor = want;
   }
+  /* b 里放 waitFor+2：-1（任意子任务）收成 1，具体 pid 收成 pid+2。 */
+  diagTask(1L, me.pid, me.waitFor + 2L, 0L);
   schedSleep(caller);
   return -2L;
 }

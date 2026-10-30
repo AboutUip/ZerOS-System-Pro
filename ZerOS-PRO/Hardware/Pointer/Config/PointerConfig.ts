@@ -25,7 +25,7 @@ export namespace ZerOS {
         /** 一个字的八位组数。方向 0 和方向 1 的载荷都是这个长度。 */
         WordOctets: 8,
         /** 一次事件要连续收下的字数。少一个都不记。 */
-        WordCount: 6,
+        WordCount: 7,
         /** 横坐标和纵坐标的上界，含本身。与显示器单边最大值减 1 相同。 */
         CoordMax: 16383,
         /** 官方参考实现 Bind 的扩展口。键盘 0、沙盒 1、网络盘 2。协议不强制这个编号。 */
@@ -52,6 +52,8 @@ export namespace ZerOS {
         QueryDepth: 8,
         /** 移出最旧的一次，返回剩下的个数。 */
         QueryPop: 9,
+        /** 最旧未读事件的关联号。7 已被按住掩码占用。 */
+        QueryCorrelation: 10,
       } as const;
     }
   }

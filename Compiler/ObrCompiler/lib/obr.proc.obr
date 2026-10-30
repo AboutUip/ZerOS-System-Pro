@@ -155,6 +155,16 @@ deRfun obr::proc::task(long home, long start): long {
   return obr::os::svc(33L);
 }
 
+/* 服务 35。提示符诊断标记；宿主在 svc 边界记 prompt 事件。 */
+deRfun obr::proc::prompt(long home): long {
+  return obr::os::svc(35L);
+}
+
+/* 服务 36。命令开始诊断标记；宿主在 svc 边界开命令 span。 */
+deRfun obr::proc::command(long home): long {
+  return obr::os::svc(36L);
+}
+
 deRfun obr::proc::alloc(long home, long size): long {
   memory::store64(size, home);
   return obr::os::svc(2L);

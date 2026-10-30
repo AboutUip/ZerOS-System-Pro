@@ -108,6 +108,7 @@ export namespace ZerOS {
         Frame: "frame",
         Run: "run",
         Trace: "trace",
+        TracePage: "trace-page",
         Inbox: "inbox",
         Panel: "panel",
         PanelSize: "panel-size",

@@ -9,8 +9,8 @@
 | **ZCP1** | CPU 与 ZAP | [Cpu](./Cpu/README.md) |
 | **ZGP1** | 显卡 | [Gpu](./Gpu/README.md) |
 | **ZDP1** | 显示器 | [Display](./Display/README.md) |
-| **ZKP1** | 键盘 | [Keyboard](./Keyboard/README.md) |
-| **ZPP1** | 鼠标 | [Pointer](./Pointer/README.md) |
+| **ZKP1** | 键盘（7 字 + 关联号） | [Keyboard](./Keyboard/README.md) |
+| **ZPP1** | 鼠标（7 字 + 关联号） | [Pointer](./Pointer/README.md) |
 | **ZXP1 / ZXD1** | 扩展口与交换 | [Expansion](./Expansion/README.md) |
 | **ZSP1** | 沙盒 | [Sandbox](./Sandbox/README.md) |
 | **ZNP1** | NAS | [Nas](./Nas/README.md) |

@@ -22,22 +22,25 @@ export namespace ZerOS {
 
       const words: bigint[] = [];
 
+      export type InboxResult = "ok" | "overflow" | "invalid";
+
       /**
        * 整段放入队列。
        * 放不下时这一段全部不进，已经在队列里的整数不动。
        */
-      export function pushInbox(incoming: readonly bigint[]): void {
+      export function pushInbox(incoming: readonly bigint[]): InboxResult {
         if (incoming.length < 1 || words.length + incoming.length > InboxCapacity) {
-          return;
+          return "overflow";
         }
         for (const word of incoming) {
           if (word < 0n || word > 0xffffffffffffffffn) {
-            return;
+            return "invalid";
           }
         }
         for (const word of incoming) {
           words.push(word);
         }
+        return "ok";
       }
 
       /** 取出最早的一个整数。队列空时返回 null，不算失败。 */

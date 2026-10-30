@@ -49,7 +49,7 @@
 
 ## sleep
 
-规范页：`utilities/sleep.html`。一个非负十进制秒，可以有一个小数点，不要指数。`--` 结束选项。没有短选项。以 `-` 开头又不是数字的词是非法选项。`-1` 按负数拒绝。
+规范页：`utilities/sleep.html`。一个非负十进制秒，可以有一个小数点，不要指数。`--` 结束选项。没有短选项。以 `-` 开头又不是数字的词是非法选项。`-1` 按负数拒绝。整数部分超过 1000000 秒按非法时间拒绝；这个上限低于 1048576，避免 `-pie` 的大立即数数据重定位。
 
 没有操作数写 `sleep: missing operand`。多于一个写 `sleep: too many arguments`。非法选项写 `sleep: invalid option`。不是合法时间写 `sleep: invalid time interval`。诊断在标准错误，退出 1。
 

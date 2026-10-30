@@ -52,6 +52,8 @@ import { ZerOS as NativeRegisterRoot } from "../Enum/NativeRegister";
 import { ZerOS as StopReasonRoot } from "../Enum/StopReason";
 import { ZerOS as FaultRecordRoot } from "../Structure/FaultRecord";
 import { ZerOS as DebugLogRoot } from "../../Debug/Host/DebugLog";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -71,6 +73,13 @@ export namespace ZerOS {
       const StopReasonFailed = StopReasonRoot.Hardware.Cpu.StopReasonFailed;
       const NativeRegisterCount = NativeRegisterRoot.Hardware.Cpu.NativeRegisterCount;
       const NativeRsp = NativeRegisterRoot.Hardware.Cpu.NativeRsp;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const traceSpanBegin = TracePageRoot.Hardware.Diagnostics.traceSpanBegin;
+      const traceSpanEnd = TracePageRoot.Hardware.Diagnostics.traceSpanEnd;
+      const traceSpanEvent = TracePageRoot.Hardware.Diagnostics.traceSpanEvent;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
 
       const CoreCountMin = ConfigRoot.Hardware.Cpu.Config.CoreCountMin;
       const CoreCountMax = ConfigRoot.Hardware.Cpu.Config.CoreCountMax;
@@ -930,6 +939,7 @@ export namespace ZerOS {
         const noted = notedFault.get(ordinal);
         const record = faultFromText(message, ordinal, noted?.index ?? 0, noted?.op ?? "", stack);
         rememberFault(record);
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, TraceHostEvent.Fault, record.Code);
         const guestTask = userCore(ordinal) && requireOrdinal(ordinal).guest;
         const machine = faultDelivery ? !guestTask : ordinal >= 2 && !userCore(ordinal);
         const kind = machine ? FaultMessage : FaultLogMessage;
@@ -1498,6 +1508,134 @@ export namespace ZerOS {
       const openSvc = new Map<number, number>();
       const ReadService = 7;
 
+      /** 打开或关闭一条命令的根 span。 */
+      const CommandService = 36;
+      /** 壳画完提示符；关闭命令 span，同时记一次 prompt。 */
+      const PromptService = 35;
+
+      interface SvcSpan {
+        readonly Service: number;
+        readonly Span: number;
+      }
+
+      /** 每颗核当前未回复的系统调用 span。 */
+      const svcSpans = new Map<number, SvcSpan>();
+      /** 每颗核当前打开的命令 span。 */
+      const commandSpans = new Map<number, number>();
+      /** 命令开始时各核已完成的指令条数。提示符时作差记一条 Exec。 */
+      const commandExecBase = new Map<number, number>();
+      /** 监督核已经从保持位取走、正在处理的 svc span。 */
+      let gateSvcSpan = 0;
+      /** 最近打开、还没被提示符关掉的命令 span。访存兜底挂到它下面。 */
+      let activeCommand = 0;
+
+      /** 当前核应该挂到哪个 span；无法确定时为 0。 */
+      function traceParentOf(ordinal: number): number {
+        return ordinal === gateOrdinal
+          ? (gateSvcSpan !== 0 ? gateSvcSpan : activeCommand)
+          : (commandSpans.get(ordinal) ?? activeCommand);
+      }
+
+      /** 原生执行器在别的文件里，借这个入口拿当前 span。 */
+      export function traceParent(ordinal: number): number {
+        return traceParentOf(ordinal);
+      }
+
+      /** 命令结束时把各核执行条数差记到命令 span 下。 */
+      function emitCommandExec(command: number): void {
+        if (command === 0) {
+          return;
+        }
+        for (const [coreOrdinal, core] of cores) {
+          const base = commandExecBase.get(coreOrdinal);
+          if (base === undefined) {
+            continue;
+          }
+          const delta = core.Executed - base;
+          if (delta > 0) {
+            traceSpanEvent(
+              TraceOp.Exec,
+              TraceLayer.Sched,
+              coreOrdinal,
+              command,
+              0,
+              delta > 0x7fffffff ? 0x7fffffff : delta,
+              0,
+            );
+          }
+        }
+        commandExecBase.clear();
+      }
+
+      /**
+       * 系统调用进入。普通调用挂在当前命令 span 下；
+       * 服务 36 自己开命令根，服务 35 先关命令根再记提示符。
+       */
+      function beginSvcSpan(ordinal: number, service: number): void {
+        const command = commandSpans.get(ordinal);
+        if (service === CommandService) {
+          if (command !== undefined) {
+            emitCommandExec(command);
+            traceSpanEnd(TraceOp.CommandEnd, TraceLayer.Host, ordinal, command, 0, 0);
+          }
+          const span = traceSpanBegin(TraceOp.Command, TraceLayer.Host, ordinal, 0, 0, 0);
+          commandSpans.set(ordinal, span);
+          activeCommand = span;
+          commandExecBase.clear();
+          for (const [coreOrdinal, core] of cores) {
+            commandExecBase.set(coreOrdinal, core.Executed);
+          }
+          traceSpanEvent(TraceOp.Svc, TraceLayer.Syscall, ordinal, span, 0, service, 0);
+          svcSpans.set(ordinal, { Service: service, Span: span });
+          return;
+        }
+        if (service === PromptService) {
+          if (command !== undefined) {
+            emitCommandExec(command);
+            traceSpanEnd(TraceOp.CommandEnd, TraceLayer.Host, ordinal, command, 0, 0);
+            traceSpanEvent(TraceOp.Prompt, TraceLayer.Host, ordinal, command, 0, 0, 0);
+            commandSpans.delete(ordinal);
+            if (activeCommand === command) {
+              activeCommand = 0;
+            }
+          }
+          const span = traceSpanBegin(TraceOp.Svc, TraceLayer.Syscall, ordinal, 0, service, 0);
+          svcSpans.set(ordinal, { Service: service, Span: span });
+          return;
+        }
+        const parent = command ?? 0;
+        const span = traceSpanBegin(TraceOp.Svc, TraceLayer.Syscall, ordinal, parent, service, 0);
+        svcSpans.set(ordinal, { Service: service, Span: span });
+      }
+
+      /**
+       * 给刚装上程序的核继承父 span。
+       * 壳派生外部命令时，宿主在装入映像的那一刻能同时看到调用核和目标核；
+       * 这是真实的因果边，不靠时间窗猜。
+       */
+      function inheritCommand(caller: number, target: number): void {
+        const open = svcSpans.get(caller);
+        const parent = gateSvcSpan !== 0 ? gateSvcSpan : (open !== undefined ? open.Span : (commandSpans.get(caller) ?? 0));
+        if (parent !== 0) {
+          commandSpans.set(target, parent);
+        }
+      }
+
+      /** 系统调用回复。按 span 编号关，不看服务号，避免跨核错配。 */
+      function endSvcSpan(ordinal: number): void {
+        const open = svcSpans.get(ordinal);
+        if (open === undefined) {
+          return;
+        }
+        svcSpans.delete(ordinal);
+        if (gateSvcSpan === open.Span) {
+          gateSvcSpan = 0;
+        }
+        /* 回复到达就是这次 wait 的宿主侧唤醒；Span 指回同一个 svc，报告不靠核猜。 */
+        traceSpanEvent(TraceOp.Wake, TraceLayer.Sched, ordinal, open.Span, 0, open.Service, 0);
+        traceSpanEnd(TraceOp.SvcReply, TraceLayer.Syscall, ordinal, open.Span, open.Service, 0);
+      }
+
       function firmwareMayPoll(): boolean {
         /* 终端还没画出时，壳也会停在读键盘。这时仍给固件 128 条，监督核就画不出第一帧。 */
         if (!terminalLive || !foregroundWaiting(0)) {
@@ -1747,11 +1885,15 @@ export namespace ZerOS {
         if (core.pending !== null) {
           fail("core still has a command in flight");
         }
+        const traceParent = traceParentOf(ordinal);
         return waitPace(core).then((): Promise<CpuCommandResult> => {
           return new Promise((resolve, reject): void => {
             core.pending = resolve;
             core.pendingReject = reject;
             publishCpuQuery();
+            if (traceParent !== 0) {
+              message["trace"] = traceParent;
+            }
             core.port.postMessage(message);
           });
         });
@@ -2044,6 +2186,7 @@ export namespace ZerOS {
             boundOrigin: core.boundOrigin,
             boundLength: core.boundLength,
             guest: core.guest,
+            trace: traceParentOf(ordinal),
             ...(steps === null ? {} : { steps }),
           });
         });
@@ -2122,7 +2265,26 @@ export namespace ZerOS {
 
       /** 把一条显卡命令交给核心。核心读寄存器后送给主板，主板再交给显卡。 */
       export function gpu(ordinal: number, message: Record<string, unknown>): Promise<CpuCommandResult> {
-        return beginCommand(ordinal, message);
+        const gpuOp = message["gpuOp"];
+        const code = gpuOp === "compose" ? 1 : gpuOp === "present" ? 2 : 0;
+        const commands = message["commands"];
+        const commandCount = Array.isArray(commands) ? commands.length : 0;
+        const parent = traceParentOf(ordinal);
+        const span = code === 0 ? 0 : traceSpanBegin(TraceOp.Gpu, TraceLayer.Host, ordinal, parent, code, commandCount);
+        try {
+          const pending = beginCommand(ordinal, message);
+          if (span === 0) {
+            return pending;
+          }
+          return pending.finally((): void => {
+            traceSpanEnd(TraceOp.GpuEnd, TraceLayer.Host, ordinal, span, code, commandCount);
+          });
+        } catch (error: unknown) {
+          if (span !== 0) {
+            traceSpanEnd(TraceOp.GpuEnd, TraceLayer.Host, ordinal, span, code, commandCount);
+          }
+          throw error;
+        }
       }
 
       /** 显卡整数参数的范围与核心读寄存器时相同。越界就失败，不把命令送出。 */
@@ -3069,6 +3231,14 @@ export namespace ZerOS {
         const current = requireOrdinal(ordinal);
         const found = current.latch === null ? 0n : 1n;
         const value = current.latch === null ? 0n : take(ordinal);
+        if (value !== 0n) {
+          const caller = Number(value >> 32n);
+          const service = Number(value & 0xffffffffn);
+          gateSvcSpan = svcSpans.get(caller)?.Span ?? 0;
+          if (gateSvcSpan !== 0) {
+            traceSpanEvent(TraceOp.Dispatch, TraceLayer.Sched, caller, gateSvcSpan, 0, service, 0);
+          }
+        }
         current.Executed += 1;
         return { found, value };
       }
@@ -3088,6 +3258,8 @@ export namespace ZerOS {
         if (!Number.isInteger(reply) || reply < 0 || reply >= NativeRegisterCount) {
           fail("syscall reply register is out of range");
         }
+        beginSvcSpan(ordinal, Number(service));
+        openSvc.set(ordinal, Number(service));
         pass(ordinal, gateOrdinal, (BigInt(ordinal) << 32n) | service);
         const core = requireOrdinal(ordinal);
         core.nativeReply = reply;
@@ -3109,6 +3281,8 @@ export namespace ZerOS {
         }
         core.blockToken = null;
         const value = take(ordinal);
+        openSvc.delete(ordinal);
+        endSvcSpan(ordinal);
         core.nativeReply = null;
         core.stopKind = 0;
         return { reg, value };
@@ -3701,6 +3875,7 @@ export namespace ZerOS {
         targetCore.sliceQuota = 0;
         targetCore.sliceLeft = 0;
         markGuest(target);
+        inheritCommand(caller, target);
       }
 
       /**
@@ -3711,6 +3886,20 @@ export namespace ZerOS {
        * 动态库不能整段换上，必须用 attach 接到已有序列后面。
        */
       async function installImage(caller: number, targetValue: bigint, address: bigint, length: bigint): Promise<void> {
+        /* 装载是宿主边界。只在监督核正在处理 svc 时记，启动期没有父的装载不记。 */
+        const span = gateSvcSpan === 0
+          ? 0
+          : traceSpanBegin(TraceOp.Install, TraceLayer.Core, caller, gateSvcSpan, Number(BigInt.asIntN(32, targetValue)), Number(BigInt.asIntN(32, length)));
+        try {
+          await installImageInner(caller, targetValue, address, length);
+        } finally {
+          if (span !== 0) {
+            traceSpanEnd(TraceOp.InstallEnd, TraceLayer.Core, caller, span, 0, 0);
+          }
+        }
+      }
+
+      async function installImageInner(caller: number, targetValue: bigint, address: bigint, length: bigint): Promise<void> {
         if (!supervisor(caller)) {
           installFail("requires the supervisor");
         }
@@ -3777,6 +3966,7 @@ export namespace ZerOS {
         targetCore.sliceQuota = 0;
         targetCore.sliceLeft = 0;
         markGuest(target);
+        inheritCommand(caller, target);
       }
 
       /**
@@ -3922,6 +4112,7 @@ export namespace ZerOS {
           const reply = take(ordinal);
           started.svcDest = null;
           openSvc.delete(ordinal);
+          endSvcSpan(ordinal);
           await place(ordinal, deliver, reply);
         }
         while (cursor < steps.length) {
@@ -4228,6 +4419,14 @@ export namespace ZerOS {
             const current = requireOrdinal(ordinal);
             const found = current.latch === null ? 0n : 1n;
             const data = current.latch === null ? 0n : take(ordinal);
+            if (data !== 0n) {
+              const caller = Number(data >> 32n);
+              const service = Number(data & 0xffffffffn);
+              gateSvcSpan = svcSpans.get(caller)?.Span ?? 0;
+              if (gateSvcSpan !== 0) {
+                traceSpanEvent(TraceOp.Dispatch, TraceLayer.Sched, caller, gateSvcSpan, 0, service, 0);
+              }
+            }
             await place(ordinal, step.Found, found);
             await place(ordinal, step.Value, data);
             current.Executed -= 1;
@@ -4259,6 +4458,7 @@ export namespace ZerOS {
             }
             pass(ordinal, gateOrdinal, (BigInt(ordinal) << 32n) | service);
             openSvc.set(ordinal, Number(service));
+            beginSvcSpan(ordinal, Number(service));
             requireOrdinal(ordinal).svcDest = step.Destination;
             requireOrdinal(ordinal).Executed += 1;
             noteStop(ordinal, StopReasonWaiting, cursor, "svc", "");

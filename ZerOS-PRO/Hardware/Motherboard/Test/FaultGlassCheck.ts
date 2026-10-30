@@ -309,6 +309,10 @@ export namespace ZerOS {
           stop: () => null,
           exchange: () => Promise.reject(new Error("exchange")),
           run: () => Promise.resolve("ran"),
+          report: () => "trace report",
+          dump: () => [],
+          clear: () => undefined,
+          status: () => ({ Records: 0, Pending: 0, Dropped: 0, Prompts: 0 }),
         });
         if ("ZerOSDebug" in quiet) {
           fail("the debug surface was installed while disabled");
@@ -320,6 +324,10 @@ export namespace ZerOS {
           stop: () => null,
           exchange: () => Promise.reject(new Error("exchange")),
           run: () => Promise.resolve("ran"),
+          report: () => "trace report",
+          dump: () => [],
+          clear: () => undefined,
+          status: () => ({ Records: 0, Pending: 0, Dropped: 0, Prompts: 0 }),
         });
         const surface = loud as {
           ZerOSDebug?: {

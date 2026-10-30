@@ -28,6 +28,7 @@ import { ZerOS as InstructionRoot } from "../Structure/CpuInstruction";
 import { ZerOS as BinaryRoot } from "../Structure/ProgramBinary";
 import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
 import { ZerOS as MailboxRoot } from "../../Motherboard/Host/Mailbox";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -53,6 +54,8 @@ export namespace ZerOS {
       const seatImage = RuntimeRoot.Hardware.Cpu.seatImage;
       const seatNativeImage = RuntimeRoot.Hardware.Cpu.seatNativeImage;
       const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
+      const attachTracePage = TracePageRoot.Hardware.Diagnostics.attachTracePage;
+      const detachTracePage = TracePageRoot.Hardware.Diagnostics.detachTracePage;
       const DebugRunMessage = MailboxRoot.Hardware.Motherboard.MailMessage.DebugRun;
       const DebugResultMessage = MailboxRoot.Hardware.Motherboard.MailMessage.DebugResult;
       const seatPrefix = "[ZerOS.Hardware.Motherboard.CpuSeat]";
@@ -102,6 +105,10 @@ export namespace ZerOS {
         const metrics = record["metrics"];
         if (metrics instanceof SharedArrayBuffer) {
           adoptMetricPage(metrics);
+        }
+        const trace = record["trace"];
+        if (trace instanceof SharedArrayBuffer) {
+          attachTracePage(trace);
         }
         globalThis.postMessage({ kind: "seated", coreCount: provider.CoreCount });
       }
@@ -333,6 +340,15 @@ export namespace ZerOS {
         }
         if (kind === "guest") {
           onGuest(record);
+          return;
+        }
+        if (kind === "trace") {
+          const buffer = record["buffer"];
+          if (buffer instanceof SharedArrayBuffer) {
+            attachTracePage(buffer);
+          } else {
+            detachTracePage();
+          }
           return;
         }
         if (kind === DebugRunMessage) {

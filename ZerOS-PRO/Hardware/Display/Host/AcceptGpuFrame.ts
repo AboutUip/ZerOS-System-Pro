@@ -21,6 +21,8 @@
 
 import { ZerOS as DisplayRoot } from "../Bootstrap/Display";
 import { ZerOS as PixelRoot } from "../Structure/Pixel";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -28,6 +30,12 @@ export namespace ZerOS {
       const Display = DisplayRoot.Hardware.Display.Display;
       const isPixel = PixelRoot.Hardware.Display.isPixel;
       const framePrefix = "[ZerOS.Hardware.Display.AcceptGpuFrame]";
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
+      const TraceRejectSource = TraceOpRoot.Hardware.Diagnostics.TraceRejectSource;
+      const TraceRejectReason = TraceOpRoot.Hardware.Diagnostics.TraceRejectReason;
 
       /**
        * 面板已经接上之后调用。
@@ -35,15 +43,19 @@ export namespace ZerOS {
        */
       export function acceptGpuFrame(frameWidth: number, frameHeight: number, pixels: Uint32Array): void {
         if (frameWidth !== Display.Width || frameHeight !== Display.Height) {
+          traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Frame, TraceRejectReason.Shape);
           throw new Error(`${framePrefix} 帧尺寸和面板不一致`);
         }
         if (pixels.length !== frameWidth * frameHeight) {
+          traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Frame, TraceRejectReason.Shape);
           throw new Error(`${framePrefix} 帧长度不是宽乘高`);
         }
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Display, frameWidth * frameHeight);
         const count = pixels.length;
         for (let index = 0; index < count; index += 1) {
           const pixel = pixels[index];
           if (pixel === undefined || !isPixel(pixel)) {
+            traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Frame, TraceRejectReason.Invalid);
             throw new Error(`${framePrefix} 帧里有非法像素`);
           }
         }
@@ -63,9 +75,11 @@ export namespace ZerOS {
         originY = 0,
       ): void {
         if (frameWidth !== Display.Width || frameHeight !== Display.Height) {
+          traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Frame, TraceRejectReason.Shape);
           bitmap.close();
           throw new Error(`${framePrefix} 位图尺寸和面板不一致`);
         }
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Display, frameWidth * frameHeight);
         /* 整幅直接盖上。只改了一块时，位图比面板小，贴在改过的那一角，其余保持上一幅。 */
         if (originX === 0 && originY === 0 && bitmap.width === frameWidth && bitmap.height === frameHeight) {
           Display.ShowBitmap(bitmap);
