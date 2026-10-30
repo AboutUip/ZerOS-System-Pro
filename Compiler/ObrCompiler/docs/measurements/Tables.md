@@ -1,6 +1,6 @@
 # 实测数据表
 
-由 `node Compiler/ObrCompiler/tests/report.mjs` 从原始结果生成。候选源码 HEAD `0312037687f8673222036c31c8105d1d6eb37f7e`（未提交源码补丁另存并记录 SHA）；基线提交 `7bf78874240d695ff384cbf75efc1a3198036677`。同一台 Apple M1 Pro / arm64，Node v24.21.0，OS 25.1.0，Apple clang version 17.0.0 (clang-1700.4.4.1)。每种编译 1 次首次运行 + 5 次交错轮换独立进程运行；表中时间是后者中位数。首次运行没有清空 OS 文件缓存。
+由 `node Compiler/ObrCompiler/tests/report.mjs` 从原始结果生成。测量时源码 HEAD 为 `0312037687f8673222036c31c8105d1d6eb37f7e`，叠加的 [compiler-source.patch.gz](compiler-source.patch.gz) 以 gzip 原样归档，解压后 SHA256 为 `a39642c363bbbfbed095b366327b685317292e1620c5885ac12d6423c96ee732`；该测量源码后来提交于 [2f2bc854](https://github.com/changzhenming123-crypto/ZerOS-System-Pro/commit/2f2bc8542e3387166aeb77fa7fc4a22195a470ce)，不是直接测试未叠补丁的旧 HEAD。基线提交 `7bf78874240d695ff384cbf75efc1a3198036677`。同一台 Apple M1 Pro / arm64，Node v24.21.0，OS 25.1.0，Apple clang version 17.0.0 (clang-1700.4.4.1)。每种编译 1 次首次运行 + 5 次交错轮换独立进程运行；表中时间是后者中位数。首次运行没有清空 OS 文件缓存。
 
 ## 真实 NAS 语料
 

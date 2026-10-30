@@ -23,6 +23,47 @@ node Compiler/ObrCompiler/tests/serve-integration.mjs
 
 计时按钮单独运行 baseline/O1/O2 各五次，交错并轮换顺序。计时定义为真实 `Board.Power()` 到包含提示符的 `nativePresent` 完成通知。它不是物理屏幕扫描延迟、帧率或鼠标输入到发光时间。每例重新创建 VM、HTTP 禁用缓存；不清空 OS 文件缓存。计时构建不发送详细 syscall/访存事件，避免把完整日志开销混入启动测量。
 
+## 离线复核已提交的原始记录
+
+`browser-records.mjs unpack` 仅恢复并验证原始 JSON；完整独立校验还会读取实际 NAS/固件/信号镜像，不能只放 manifest 冒充镜像存在。先完成上面的两个构建脚本，无需启动服务；然后在仓库根目录执行以下准备步骤。`OBRC_ARCHIVE_IMAGE_ROOT` 指向刚构建的隔离产物目录；归档中的旧 manifest 保留不变，校验器会将重建镜像的实际 SHA 与两个历史版本分别核对。若工具链变化导致字节不一致，应保留失败，不能替换归档 manifest。
+
+```sh
+OBRC_ARCHIVE_IMAGE_ROOT=Toolchain/CompilerCheck/integration-strict python3 - <<'PY'
+import os, pathlib, shutil
+images = pathlib.Path(os.environ['OBRC_ARCHIVE_IMAGE_ROOT'])
+saved = pathlib.Path('Compiler/ObrCompiler/docs/measurements')
+review = pathlib.Path('Toolchain/CompilerCheck/archive-review')
+review.mkdir(parents=True, exist_ok=False)
+for version in ('v3', 'v5'):
+    dest, original = review / version, saved / ('browser-' + version)
+    for variant in ('baseline', 'O1', 'O2'):
+        target = dest / variant
+        target.mkdir(parents=True)
+        for folder in ('NasRoot', 'firmware'):
+            shutil.copytree(images / variant / folder, target / folder)
+        shutil.copy2(original / variant / 'manifest.json', target / 'manifest.json')
+for name in ('known-incomplete-runs.json', 'documented-historical-runs.json'):
+    shutil.copy2(saved / 'browser-v5' / name, review / 'v5' / name)
+signal = review / 'v5' / 'signal-build'
+signal.mkdir()
+shutil.copy2(saved / 'browser-v5/signal-build/manifest.json', signal / 'manifest.json')
+shutil.copytree(images / 'signal-build/source', signal / 'source')
+PY
+
+node Compiler/ObrCompiler/tests/browser-records.mjs unpack \
+  Compiler/ObrCompiler/docs/measurements/browser-v5/index.json \
+  Toolchain/CompilerCheck/archive-review/v5/browser-results.json
+node Compiler/ObrCompiler/tests/browser-records.mjs unpack \
+  Compiler/ObrCompiler/docs/measurements/browser-v3/index.json \
+  Toolchain/CompilerCheck/archive-review/v3/browser-results.json
+node Compiler/ObrCompiler/tests/verify-browser-results.mjs \
+  Toolchain/CompilerCheck/archive-review/v5/browser-results.json \
+  Toolchain/CompilerCheck/archive-review/report.json \
+  Toolchain/CompilerCheck/archive-review/v3/browser-results.json
+```
+
+准备目录必须是新目录，避免混入上次复核文件；重复复核应选新目录。已记录的结果是 **4040 检查、46 失败、退出码 1**，不是预期全绿。该流程重查原始采集证据，没有运行新的浏览器样本。v5/v3 原始 SHA、完整性与失败详情复核见 [archive-reverification-20261031.json](measurements/archive-reverification-20261031.json)。
+
 ## 采集完整性与可观察结果
 
 完整功能采集要求页面、主板、内存、CPU 和八个核心共十二个 producer。每个 producer 带独立序号，barrier 发出时插入原始 watermark，等截止序号前的 HTTP 批次全部确认后才 ACK。独立校验器重新检查 producer 集合、原始事件无缺号/重复、watermark 与 ACK 的精确对应；不是仅相信页面上的“完成”。
