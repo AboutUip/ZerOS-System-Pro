@@ -1,0 +1,6 @@
+[
+  {
+    "run": "159837e4-a24d-4494-a7a8-4d7328768933",
+    "reason": "Parent reported user pause interrupted this baseline head sample before a final result; disclose as incomplete, never classify as a compiler failure."
+  }
+]

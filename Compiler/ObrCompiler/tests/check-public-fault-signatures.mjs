@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';import {faultSignature,publicFaultSnapshot}from './PublicFaultSignatures.mjs';
+const base={Code:0,Source:1,Text:'divisor is 0',Core:3,Index:4,Op:'div',Site:'-',Stack:['old bundle'],Window:true},copy=v=>structuredClone(v),same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),checks=[];
+const stack=copy(base);stack.Stack=['new bundle path'];assert(same(faultSignature(base),faultSignature(stack)));checks.push('stack-only change excluded');
+const x=copy(base),y=copy(base);x.Text='failure stack=old:1:33 draw=paint failed';y.Text='failure stack=new:99:55 draw=paint failed';assert(same(faultSignature(x),faultSignature(y)));assert(faultSignature(x).Text.endsWith('draw=paint failed'));checks.push('embedded stack excluded while preserving draw failure');
+for(const key of ['Code','Source','Core','Index','Text','Op','Site','Window']){const changed=copy(base);changed[key]=typeof changed[key]==='number'?changed[key]+1:typeof changed[key]==='boolean'?!changed[key]:changed[key]+' changed';assert(!same(faultSignature(base),faultSignature(changed)));}checks.push('all semantic fields retained');
+const event=(faults,time)=>({kind:'faults',time,order:time,source:'page',data:{faults,last:faults.at(-1)}}),extra={...copy(base),Code:12,Text:'install relocation'};
+const normal=publicFaultSnapshot([event([base],1)]),regression=publicFaultSnapshot([event([base],1),event([base,extra],2)]);assert(!same(normal.signatures,regression.signatures));checks.push('new Code12 retained and differs');
+assert(!same(normal.signatures,publicFaultSnapshot([event([base,copy(base)],1)]).signatures));checks.push('duplicate same core3 div is not globally waived');
+assert.throws(()=>publicFaultSnapshot([event([base,extra],1),event([base],2)]));checks.push('lost historical fault rejected');
+const wrong=event([base],1);wrong.data.last=extra;assert.throws(()=>publicFaultSnapshot([wrong]));checks.push('LastFault mismatch rejected');
+const empty=event([],1);empty.data.last=null;assert(publicFaultSnapshot([empty]).observed);checks.push('empty list with null LastFault accepted');
+for(const last of [extra,undefined]){const wrongEmpty=event([],1);wrongEmpty.data.last=last;assert.throws(()=>publicFaultSnapshot([wrongEmpty]));}checks.push('empty list with non-null or missing LastFault rejected');
+console.log(JSON.stringify({checks:checks.length,passed:true,details:checks},null,2));

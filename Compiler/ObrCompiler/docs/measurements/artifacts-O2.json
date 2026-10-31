@@ -1,0 +1,360 @@
+{
+  "level": "O2",
+  "compilerSha256": "b0de7d58b86698b8afcef1c8b9fe9dc628d2b926ce5397251222cc8446a23efb",
+  "programs": [
+    {
+      "name": "kernel/start",
+      "sha256": "e86c765963452385d27e36807264b9b2ce356120e0387f727e4a3062016f42e5",
+      "bytes": 500745,
+      "format": "ZNB1"
+    },
+    {
+      "name": "kernel/init",
+      "sha256": "576024b4a01fde3c4be265fcef48ad66bfb042661092afdacc289d958d48be91",
+      "bytes": 19740,
+      "format": "ZPB1"
+    },
+    {
+      "name": "os/sh",
+      "sha256": "f182b752f57384165ca91b53cf981761ef8b94aac894799ad07b540b35ecdf63",
+      "bytes": 370920,
+      "format": "ZPB1"
+    },
+    {
+      "name": "os/session",
+      "sha256": "f025e43bffe75a0ca51882a805fc23c970e316fb640d5ad4b3041ff5edc91d6d",
+      "bytes": 16993,
+      "format": "ZPB1"
+    },
+    {
+      "name": "kernel/idle",
+      "sha256": "255b0993fac77ddcd289904f01d903615dcdedfd7da25e2b641b6c2d157a7145",
+      "bytes": 418,
+      "format": "ZPB1"
+    },
+    {
+      "name": "kernel/drv/pulse",
+      "sha256": "bf30add53d1eca73877b80b1e033dde97a52c12f8adda73313068ce29cd92164",
+      "bytes": 1886,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/basename",
+      "sha256": "48958024492e20ab80c4c20b659a232812fcf6827ce9b5fee8d04d825c10b0bd",
+      "bytes": 40503,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/cat",
+      "sha256": "98749cf21d794735c5c5600ae7fbcdb2faf730390a926231f4a907e500d0b88e",
+      "bytes": 50038,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/chmod",
+      "sha256": "7f639a9388f28928f978864b0276575d16faf77ba7b9b1204918b5cad0f0d8c8",
+      "bytes": 87397,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/chown",
+      "sha256": "80852abe55c0713b55ac6d297fb767270d6665e7a00babec3ccedba8a4d33d58",
+      "bytes": 84210,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/cksum",
+      "sha256": "6b9feb5ba37f12ebe31dfb11412d33f595bc56b8aac1635c38ec1dc1efbe9421",
+      "bytes": 64937,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/cmp",
+      "sha256": "894832a23382979e2153009483ff2df5a5df68c456729304328fb3df1031dc56",
+      "bytes": 89016,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/comm",
+      "sha256": "444d24d97c7f553416ca171445644f28da3354cda12b04d875ef640390e3e6d8",
+      "bytes": 91761,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/cp",
+      "sha256": "15ba85935d23fa774c3baacf008aabdc2a01decedab7445ab5d025420dcb7d4b",
+      "bytes": 180866,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/cut",
+      "sha256": "6009a377baaae2cc26aee60a828418ce6432539963ab2e8f1053bb63765dfb8a",
+      "bytes": 125050,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/date",
+      "sha256": "8b7c4692f7739945804c572c4a34b2b95b4f26cfe04579d6444a68a1394ef3df",
+      "bytes": 151774,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/dd",
+      "sha256": "5bf5d043b93101a81e1f7e49ab8a55d39dd77068291c64517ab7c415b66f3ba3",
+      "bytes": 121211,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/diff",
+      "sha256": "02174d653ab6231ee4d236601cd60ec928614ae27106f1c412cb40557427d18b",
+      "bytes": 94064,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/dirname",
+      "sha256": "b95d97b866bd3e79e6e16ffdb199751226371e5145cda5a24e4f424b2ea43f4d",
+      "bytes": 38467,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/du",
+      "sha256": "1167d2db756b2431c156a2f4e3d6d17c097608dee201e2348d13b5e85edd9aed",
+      "bytes": 84186,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/echo",
+      "sha256": "0629adaba0035bf5fa226007d3ed3eb696d1161aa5353b70f4aa014af77a4859",
+      "bytes": 29278,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/env",
+      "sha256": "e16a2f09c0a910e2ce329a40dd25d745f8bd2c313d2133b6c098624509f0ccac",
+      "bytes": 124490,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/expr",
+      "sha256": "2b07f5d80b7f0d8f0468c9545b2ff6048b98ca04404d8b10d47a13978cddae22",
+      "bytes": 80323,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/false",
+      "sha256": "daaaa6eaa68c3eff76b655d06384c79105410db4bc46af92686dee9439405c94",
+      "bytes": 25432,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/find",
+      "sha256": "2b7c3c8db64ff0fd85e5ed961805948db7c08b9226949802eae61ecd5f7839aa",
+      "bytes": 230198,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/fold",
+      "sha256": "a5a6af56d1093d141eb81de7aba985b4562de178449bc0b86448f385f07e5d1f",
+      "bytes": 88756,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/grep",
+      "sha256": "e616b0bd29f4d621be30fbdef8f0fe710fde8b6de62ff40f1939d78ceb28708f",
+      "bytes": 368038,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/head",
+      "sha256": "a96f227c9f2968ab00cc0436faf7828f25e66598ec86d6ee529d3ca756bb6026",
+      "bytes": 68132,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/id",
+      "sha256": "a5d213ca14e4309edb331aa93c5461c548c4a340918d3f1817b1e5256db8af48",
+      "bytes": 58874,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/install",
+      "sha256": "ec327fe600794154a4628ff7f61357a26f0907811193dfc84d8283b4ae8ca1b9",
+      "bytes": 87298,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/kill",
+      "sha256": "1b3cce90c04fdba7dab14370be47f2cc3f5e414a7fba0d48bd8c1c126de94639",
+      "bytes": 116667,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/ls",
+      "sha256": "25781becc6576fa1eeda84840deda974b0f37e6af5582c8a0d795c3c83d766de",
+      "bytes": 256824,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/mkdir",
+      "sha256": "a06781d3d590402f7866ae4baa1bae338d5ea3a0e6f218e170ff72a0d2a49e6b",
+      "bytes": 68814,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/mktemp",
+      "sha256": "a7f92c12c24a6a37911f92e53af858b5aebf49e4a805b6fc7ba22199968869e0",
+      "bytes": 52802,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/mv",
+      "sha256": "f6d1ff5516b83a519d5da856ddb52437e2db43555a16077b49646b5531198063",
+      "bytes": 219350,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/od",
+      "sha256": "822a4e634a66de65535a0682769558c62ba6a12b4984d0f0e71f75a00a769da9",
+      "bytes": 131628,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/paste",
+      "sha256": "eec59fe5c925efee53fd6f789c745358fe85a79aa9dfa6482748bc4bb9145ada",
+      "bytes": 111777,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/printf",
+      "sha256": "3531f460b59977b5411a448c7362da9805175042e717e8eb9737ef3ca7f35f0b",
+      "bytes": 145002,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/ps",
+      "sha256": "c7f266e9402b9583848599b20a9cce21f09d112243ff8337a6ce9fe751547ca6",
+      "bytes": 167705,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/pwd",
+      "sha256": "5a9b26a267557f329e29f0c22889a5b99b55076116c59c20c4e0bbc6f46d70ef",
+      "bytes": 53012,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/realpath",
+      "sha256": "7cc799914af820401a21555ad15fabc916c64eed608247a238c0b36da32f3299",
+      "bytes": 62273,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/rm",
+      "sha256": "da634c96ff495a40f7aaf748738b19a404b8c7d6eb48fd7e29b8ec6ef2c20506",
+      "bytes": 113507,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/rmdir",
+      "sha256": "84fb09018d5fccbdd540f336e97a153507c9bf4026a8394982c5445224600147",
+      "bytes": 70104,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/seq",
+      "sha256": "210e251ea3403cce23e190e5c7c85cb5178875577fd0e3fd7bd6cadb7a8ff522",
+      "bytes": 62459,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/sleep",
+      "sha256": "fae236462c692518c92929092c8cef4241f82528a7f8d3d380935316f5761cd4",
+      "bytes": 41736,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/sort",
+      "sha256": "cd170edb27cf94e115007bbb94a0c9106ccb6fa16732c6e6c709ea9e961eaf4a",
+      "bytes": 172918,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/tail",
+      "sha256": "7f52568863ca4677e92c89312919ae9f45a15721fc6d1bcb6a410e1ec6801689",
+      "bytes": 87344,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/tee",
+      "sha256": "d44559e9b86d9f55a0d9924f8c2974aa28c8bdf075a2b345e7617f83ad9eb8c6",
+      "bytes": 62291,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/test",
+      "sha256": "72f839c4ff7331c13397816491dd9f5ed4f0b2baf0d3b0eddb66fa305d4a74b8",
+      "bytes": 119962,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/touch",
+      "sha256": "6811a26b8caf70a09908d0c4781cbdcb46c23f70c1327ec34a3505b346a3998f",
+      "bytes": 79371,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/tr",
+      "sha256": "d71fc1e03bc02d808e0a1273a9298057c307ad4b1ffc8df6f6df6b2b64623515",
+      "bytes": 134520,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/true",
+      "sha256": "c9e780355b398715491425cdfe7251d89823d725bc92109973282a71ad015bb8",
+      "bytes": 25607,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/uname",
+      "sha256": "ed344589108b810d0828ec0824361a5c2936d9cbb761aab60676124cc980525e",
+      "bytes": 42983,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/uniq",
+      "sha256": "4c7376d33345d2a31eebfcd8ce00f0d8a1d1fbd3bb3ea01496ea7e222e30a115",
+      "bytes": 99376,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/wc",
+      "sha256": "61a2cd089698f889180f176b0d54f5a1763fdeed26c7dc7faaa88e20e9aef036",
+      "bytes": 85649,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/which",
+      "sha256": "ae573c43ea9fae277474cc61652640bc91e41478a5d0c7538031516ebf07a3b6",
+      "bytes": 67308,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/whoami",
+      "sha256": "06fa8d740874b0d9b88ca086f1f280fa62b5b92315dc0df4de880cf376ab64ce",
+      "bytes": 38468,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/xargs",
+      "sha256": "a1140ee42e1c776a4116369a342ed99b56e18a19bc370adf3e35e56cdf68893a",
+      "bytes": 105622,
+      "format": "ZPB1"
+    },
+    {
+      "name": "bin/yes",
+      "sha256": "090b59a6dc1ad2cd25d56e83aa6e7ed2905fa2a4b08fdb83d46e11bd89547ee7",
+      "bytes": 44416,
+      "format": "ZPB1"
+    }
+  ]
+}

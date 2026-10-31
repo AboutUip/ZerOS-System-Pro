@@ -1,6 +1,7 @@
 #include "Peephole.hpp"
 
 #include "../Diagnostic.hpp"
+#include "Layout.hpp"
 
 #include <cstdint>
 #include <map>
@@ -46,16 +47,18 @@ bool parseImm(const std::string& token, int64_t& value) {
 }
 
 bool add64(int64_t left, int64_t right, int64_t& out) {
-  const __int128 sum = static_cast<__int128>(left) + right;
-  if (sum > INT64_MAX || sum < INT64_MIN) return false;
-  out = static_cast<int64_t>(sum);
+  if ((right > 0 && left > INT64_MAX - right) || (right < 0 && left < INT64_MIN - right)) return false;
+  out = left + right;
   return true;
 }
 
 bool mul64(int64_t left, int64_t right, int64_t& out) {
-  const __int128 product = static_cast<__int128>(left) * right;
-  if (product > INT64_MAX || product < INT64_MIN) return false;
-  out = static_cast<int64_t>(product);
+  if (left > 0) {
+    if ((right > 0 && left > INT64_MAX / right) || (right < 0 && right < INT64_MIN / left)) return false;
+  } else if (left < 0) {
+    if ((right > 0 && left < INT64_MIN / right) || (right < 0 && left < INT64_MAX / right)) return false;
+  }
+  out = left * right;
   return true;
 }
 
@@ -122,14 +125,8 @@ std::string immAddr(int64_t imm) {
 }
 
 bool compilerCell(int64_t addr) {
-  static const int64_t kBase[] = {68173760, 68173824, 70729728, 71319552, 70795264, 71843840, 70680576};
-  constexpr int64_t kWindow = 268435456;
-  for (int slot = 0; slot < 8; slot += 1) {
-    const int64_t delta = slot * kWindow;
-    for (const int64_t base : kBase) {
-      if (addr == base + delta) return true;
-    }
-  }
+  const int64_t cells[] = {kSp, kFrame, kHeapPtr};
+  for (const int64_t cell : cells) if (addr == cell) return true;
   return false;
 }
 
@@ -163,6 +160,7 @@ struct Reg {
   bool hasMem = false;
   std::string memAddr;
   int memWidth = 0;
+  bool privateAddress = false;
 };
 
 struct Fact {
@@ -171,16 +169,19 @@ struct Fact {
   int width = 0;
 };
 
-struct Line {
-  std::string text;
-  DebugSite site;
-};
-
 bool numericId(const std::string& id, int64_t& number) {
   if (id.size() < 3 || id[1] != ':') return false;
   const char kind = id[0];
   if (kind != 'c' && kind != 'r' && kind != 'n') return false;
   return parseImm(id.substr(2), number);
+}
+
+/** 私有性约束整个访问区间；没有数值范围证明的符号指针不能仅凭来源获得转发资格。 */
+bool privateSpan(const Reg& pointer, int width) {
+  if (!pointer.privateAddress || width <= 0) return false;
+  int64_t address = 0;
+  if (!numericId(pointer.addr, address)) return false;
+  return address >= kStack && address <= static_cast<int64_t>(kUi) - width;
 }
 
 /** 从一次装入长出来的指针：v:序号:来源#位偏移。序号不同表示不是同一次装入。 */
@@ -207,7 +208,8 @@ bool spanOverlap(int64_t left, int leftWidth, int64_t right, int rightWidth) {
 /**
  * 地址按位。同一条装入推出来的两个槽，区间相交才冲突。
  * 另一次装入、或槽和绝对地址，都可能指到同一处，按冲突处理。
- * 绝对地址只和同一类（会重定位、小立即数、大负数）比区间；类不同就不会是同一格。
+ * 重定位分类描述的是地址来源，不是互斥地址空间：算术可将高地址移到小地址区，
+ * PIE 的窗口位移也可能改变两种来源的相对关系。分类不同且无法证明位移时，保守按冲突处理。
  */
 bool overlap(const std::string& left, int leftWidth, const std::string& right, int rightWidth) {
   if (left.empty() || right.empty()) return true;
@@ -225,7 +227,7 @@ bool overlap(const std::string& left, int leftWidth, const std::string& right, i
   int64_t leftNumber = 0;
   int64_t rightNumber = 0;
   if (!numericId(left, leftNumber) || !numericId(right, rightNumber)) return true;
-  if (left[0] != right[0]) return false;
+  if (left[0] != right[0]) return true;
   return spanOverlap(leftNumber, leftWidth, rightNumber, rightWidth);
 }
 
@@ -271,12 +273,14 @@ struct Machine {
     if (dangerous(addr)) clearMem();
   }
 
-  void rememberStore(const std::string& addr, int width, int source) {
+  void rememberStore(const std::string& addr, int width, int source, bool privateAccess) {
     if (addr.empty()) {
       clearMem();
       return;
     }
     invalidate(addr, width);
+    // 设备/共享区和任意用户指针不能被当成编译器自己的栈槽。
+    if (!privateAccess) return;
     Fact fact;
     fact.width = width;
     const Reg& value = regs[source];
@@ -405,10 +409,9 @@ struct View {
   bool ok = false;
 };
 
-View viewOf(const std::string& line) {
+View viewOf(const std::vector<std::string>& parts, bool label) {
   View view;
-  if (isLabel(line)) return view;
-  const std::vector<std::string> parts = tokensOf(line);
+  if (label) return view;
   if (parts.empty()) return view;
   view.head = parts[0];
   view.ok = true;
@@ -422,13 +425,26 @@ View viewOf(const std::string& line) {
   return view;
 }
 
+/** 窥孔机器 IR：寄存器、立即数和源位置仅解析一次，CFG/前向传播共用。 */
+struct Line {
+  std::string text;
+  DebugSite site;
+  std::vector<std::string> parts;
+  bool label;
+  View view;
+
+  Line(std::string source, DebugSite location)
+      : text(std::move(source)), site(std::move(location)), parts(tokensOf(text)),
+        label(isLabel(text)), view(viewOf(parts, label)) {}
+};
+
 enum class LiveKind { None, Pure, Keep, Clobber };
 
 struct Live {
   LiveKind kind = LiveKind::Clobber;
   bool hasDef = false;
   int def = 0;
-  int uses[4]{};
+  int uses[8]{};
   int nuses = 0;
 };
 
@@ -438,23 +454,26 @@ void addUse(Live& live, int reg) {
   live.nuses += 1;
 }
 
-Live liveOf(const std::string& line) {
+Live liveOf(const Line& instruction) {
+  const std::string& line = instruction.text;
   Live live;
-  if (line.empty() || isLabel(line)) {
+  if (line.empty() || instruction.label) {
     live.kind = LiveKind::None;
     return live;
   }
-  if (line == "rsp.bias" || line == "rsp.restore" || line == "halt" || line == "yield" || line == "dwell") {
-    live.kind = LiveKind::Keep;
-    return live;
-  }
-  if (line == "ret") {
+  if (line == "halt") {
     live.kind = LiveKind::Keep;
     addUse(live, 0);
-    addUse(live, 7);
     return live;
   }
-  const View view = viewOf(line);
+  if (line == "rsp.bias" || line == "rsp.restore" || line == "yield" || line == "dwell") {
+    live.kind = LiveKind::Keep;
+    return live;
+  }
+  // 返回边界保守保留全寄存器状态。文本中包含多值返回的手写运行时和内联路径，
+  // DebugSite 只描述源码，不能被当成调用约定摘要。没有跨函数 clobber 证明前不能只留 r0/r7。
+  if (line == "ret") return live;
+  const View& view = instruction.view;
   if (!view.ok) return live;
   const std::string& head = view.head;
   if (head == "call") return live;
@@ -546,8 +565,7 @@ Live liveOf(const std::string& line) {
   return live;
 }
 
-bool transfer(const std::string& line, bool live[8]) {
-  const Live effect = liveOf(line);
+bool transfer(const Live& effect, bool live[8]) {
   if (effect.kind == LiveKind::Clobber) {
     for (int index = 0; index < 8; index += 1) live[index] = true;
     return false;
@@ -566,21 +584,25 @@ bool transfer(const std::string& line, bool live[8]) {
 }
 
 void writeSmall(std::vector<Line>& out, const Line& line, int dest, int64_t imm, Machine& machine) {
-  Line next = line;
-  next.text = placeOf(dest, imm);
-  out.push_back(next);
+  out.emplace_back(placeOf(dest, imm), line.site);
   setSmall(machine.regs[dest], imm);
 }
 
 void writeCopy(std::vector<Line>& out, const Line& line, int dest, int src, const Reg& saved, Machine& machine) {
   if (dest == src) return;
-  Line next = line;
-  next.text = copyOf(dest, src);
-  out.push_back(next);
+  out.emplace_back(copyOf(dest, src), line.site);
   machine.regs[dest] = saved;
 }
 
-bool takeLoad(Machine& machine, const std::string& addr, int width, int dest, const Line& line, std::vector<Line>& out) {
+bool takeLoad(Machine& machine, const std::string& addr, int width, int dest, Line& line, std::vector<Line>& out, bool privateAccess) {
+  if (!privateAccess) {
+    Reg next;
+    next.hasAddr = true;
+    next.addr = "v:" + std::to_string(machine.serial++) + ":" + addr + ":" + std::to_string(width) + "#0";
+    machine.regs[dest] = next;
+    out.push_back(std::move(line));
+    return true;
+  }
   const Fact* fact = machine.factAt(addr);
   if (holds(machine.regs[dest], addr, width, fact)) {
     machine.regs[dest].hasMem = true;
@@ -613,6 +635,8 @@ bool takeLoad(Machine& machine, const std::string& addr, int width, int dest, co
   next.memWidth = width;
   next.hasAddr = true;
   next.addr = "v:" + std::to_string(machine.serial) + ":" + addr + ":" + std::to_string(width) + "#0";
+  // 从帧/栈指针字加载只证明值的来源，不证明加载宽度、实际指针或完整访问范围。
+  // 尤其窄加载可能只剩低位并落入共享区。无数值范围证明时只保留符号别名关系。
   machine.serial += 1;
   if (fact != nullptr && fact->emitOk && fact->width == width) {
     next.emitOk = true;
@@ -620,36 +644,43 @@ bool takeLoad(Machine& machine, const std::string& addr, int width, int dest, co
     next.addr = "c:" + std::to_string(fact->imm);
   }
   machine.regs[dest] = next;
-  out.push_back(line);
+  out.push_back(std::move(line));
   return true;
 }
 
-void forward(const std::vector<Line>& input, std::vector<Line>& output) {
+// 每轮接收上一轮的唯一所有权；未改写的行直接搬入输出，避免深拷贝token和DebugSite。
+// 发射后不再读取被搬走的行；改写指令仍先按原DebugSite构造新行。
+void forward(std::vector<Line>& input, std::vector<Line>& output, const OptimizationOptions& options) {
   Machine machine;
-  for (const Line& line : input) {
-    if (isLabel(line.text)) {
+  for (Line& line : input) {
+    if (line.site.opaque) {
       machine.clearAll();
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
-    const View view = viewOf(line.text);
+    if (line.label) {
+      machine.clearAll();
+      output.push_back(std::move(line));
+      continue;
+    }
+    const View& view = line.view;
     if (!view.ok) {
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
     const std::string& head = view.head;
     if (head == "call" || head == "ret" || head == "halt") {
-      output.push_back(line);
+      output.push_back(std::move(line));
       machine.clearAll();
       continue;
     }
     if (head == "yield" || head == "dwell") {
-      output.push_back(line);
+      output.push_back(std::move(line));
       machine.clearMem();
       continue;
     }
     if (head == "jz" || head == "jnz" || head == "jmp" || head == "rsp.bias" || head == "rsp.restore") {
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
     if (head == "place" && view.nregs >= 1) {
@@ -661,19 +692,20 @@ void forward(const std::vector<Line>& input, std::vector<Line>& output) {
         }
         next.hasAddr = true;
         next.addr = immAddr(view.imm);
+        next.privateAddress = view.imm >= kStack && view.imm < kUi;
       }
       machine.regs[view.regs[0]] = next;
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
     const int width = widthOf(head);
     if (width > 0 && head.rfind("load.", 0) == 0 && head != "load.scale" && view.nregs >= 1 && view.immOk) {
-      takeLoad(machine, immAddr(view.imm), width, view.regs[0], line, output);
+      takeLoad(machine, immAddr(view.imm), width, view.regs[0], line, output, options.loadForward && compilerCell(view.imm));
       continue;
     }
     if (width > 0 && head.rfind("store.", 0) == 0 && head != "store.scale" && view.nregs >= 1 && view.immOk) {
-      output.push_back(line);
-      machine.rememberStore(immAddr(view.imm), width, view.regs[0]);
+      machine.rememberStore(immAddr(view.imm), width, view.regs[0], options.loadForward && compilerCell(view.imm));
+      output.push_back(std::move(line));
       continue;
     }
     if (width > 0 && head.rfind("ldi.", 0) == 0 && view.nregs >= 2) {
@@ -681,41 +713,41 @@ void forward(const std::vector<Line>& input, std::vector<Line>& output) {
       const int pointer = view.regs[1];
       if (!machine.regs[pointer].hasAddr) {
         machine.regs[dest] = {};
-        output.push_back(line);
+        output.push_back(std::move(line));
       } else {
         const std::string addr = machine.regs[pointer].addr;
-        takeLoad(machine, addr, width, dest, line, output);
+        takeLoad(machine, addr, width, dest, line, output, options.loadForward && privateSpan(machine.regs[pointer], width));
       }
       continue;
     }
     if (width > 0 && head.rfind("sti.", 0) == 0 && view.nregs >= 2) {
-      output.push_back(line);
       const int pointer = view.regs[1];
       if (!machine.regs[pointer].hasAddr) machine.clearMem();
       else {
         const std::string addr = machine.regs[pointer].addr;
-        machine.rememberStore(addr, width, view.regs[0]);
+        machine.rememberStore(addr, width, view.regs[0], options.loadForward && privateSpan(machine.regs[pointer], width));
       }
+      output.push_back(std::move(line));
       continue;
     }
     if (head == "load.scale" && view.nregs >= 1) {
       machine.regs[view.regs[0]] = {};
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
     if (head == "store.scale") {
-      output.push_back(line);
+      output.push_back(std::move(line));
       machine.clearMem();
       continue;
     }
     if ((isFloat(head) || head == "query") && view.nregs >= 1) {
       machine.regs[view.regs[0]] = {};
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
     if (head == "not" && view.nregs >= 2) {
       const Reg source = machine.regs[view.regs[1]];
-      if (source.emitOk) {
+      if (options.fold && source.emitOk) {
         const int64_t result = -source.imm - 1;
         if (canEmit(result)) {
           writeSmall(output, line, view.regs[0], result, machine);
@@ -723,7 +755,7 @@ void forward(const std::vector<Line>& input, std::vector<Line>& output) {
         }
       }
       machine.regs[view.regs[0]] = {};
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
     const bool alu = head == "add" || head == "sub" || head == "mul" || head == "div" || head == "mod" || head == "udiv" || head == "umod" || head == "and" || head == "or" || head == "xor" || head == "shl" || head == "shr" || head == "eq" || head == "lt" || head == "le" || head == "gt" || head == "ge";
@@ -733,11 +765,11 @@ void forward(const std::vector<Line>& input, std::vector<Line>& output) {
       const int rightReg = view.regs[2];
       const Reg left = machine.regs[leftReg];
       const Reg right = machine.regs[rightReg];
-      if (head == "or" && leftReg == rightReg) {
+      if (options.fold && head == "or" && leftReg == rightReg) {
         writeCopy(output, line, dest, leftReg, left, machine);
         continue;
       }
-      if (left.emitOk && right.emitOk) {
+      if (options.fold && left.emitOk && right.emitOk) {
         int64_t result = 0;
         if (arithmetic(head, left.imm, right.imm, result) && canEmit(result)) {
           writeSmall(output, line, dest, result, machine);
@@ -747,51 +779,51 @@ void forward(const std::vector<Line>& input, std::vector<Line>& output) {
       const auto zero = [](const Reg& reg) { return reg.emitOk && reg.imm == 0; };
       const auto one = [](const Reg& reg) { return reg.emitOk && reg.imm == 1; };
       const auto ones = [](const Reg& reg) { return reg.emitOk && reg.imm == -1; };
-      if ((head == "add" || head == "or" || head == "xor" || head == "sub") && zero(right) && head != "sub") {
+      if (options.fold && (head == "add" || head == "or" || head == "xor") && zero(right)) {
         writeCopy(output, line, dest, leftReg, left, machine);
         continue;
       }
-      if (head == "sub" && zero(right)) {
+      if (options.fold && head == "sub" && zero(right)) {
         writeCopy(output, line, dest, leftReg, left, machine);
         continue;
       }
-      if (head == "add" && zero(left)) {
+      if (options.fold && head == "add" && zero(left)) {
         writeCopy(output, line, dest, rightReg, right, machine);
         continue;
       }
-      if ((head == "or" || head == "xor") && zero(left)) {
+      if (options.fold && (head == "or" || head == "xor") && zero(left)) {
         writeCopy(output, line, dest, rightReg, right, machine);
         continue;
       }
-      if ((head == "mul" || head == "div") && one(right)) {
+      if (options.fold && (head == "mul" || head == "div") && one(right)) {
         writeCopy(output, line, dest, leftReg, left, machine);
         continue;
       }
-      if (head == "mul" && one(left)) {
+      if (options.fold && head == "mul" && one(left)) {
         writeCopy(output, line, dest, rightReg, right, machine);
         continue;
       }
-      if (head == "mul" && (zero(left) || zero(right))) {
+      if (options.fold && head == "mul" && (zero(left) || zero(right))) {
         writeSmall(output, line, dest, 0, machine);
         continue;
       }
-      if (head == "and" && (zero(left) || zero(right))) {
+      if (options.fold && head == "and" && (zero(left) || zero(right))) {
         writeSmall(output, line, dest, 0, machine);
         continue;
       }
-      if (head == "or" && (ones(left) || ones(right))) {
+      if (options.fold && head == "or" && (ones(left) || ones(right))) {
         writeSmall(output, line, dest, -1, machine);
         continue;
       }
-      if (head == "and" && ones(right)) {
+      if (options.fold && head == "and" && ones(right)) {
         writeCopy(output, line, dest, leftReg, left, machine);
         continue;
       }
-      if (head == "and" && ones(left)) {
+      if (options.fold && head == "and" && ones(left)) {
         writeCopy(output, line, dest, rightReg, right, machine);
         continue;
       }
-      if ((head == "shl" || head == "shr") && zero(right)) {
+      if (options.fold && (head == "shl" || head == "shr") && zero(right)) {
         writeCopy(output, line, dest, leftReg, left, machine);
         continue;
       }
@@ -805,12 +837,24 @@ void forward(const std::vector<Line>& input, std::vector<Line>& output) {
       if (!moved.empty()) {
         next.hasAddr = true;
         next.addr = std::move(moved);
+        next.privateAddress = (left.hasAddr && left.privateAddress && right.emitOk)
+            || (head == "add" && right.hasAddr && right.privateAddress && left.emitOk);
+        // 来源是私有指针不代表算术结果仍然私有。绝对位置一旦离开栈区，
+        // 之后的读取必须保留，写入也不能再建立可复用的私有槽事实。
+        int64_t address = 0;
+        if (numericId(next.addr, address)) {
+          if (address < kStack || address >= kUi) next.privateAddress = false;
+        } else if (next.addr != left.addr && next.addr != right.addr) {
+          // 帧/栈指针的运行时值没有可用的上下界。偏移改变后无法证明访问仍在私有区，
+          // 先撤销转发资格；不能把符号来源当作任意偏移都安全的证明。
+          next.privateAddress = false;
+        }
       }
       machine.regs[dest] = next;
-      output.push_back(line);
+      output.push_back(std::move(line));
       continue;
     }
-    output.push_back(line);
+    output.push_back(std::move(line));
     machine.clearAll();
   }
 }
@@ -825,9 +869,8 @@ struct Block {
   bool liveOut[8]{};
 };
 
-bool isTerminator(const std::string& line) {
-  if (isLabel(line)) return false;
-  const View view = viewOf(line);
+bool isTerminator(const Line& line) {
+  const View& view = line.view;
   if (!view.ok) return false;
   return view.head == "jz" || view.head == "jnz" || view.head == "jmp" || view.head == "ret" || view.head == "halt";
 }
@@ -846,11 +889,15 @@ bool sameLive(const bool left[8], const bool right[8]) {
 void dropDead(std::vector<Line>& lines) {
   const int count = static_cast<int>(lines.size());
   if (count == 0) return;
+  // 每条指令的 def/use 只解析一次；活跃性不动点循环不重复分词。
+  std::vector<Live> effects;
+  effects.reserve(lines.size());
+  for (const Line& line : lines) effects.push_back(line.site.opaque ? Live{} : liveOf(line));
   std::vector<char> leader(static_cast<std::size_t>(count), 0);
   leader[0] = 1;
   for (int index = 0; index < count; index += 1) {
-    if (isLabel(lines[static_cast<std::size_t>(index)].text)) leader[static_cast<std::size_t>(index)] = 1;
-    if (isTerminator(lines[static_cast<std::size_t>(index)].text) && index + 1 < count) leader[static_cast<std::size_t>(index + 1)] = 1;
+    if (lines[static_cast<std::size_t>(index)].label) leader[static_cast<std::size_t>(index)] = 1;
+    if (isTerminator(lines[static_cast<std::size_t>(index)]) && index + 1 < count) leader[static_cast<std::size_t>(index + 1)] = 1;
   }
   std::vector<Block> blocks;
   std::vector<int> at(static_cast<std::size_t>(count), -1);
@@ -868,12 +915,12 @@ void dropDead(std::vector<Line>& lines) {
   std::map<std::string, int> labels;
   for (int index = 0; index < count; index += 1) {
     const std::string& text = lines[static_cast<std::size_t>(index)].text;
-    if (!isLabel(text)) continue;
+    if (!lines[static_cast<std::size_t>(index)].label) continue;
     labels.emplace(text.substr(0, text.size() - 1), at[static_cast<std::size_t>(index)]);
   }
   for (Block& block : blocks) {
-    const std::string& last = lines[static_cast<std::size_t>(block.end - 1)].text;
-    const View view = viewOf(last);
+    const Line& last = lines[static_cast<std::size_t>(block.end - 1)];
+    const View& view = last.view;
     const bool stop = view.ok && (view.head == "ret" || view.head == "halt");
     if (!stop && block.end < count) {
       const int next = at[static_cast<std::size_t>(block.end)];
@@ -883,7 +930,7 @@ void dropDead(std::vector<Line>& lines) {
       }
     }
     if (view.ok && (view.head == "jz" || view.head == "jnz" || view.head == "jmp")) {
-      const std::vector<std::string> parts = tokensOf(last);
+      const auto& parts = last.parts;
       int64_t ignore = 0;
       if (parts.size() >= 2 && regOf(parts.back()) < 0 && !parseImm(parts.back(), ignore)) {
         const auto found = labels.find(parts.back());
@@ -901,7 +948,8 @@ void dropDead(std::vector<Line>& lines) {
   bool converged = false;
   for (int pass = 0; pass < count + 2; pass += 1) {
     bool changed = false;
-    for (Block& block : blocks) {
+    for (auto blockAt = blocks.rbegin(); blockAt != blocks.rend(); ++blockAt) {
+      Block& block = *blockAt;
       bool cur[8];
       if (block.sticky) fill(cur, true);
       else {
@@ -913,7 +961,7 @@ void dropDead(std::vector<Line>& lines) {
       }
       for (int index = 0; index < 8; index += 1) block.liveOut[index] = cur[index];
       for (int index = block.end - 1; index >= block.begin; index -= 1) {
-        transfer(lines[static_cast<std::size_t>(index)].text, cur);
+        transfer(effects[static_cast<std::size_t>(index)], cur);
       }
       if (!sameLive(cur, block.liveIn)) {
         for (int index = 0; index < 8; index += 1) block.liveIn[index] = cur[index];
@@ -931,7 +979,7 @@ void dropDead(std::vector<Line>& lines) {
     bool cur[8];
     for (int index = 0; index < 8; index += 1) cur[index] = block.liveOut[index];
     for (int index = block.end - 1; index >= block.begin; index -= 1) {
-      if (transfer(lines[static_cast<std::size_t>(index)].text, cur)) drop[static_cast<std::size_t>(index)] = 1;
+      if (transfer(effects[static_cast<std::size_t>(index)], cur)) drop[static_cast<std::size_t>(index)] = 1;
     }
   }
   std::vector<Line> kept;
@@ -944,6 +992,7 @@ void dropDead(std::vector<Line>& lines) {
 
 std::vector<Line> split(const std::string& text, const std::vector<DebugSite>& sites) {
   std::vector<Line> lines;
+  lines.reserve(sites.size());
   std::string current;
   std::size_t row = 0;
   auto push = [&]() {
@@ -961,27 +1010,55 @@ std::vector<Line> split(const std::string& text, const std::vector<DebugSite>& s
   return lines;
 }
 
-std::string join(const std::vector<Line>& lines, std::vector<DebugSite>& sites) {
+std::string join(std::vector<Line>& lines, std::vector<DebugSite>& sites) {
   std::string text;
+  std::size_t size = 0;
+  for (const Line& line : lines) size += line.text.size() + 1;
+  text.reserve(size);
   sites.clear();
   sites.reserve(lines.size());
-  for (const Line& line : lines) {
+  for (Line& line : lines) {
     text += line.text;
     text += '\n';
-    sites.push_back(line.site);
+    sites.push_back(std::move(line.site));
   }
   return text;
 }
 
 }  // namespace
 
-void peel(std::string& text, std::vector<DebugSite>& sites) {
+void peel(std::string& text, std::vector<DebugSite>& sites, const OptimizationOptions& options) {
   if (text.empty() && sites.empty()) return;
+  if (options.level == 0 || !options.peephole) return;
   std::vector<Line> lines = split(text, sites);
-  std::vector<Line> folded;
-  folded.reserve(lines.size());
-  forward(lines, folded);
-  dropDead(folded);
+  // 数值/间接目标依赖原来的全局下标。在没有目标重定位信息时必须固定该段，不能删行。
+  for (const Line& line : lines) {
+    const auto& parts = line.parts;
+    if (parts.empty()) continue;
+    const auto& op = parts.front();
+    int64_t numeric = 0;
+    if ((op == "jz" || op == "jnz" || op == "call" || op == "link" || op == "icall")
+        && parts.size() > 1 && (parseImm(parts.back(), numeric)
+            || (!parts.back().empty() && parts.back()[0] >= '0' && parts.back()[0] <= '9'))) return;
+    if (op == "jmp" && parts.size() > 1 && regOf(parts.back()) >= 0) return;
+  }
+  std::vector<OptimizationPass> passes = options.passes;
+  if (passes.empty()) {
+    passes = {OptimizationPass::Forward, OptimizationPass::DeadCode};
+  }
+  std::vector<Line> folded = std::move(lines);
+  for (const OptimizationPass pass : passes) {
+    // forward 是保持旧默认耗时的合并遍历；两项也能单独运行、排序和重复。
+    OptimizationOptions active = options;
+    active.fold = options.fold && pass != OptimizationPass::LoadForward;
+    active.loadForward = options.loadForward && pass != OptimizationPass::Fold;
+    if (pass != OptimizationPass::DeadCode && (active.fold || active.loadForward)) {
+      std::vector<Line> next;
+      next.reserve(folded.size());
+      forward(folded, next, active);
+      folded = std::move(next);
+    } else if (pass == OptimizationPass::DeadCode && options.deadCode) dropDead(folded);
+  }
   text = join(folded, sites);
 }
 

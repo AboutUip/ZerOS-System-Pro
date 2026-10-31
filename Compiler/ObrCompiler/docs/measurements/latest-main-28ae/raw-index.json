@@ -1,0 +1,21 @@
+{
+  "purpose": "Historical pre-rollback candidate 601ec88 on upstream 28ae11e; not the current ae0 candidate acceptance. Decompress each file and verify rawSha256 before use.",
+  "entries": [
+    {
+      "file": "benchmark.json.gz",
+      "rawFile": "benchmark.json",
+      "rawSha256": "e403bd657011a8e9bfca03efa942b48aa64bfc1782271435506f193f19ec088f",
+      "compressedSha256": "8024db9ecd7641f97cd09a3c1e5cf1444effdcc67b2731220fff3352f84682c5",
+      "rawBytes": 572986,
+      "compressedBytes": 48441
+    },
+    {
+      "file": "differential.json.gz",
+      "rawFile": "differential.json",
+      "rawSha256": "42492a18eeae186c04bcf3d8124f9b6806459f6ba2c9065886ce5bc6d8f9eea4",
+      "compressedSha256": "699a2ed9d4a28287ed2feaf6142ed54f5d92a1835b058e889237a7fc58111d0a",
+      "rawBytes": 514965,
+      "compressedBytes": 19196
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "entries": [
+    {
+      "file": "differential-final.json.gz",
+      "rawBytes": 515965,
+      "rawSha256": "5c6d0a7bc429a8c0a90db22aa69a813eb1955a4e80117cd2a6d949344ba45abb",
+      "compressedBytes": 19241,
+      "compressedSha256": "dc18f8ccd0f4c33c8843cd2dcf2d45d745da3734cf58019a90446ccdddbd3169"
+    },
+    {
+      "file": "reordered-final.json.gz",
+      "rawBytes": 515948,
+      "rawSha256": "465ff14e0510e7365b0998a182cc94e11954467baafdf1c34367817d9ce7a547",
+      "compressedBytes": 19235,
+      "compressedSha256": "d0b4f5e722effbe0c981f0f7dc4685065f1bf6f239b0cc9a3ef2ac859015441a"
+    },
+    {
+      "file": "contracts-final.json.gz",
+      "rawBytes": 18967,
+      "rawSha256": "8416316204ae982fc3d14f70015fb4171ce2bf8f31c4ea3b4e149308c6e9a2e3",
+      "compressedBytes": 1238,
+      "compressedSha256": "024d0b90f7d1f6e16bd87d855e81a7ed8e3019f8df1f79016500c5db106c9350"
+    },
+    {
+      "file": "benchmark-final.json.gz",
+      "rawBytes": 725723,
+      "rawSha256": "1f2e3959f497a10a02c7fdd66d1a023aea7041256471c9f5414a6a66b094ead2",
+      "compressedBytes": 47350,
+      "compressedSha256": "0986048c76cf1f7e54f9bd4554150c805eed7ab03ee7c201f1d2a73407acef80"
+    },
+    {
+      "file": "benchmark-initial-incomplete.json.gz",
+      "rawBytes": 658159,
+      "rawSha256": "932d67af71bccf9c9b1222cfe87c631cd9d0f9e1fd4e4a9bc80661b89e72e86b",
+      "compressedBytes": 42709,
+      "compressedSha256": "1613e7a10dee63217ea85f1d363c7e8efb94adce320c175549e5a90c4840b619"
+    },
+    {
+      "file": "benchmark-initial-interrupted.json.gz",
+      "rawBytes": 313,
+      "rawSha256": "ec0747073220f3d112de0541ffc90c1d0f8f672070bc3745988ce06779906db0",
+      "compressedBytes": 245,
+      "compressedSha256": "feb45d4579bb52ece6974999355ae9d11a4ff8d7db91f0a02520991a33e98949"
+    },
+    {
+      "file": "native-boundaries.json.gz",
+      "rawBytes": 12406,
+      "rawSha256": "ebb33e4ba319b27401ed5ebdf3308da18bb96658db164bc605f4a6df7aa136ce",
+      "compressedBytes": 738,
+      "compressedSha256": "732768b2dd8fe23b27ccaef6f24aba5683c762a1c0629573ee8f0e5e44d4a49b"
+    },
+    {
+      "file": "red-green.json.gz",
+      "rawBytes": 642,
+      "rawSha256": "def71e9d45b22d9b62f81d9009d3c3f96d01ea959f4df5ed3bf39299d86fedb4",
+      "compressedBytes": 317,
+      "compressedSha256": "126adbbb0dadbe4a462c0b1126d9ec2f469b23550830af06575a3f87e50da5fe"
+    },
+    {
+      "file": "kernel-flag-bisect.json.gz",
+      "rawBytes": 12367134,
+      "rawSha256": "d4df03015377fc97cc9855845b03745bdee1cac2f5d591a5ac3b2ecc27591ce8",
+      "compressedBytes": 345475,
+      "compressedSha256": "8ea52c81ffcdee3f75f06a1575ca88d39bb740632e95256b938ca5d3974ae408"
+    },
+    {
+      "file": "kernel-flag-manifest.json.gz",
+      "rawBytes": 13409,
+      "rawSha256": "6bec3bf9b53441664d1b349d516fab462328e9ca24db898056fdc345b4bb0679",
+      "compressedBytes": 989,
+      "compressedSha256": "a63e1640ba51340c2160aa2351565e5ed55ad19b303038a31a5b0d65424d22ca"
+    },
+    {
+      "file": "kernel-flag-summary.json.gz",
+      "rawBytes": 1345,
+      "rawSha256": "0d1b504bfa09da63b636c77949b9275adf550a2cd2dd34f81ec394046161ad02",
+      "compressedBytes": 539,
+      "compressedSha256": "677ccfcb5429dba1a85a823fb7bde26e8fd85926b4e233d1aac08f99a23a136c"
+    }
+  ]
+}

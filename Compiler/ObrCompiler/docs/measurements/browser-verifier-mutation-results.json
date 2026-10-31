@@ -1,0 +1,36 @@
+{
+  "fixtureRun": "46a1733d-a950-49cc-af55-40acf9efff17",
+  "passed": true,
+  "results": [
+    {
+      "name": "missing-watermark",
+      "detected": "every event through the acknowledged cutoff is present once",
+      "failures": 57
+    },
+    {
+      "name": "wrong-status",
+      "detected": "valid fixture commands exited successfully",
+      "failures": 34
+    },
+    {
+      "name": "missing-status",
+      "detected": "actual OS exit state is observed separately from main returnValue",
+      "failures": 36
+    },
+    {
+      "name": "wrong-input",
+      "detected": "exact complete command was delivered",
+      "failures": 34
+    },
+    {
+      "name": "invalid-png",
+      "detected": "original PNG must independently decode",
+      "failures": 34
+    },
+    {
+      "name": "false-halt-snapshot",
+      "detected": "halt return register is bound to its actual FIFO stop token",
+      "failures": 34
+    }
+  ]
+}

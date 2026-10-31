@@ -1,0 +1,96 @@
+{
+  "created": "2026-10-30T10:55:59.766Z",
+  "source": {
+    "file": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/SignalProbe.obr",
+    "sha256": "05ec794bb7d2f8ae661fd1e27e28e222066cf6883c50bae9e250c90742dbf303",
+    "stagedFile": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/source/SignalProbe.obr",
+    "stagedSha256": "05ec794bb7d2f8ae661fd1e27e28e222066cf6883c50bae9e250c90742dbf303"
+  },
+  "compilers": {
+    "baseline": "f4c5697da8ac93094f3176e8b7acbabfa68b683fd22b44df04bebc01a41dca3c",
+    "candidate": "b671ce193549a37de26201cd8d8e2fa3cdc90e9ec1bae4d4eba9768998018359"
+  },
+  "companions": [
+    {
+      "file": "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+      "sha256": "6c89885c5f924e729aa5b6aad01b43d7d914c5aff4b199f61d22f53499d908b2"
+    }
+  ],
+  "command": "compiler-signal-smoke",
+  "rows": [
+    {
+      "variant": "baseline",
+      "compiler": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/bin/baseline-obrc",
+      "flags": [
+        "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/source/SignalProbe.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-debug",
+        "-o",
+        "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/baseline"
+      ],
+      "file": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/baseline",
+      "sha256": "8463c9734fd8cb3296af0b2221daba6c56a1cac27bb2edd0ab99824dc9a16cf0",
+      "bytes": 29180,
+      "installed": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/baseline/NasRoot/bin/compiler-signal-smoke"
+    },
+    {
+      "variant": "O1",
+      "compiler": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/bin/candidate-obrc",
+      "flags": [
+        "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/source/SignalProbe.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-O1",
+        "-debug",
+        "-o",
+        "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/O1"
+      ],
+      "file": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/O1",
+      "sha256": "fcee7c7d725dc256972ce35676148e92358356ddaf3a53808cf2bbf377700b5e",
+      "bytes": 27022,
+      "installed": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/O1/NasRoot/bin/compiler-signal-smoke"
+    },
+    {
+      "variant": "O2",
+      "compiler": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/bin/candidate-obrc",
+      "flags": [
+        "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/source/SignalProbe.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-O2",
+        "-debug",
+        "-o",
+        "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/O2"
+      ],
+      "file": "<repo>/Toolchain/CompilerCheck/independent-agent-20261030/signal-smoke-build/O2",
+      "sha256": "013cdf1806e5096ea03b8188115d0a72029df475430222e0b161a322b35460ff",
+      "bytes": 26695,
+      "installed": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/O2/NasRoot/bin/compiler-signal-smoke"
+    }
+  ]
+}

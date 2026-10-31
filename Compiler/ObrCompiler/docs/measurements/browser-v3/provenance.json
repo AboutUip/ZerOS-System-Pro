@@ -1,0 +1,10 @@
+{
+  "base": "7bf78874240d695ff384cbf75efc1a3198036677",
+  "baseline": "f4c5697da8ac93094f3176e8b7acbabfa68b683fd22b44df04bebc01a41dca3c",
+  "candidate": "1b1f751429c94e904749bfa908398b91484d315d296ed7c741c9a18103080977",
+  "observer": "2b348edb2eab66195e84ab2a46bd9eeabec5d301bd857f92641a2db05fb1f2c6",
+  "plugin": "03d71955f7c8539a937f9241c88055c127cd4a8aa5a6c187f0b6d3d78f327874",
+  "node": "v24.21.0",
+  "os": "25.1.0",
+  "cpu": "Apple M1 Pro"
+}

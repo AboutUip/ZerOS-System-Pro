@@ -1,0 +1,6236 @@
+{
+  "startedAt": "2026-10-29T18:42:15.444Z",
+  "environment": {
+    "node": "v24.21.0",
+    "os": "25.1.0",
+    "cpu": "Apple M1 Pro",
+    "arch": "arm64",
+    "hostCompiler": "Apple clang version 17.0.0 (clang-1700.4.4.1)",
+    "loadAverage": [
+      2.86181640625,
+      2.46875,
+      2.06298828125
+    ]
+  },
+  "sourceRef": "7bf78874240d695ff384cbf75efc1a3198036677",
+  "repeats": 5,
+  "order": "interleaved-rotating",
+  "snapshots": {
+    "baseline": {
+      "path": "<repo>/Toolchain/CompilerCheck/benchmark-final/baseline-obrc",
+      "sha256": "f4c5697da8ac93094f3176e8b7acbabfa68b683fd22b44df04bebc01a41dca3c"
+    },
+    "candidate": {
+      "path": "<repo>/Toolchain/CompilerCheck/benchmark-final/candidate-obrc",
+      "sha256": "ad6a2d1cb42b50a0ab34ede4f0c7f538b3740c039a0aea09eac978ad022b7e5a"
+    }
+  },
+  "manifest": [
+    {
+      "name": "kernel/start",
+      "sources": [
+        "<repo>/ZerOS-PRO/Kernel/Init/start.obr",
+        "<repo>/ZerOS-PRO/Kernel/Proc/task.obr",
+        "<repo>/ZerOS-PRO/Kernel/Mm/mm.obr",
+        "<repo>/ZerOS-PRO/Kernel/Sched/sched.obr",
+        "<repo>/ZerOS-PRO/Kernel/Fs/vfs.obr",
+        "<repo>/ZerOS-PRO/Kernel/Exec/exec.obr",
+        "<repo>/ZerOS-PRO/Kernel/Font/font.obr",
+        "<repo>/ZerOS-PRO/Kernel/Text/utf8.obr",
+        "<repo>/ZerOS-PRO/Kernel/Test/suite.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.nas.obr"
+      ],
+      "flags": [
+        "-slot",
+        "2",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Init",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Proc",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Mm",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Sched",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Fs",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Exec",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Font",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Text",
+        "-I",
+        "<repo>/ZerOS-PRO/Kernel/Test",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib"
+      ]
+    },
+    {
+      "name": "kernel/init",
+      "sources": [
+        "<repo>/ZerOS-PRO/System/Init/init.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.text.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib"
+      ]
+    },
+    {
+      "name": "os/sh",
+      "sources": [
+        "<repo>/ZerOS-PRO/System/Shell/sh.obr",
+        "<repo>/ZerOS-PRO/System/Shell/edit.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/System/Shell"
+      ]
+    },
+    {
+      "name": "os/session",
+      "sources": [
+        "<repo>/ZerOS-PRO/System/Session/session.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib"
+      ]
+    },
+    {
+      "name": "kernel/idle",
+      "sources": [
+        "<repo>/ZerOS-PRO/Kernel/Idle/idle.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib"
+      ]
+    },
+    {
+      "name": "kernel/drv/pulse",
+      "sources": [
+        "<repo>/ZerOS-PRO/Kernel/Drv/pulse.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib"
+      ]
+    },
+    {
+      "name": "bin/basename",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/basename.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/cat",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/cat.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/chmod",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/chmod.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/chown",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/chown.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/cksum",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/cksum.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/cmp",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/cmp.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/comm",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/comm.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/cp",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/cp.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/cut",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/cut.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/date",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/date.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/dd",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/dd.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/diff",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/diff.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/dirname",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/dirname.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/du",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/du.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/echo",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/echo.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/env",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/env.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/expr",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/expr.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/false",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/false.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/find",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/find.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/fold",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/fold.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/grep",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/grep.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/head",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/head.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/id",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/id.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/install",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/install.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/kill",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/kill.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/ls",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/ls.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/mkdir",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/mkdir.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/mktemp",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/mktemp.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/mv",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/mv.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/od",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/od.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/paste",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/paste.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/printf",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/printf.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/ps",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/ps.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/pwd",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/pwd.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/realpath",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/realpath.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/rm",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/rm.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/rmdir",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/rmdir.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/seq",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/seq.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/sleep",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/sleep.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/sort",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/sort.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/tail",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/tail.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/tee",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/tee.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/test",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/test.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/touch",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/touch.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/tr",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/tr.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/true",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/true.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/uname",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/uname.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/uniq",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/uniq.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/wc",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/wc.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/which",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/which.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/whoami",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/whoami.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/xargs",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/xargs.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    },
+    {
+      "name": "bin/yes",
+      "sources": [
+        "<repo>/ZerOS-PRO/Resource/Bin/yes.obr",
+        "<repo>/ZerOS-PRO/Resource/Bin/arg.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr"
+      ],
+      "flags": [
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Resource/Bin"
+      ]
+    }
+  ],
+  "results": [
+    {
+      "name": "kernel/start",
+      "variant": "baseline",
+      "bytes": 672933,
+      "format": "ZNB1",
+      "instructions": 81968,
+      "debugBytes": 9963410,
+      "coldMs": 3166.988667,
+      "warmMs": [
+        2340.3265409999985,
+        2339.3626250000016,
+        2338.2495839999974,
+        2356.8457080000007,
+        2342.0193329999965
+      ],
+      "medianMs": 2340.3265409999985,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "kernel/start",
+      "variant": "O0",
+      "bytes": 672933,
+      "format": "ZNB1",
+      "instructions": 81968,
+      "debugBytes": 9963410,
+      "coldMs": 2877.2447089999996,
+      "warmMs": [
+        2347.9646249999987,
+        2369.963749999999,
+        2349.959459000005,
+        2350.673333999999,
+        2348.615582999999
+      ],
+      "medianMs": 2349.959459000005,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.004116057238700677
+      }
+    },
+    {
+      "name": "kernel/start",
+      "variant": "O1",
+      "bytes": 504898,
+      "format": "ZNB1",
+      "instructions": 76302,
+      "debugBytes": 9266772,
+      "coldMs": 2418.4583330000005,
+      "warmMs": [
+        2407.0520829999987,
+        2409.6846250000017,
+        2410.903707999998,
+        2407.3960420000003,
+        2422.953625000002
+      ],
+      "medianMs": 2409.6846250000017,
+      "relative": {
+        "bytes": -0.24970539414770865,
+        "medianMs": 0.029636071199862224
+      }
+    },
+    {
+      "name": "kernel/start",
+      "variant": "O2",
+      "bytes": 500745,
+      "format": "ZNB1",
+      "instructions": 75723,
+      "debugBytes": 9196172,
+      "coldMs": 2408.419917000001,
+      "warmMs": [
+        2415.100083000001,
+        2422.275125,
+        2407.852708000002,
+        2409.333832999997,
+        2412.447042
+      ],
+      "medianMs": 2412.447042,
+      "relative": {
+        "bytes": -0.25587688521739904,
+        "medianMs": 0.03081642656976613
+      }
+    },
+    {
+      "name": "kernel/init",
+      "variant": "baseline",
+      "bytes": 21672,
+      "format": "ZPB1",
+      "instructions": 2215,
+      "debugBytes": 289182,
+      "coldMs": 21.805624999993597,
+      "warmMs": [
+        20.448457999998936,
+        20.709208000000217,
+        20.45100000000093,
+        20.51524999999674,
+        20.51054099999601
+      ],
+      "medianMs": 20.51054099999601,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "kernel/init",
+      "variant": "O0",
+      "bytes": 21672,
+      "format": "ZPB1",
+      "instructions": 2215,
+      "debugBytes": 289182,
+      "coldMs": 20.974874999999884,
+      "warmMs": [
+        20.628750000003492,
+        21.01191599998856,
+        20.38329199999862,
+        20.589875000005122,
+        20.450915999987046
+      ],
+      "medianMs": 20.589875000005122,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0038679623325941215
+      }
+    },
+    {
+      "name": "kernel/init",
+      "variant": "O1",
+      "bytes": 19740,
+      "format": "ZPB1",
+      "instructions": 2075,
+      "debugBytes": 270890,
+      "coldMs": 22.009332999994513,
+      "warmMs": [
+        22.098999999987427,
+        22.17370800000208,
+        21.956374999994296,
+        21.916792000003625,
+        21.78575000001001
+      ],
+      "medianMs": 21.956374999994296,
+      "relative": {
+        "bytes": -0.08914728682170547,
+        "medianMs": 0.07049224103833085
+      }
+    },
+    {
+      "name": "kernel/init",
+      "variant": "O2",
+      "bytes": 19740,
+      "format": "ZPB1",
+      "instructions": 2075,
+      "debugBytes": 270890,
+      "coldMs": 22.12804199999664,
+      "warmMs": [
+        22.409665999992285,
+        22.098125000004075,
+        22.01545900000201,
+        21.772833999988507,
+        21.91366600000765
+      ],
+      "medianMs": 22.01545900000201,
+      "relative": {
+        "bytes": -0.08914728682170547,
+        "medianMs": 0.07337290615621961
+      }
+    },
+    {
+      "name": "os/sh",
+      "variant": "baseline",
+      "bytes": 391860,
+      "format": "ZPB1",
+      "instructions": 44026,
+      "debugBytes": 5266212,
+      "coldMs": 370.854124999998,
+      "warmMs": [
+        364.3273329999938,
+        363.5432499999879,
+        365.02841700000863,
+        364.94320799999696,
+        365.00675000000047
+      ],
+      "medianMs": 364.94320799999696,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "os/sh",
+      "variant": "O0",
+      "bytes": 391860,
+      "format": "ZPB1",
+      "instructions": 44026,
+      "debugBytes": 5266212,
+      "coldMs": 364.9307909999916,
+      "warmMs": [
+        365.36200000000827,
+        366.0766670000012,
+        365.3298749999958,
+        364.3502920000028,
+        365.44312500000524
+      ],
+      "medianMs": 365.36200000000827,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.001147553895594955
+      }
+    },
+    {
+      "name": "os/sh",
+      "variant": "O1",
+      "bytes": 373307,
+      "format": "ZPB1",
+      "instructions": 41987,
+      "debugBytes": 5020501,
+      "coldMs": 397.067458000005,
+      "warmMs": [
+        395.6470419999969,
+        397.71912500000326,
+        396.6511249999894,
+        395.9226670000062,
+        397.44695800000045
+      ],
+      "medianMs": 396.6511249999894,
+      "relative": {
+        "bytes": -0.047345990915122704,
+        "medianMs": 0.08688452423532356
+      }
+    },
+    {
+      "name": "os/sh",
+      "variant": "O2",
+      "bytes": 370920,
+      "format": "ZPB1",
+      "instructions": 42294,
+      "debugBytes": 5056843,
+      "coldMs": 397.4736249999987,
+      "warmMs": [
+        398.1509580000129,
+        398.61774999999034,
+        398.2481669999979,
+        399.32708399998955,
+        397.1555420000077
+      ],
+      "medianMs": 398.2481669999979,
+      "relative": {
+        "bytes": -0.053437452151278486,
+        "medianMs": 0.09126066267275545
+      }
+    },
+    {
+      "name": "os/session",
+      "variant": "baseline",
+      "bytes": 18982,
+      "format": "ZPB1",
+      "instructions": 1932,
+      "debugBytes": 252194,
+      "coldMs": 32.5252499999915,
+      "warmMs": [
+        31.98262500000419,
+        32.0754159999924,
+        31.946583999990253,
+        32.06958300000406,
+        31.943041000005906
+      ],
+      "medianMs": 31.98262500000419,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "os/session",
+      "variant": "O0",
+      "bytes": 18982,
+      "format": "ZPB1",
+      "instructions": 1932,
+      "debugBytes": 252194,
+      "coldMs": 32.21029099999578,
+      "warmMs": [
+        31.741416999997455,
+        31.958792000004905,
+        32.62120800001139,
+        31.956583000006503,
+        31.867832999996608
+      ],
+      "medianMs": 31.956583000006503,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0008142546147379415
+      }
+    },
+    {
+      "name": "os/session",
+      "variant": "O1",
+      "bytes": 16993,
+      "format": "ZPB1",
+      "instructions": 1766,
+      "debugBytes": 230889,
+      "coldMs": 33.07125000000815,
+      "warmMs": [
+        33.29216699999233,
+        33.210499999986496,
+        33.39687500000582,
+        32.99866700000712,
+        33.121458000008715
+      ],
+      "medianMs": 33.210499999986496,
+      "relative": {
+        "bytes": -0.10478347908544938,
+        "medianMs": 0.03839193937277341
+      }
+    },
+    {
+      "name": "os/session",
+      "variant": "O2",
+      "bytes": 16993,
+      "format": "ZPB1",
+      "instructions": 1766,
+      "debugBytes": 230889,
+      "coldMs": 33.301250000004075,
+      "warmMs": [
+        33.33562499999243,
+        33.02324999999837,
+        34.452708000011626,
+        33.75912499999686,
+        33.66991599999892
+      ],
+      "medianMs": 33.66991599999892,
+      "relative": {
+        "bytes": -0.10478347908544938,
+        "medianMs": 0.05275648887464701
+      }
+    },
+    {
+      "name": "kernel/idle",
+      "variant": "baseline",
+      "bytes": 462,
+      "format": "ZPB1",
+      "instructions": 35,
+      "debugBytes": 3478,
+      "coldMs": 2.940666999988025,
+      "warmMs": [
+        2.4414169999945443,
+        2.2897910000028787,
+        2.157208000004175,
+        2.065333999998984,
+        2.0290839999943273
+      ],
+      "medianMs": 2.157208000004175,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "kernel/idle",
+      "variant": "O0",
+      "bytes": 462,
+      "format": "ZPB1",
+      "instructions": 35,
+      "debugBytes": 3478,
+      "coldMs": 2.271290999997291,
+      "warmMs": [
+        2.163125000006403,
+        2.223707999990438,
+        2.2319580000039423,
+        2.1898329999967245,
+        1.989540999988094
+      ],
+      "medianMs": 2.1898329999967245,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.015123715465771514
+      }
+    },
+    {
+      "name": "kernel/idle",
+      "variant": "O1",
+      "bytes": 418,
+      "format": "ZPB1",
+      "instructions": 32,
+      "debugBytes": 3145,
+      "coldMs": 2.1730830000014976,
+      "warmMs": [
+        2.2678330000053393,
+        2.1488340000069,
+        2.1298339999921154,
+        2.160875000001397,
+        2.25449999999546
+      ],
+      "medianMs": 2.160875000001397,
+      "relative": {
+        "bytes": -0.09523809523809523,
+        "medianMs": 0.0016998824393450462
+      }
+    },
+    {
+      "name": "kernel/idle",
+      "variant": "O2",
+      "bytes": 418,
+      "format": "ZPB1",
+      "instructions": 32,
+      "debugBytes": 3145,
+      "coldMs": 2.2051249999931315,
+      "warmMs": [
+        2.3977080000040587,
+        2.1995420000021113,
+        2.0632079999923008,
+        2.1386249999923166,
+        2.135167000000365
+      ],
+      "medianMs": 2.1386249999923166,
+      "relative": {
+        "bytes": -0.09523809523809523,
+        "medianMs": -0.00861437562433598
+      }
+    },
+    {
+      "name": "kernel/drv/pulse",
+      "variant": "baseline",
+      "bytes": 2133,
+      "format": "ZPB1",
+      "instructions": 226,
+      "debugBytes": 24959,
+      "coldMs": 3.147666000004392,
+      "warmMs": [
+        3.029999999998836,
+        2.965749999988475,
+        3.0259169999917503,
+        3.3248330000060378,
+        3.0114170000015292
+      ],
+      "medianMs": 3.0259169999917503,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "kernel/drv/pulse",
+      "variant": "O0",
+      "bytes": 2133,
+      "format": "ZPB1",
+      "instructions": 226,
+      "debugBytes": 24959,
+      "coldMs": 3.062416000000667,
+      "warmMs": [
+        3.034875000012107,
+        2.9835410000086995,
+        3.3339579999883426,
+        3.022916999994777,
+        2.8958330000023125
+      ],
+      "medianMs": 3.022916999994777,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0009914349920970844
+      }
+    },
+    {
+      "name": "kernel/drv/pulse",
+      "variant": "O1",
+      "bytes": 1886,
+      "format": "ZPB1",
+      "instructions": 195,
+      "debugBytes": 21462,
+      "coldMs": 3.1965840000048047,
+      "warmMs": [
+        3.3959579999936977,
+        3.156667000002926,
+        3.2162499999976717,
+        3.1691250000003492,
+        3.0796250000130385
+      ],
+      "medianMs": 3.1691250000003492,
+      "relative": {
+        "bytes": -0.11579934364744493,
+        "medianMs": 0.04732714083333733
+      }
+    },
+    {
+      "name": "kernel/drv/pulse",
+      "variant": "O2",
+      "bytes": 1886,
+      "format": "ZPB1",
+      "instructions": 195,
+      "debugBytes": 21462,
+      "coldMs": 3.1256670000002487,
+      "warmMs": [
+        3.1764579999871785,
+        3.1295419999951264,
+        3.1199999999953434,
+        3.3592920000082813,
+        3.1962079999939306
+      ],
+      "medianMs": 3.1764579999871785,
+      "relative": {
+        "bytes": -0.11579934364744493,
+        "medianMs": 0.04975053843044552
+      }
+    },
+    {
+      "name": "bin/basename",
+      "variant": "baseline",
+      "bytes": 43857,
+      "format": "ZPB1",
+      "instructions": 4728,
+      "debugBytes": 586255,
+      "coldMs": 38.30912499999977,
+      "warmMs": [
+        37.82308299999568,
+        38.08587500000431,
+        37.7790410000016,
+        37.985083999999915,
+        37.99704100000963
+      ],
+      "medianMs": 37.985083999999915,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/basename",
+      "variant": "O0",
+      "bytes": 43857,
+      "format": "ZPB1",
+      "instructions": 4728,
+      "debugBytes": 586255,
+      "coldMs": 38.47170799999731,
+      "warmMs": [
+        37.59920900000725,
+        37.3193750000064,
+        37.524416999993264,
+        37.78458400000818,
+        37.93850000000384
+      ],
+      "medianMs": 37.59920900000725,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.010158592777961606
+      }
+    },
+    {
+      "name": "bin/basename",
+      "variant": "O1",
+      "bytes": 40827,
+      "format": "ZPB1",
+      "instructions": 4477,
+      "debugBytes": 554928,
+      "coldMs": 40.7922499999986,
+      "warmMs": [
+        40.20558300000266,
+        40.652333000005456,
+        40.712165999997524,
+        41.07729099999415,
+        40.834709000002476
+      ],
+      "medianMs": 40.712165999997524,
+      "relative": {
+        "bytes": -0.06908817292564473,
+        "medianMs": 0.07179349662613932
+      }
+    },
+    {
+      "name": "bin/basename",
+      "variant": "O2",
+      "bytes": 40503,
+      "format": "ZPB1",
+      "instructions": 4487,
+      "debugBytes": 555906,
+      "coldMs": 41.06979200000933,
+      "warmMs": [
+        40.59995899999922,
+        40.52537499999744,
+        40.449915999997756,
+        40.796624999988126,
+        40.944166999994195
+      ],
+      "medianMs": 40.59995899999922,
+      "relative": {
+        "bytes": -0.07647581913947599,
+        "medianMs": 0.06883952132366766
+      }
+    },
+    {
+      "name": "bin/cat",
+      "variant": "baseline",
+      "bytes": 53971,
+      "format": "ZPB1",
+      "instructions": 5817,
+      "debugBytes": 699786,
+      "coldMs": 40.8660830000008,
+      "warmMs": [
+        40.35912500000268,
+        40.28420799999731,
+        40.50387499999488,
+        39.978209000008064,
+        39.93774999999732
+      ],
+      "medianMs": 40.28420799999731,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/cat",
+      "variant": "O0",
+      "bytes": 53971,
+      "format": "ZPB1",
+      "instructions": 5817,
+      "debugBytes": 699786,
+      "coldMs": 40.41624999999476,
+      "warmMs": [
+        40.237624999994296,
+        40.65570899999875,
+        40.10883300000569,
+        39.88741700000537,
+        40.063707999986946
+      ],
+      "medianMs": 40.10883300000569,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.004353442917175654
+      }
+    },
+    {
+      "name": "bin/cat",
+      "variant": "O1",
+      "bytes": 50694,
+      "format": "ZPB1",
+      "instructions": 5543,
+      "debugBytes": 666277,
+      "coldMs": 43.62795800001186,
+      "warmMs": [
+        44.07700000000477,
+        44.082915999999386,
+        44.15166600000521,
+        43.80983299999207,
+        43.58679200000188
+      ],
+      "medianMs": 44.07700000000477,
+      "relative": {
+        "bytes": -0.06071779288877355,
+        "medianMs": 0.09415083945569247
+      }
+    },
+    {
+      "name": "bin/cat",
+      "variant": "O2",
+      "bytes": 50038,
+      "format": "ZPB1",
+      "instructions": 5530,
+      "debugBytes": 664489,
+      "coldMs": 43.53370800000266,
+      "warmMs": [
+        44.65387499998906,
+        43.775207999991835,
+        44.344541999991634,
+        44.261083999997936,
+        43.7867499999993
+      ],
+      "medianMs": 44.261083999997936,
+      "relative": {
+        "bytes": -0.07287246854792384,
+        "medianMs": 0.09872047130728978
+      }
+    },
+    {
+      "name": "bin/chmod",
+      "variant": "baseline",
+      "bytes": 92872,
+      "format": "ZPB1",
+      "instructions": 10235,
+      "debugBytes": 1232371,
+      "coldMs": 57.56195899999875,
+      "warmMs": [
+        57.11304199999722,
+        58.161542000001646,
+        57.98325000000477,
+        57.24183400000038,
+        58.67833300000348
+      ],
+      "medianMs": 57.98325000000477,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/chmod",
+      "variant": "O0",
+      "bytes": 92872,
+      "format": "ZPB1",
+      "instructions": 10235,
+      "debugBytes": 1232371,
+      "coldMs": 57.56012500000361,
+      "warmMs": [
+        57.455208000013954,
+        57.57979200000409,
+        57.63016699999571,
+        58.15958399999363,
+        57.52349999999569
+      ],
+      "medianMs": 57.57979200000409,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0069581818887463065
+      }
+    },
+    {
+      "name": "bin/chmod",
+      "variant": "O1",
+      "bytes": 87942,
+      "format": "ZPB1",
+      "instructions": 9778,
+      "debugBytes": 1176440,
+      "coldMs": 64.91870799999742,
+      "warmMs": [
+        64.40224999999919,
+        64.79200000000128,
+        64.8124589999934,
+        64.98020800000813,
+        64.31304200000886
+      ],
+      "medianMs": 64.79200000000128,
+      "relative": {
+        "bytes": -0.05308381428202258,
+        "medianMs": 0.11742615324246142
+      }
+    },
+    {
+      "name": "bin/chmod",
+      "variant": "O2",
+      "bytes": 87397,
+      "format": "ZPB1",
+      "instructions": 9793,
+      "debugBytes": 1177912,
+      "coldMs": 65.07575000000361,
+      "warmMs": [
+        63.97029199999815,
+        64.96683299999859,
+        65.6672499999986,
+        64.2934169999935,
+        65.06849999999395
+      ],
+      "medianMs": 64.96683299999859,
+      "relative": {
+        "bytes": -0.05895210612455848,
+        "medianMs": 0.1204413860898319
+      }
+    },
+    {
+      "name": "bin/chown",
+      "variant": "baseline",
+      "bytes": 89549,
+      "format": "ZPB1",
+      "instructions": 9858,
+      "debugBytes": 1186313,
+      "coldMs": 57.60150000000431,
+      "warmMs": [
+        57.51545899998746,
+        57.39787499999511,
+        57.3138340000005,
+        57.556291999993846,
+        58.0896250000078
+      ],
+      "medianMs": 57.51545899998746,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/chown",
+      "variant": "O0",
+      "bytes": 89549,
+      "format": "ZPB1",
+      "instructions": 9858,
+      "debugBytes": 1186313,
+      "coldMs": 57.63833399998839,
+      "warmMs": [
+        57.63587500000722,
+        57.655750000005355,
+        56.92037500000151,
+        56.99816600000486,
+        58.18645799999649
+      ],
+      "medianMs": 57.63587500000722,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0020936284281376505
+      }
+    },
+    {
+      "name": "bin/chown",
+      "variant": "O1",
+      "bytes": 84755,
+      "format": "ZPB1",
+      "instructions": 9414,
+      "debugBytes": 1132171,
+      "coldMs": 63.97970900000655,
+      "warmMs": [
+        63.70379200000025,
+        64.09795799999847,
+        64.71079199999804,
+        63.886333000002196,
+        63.88995799999975
+      ],
+      "medianMs": 63.88995799999975,
+      "relative": {
+        "bytes": -0.053534936180191894,
+        "medianMs": 0.11083105500407608
+      }
+    },
+    {
+      "name": "bin/chown",
+      "variant": "O2",
+      "bytes": 84210,
+      "format": "ZPB1",
+      "instructions": 9429,
+      "debugBytes": 1133643,
+      "coldMs": 129.9017920000042,
+      "warmMs": [
+        63.712166999990586,
+        63.864457999996375,
+        64.27316599999904,
+        63.59741600000416,
+        64.04524999999558
+      ],
+      "medianMs": 63.864457999996375,
+      "relative": {
+        "bytes": -0.05962098962579143,
+        "medianMs": 0.11038769594119557
+      }
+    },
+    {
+      "name": "bin/cksum",
+      "variant": "baseline",
+      "bytes": 69731,
+      "format": "ZPB1",
+      "instructions": 7579,
+      "debugBytes": 917677,
+      "coldMs": 55.02545899999677,
+      "warmMs": [
+        58.369250000003376,
+        55.08979199999885,
+        55.00387499999488,
+        55.38041700000758,
+        54.59212500001013
+      ],
+      "medianMs": 55.08979199999885,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/cksum",
+      "variant": "O0",
+      "bytes": 69731,
+      "format": "ZPB1",
+      "instructions": 7579,
+      "debugBytes": 917677,
+      "coldMs": 54.5971669999999,
+      "warmMs": [
+        55.616875000006985,
+        55.02454100000614,
+        54.63041699999303,
+        55.89137500000652,
+        54.768249999993714
+      ],
+      "medianMs": 55.02454100000614,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.001184448109601055
+      }
+    },
+    {
+      "name": "bin/cksum",
+      "variant": "O1",
+      "bytes": 65613,
+      "format": "ZPB1",
+      "instructions": 7231,
+      "debugBytes": 875117,
+      "coldMs": 59.84558300000208,
+      "warmMs": [
+        59.84687499998836,
+        60.57187499999418,
+        60.34529199999815,
+        59.958041999998386,
+        59.37916700000642
+      ],
+      "medianMs": 59.958041999998386,
+      "relative": {
+        "bytes": -0.05905551332979597,
+        "medianMs": 0.08836936614318014
+      }
+    },
+    {
+      "name": "bin/cksum",
+      "variant": "O2",
+      "bytes": 64937,
+      "format": "ZPB1",
+      "instructions": 7226,
+      "debugBytes": 874521,
+      "coldMs": 59.618791999993846,
+      "warmMs": [
+        60.382792000003974,
+        60.38795799999207,
+        60.61304199999722,
+        60.00941600000078,
+        59.754083000007086
+      ],
+      "medianMs": 60.382792000003974,
+      "relative": {
+        "bytes": -0.0687499103698499,
+        "medianMs": 0.09607950598189285
+      }
+    },
+    {
+      "name": "bin/cmp",
+      "variant": "baseline",
+      "bytes": 94170,
+      "format": "ZPB1",
+      "instructions": 10241,
+      "debugBytes": 1225440,
+      "coldMs": 60.53879200000665,
+      "warmMs": [
+        60.87958399999479,
+        59.44816700000956,
+        59.939208000010694,
+        60.008041999986744,
+        59.68354199999885
+      ],
+      "medianMs": 59.939208000010694,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/cmp",
+      "variant": "O0",
+      "bytes": 94170,
+      "format": "ZPB1",
+      "instructions": 10241,
+      "debugBytes": 1225440,
+      "coldMs": 60.9050419999985,
+      "warmMs": [
+        60.30333399999654,
+        59.36750000000757,
+        60.19962500000838,
+        59.582416999997804,
+        59.154624999995576
+      ],
+      "medianMs": 59.582416999997804,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.005952547788299567
+      }
+    },
+    {
+      "name": "bin/cmp",
+      "variant": "O1",
+      "bytes": 89692,
+      "format": "ZPB1",
+      "instructions": 9883,
+      "debugBytes": 1181573,
+      "coldMs": 67.78087499999674,
+      "warmMs": [
+        66.3428750000021,
+        66.84562500000175,
+        65.95891699999629,
+        66.14333299999998,
+        66.3082080000022
+      ],
+      "medianMs": 66.3082080000022,
+      "relative": {
+        "bytes": -0.04755229903366254,
+        "medianMs": 0.10625766026121619
+      }
+    },
+    {
+      "name": "bin/cmp",
+      "variant": "O2",
+      "bytes": 89016,
+      "format": "ZPB1",
+      "instructions": 9878,
+      "debugBytes": 1181025,
+      "coldMs": 67.23658299999079,
+      "warmMs": [
+        66.67795899999328,
+        66.52074999999604,
+        66.42095899999549,
+        66.70983399999386,
+        66.19187499998952
+      ],
+      "medianMs": 66.52074999999604,
+      "relative": {
+        "bytes": -0.054730805989168574,
+        "medianMs": 0.10980361969387675
+      }
+    },
+    {
+      "name": "bin/comm",
+      "variant": "baseline",
+      "bytes": 97841,
+      "format": "ZPB1",
+      "instructions": 10533,
+      "debugBytes": 1264553,
+      "coldMs": 64.8113330000051,
+      "warmMs": [
+        64.09870800000499,
+        64.48579199999222,
+        64.98683300000266,
+        64.31587500000023,
+        64.84183299999859
+      ],
+      "medianMs": 64.48579199999222,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/comm",
+      "variant": "O0",
+      "bytes": 97841,
+      "format": "ZPB1",
+      "instructions": 10533,
+      "debugBytes": 1264553,
+      "coldMs": 64.4910830000008,
+      "warmMs": [
+        64.56716700000106,
+        64.799125000005,
+        64.56883299999754,
+        64.47825000000012,
+        64.50970900000539
+      ],
+      "medianMs": 64.56716700000106,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0012619058785672266
+      }
+    },
+    {
+      "name": "bin/comm",
+      "variant": "O1",
+      "bytes": 93247,
+      "format": "ZPB1",
+      "instructions": 10168,
+      "debugBytes": 1219551,
+      "coldMs": 72.12937500000407,
+      "warmMs": [
+        71.17399999999907,
+        71.38199999999779,
+        71.7563749999972,
+        71.4857500000071,
+        71.27570800000103
+      ],
+      "medianMs": 71.38199999999779,
+      "relative": {
+        "bytes": -0.046953731053443803,
+        "medianMs": 0.10694151046491607
+      }
+    },
+    {
+      "name": "bin/comm",
+      "variant": "O2",
+      "bytes": 91761,
+      "format": "ZPB1",
+      "instructions": 10106,
+      "debugBytes": 1212019,
+      "coldMs": 71.91158400000131,
+      "warmMs": [
+        71.67220899999666,
+        71.39091700001154,
+        71.86441599999671,
+        71.80620799999451,
+        71.12391700000444
+      ],
+      "medianMs": 71.67220899999666,
+      "relative": {
+        "bytes": -0.06214163796363492,
+        "medianMs": 0.11144186614014617
+      }
+    },
+    {
+      "name": "bin/cp",
+      "variant": "baseline",
+      "bytes": 189231,
+      "format": "ZPB1",
+      "instructions": 20958,
+      "debugBytes": 2465386,
+      "coldMs": 88.3744999999908,
+      "warmMs": [
+        88.96875,
+        88.28666599999997,
+        87.39341600000625,
+        87.57916700000351,
+        88.36433300000499
+      ],
+      "medianMs": 88.28666599999997,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/cp",
+      "variant": "O0",
+      "bytes": 189231,
+      "format": "ZPB1",
+      "instructions": 20958,
+      "debugBytes": 2465386,
+      "coldMs": 88.28079099999741,
+      "warmMs": [
+        88.56016700000328,
+        87.96012500001234,
+        87.86566699999094,
+        87.17441599999438,
+        87.52666700001282
+      ],
+      "medianMs": 87.86566699999094,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.004768545682867109
+      }
+    },
+    {
+      "name": "bin/cp",
+      "variant": "O1",
+      "bytes": 180811,
+      "format": "ZPB1",
+      "instructions": 20182,
+      "debugBytes": 2372940,
+      "coldMs": 104.69125000000349,
+      "warmMs": [
+        101.74095799999486,
+        103.38279200000397,
+        102.59741600000416,
+        101.48308299999917,
+        102.56824999999662
+      ],
+      "medianMs": 102.56824999999662,
+      "relative": {
+        "bytes": -0.04449588069608046,
+        "medianMs": 0.1617637707600903
+      }
+    },
+    {
+      "name": "bin/cp",
+      "variant": "O2",
+      "bytes": 180866,
+      "format": "ZPB1",
+      "instructions": 20306,
+      "debugBytes": 2387429,
+      "coldMs": 103.23549999999523,
+      "warmMs": [
+        102.72329100000206,
+        103.23491600000125,
+        102.45133300000452,
+        101.91270800000348,
+        102.72845900000539
+      ],
+      "medianMs": 102.72329100000206,
+      "relative": {
+        "bytes": -0.044205230644027704,
+        "medianMs": 0.1635198796611268
+      }
+    },
+    {
+      "name": "bin/cut",
+      "variant": "baseline",
+      "bytes": 134111,
+      "format": "ZPB1",
+      "instructions": 14744,
+      "debugBytes": 1757427,
+      "coldMs": 90.71887499999139,
+      "warmMs": [
+        91.58508299999812,
+        89.73149999999441,
+        89.65741700000945,
+        90.09637500000827,
+        90.26600000000326
+      ],
+      "medianMs": 90.09637500000827,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/cut",
+      "variant": "O0",
+      "bytes": 134111,
+      "format": "ZPB1",
+      "instructions": 14744,
+      "debugBytes": 1757427,
+      "coldMs": 90.68841600000451,
+      "warmMs": [
+        90.4589580000029,
+        90.20641699999396,
+        90.58841699999175,
+        89.81350000000384,
+        90.25550000001385
+      ],
+      "medianMs": 90.25550000001385,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0017661642880257844
+      }
+    },
+    {
+      "name": "bin/cut",
+      "variant": "O1",
+      "bytes": 127345,
+      "format": "ZPB1",
+      "instructions": 14152,
+      "debugBytes": 1685946,
+      "coldMs": 100.39054100000067,
+      "warmMs": [
+        100.32474999999977,
+        99.88916700000118,
+        99.43770900000527,
+        101.6162089999998,
+        100.19620800000848
+      ],
+      "medianMs": 100.19620800000848,
+      "relative": {
+        "bytes": -0.05045074602381605,
+        "medianMs": 0.11210032590100649
+      }
+    },
+    {
+      "name": "bin/cut",
+      "variant": "O2",
+      "bytes": 125050,
+      "format": "ZPB1",
+      "instructions": 14021,
+      "debugBytes": 1670002,
+      "coldMs": 99.35791700000118,
+      "warmMs": [
+        99.90904199999932,
+        99.52587499999208,
+        100.04041700001108,
+        99.98841700000048,
+        100.30812499999593
+      ],
+      "medianMs": 99.98841700000048,
+      "relative": {
+        "bytes": -0.06756343625802508,
+        "medianMs": 0.10979400669551143
+      }
+    },
+    {
+      "name": "bin/date",
+      "variant": "baseline",
+      "bytes": 160060,
+      "format": "ZPB1",
+      "instructions": 17483,
+      "debugBytes": 2106993,
+      "coldMs": 73.32820899999933,
+      "warmMs": [
+        72.94925000000512,
+        72.61724999999569,
+        72.69937500001106,
+        72.74491699998907,
+        73.09541699998954
+      ],
+      "medianMs": 72.74491699998907,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/date",
+      "variant": "O0",
+      "bytes": 160060,
+      "format": "ZPB1",
+      "instructions": 17483,
+      "debugBytes": 2106993,
+      "coldMs": 73.2219999999943,
+      "warmMs": [
+        73.05908400000772,
+        73.7222080000065,
+        72.54529100000218,
+        73.24408299999777,
+        73.02041699999245
+      ],
+      "medianMs": 73.05908400000772,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.004318748484085644
+      }
+    },
+    {
+      "name": "bin/date",
+      "variant": "O1",
+      "bytes": 152080,
+      "format": "ZPB1",
+      "instructions": 16817,
+      "debugBytes": 2025534,
+      "coldMs": 86.12141700000211,
+      "warmMs": [
+        86.0219999999972,
+        85.39925000000221,
+        84.90233300000546,
+        85.44291700000758,
+        85.41895900000236
+      ],
+      "medianMs": 85.41895900000236,
+      "relative": {
+        "bytes": -0.049856303886042785,
+        "medianMs": 0.17422580879451943
+      }
+    },
+    {
+      "name": "bin/date",
+      "variant": "O2",
+      "bytes": 151774,
+      "format": "ZPB1",
+      "instructions": 16845,
+      "debugBytes": 2028732,
+      "coldMs": 86.00095799998962,
+      "warmMs": [
+        85.11970799999835,
+        85.61433300000499,
+        85.24333399999887,
+        84.89379099999496,
+        86.77650000000722
+      ],
+      "medianMs": 85.24333399999887,
+      "relative": {
+        "bytes": -0.05176808696738722,
+        "medianMs": 0.17181155076459387
+      }
+    },
+    {
+      "name": "bin/dd",
+      "variant": "baseline",
+      "bytes": 127025,
+      "format": "ZPB1",
+      "instructions": 14117,
+      "debugBytes": 1660653,
+      "coldMs": 71.4699580000015,
+      "warmMs": [
+        71.37287500000093,
+        71.2500410000066,
+        71.65829200000735,
+        70.8564170000027,
+        71.00933299999451
+      ],
+      "medianMs": 71.2500410000066,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/dd",
+      "variant": "O0",
+      "bytes": 127025,
+      "format": "ZPB1",
+      "instructions": 14117,
+      "debugBytes": 1660653,
+      "coldMs": 71.06404100000509,
+      "warmMs": [
+        71.22699999999895,
+        71.5595830000093,
+        71.7525830000086,
+        71.1880000000092,
+        70.99574999998731
+      ],
+      "medianMs": 71.22699999999895,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.00032338227016104337
+      }
+    },
+    {
+      "name": "bin/dd",
+      "variant": "O1",
+      "bytes": 121648,
+      "format": "ZPB1",
+      "instructions": 13662,
+      "debugBytes": 1605676,
+      "coldMs": 81.1804170000105,
+      "warmMs": [
+        81.68320900000981,
+        80.50220800000534,
+        80.61999999999534,
+        81.43870900000911,
+        81.01141700000153
+      ],
+      "medianMs": 81.01141700000153,
+      "relative": {
+        "bytes": -0.04233024995079704,
+        "medianMs": 0.13700168958490866
+      }
+    },
+    {
+      "name": "bin/dd",
+      "variant": "O2",
+      "bytes": 121211,
+      "format": "ZPB1",
+      "instructions": 13710,
+      "debugBytes": 1611228,
+      "coldMs": 80.7170419999893,
+      "warmMs": [
+        81.773915999991,
+        81.06858300000022,
+        81.45200000000477,
+        81.32437499999651,
+        81.15608400000201
+      ],
+      "medianMs": 81.32437499999651,
+      "relative": {
+        "bytes": -0.04577051761464279,
+        "medianMs": 0.14139408003974308
+      }
+    },
+    {
+      "name": "bin/diff",
+      "variant": "baseline",
+      "bytes": 99318,
+      "format": "ZPB1",
+      "instructions": 10790,
+      "debugBytes": 1300502,
+      "coldMs": 68.49499999999534,
+      "warmMs": [
+        68.46045800000138,
+        68.33745800000906,
+        68.06779200000165,
+        68.4545000000071,
+        67.99641700000211
+      ],
+      "medianMs": 68.33745800000906,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/diff",
+      "variant": "O0",
+      "bytes": 99318,
+      "format": "ZPB1",
+      "instructions": 10790,
+      "debugBytes": 1300502,
+      "coldMs": 67.74258299999929,
+      "warmMs": [
+        68.59766699999454,
+        70.24183300000732,
+        68.19625000000815,
+        68.46679200000654,
+        68.09395799999766
+      ],
+      "medianMs": 68.46679200000654,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0018925784450081196
+      }
+    },
+    {
+      "name": "bin/diff",
+      "variant": "O1",
+      "bytes": 94740,
+      "format": "ZPB1",
+      "instructions": 10419,
+      "debugBytes": 1254711,
+      "coldMs": 74.92058400000678,
+      "warmMs": [
+        75.74116599999252,
+        78.52145799998834,
+        75.79875000000175,
+        75.41400000000431,
+        75.63920800000778
+      ],
+      "medianMs": 75.74116599999252,
+      "relative": {
+        "bytes": -0.046094363559475604,
+        "medianMs": 0.10834040680855406
+      }
+    },
+    {
+      "name": "bin/diff",
+      "variant": "O2",
+      "bytes": 94064,
+      "format": "ZPB1",
+      "instructions": 10414,
+      "debugBytes": 1254090,
+      "coldMs": 75.92958299999009,
+      "warmMs": [
+        75.61658299999544,
+        75.51179200000479,
+        76.3784580000065,
+        74.90824999999313,
+        75.8269169999985
+      ],
+      "medianMs": 75.61658299999544,
+      "relative": {
+        "bytes": -0.05290078334239512,
+        "medianMs": 0.10651735099636594
+      }
+    },
+    {
+      "name": "bin/dirname",
+      "variant": "baseline",
+      "bytes": 41790,
+      "format": "ZPB1",
+      "instructions": 4475,
+      "debugBytes": 552881,
+      "coldMs": 31.582957999999053,
+      "warmMs": [
+        31.057958999997936,
+        31.096042000004672,
+        31.45470899999782,
+        31.567708000002312,
+        31.960124999997788
+      ],
+      "medianMs": 31.45470899999782,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/dirname",
+      "variant": "O0",
+      "bytes": 41790,
+      "format": "ZPB1",
+      "instructions": 4475,
+      "debugBytes": 552881,
+      "coldMs": 30.840875000008964,
+      "warmMs": [
+        31.122375000006286,
+        31.600582999992184,
+        31.264584000004106,
+        31.71820899999875,
+        31.39558300000499
+      ],
+      "medianMs": 31.39558300000499,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0018797185500216695
+      }
+    },
+    {
+      "name": "bin/dirname",
+      "variant": "O1",
+      "bytes": 38801,
+      "format": "ZPB1",
+      "instructions": 4219,
+      "debugBytes": 521067,
+      "coldMs": 33.90641599999799,
+      "warmMs": [
+        34.412292000008165,
+        33.88925000000745,
+        33.92245899999398,
+        34.74499999999534,
+        34.14466700000048
+      ],
+      "medianMs": 34.14466700000048,
+      "relative": {
+        "bytes": -0.07152428810720268,
+        "medianMs": 0.08551845130733371
+      }
+    },
+    {
+      "name": "bin/dirname",
+      "variant": "O2",
+      "bytes": 38467,
+      "format": "ZPB1",
+      "instructions": 4233,
+      "debugBytes": 522677,
+      "coldMs": 34.05762500000128,
+      "warmMs": [
+        34.73200000000361,
+        34.339457999987644,
+        34.10612499999115,
+        34.2479170000006,
+        34.12174999999115
+      ],
+      "medianMs": 34.2479170000006,
+      "relative": {
+        "bytes": -0.07951663077291216,
+        "medianMs": 0.08880094869111566
+      }
+    },
+    {
+      "name": "bin/du",
+      "variant": "baseline",
+      "bytes": 89865,
+      "format": "ZPB1",
+      "instructions": 9903,
+      "debugBytes": 1175430,
+      "coldMs": 63.294249999991735,
+      "warmMs": [
+        63.40716699999757,
+        62.331959000002826,
+        61.96499999999651,
+        62.324791999999434,
+        62.381124999999884
+      ],
+      "medianMs": 62.331959000002826,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/du",
+      "variant": "O0",
+      "bytes": 89865,
+      "format": "ZPB1",
+      "instructions": 9903,
+      "debugBytes": 1175430,
+      "coldMs": 62.683417000007466,
+      "warmMs": [
+        62.773374999989755,
+        62.647291999994195,
+        62.53570799999579,
+        62.46241700000246,
+        62.45529200001329
+      ],
+      "medianMs": 62.53570799999579,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0032687726049642762
+      }
+    },
+    {
+      "name": "bin/du",
+      "variant": "O1",
+      "bytes": 84862,
+      "format": "ZPB1",
+      "instructions": 9443,
+      "debugBytes": 1120255,
+      "coldMs": 69.04287499999919,
+      "warmMs": [
+        69.49116599999252,
+        68.90658399999666,
+        69.09933300000557,
+        69.34799999999814,
+        68.84637500000827
+      ],
+      "medianMs": 69.09933300000557,
+      "relative": {
+        "bytes": -0.05567239748511654,
+        "medianMs": 0.10856989108913528
+      }
+    },
+    {
+      "name": "bin/du",
+      "variant": "O2",
+      "bytes": 84186,
+      "format": "ZPB1",
+      "instructions": 9438,
+      "debugBytes": 1119735,
+      "coldMs": 70.08183300000383,
+      "warmMs": [
+        69.32804100000067,
+        69.24012499999662,
+        69.37233299999207,
+        68.5849589999998,
+        69.32137499999953
+      ],
+      "medianMs": 69.32137499999953,
+      "relative": {
+        "bytes": -0.06319479218828239,
+        "medianMs": 0.11213214075297051
+      }
+    },
+    {
+      "name": "bin/echo",
+      "variant": "baseline",
+      "bytes": 31786,
+      "format": "ZPB1",
+      "instructions": 3377,
+      "debugBytes": 418695,
+      "coldMs": 28.912458000006154,
+      "warmMs": [
+        28.83125000000291,
+        29.390207999997074,
+        29.114042000001064,
+        28.58849999999802,
+        28.375834000005852
+      ],
+      "medianMs": 28.83125000000291,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/echo",
+      "variant": "O0",
+      "bytes": 31786,
+      "format": "ZPB1",
+      "instructions": 3377,
+      "debugBytes": 418695,
+      "coldMs": 28.529833000007784,
+      "warmMs": [
+        28.648750000007567,
+        28.542082999993,
+        28.619707999998354,
+        28.549708999998984,
+        28.406958000006853
+      ],
+      "medianMs": 28.549708999998984,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.009765133319016628
+      }
+    },
+    {
+      "name": "bin/echo",
+      "variant": "O1",
+      "bytes": 29270,
+      "format": "ZPB1",
+      "instructions": 3169,
+      "debugBytes": 392763,
+      "coldMs": 30.854833000004874,
+      "warmMs": [
+        30.8837910000002,
+        30.522833000009996,
+        33.93820800000685,
+        30.45416700000351,
+        31.013458999994327
+      ],
+      "medianMs": 30.8837910000002,
+      "relative": {
+        "bytes": -0.07915434468004778,
+        "medianMs": 0.07119153696066194
+      }
+    },
+    {
+      "name": "bin/echo",
+      "variant": "O2",
+      "bytes": 29278,
+      "format": "ZPB1",
+      "instructions": 3202,
+      "debugBytes": 396664,
+      "coldMs": 31.026249999995343,
+      "warmMs": [
+        30.746083000005456,
+        30.53749999999127,
+        31.738375000000815,
+        30.56945799999812,
+        30.841542000009213
+      ],
+      "medianMs": 30.746083000005456,
+      "relative": {
+        "bytes": -0.07890266154910963,
+        "medianMs": 0.06641519184920353
+      }
+    },
+    {
+      "name": "bin/env",
+      "variant": "baseline",
+      "bytes": 131382,
+      "format": "ZPB1",
+      "instructions": 15086,
+      "debugBytes": 1813676,
+      "coldMs": 108.03458399999363,
+      "warmMs": [
+        104.45320799999172,
+        105.3025420000049,
+        105.17945900000632,
+        104.68300000000454,
+        104.72233299999789
+      ],
+      "medianMs": 104.72233299999789,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/env",
+      "variant": "O0",
+      "bytes": 131382,
+      "format": "ZPB1",
+      "instructions": 15086,
+      "debugBytes": 1813676,
+      "coldMs": 104.81674999999814,
+      "warmMs": [
+        104.91487500000221,
+        104.78912499999569,
+        105.08429199999955,
+        104.22050000001036,
+        104.4936660000094
+      ],
+      "medianMs": 104.78912499999569,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0006378009168093168
+      }
+    },
+    {
+      "name": "bin/env",
+      "variant": "O1",
+      "bytes": 125312,
+      "format": "ZPB1",
+      "instructions": 14484,
+      "debugBytes": 1740125,
+      "coldMs": 114.39895799999067,
+      "warmMs": [
+        115.26458299999649,
+        114.76549999999406,
+        114.80624999999418,
+        114.63358300000255,
+        114.76675000000978
+      ],
+      "medianMs": 114.76675000000978,
+      "relative": {
+        "bytes": -0.0462011538871383,
+        "medianMs": 0.09591475583352493
+      }
+    },
+    {
+      "name": "bin/env",
+      "variant": "O2",
+      "bytes": 124490,
+      "format": "ZPB1",
+      "instructions": 14473,
+      "debugBytes": 1738662,
+      "coldMs": 114.3555839999899,
+      "warmMs": [
+        115.41675000000396,
+        114.94495799999277,
+        115.31566600000951,
+        115.04499999999825,
+        115.3526669999992
+      ],
+      "medianMs": 115.31566600000951,
+      "relative": {
+        "bytes": -0.05245771871337013,
+        "medianMs": 0.10115638848507924
+      }
+    },
+    {
+      "name": "bin/expr",
+      "variant": "baseline",
+      "bytes": 85300,
+      "format": "ZPB1",
+      "instructions": 9242,
+      "debugBytes": 1122064,
+      "coldMs": 68.96954199999163,
+      "warmMs": [
+        68.52154100000917,
+        68.92662499999278,
+        68.50254100000893,
+        68.19312500000524,
+        68.90287499999977
+      ],
+      "medianMs": 68.52154100000917,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/expr",
+      "variant": "O0",
+      "bytes": 85300,
+      "format": "ZPB1",
+      "instructions": 9242,
+      "debugBytes": 1122064,
+      "coldMs": 68.58787499999744,
+      "warmMs": [
+        68.42670799999905,
+        68.80995900000562,
+        68.3140829999902,
+        68.25862499998766,
+        68.86824999999953
+      ],
+      "medianMs": 68.42670799999905,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0013839881390014241
+      }
+    },
+    {
+      "name": "bin/expr",
+      "variant": "O1",
+      "bytes": 80798,
+      "format": "ZPB1",
+      "instructions": 8887,
+      "debugBytes": 1078425,
+      "coldMs": 74.9622090000048,
+      "warmMs": [
+        75.49412499999744,
+        75.22400000000198,
+        74.68875000000116,
+        75.36320799999521,
+        74.61920800000371
+      ],
+      "medianMs": 75.22400000000198,
+      "relative": {
+        "bytes": -0.05277842907385699,
+        "medianMs": 0.09781535707131739
+      }
+    },
+    {
+      "name": "bin/expr",
+      "variant": "O2",
+      "bytes": 80323,
+      "format": "ZPB1",
+      "instructions": 8899,
+      "debugBytes": 1079721,
+      "coldMs": 75.18008299999929,
+      "warmMs": [
+        76.1516249999986,
+        75.27566599998681,
+        86.18095799999719,
+        74.5413750000007,
+        74.96229100000346
+      ],
+      "medianMs": 75.27566599998681,
+      "relative": {
+        "bytes": -0.05834701055099645,
+        "medianMs": 0.09856936813456585
+      }
+    },
+    {
+      "name": "bin/false",
+      "variant": "baseline",
+      "bytes": 27729,
+      "format": "ZPB1",
+      "instructions": 2890,
+      "debugBytes": 363156,
+      "coldMs": 23.69237499999872,
+      "warmMs": [
+        23.7268330000079,
+        23.257582999998704,
+        23.56366600000183,
+        23.3966250000085,
+        23.369791999997688
+      ],
+      "medianMs": 23.3966250000085,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/false",
+      "variant": "O0",
+      "bytes": 27729,
+      "format": "ZPB1",
+      "instructions": 2890,
+      "debugBytes": 363156,
+      "coldMs": 23.704540999999153,
+      "warmMs": [
+        23.29170800000429,
+        23.070916000011493,
+        23.85975000000326,
+        23.175583000003826,
+        23.187707999997656
+      ],
+      "medianMs": 23.187707999997656,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.008929364812692686
+      }
+    },
+    {
+      "name": "bin/false",
+      "variant": "O1",
+      "bytes": 25424,
+      "format": "ZPB1",
+      "instructions": 2716,
+      "debugBytes": 341200,
+      "coldMs": 25.317792000001646,
+      "warmMs": [
+        24.941042000005837,
+        24.87954200000968,
+        25.0755419999914,
+        25.423084000009112,
+        25.06379200000083
+      ],
+      "medianMs": 25.06379200000083,
+      "relative": {
+        "bytes": -0.08312596920191861,
+        "medianMs": 0.07125673040413849
+      }
+    },
+    {
+      "name": "bin/false",
+      "variant": "O2",
+      "bytes": 25432,
+      "format": "ZPB1",
+      "instructions": 2749,
+      "debugBytes": 345101,
+      "coldMs": 25.642542000001413,
+      "warmMs": [
+        25.0477089999913,
+        25.2370840000076,
+        25.623959000004106,
+        25.756958000012673,
+        25.190958000006503
+      ],
+      "medianMs": 25.2370840000076,
+      "relative": {
+        "bytes": -0.08283746258429803,
+        "medianMs": 0.07866343970544598
+      }
+    },
+    {
+      "name": "bin/find",
+      "variant": "baseline",
+      "bytes": 240554,
+      "format": "ZPB1",
+      "instructions": 26163,
+      "debugBytes": 3128615,
+      "coldMs": 106.9991250000021,
+      "warmMs": [
+        106.16566699999385,
+        106.55116600000474,
+        106.59908400000131,
+        105.96870800000033,
+        105.8073749999894
+      ],
+      "medianMs": 106.16566699999385,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/find",
+      "variant": "O0",
+      "bytes": 240554,
+      "format": "ZPB1",
+      "instructions": 26163,
+      "debugBytes": 3128615,
+      "coldMs": 107.3640000000014,
+      "warmMs": [
+        106.3312089999963,
+        106.51245799999742,
+        106.4311250000028,
+        106.1852910000016,
+        105.80224999999336
+      ],
+      "medianMs": 106.3312089999963,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0015592799883457076
+      }
+    },
+    {
+      "name": "bin/find",
+      "variant": "O1",
+      "bytes": 231074,
+      "format": "ZPB1",
+      "instructions": 25345,
+      "debugBytes": 3029770,
+      "coldMs": 123.60891600001196,
+      "warmMs": [
+        125.98591599999054,
+        125.29908300000534,
+        124.59458400000585,
+        123.8647079999937,
+        123.8200829999987
+      ],
+      "medianMs": 124.59458400000585,
+      "relative": {
+        "bytes": -0.039409030820522606,
+        "medianMs": 0.1735864100021438
+      }
+    },
+    {
+      "name": "bin/find",
+      "variant": "O2",
+      "bytes": 230198,
+      "format": "ZPB1",
+      "instructions": 25325,
+      "debugBytes": 3027167,
+      "coldMs": 124.4783749999915,
+      "warmMs": [
+        124.86287499999162,
+        123.62016700000095,
+        124.62758299999405,
+        124.2869170000049,
+        124.2554589999927
+      ],
+      "medianMs": 124.2869170000049,
+      "relative": {
+        "bytes": -0.04305062480773547,
+        "medianMs": 0.17068842039123733
+      }
+    },
+    {
+      "name": "bin/fold",
+      "variant": "baseline",
+      "bytes": 95188,
+      "format": "ZPB1",
+      "instructions": 10422,
+      "debugBytes": 1249273,
+      "coldMs": 65.74833299999591,
+      "warmMs": [
+        65.18858400000317,
+        66.08770799999184,
+        65.55949999998847,
+        65.58862500000396,
+        65.49966600000334
+      ],
+      "medianMs": 65.55949999998847,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/fold",
+      "variant": "O0",
+      "bytes": 95188,
+      "format": "ZPB1",
+      "instructions": 10422,
+      "debugBytes": 1249273,
+      "coldMs": 65.83699999999953,
+      "warmMs": [
+        65.53920899999503,
+        65.76400000001013,
+        65.46912499998871,
+        65.3998750000028,
+        65.32241700000304
+      ],
+      "medianMs": 65.46912499998871,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0013785187501397234
+      }
+    },
+    {
+      "name": "bin/fold",
+      "variant": "O1",
+      "bytes": 89962,
+      "format": "ZPB1",
+      "instructions": 9981,
+      "debugBytes": 1195347,
+      "coldMs": 71.97020899999188,
+      "warmMs": [
+        72.96774999999616,
+        72.54000000000815,
+        72.3296670000127,
+        72.63612499998999,
+        72.45112499999232
+      ],
+      "medianMs": 72.54000000000815,
+      "relative": {
+        "bytes": -0.054901878388032066,
+        "medianMs": 0.10647579679559649
+      }
+    },
+    {
+      "name": "bin/fold",
+      "variant": "O2",
+      "bytes": 88756,
+      "format": "ZPB1",
+      "instructions": 9939,
+      "debugBytes": 1190244,
+      "coldMs": 71.9953749999986,
+      "warmMs": [
+        72.67512500000885,
+        73.22808299999451,
+        72.28012499999022,
+        72.01016700000037,
+        72.39666700000816
+      ],
+      "medianMs": 72.39666700000816,
+      "relative": {
+        "bytes": -0.06757154263142418,
+        "medianMs": 0.1042894927511786
+      }
+    },
+    {
+      "name": "bin/grep",
+      "variant": "baseline",
+      "bytes": 396660,
+      "format": "ZPB1",
+      "instructions": 43339,
+      "debugBytes": 5260264,
+      "coldMs": 229.68237500000396,
+      "warmMs": [
+        231.07016699999804,
+        227.7278329999972,
+        229.83420800000022,
+        229.2297499999986,
+        229.2144580000022
+      ],
+      "medianMs": 229.2297499999986,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/grep",
+      "variant": "O0",
+      "bytes": 396660,
+      "format": "ZPB1",
+      "instructions": 43339,
+      "debugBytes": 5260264,
+      "coldMs": 229.76120799999626,
+      "warmMs": [
+        229.74133400000574,
+        231.0689160000038,
+        229.59724999999162,
+        230.99662499999977,
+        229.04041600000346
+      ],
+      "medianMs": 229.74133400000574,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.002231752204969517
+      }
+    },
+    {
+      "name": "bin/grep",
+      "variant": "O1",
+      "bytes": 375816,
+      "format": "ZPB1",
+      "instructions": 41565,
+      "debugBytes": 5043234,
+      "coldMs": 262.9299170000013,
+      "warmMs": [
+        259.85433399998874,
+        259.9369580000057,
+        260.82404099999985,
+        260.604582999993,
+        259.95254099999147
+      ],
+      "medianMs": 259.95254099999147,
+      "relative": {
+        "bytes": -0.052548782332476174,
+        "medianMs": 0.13402619424395423
+      }
+    },
+    {
+      "name": "bin/grep",
+      "variant": "O2",
+      "bytes": 368038,
+      "format": "ZPB1",
+      "instructions": 41305,
+      "debugBytes": 5011327,
+      "coldMs": 260.96104199999536,
+      "warmMs": [
+        260.1659579999978,
+        259.6797499999957,
+        260.16491599999426,
+        260.24862500000745,
+        260.6343339999876
+      ],
+      "medianMs": 260.1659579999978,
+      "relative": {
+        "bytes": -0.07215751525235714,
+        "medianMs": 0.134957212141964
+      }
+    },
+    {
+      "name": "bin/head",
+      "variant": "baseline",
+      "bytes": 72664,
+      "format": "ZPB1",
+      "instructions": 7913,
+      "debugBytes": 951999,
+      "coldMs": 51.00650000000314,
+      "warmMs": [
+        50.74079199999687,
+        50.54395899998781,
+        50.44795800000429,
+        50.568041000005906,
+        51.128458999999566
+      ],
+      "medianMs": 50.568041000005906,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/head",
+      "variant": "O0",
+      "bytes": 72664,
+      "format": "ZPB1",
+      "instructions": 7913,
+      "debugBytes": 951999,
+      "coldMs": 50.24633300000278,
+      "warmMs": [
+        50.72624999999243,
+        50.67949999999837,
+        50.85458300000755,
+        50.388584000000264,
+        50.72829199999978
+      ],
+      "medianMs": 50.72624999999243,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.003128636127836426
+      }
+    },
+    {
+      "name": "bin/head",
+      "variant": "O1",
+      "bytes": 68803,
+      "format": "ZPB1",
+      "instructions": 7592,
+      "debugBytes": 912709,
+      "coldMs": 56.726416000004974,
+      "warmMs": [
+        55.58512499999779,
+        55.84404199999699,
+        56.69466599999578,
+        55.66104199999245,
+        55.78116699999373
+      ],
+      "medianMs": 55.78116699999373,
+      "relative": {
+        "bytes": -0.05313497743036444,
+        "medianMs": 0.10309131809134575
+      }
+    },
+    {
+      "name": "bin/head",
+      "variant": "O2",
+      "bytes": 68132,
+      "format": "ZPB1",
+      "instructions": 7585,
+      "debugBytes": 911827,
+      "coldMs": 57.22812499999418,
+      "warmMs": [
+        56.257041999997455,
+        56.304083000009996,
+        88.10195899999235,
+        55.64858300000196,
+        55.81612500001211
+      ],
+      "medianMs": 56.257041999997455,
+      "relative": {
+        "bytes": -0.06236926125729381,
+        "medianMs": 0.11250190609501542
+      }
+    },
+    {
+      "name": "bin/id",
+      "variant": "baseline",
+      "bytes": 62470,
+      "format": "ZPB1",
+      "instructions": 6713,
+      "debugBytes": 806481,
+      "coldMs": 40.29129200000898,
+      "warmMs": [
+        39.61829100000614,
+        39.29520799999591,
+        39.28612500001327,
+        39.41408300001058,
+        39.95062499999767
+      ],
+      "medianMs": 39.41408300001058,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/id",
+      "variant": "O0",
+      "bytes": 62470,
+      "format": "ZPB1",
+      "instructions": 6713,
+      "debugBytes": 806481,
+      "coldMs": 39.46950000000652,
+      "warmMs": [
+        39.54845899999782,
+        41.32325000000128,
+        39.164457999999286,
+        39.575041999996756,
+        39.95354099999531
+      ],
+      "medianMs": 39.575041999996756,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.004083794109484451
+      }
+    },
+    {
+      "name": "bin/id",
+      "variant": "O1",
+      "bytes": 59203,
+      "format": "ZPB1",
+      "instructions": 6441,
+      "debugBytes": 773146,
+      "coldMs": 44.18995800000266,
+      "warmMs": [
+        43.71937500000058,
+        43.85679099999834,
+        44.03141699999105,
+        43.88270800000464,
+        44.18429199999082
+      ],
+      "medianMs": 43.88270800000464,
+      "relative": {
+        "bytes": -0.052297102609252466,
+        "medianMs": 0.11337635332002693
+      }
+    },
+    {
+      "name": "bin/id",
+      "variant": "O2",
+      "bytes": 58874,
+      "format": "ZPB1",
+      "instructions": 6453,
+      "debugBytes": 774506,
+      "coldMs": 44.181125000002794,
+      "warmMs": [
+        45.10299999998824,
+        44.08725000001141,
+        44.19116600000416,
+        43.7554999999993,
+        44.420083000004524
+      ],
+      "medianMs": 44.19116600000416,
+      "relative": {
+        "bytes": -0.05756363054266045,
+        "medianMs": 0.12120243923960627
+      }
+    },
+    {
+      "name": "bin/install",
+      "variant": "baseline",
+      "bytes": 92466,
+      "format": "ZPB1",
+      "instructions": 10320,
+      "debugBytes": 1258830,
+      "coldMs": 62.33445799999754,
+      "warmMs": [
+        62.10141599999042,
+        62.82712499999616,
+        62.51324999998906,
+        62.43708400000469,
+        62.43279199999233
+      ],
+      "medianMs": 62.43708400000469,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/install",
+      "variant": "O0",
+      "bytes": 92466,
+      "format": "ZPB1",
+      "instructions": 10320,
+      "debugBytes": 1258830,
+      "coldMs": 62.15654199999699,
+      "warmMs": [
+        62.91458300000522,
+        62.145332999993116,
+        62.15937499998836,
+        62.715540999997756,
+        63.207875000007334
+      ],
+      "medianMs": 62.715540999997756,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.004459801485813264
+      }
+    },
+    {
+      "name": "bin/install",
+      "variant": "O1",
+      "bytes": 88133,
+      "format": "ZPB1",
+      "instructions": 9912,
+      "debugBytes": 1208149,
+      "coldMs": 69.03108300000895,
+      "warmMs": [
+        69.2390000000014,
+        69.40862500001094,
+        69.22595799999544,
+        69.27433299999393,
+        69.35662500000035
+      ],
+      "medianMs": 69.27433299999393,
+      "relative": {
+        "bytes": -0.04686046763134555,
+        "medianMs": 0.10950621909230618
+      }
+    },
+    {
+      "name": "bin/install",
+      "variant": "O2",
+      "bytes": 87298,
+      "format": "ZPB1",
+      "instructions": 9916,
+      "debugBytes": 1208421,
+      "coldMs": 69.06012500000361,
+      "warmMs": [
+        69.4184169999935,
+        69.35899999999674,
+        69.53954199999862,
+        69.23837500000081,
+        69.10541600000579
+      ],
+      "medianMs": 69.35899999999674,
+      "relative": {
+        "bytes": -0.05589081392079254,
+        "medianMs": 0.11086225615519663
+      }
+    },
+    {
+      "name": "bin/kill",
+      "variant": "baseline",
+      "bytes": 121170,
+      "format": "ZPB1",
+      "instructions": 12835,
+      "debugBytes": 1551737,
+      "coldMs": 49.63804200000595,
+      "warmMs": [
+        48.76129100000253,
+        48.58541699999478,
+        49.616125000000466,
+        49.12349999998696,
+        48.80320799999754
+      ],
+      "medianMs": 48.80320799999754,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/kill",
+      "variant": "O0",
+      "bytes": 121170,
+      "format": "ZPB1",
+      "instructions": 12835,
+      "debugBytes": 1551737,
+      "coldMs": 49.147583999991184,
+      "warmMs": [
+        49.40508399999817,
+        48.98720800000592,
+        49.37779200001387,
+        49.353208000015,
+        49.35845900001004
+      ],
+      "medianMs": 49.35845900001004,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.01137734634191534
+      }
+    },
+    {
+      "name": "bin/kill",
+      "variant": "O1",
+      "bytes": 116991,
+      "format": "ZPB1",
+      "instructions": 12491,
+      "debugBytes": 1509301,
+      "coldMs": 57.42270799999824,
+      "warmMs": [
+        56.785250000000815,
+        58.24374999999418,
+        57.30516700001317,
+        57.59358300000895,
+        57.59354199998779
+      ],
+      "medianMs": 57.59354199998779,
+      "relative": {
+        "bytes": -0.034488734835355306,
+        "medianMs": 0.18011795454083046
+      }
+    },
+    {
+      "name": "bin/kill",
+      "variant": "O2",
+      "bytes": 116667,
+      "format": "ZPB1",
+      "instructions": 12501,
+      "debugBytes": 1510325,
+      "coldMs": 57.864082999993116,
+      "warmMs": [
+        57.58329200001026,
+        57.49474999999802,
+        58.33212500001537,
+        57.953917000006186,
+        57.84816699998919
+      ],
+      "medianMs": 57.84816699998919,
+      "relative": {
+        "bytes": -0.03716266402574897,
+        "medianMs": 0.18533533697194882
+      }
+    },
+    {
+      "name": "bin/ls",
+      "variant": "baseline",
+      "bytes": 271413,
+      "format": "ZPB1",
+      "instructions": 30789,
+      "debugBytes": 3679090,
+      "coldMs": 165.30529099999694,
+      "warmMs": [
+        164.84049999999115,
+        164.4611670000013,
+        164.7530839999963,
+        165.1414170000062,
+        164.3833750000049
+      ],
+      "medianMs": 164.7530839999963,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/ls",
+      "variant": "O0",
+      "bytes": 271413,
+      "format": "ZPB1",
+      "instructions": 30789,
+      "debugBytes": 3679090,
+      "coldMs": 165.1638329999987,
+      "warmMs": [
+        164.90374999999767,
+        164.4157089999935,
+        164.45308300000033,
+        165.58049999998184,
+        164.41304099999252
+      ],
+      "medianMs": 164.45308300000033,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0018209128030403088
+      }
+    },
+    {
+      "name": "bin/ls",
+      "variant": "O1",
+      "bytes": 256412,
+      "format": "ZPB1",
+      "instructions": 29206,
+      "debugBytes": 3489051,
+      "coldMs": 188.06724999999278,
+      "warmMs": [
+        186.9665420000092,
+        185.65720799998962,
+        185.69625000000815,
+        187.34249999999884,
+        188.155167000019
+      ],
+      "medianMs": 186.9665420000092,
+      "relative": {
+        "bytes": -0.05527001285863242,
+        "medianMs": 0.1348287841459368
+      }
+    },
+    {
+      "name": "bin/ls",
+      "variant": "O2",
+      "bytes": 256824,
+      "format": "ZPB1",
+      "instructions": 29432,
+      "debugBytes": 3515902,
+      "coldMs": 186.14829199999804,
+      "warmMs": [
+        187.9342909999832,
+        186.49579099999391,
+        188.3990000000049,
+        187.85725000000093,
+        187.02920900000026
+      ],
+      "medianMs": 187.85725000000093,
+      "relative": {
+        "bytes": -0.05375203103757009,
+        "medianMs": 0.14023510479479184
+      }
+    },
+    {
+      "name": "bin/mkdir",
+      "variant": "baseline",
+      "bytes": 73702,
+      "format": "ZPB1",
+      "instructions": 8026,
+      "debugBytes": 975436,
+      "coldMs": 53.64004199998453,
+      "warmMs": [
+        52.442041999980574,
+        52.38641700000153,
+        51.901665999990655,
+        52.116957999998704,
+        51.968499999988126
+      ],
+      "medianMs": 52.116957999998704,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/mkdir",
+      "variant": "O0",
+      "bytes": 73702,
+      "format": "ZPB1",
+      "instructions": 8026,
+      "debugBytes": 975436,
+      "coldMs": 52.623291999974754,
+      "warmMs": [
+        52.51487499999348,
+        52.20545800001128,
+        52.045249999995576,
+        52.514583000011044,
+        51.77874999999767
+      ],
+      "medianMs": 52.20545800001128,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0016981037153507295
+      }
+    },
+    {
+      "name": "bin/mkdir",
+      "variant": "O1",
+      "bytes": 69675,
+      "format": "ZPB1",
+      "instructions": 7690,
+      "debugBytes": 934025,
+      "coldMs": 57.493249999999534,
+      "warmMs": [
+        57.93654200001038,
+        57.78912499998114,
+        57.86958299999242,
+        57.3045839999977,
+        58.639457999990555
+      ],
+      "medianMs": 57.86958299999242,
+      "relative": {
+        "bytes": -0.05463895145314912,
+        "medianMs": 0.1103791399335674
+      }
+    },
+    {
+      "name": "bin/mkdir",
+      "variant": "O2",
+      "bytes": 68814,
+      "format": "ZPB1",
+      "instructions": 7664,
+      "debugBytes": 930439,
+      "coldMs": 58.75254099999438,
+      "warmMs": [
+        57.959250000014435,
+        57.879833000013605,
+        57.69570899999235,
+        57.340457999991486,
+        57.73762500000885
+      ],
+      "medianMs": 57.73762500000885,
+      "relative": {
+        "bytes": -0.06632113104122006,
+        "medianMs": 0.1078471809503978
+      }
+    },
+    {
+      "name": "bin/mktemp",
+      "variant": "baseline",
+      "bytes": 57011,
+      "format": "ZPB1",
+      "instructions": 6222,
+      "debugBytes": 757536,
+      "coldMs": 44.31366600000183,
+      "warmMs": [
+        43.51212499997928,
+        44.04608400000143,
+        44.094249999994645,
+        43.77370799999335,
+        44.18512499998906
+      ],
+      "medianMs": 44.04608400000143,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/mktemp",
+      "variant": "O0",
+      "bytes": 57011,
+      "format": "ZPB1",
+      "instructions": 6222,
+      "debugBytes": 757536,
+      "coldMs": 43.596916999988025,
+      "warmMs": [
+        43.46454200000153,
+        44.522624999983236,
+        44.015625,
+        43.79212500000722,
+        43.76570800002082
+      ],
+      "medianMs": 43.79212500000722,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.005765756610603634
+      }
+    },
+    {
+      "name": "bin/mktemp",
+      "variant": "O1",
+      "bytes": 53453,
+      "format": "ZPB1",
+      "instructions": 5907,
+      "debugBytes": 718673,
+      "coldMs": 47.96779199998127,
+      "warmMs": [
+        47.88741600001231,
+        48.22645799999009,
+        47.992417000001296,
+        48.433334000001196,
+        47.920833000011044
+      ],
+      "medianMs": 47.992417000001296,
+      "relative": {
+        "bytes": -0.062409008787777775,
+        "medianMs": 0.08959554724546548
+      }
+    },
+    {
+      "name": "bin/mktemp",
+      "variant": "O2",
+      "bytes": 52802,
+      "format": "ZPB1",
+      "instructions": 5892,
+      "debugBytes": 716471,
+      "coldMs": 48.21883399999933,
+      "warmMs": [
+        48.58954200000153,
+        48.06166600002325,
+        48.233084000006784,
+        48.28120800000033,
+        47.93016700001317
+      ],
+      "medianMs": 48.233084000006784,
+      "relative": {
+        "bytes": -0.07382785778183154,
+        "medianMs": 0.09505952901522918
+      }
+    },
+    {
+      "name": "bin/mv",
+      "variant": "baseline",
+      "bytes": 231186,
+      "format": "ZPB1",
+      "instructions": 25761,
+      "debugBytes": 3063126,
+      "coldMs": 98.30629100001534,
+      "warmMs": [
+        99.33941600000253,
+        98.86729200000991,
+        98.65691600000719,
+        98.7827920000127,
+        98.67058400000678
+      ],
+      "medianMs": 98.7827920000127,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/mv",
+      "variant": "O0",
+      "bytes": 231186,
+      "format": "ZPB1",
+      "instructions": 25761,
+      "debugBytes": 3063126,
+      "coldMs": 98.05070799999521,
+      "warmMs": [
+        98.81516600001487,
+        98.10083400001167,
+        98.13966700001038,
+        98.52129099998274,
+        98.59762500002398
+      ],
+      "medianMs": 98.52129099998274,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0026472323239247197
+      }
+    },
+    {
+      "name": "bin/mv",
+      "variant": "O1",
+      "bytes": 220329,
+      "format": "ZPB1",
+      "instructions": 24688,
+      "debugBytes": 2934223,
+      "coldMs": 115.71400000000722,
+      "warmMs": [
+        115.66045799999847,
+        115.79470800000126,
+        116.47808400000213,
+        115.32149999999092,
+        116.21487500000512
+      ],
+      "medianMs": 115.79470800000126,
+      "relative": {
+        "bytes": -0.04696218629155746,
+        "medianMs": 0.17221537937484466
+      }
+    },
+    {
+      "name": "bin/mv",
+      "variant": "O2",
+      "bytes": 219350,
+      "format": "ZPB1",
+      "instructions": 24667,
+      "debugBytes": 2931968,
+      "coldMs": 117.37008299998706,
+      "warmMs": [
+        114.65754200000083,
+        116.375,
+        115.67366599998786,
+        115.64941700000782,
+        115.89999999999418
+      ],
+      "medianMs": 115.67366599998786,
+      "relative": {
+        "bytes": -0.05119687178289345,
+        "medianMs": 0.17099004450059474
+      }
+    },
+    {
+      "name": "bin/od",
+      "variant": "baseline",
+      "bytes": 139879,
+      "format": "ZPB1",
+      "instructions": 15677,
+      "debugBytes": 1855826,
+      "coldMs": 91.53429100001813,
+      "warmMs": [
+        89.87900000001537,
+        89.8458329999994,
+        90.94074999997974,
+        90.09741699998267,
+        90.46695800000452
+      ],
+      "medianMs": 90.09741699998267,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/od",
+      "variant": "O0",
+      "bytes": 139879,
+      "format": "ZPB1",
+      "instructions": 15677,
+      "debugBytes": 1855826,
+      "coldMs": 90.2833329999994,
+      "warmMs": [
+        89.88908400002401,
+        89.97875000000931,
+        90.38658299998497,
+        90.01574999999139,
+        91.10458299997845
+      ],
+      "medianMs": 90.01574999999139,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0009064299811314402
+      }
+    },
+    {
+      "name": "bin/od",
+      "variant": "O1",
+      "bytes": 132503,
+      "format": "ZPB1",
+      "instructions": 14987,
+      "debugBytes": 1773146,
+      "coldMs": 100.48258400001214,
+      "warmMs": [
+        100.00524999998743,
+        99.86925000001793,
+        99.95295900001656,
+        100.81720799999312,
+        100.36012500000652
+      ],
+      "medianMs": 100.00524999998743,
+      "relative": {
+        "bytes": -0.052731289185653285,
+        "medianMs": 0.10996800274536911
+      }
+    },
+    {
+      "name": "bin/od",
+      "variant": "O2",
+      "bytes": 131628,
+      "format": "ZPB1",
+      "instructions": 14968,
+      "debugBytes": 1770809,
+      "coldMs": 101.33658400000422,
+      "warmMs": [
+        100.85175000000163,
+        100.11149999999907,
+        103.51975000000675,
+        100.96037499999511,
+        100.76604200000293
+      ],
+      "medianMs": 100.85175000000163,
+      "relative": {
+        "bytes": -0.058986695644092424,
+        "medianMs": 0.11936338863100837
+      }
+    },
+    {
+      "name": "bin/paste",
+      "variant": "baseline",
+      "bytes": 120550,
+      "format": "ZPB1",
+      "instructions": 13067,
+      "debugBytes": 1601836,
+      "coldMs": 89.35683400000562,
+      "warmMs": [
+        88.25533399998676,
+        88.4476250000007,
+        87.98600000000442,
+        88.58104099999764,
+        88.19162500000675
+      ],
+      "medianMs": 88.25533399998676,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/paste",
+      "variant": "O0",
+      "bytes": 120550,
+      "format": "ZPB1",
+      "instructions": 13067,
+      "debugBytes": 1601836,
+      "coldMs": 88.74408400000539,
+      "warmMs": [
+        88.67566600002465,
+        89.18670900000143,
+        88.07045900000958,
+        88.07595900000888,
+        90.0584160000144
+      ],
+      "medianMs": 88.67566600002465,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.004762680973344313
+      }
+    },
+    {
+      "name": "bin/paste",
+      "variant": "O1",
+      "bytes": 114274,
+      "format": "ZPB1",
+      "instructions": 12557,
+      "debugBytes": 1538535,
+      "coldMs": 97.93754100002116,
+      "warmMs": [
+        99.9159159999981,
+        97.43179099998088,
+        97.29399999999441,
+        97.49154199997429,
+        96.97016699999222
+      ],
+      "medianMs": 97.43179099998088,
+      "relative": {
+        "bytes": -0.05206138531729576,
+        "medianMs": 0.10397623105698628
+      }
+    },
+    {
+      "name": "bin/paste",
+      "variant": "O2",
+      "bytes": 111777,
+      "format": "ZPB1",
+      "instructions": 12414,
+      "debugBytes": 1520993,
+      "coldMs": 97.46520899998723,
+      "warmMs": [
+        97.93016600000556,
+        97.3112919999985,
+        97.92779200000223,
+        97.41349999999511,
+        97.80162499999278
+      ],
+      "medianMs": 97.80162499999278,
+      "relative": {
+        "bytes": -0.07277478224802991,
+        "medianMs": 0.10816673131629018
+      }
+    },
+    {
+      "name": "bin/printf",
+      "variant": "baseline",
+      "bytes": 153531,
+      "format": "ZPB1",
+      "instructions": 16991,
+      "debugBytes": 2084172,
+      "coldMs": 89.90791600002558,
+      "warmMs": [
+        88.8756669999857,
+        88.96187500000815,
+        89.39504100001068,
+        88.99099999997998,
+        88.93149999997695
+      ],
+      "medianMs": 88.96187500000815,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/printf",
+      "variant": "O0",
+      "bytes": 153531,
+      "format": "ZPB1",
+      "instructions": 16991,
+      "debugBytes": 2084172,
+      "coldMs": 89.00866699998733,
+      "warmMs": [
+        88.87833399997908,
+        88.34350000001723,
+        88.58579099999042,
+        89.02033299999312,
+        88.7074169999978
+      ],
+      "medianMs": 88.7074169999978,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0028603039224422977
+      }
+    },
+    {
+      "name": "bin/printf",
+      "variant": "O1",
+      "bytes": 146046,
+      "format": "ZPB1",
+      "instructions": 16352,
+      "debugBytes": 2004935,
+      "coldMs": 101.58145800000057,
+      "warmMs": [
+        101.03724999999395,
+        101.87570800000685,
+        100.23245800001314,
+        100.37558299998636,
+        101.14054200000828
+      ],
+      "medianMs": 101.03724999999395,
+      "relative": {
+        "bytes": -0.048752369228364345,
+        "medianMs": 0.13573651634461048
+      }
+    },
+    {
+      "name": "bin/printf",
+      "variant": "O2",
+      "bytes": 145002,
+      "format": "ZPB1",
+      "instructions": 16314,
+      "debugBytes": 2000135,
+      "coldMs": 100.31783300000825,
+      "warmMs": [
+        101.22508299999754,
+        101.53816699999152,
+        100.42916600001627,
+        100.93337499999325,
+        100.85920899998746
+      ],
+      "medianMs": 100.93337499999325,
+      "relative": {
+        "bytes": -0.055552298884264384,
+        "medianMs": 0.13456888133241351
+      }
+    },
+    {
+      "name": "bin/ps",
+      "variant": "baseline",
+      "bytes": 175424,
+      "format": "ZPB1",
+      "instructions": 19157,
+      "debugBytes": 2269576,
+      "coldMs": 105.2642090000154,
+      "warmMs": [
+        102.24016700001084,
+        102.05404200000339,
+        101.41887500000303,
+        102.10504199998104,
+        101.95100000000093
+      ],
+      "medianMs": 102.05404200000339,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/ps",
+      "variant": "O0",
+      "bytes": 175424,
+      "format": "ZPB1",
+      "instructions": 19157,
+      "debugBytes": 2269576,
+      "coldMs": 105.54999999998836,
+      "warmMs": [
+        102.22670900000958,
+        102.10966700001154,
+        102.47795800000313,
+        101.82391700000153,
+        102.08937499998137
+      ],
+      "medianMs": 102.10966700001154,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0005450543547127484
+      }
+    },
+    {
+      "name": "bin/ps",
+      "variant": "O1",
+      "bytes": 168718,
+      "format": "ZPB1",
+      "instructions": 18488,
+      "debugBytes": 2189109,
+      "coldMs": 117.42629199998919,
+      "warmMs": [
+        115.41383399997721,
+        116.59820800001035,
+        115.85362500001793,
+        117.03141699999105,
+        115.59783300000709
+      ],
+      "medianMs": 115.85362500001793,
+      "relative": {
+        "bytes": -0.03822738051805907,
+        "medianMs": 0.13521838752858106
+      }
+    },
+    {
+      "name": "bin/ps",
+      "variant": "O2",
+      "bytes": 167705,
+      "format": "ZPB1",
+      "instructions": 18462,
+      "debugBytes": 2185825,
+      "coldMs": 114.90854199999012,
+      "warmMs": [
+        115.04091700000572,
+        115.70362499999464,
+        114.86545799998567,
+        115.54833299998427,
+        116.316124999983
+      ],
+      "medianMs": 115.54833299998427,
+      "relative": {
+        "bytes": -0.04400196096315212,
+        "medianMs": 0.1322269136579659
+      }
+    },
+    {
+      "name": "bin/pwd",
+      "variant": "baseline",
+      "bytes": 57078,
+      "format": "ZPB1",
+      "instructions": 6217,
+      "debugBytes": 748346,
+      "coldMs": 41.98554100000183,
+      "warmMs": [
+        40.948457999998936,
+        40.69287499997881,
+        40.60691699999734,
+        41.39400000000023,
+        41.09966599999461
+      ],
+      "medianMs": 40.948457999998936,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/pwd",
+      "variant": "O0",
+      "bytes": 57078,
+      "format": "ZPB1",
+      "instructions": 6217,
+      "debugBytes": 748346,
+      "coldMs": 41.40316700001131,
+      "warmMs": [
+        40.92508300000918,
+        40.6984999999986,
+        40.57699999999022,
+        40.92362499999581,
+        40.6982920000155
+      ],
+      "medianMs": 40.6984999999986,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.006104210322165016
+      }
+    },
+    {
+      "name": "bin/pwd",
+      "variant": "O1",
+      "bytes": 53668,
+      "format": "ZPB1",
+      "instructions": 5913,
+      "debugBytes": 711247,
+      "coldMs": 45.39095800000359,
+      "warmMs": [
+        45.37150000000838,
+        44.90020800000639,
+        44.81700000001001,
+        44.69391599998926,
+        46.976167000015266
+      ],
+      "medianMs": 44.90020800000639,
+      "relative": {
+        "bytes": -0.05974280808717891,
+        "medianMs": 0.09650546548071604
+      }
+    },
+    {
+      "name": "bin/pwd",
+      "variant": "O2",
+      "bytes": 53012,
+      "format": "ZPB1",
+      "instructions": 5900,
+      "debugBytes": 709451,
+      "coldMs": 45.34662500000559,
+      "warmMs": [
+        44.830374999990454,
+        45.185874999995576,
+        44.61429200001294,
+        44.774124999996275,
+        44.89958299999125
+      ],
+      "medianMs": 44.830374999990454,
+      "relative": {
+        "bytes": -0.0712358526928063,
+        "medianMs": 0.09480007769747067
+      }
+    },
+    {
+      "name": "bin/realpath",
+      "variant": "baseline",
+      "bytes": 66740,
+      "format": "ZPB1",
+      "instructions": 7295,
+      "debugBytes": 902845,
+      "coldMs": 48.928874999983236,
+      "warmMs": [
+        47.948915999993915,
+        47.87366700000712,
+        48.4682089999842,
+        48.48254200001247,
+        48.84741699998267
+      ],
+      "medianMs": 48.4682089999842,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/realpath",
+      "variant": "O0",
+      "bytes": 66740,
+      "format": "ZPB1",
+      "instructions": 7295,
+      "debugBytes": 902845,
+      "coldMs": 48.64970800001174,
+      "warmMs": [
+        48.45558399998117,
+        48.73225000000093,
+        48.2506670000148,
+        48.27358400000958,
+        48.41979099999298
+      ],
+      "medianMs": 48.41979099999298,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0009989640836787217
+      }
+    },
+    {
+      "name": "bin/realpath",
+      "variant": "O1",
+      "bytes": 62929,
+      "format": "ZPB1",
+      "instructions": 6967,
+      "debugBytes": 861983,
+      "coldMs": 53.528625000006286,
+      "warmMs": [
+        53.10770799999591,
+        53.19166700000642,
+        53.20912500002305,
+        53.12504099999205,
+        53.33287499999278
+      ],
+      "medianMs": 53.19166700000642,
+      "relative": {
+        "bytes": -0.057102187593646936,
+        "medianMs": 0.09745476669096154
+      }
+    },
+    {
+      "name": "bin/realpath",
+      "variant": "O2",
+      "bytes": 62273,
+      "format": "ZPB1",
+      "instructions": 6954,
+      "debugBytes": 860051,
+      "coldMs": 53.28362499998184,
+      "warmMs": [
+        53.35366699998849,
+        53.16104100001394,
+        53.162750000017695,
+        54.04024999999092,
+        53.322959000011906
+      ],
+      "medianMs": 53.322959000011906,
+      "relative": {
+        "bytes": -0.06693137548696437,
+        "medianMs": 0.10016359383176887
+      }
+    },
+    {
+      "name": "bin/rm",
+      "variant": "baseline",
+      "bytes": 120746,
+      "format": "ZPB1",
+      "instructions": 13286,
+      "debugBytes": 1575566,
+      "coldMs": 67.31099999998696,
+      "warmMs": [
+        66.7669590000005,
+        67.24766699998872,
+        66.93624999999884,
+        66.82508400001097,
+        66.90804199999548
+      ],
+      "medianMs": 66.90804199999548,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/rm",
+      "variant": "O0",
+      "bytes": 120746,
+      "format": "ZPB1",
+      "instructions": 13286,
+      "debugBytes": 1575566,
+      "coldMs": 66.96562500001164,
+      "warmMs": [
+        67.56495899998117,
+        67.84875000000466,
+        66.89383299998008,
+        66.61429199998383,
+        67.15512499999022
+      ],
+      "medianMs": 67.15512499999022,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0036928744678368375
+      }
+    },
+    {
+      "name": "bin/rm",
+      "variant": "O1",
+      "bytes": 113771,
+      "format": "ZPB1",
+      "instructions": 12618,
+      "debugBytes": 1495313,
+      "coldMs": 76.13375000000815,
+      "warmMs": [
+        76.64704100001836,
+        76.5089169999992,
+        75.42987500000163,
+        75.84491700000945,
+        76.303041999985
+      ],
+      "medianMs": 76.303041999985,
+      "relative": {
+        "bytes": -0.05776588872509236,
+        "medianMs": 0.1404166034329648
+      }
+    },
+    {
+      "name": "bin/rm",
+      "variant": "O2",
+      "bytes": 113507,
+      "format": "ZPB1",
+      "instructions": 12692,
+      "debugBytes": 1503670,
+      "coldMs": 76.14295900001889,
+      "warmMs": [
+        77.58441700000549,
+        75.9666670000006,
+        76.39016700000502,
+        75.72345900000073,
+        76.17699999999604
+      ],
+      "medianMs": 76.17699999999604,
+      "relative": {
+        "bytes": -0.05995229655640766,
+        "medianMs": 0.13853279401004137
+      }
+    },
+    {
+      "name": "bin/rmdir",
+      "variant": "baseline",
+      "bytes": 74588,
+      "format": "ZPB1",
+      "instructions": 8130,
+      "debugBytes": 992708,
+      "coldMs": 55.07433299999684,
+      "warmMs": [
+        53.88904099998763,
+        53.16341700000339,
+        53.49749999999767,
+        53.63500000000931,
+        53.62912500000675
+      ],
+      "medianMs": 53.62912500000675,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/rmdir",
+      "variant": "O0",
+      "bytes": 74588,
+      "format": "ZPB1",
+      "instructions": 8130,
+      "debugBytes": 992708,
+      "coldMs": 53.53691699999035,
+      "warmMs": [
+        54.11600000000908,
+        53.33095799997682,
+        53.15454200000386,
+        53.318209000019124,
+        53.029458000004524
+      ],
+      "medianMs": 53.318209000019124,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.005797521402551076
+      }
+    },
+    {
+      "name": "bin/rmdir",
+      "variant": "O1",
+      "bytes": 70755,
+      "format": "ZPB1",
+      "instructions": 7787,
+      "debugBytes": 950351,
+      "coldMs": 59.03595900000073,
+      "warmMs": [
+        59.521082999999635,
+        59.026041000004625,
+        58.94883399998071,
+        58.751665999996476,
+        58.554000000003725
+      ],
+      "medianMs": 58.94883399998071,
+      "relative": {
+        "bytes": -0.051388963372124175,
+        "medianMs": 0.09919440229489629
+      }
+    },
+    {
+      "name": "bin/rmdir",
+      "variant": "O2",
+      "bytes": 70104,
+      "format": "ZPB1",
+      "instructions": 7772,
+      "debugBytes": 948141,
+      "coldMs": 59.2330409999995,
+      "warmMs": [
+        59.027957999991486,
+        59.414374999993015,
+        58.85233299998799,
+        59.29733399997349,
+        59.57358299999032
+      ],
+      "medianMs": 59.29733399997349,
+      "relative": {
+        "bytes": -0.06011690888614796,
+        "medianMs": 0.10569273692170111
+      }
+    },
+    {
+      "name": "bin/seq",
+      "variant": "baseline",
+      "bytes": 66721,
+      "format": "ZPB1",
+      "instructions": 7249,
+      "debugBytes": 878034,
+      "coldMs": 52.680292000004556,
+      "warmMs": [
+        52.1697920000006,
+        54.410084000002826,
+        52.45533299999079,
+        52.66145799998776,
+        52.50562500001979
+      ],
+      "medianMs": 52.50562500001979,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/seq",
+      "variant": "O0",
+      "bytes": 66721,
+      "format": "ZPB1",
+      "instructions": 7249,
+      "debugBytes": 878034,
+      "coldMs": 52.252624999993714,
+      "warmMs": [
+        52.29150000002119,
+        52.497540999989724,
+        52.40212499999325,
+        52.48929200001294,
+        52.06225000001723
+      ],
+      "medianMs": 52.40212499999325,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0019712173700723312
+      }
+    },
+    {
+      "name": "bin/seq",
+      "variant": "O1",
+      "bytes": 62939,
+      "format": "ZPB1",
+      "instructions": 6939,
+      "debugBytes": 839856,
+      "coldMs": 57.154334000020754,
+      "warmMs": [
+        57.08666699999594,
+        57.10745899999165,
+        58.11874999999418,
+        57.26445800001966,
+        57.08491700000013
+      ],
+      "medianMs": 57.10745899999165,
+      "relative": {
+        "bytes": -0.05668380270079887,
+        "medianMs": 0.08764459045997697
+      }
+    },
+    {
+      "name": "bin/seq",
+      "variant": "O2",
+      "bytes": 62459,
+      "format": "ZPB1",
+      "instructions": 6953,
+      "debugBytes": 841446,
+      "coldMs": 57.028957999980776,
+      "warmMs": [
+        57.69508400000632,
+        57.47962500000722,
+        57.627708000014536,
+        57.29916699999012,
+        57.064916000002995
+      ],
+      "medianMs": 57.47962500000722,
+      "relative": {
+        "bytes": -0.0638779394793243,
+        "medianMs": 0.09473270720966664
+      }
+    },
+    {
+      "name": "bin/sleep",
+      "variant": "baseline",
+      "bytes": 44581,
+      "format": "ZPB1",
+      "instructions": 4798,
+      "debugBytes": 586396,
+      "coldMs": 32.99700000000303,
+      "warmMs": [
+        33.278458999993745,
+        33.11204199999338,
+        34.24704200000269,
+        93.24183399998583,
+        32.83191700000316
+      ],
+      "medianMs": 33.278458999993745,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/sleep",
+      "variant": "O0",
+      "bytes": 44581,
+      "format": "ZPB1",
+      "instructions": 4798,
+      "debugBytes": 586396,
+      "coldMs": 32.72849999999744,
+      "warmMs": [
+        33.18845800001873,
+        32.77204099998926,
+        35.07541600000695,
+        33.93883299999288,
+        32.76199999998789
+      ],
+      "medianMs": 33.18845800001873,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0027044821989814505
+      }
+    },
+    {
+      "name": "bin/sleep",
+      "variant": "O1",
+      "bytes": 41728,
+      "format": "ZPB1",
+      "instructions": 4565,
+      "debugBytes": 557459,
+      "coldMs": 35.60349999999744,
+      "warmMs": [
+        36.61850000001141,
+        36.69316600001184,
+        35.96562499998254,
+        35.970624999987194,
+        36.32524999999441
+      ],
+      "medianMs": 36.32524999999441,
+      "relative": {
+        "bytes": -0.063995872681187,
+        "medianMs": 0.09155444968173665
+      }
+    },
+    {
+      "name": "bin/sleep",
+      "variant": "O2",
+      "bytes": 41736,
+      "format": "ZPB1",
+      "instructions": 4598,
+      "debugBytes": 561360,
+      "coldMs": 36.2043330000015,
+      "warmMs": [
+        36.3961249999993,
+        36.066290999995545,
+        36.47075000000768,
+        37.57958300001337,
+        36.615749999997206
+      ],
+      "medianMs": 36.47075000000768,
+      "relative": {
+        "bytes": -0.06381642403714582,
+        "medianMs": 0.09592664732506218
+      }
+    },
+    {
+      "name": "bin/sort",
+      "variant": "baseline",
+      "bytes": 183100,
+      "format": "ZPB1",
+      "instructions": 20333,
+      "debugBytes": 2453269,
+      "coldMs": 124.80683400001726,
+      "warmMs": [
+        125.11041600001045,
+        126.07066599998507,
+        124.56066700001247,
+        125.9924170000013,
+        124.11033300001873
+      ],
+      "medianMs": 125.11041600001045,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/sort",
+      "variant": "O0",
+      "bytes": 183100,
+      "format": "ZPB1",
+      "instructions": 20333,
+      "debugBytes": 2453269,
+      "coldMs": 124.87391600001138,
+      "warmMs": [
+        124.50491700001294,
+        125.41824999998789,
+        124.95879199999035,
+        124.91625000000931,
+        124.5340000000142
+      ],
+      "medianMs": 124.91625000000931,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0015519571128363996
+      }
+    },
+    {
+      "name": "bin/sort",
+      "variant": "O1",
+      "bytes": 174463,
+      "format": "ZPB1",
+      "instructions": 19613,
+      "debugBytes": 2365405,
+      "coldMs": 140.26733299999614,
+      "warmMs": [
+        139.83995799999684,
+        139.61495800002012,
+        140.1701250000042,
+        138.89037500001723,
+        139.21362500000396
+      ],
+      "medianMs": 139.61495800002012,
+      "relative": {
+        "bytes": -0.04717094483888584,
+        "medianMs": 0.11593392831503713
+      }
+    },
+    {
+      "name": "bin/sort",
+      "variant": "O2",
+      "bytes": 172918,
+      "format": "ZPB1",
+      "instructions": 19673,
+      "debugBytes": 2372456,
+      "coldMs": 139.61358299999847,
+      "warmMs": [
+        139.85195799998473,
+        139.62283400000888,
+        140.09504200000083,
+        139.48816599999554,
+        139.89937500000815
+      ],
+      "medianMs": 139.85195799998473,
+      "relative": {
+        "bytes": -0.05560895685417799,
+        "medianMs": 0.11782825500294924
+      }
+    },
+    {
+      "name": "bin/tail",
+      "variant": "baseline",
+      "bytes": 93070,
+      "format": "ZPB1",
+      "instructions": 10265,
+      "debugBytes": 1236586,
+      "coldMs": 66.84854099998483,
+      "warmMs": [
+        66.47575000001234,
+        68.35129200000665,
+        65.85241699998733,
+        66.64695900000515,
+        66.15458299999591
+      ],
+      "medianMs": 66.47575000001234,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/tail",
+      "variant": "O0",
+      "bytes": 93070,
+      "format": "ZPB1",
+      "instructions": 10265,
+      "debugBytes": 1236586,
+      "coldMs": 66.00875000000815,
+      "warmMs": [
+        66.26774999999907,
+        67.3173329999845,
+        65.8239590000012,
+        66.34258299999055,
+        66.27583299999242
+      ],
+      "medianMs": 66.27583299999242,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0030073673485426777
+      }
+    },
+    {
+      "name": "bin/tail",
+      "variant": "O1",
+      "bytes": 88386,
+      "format": "ZPB1",
+      "instructions": 9884,
+      "debugBytes": 1189732,
+      "coldMs": 73.4895410000172,
+      "warmMs": [
+        73.30858300000546,
+        74.3015000000014,
+        73.97491600000649,
+        73.64837499998976,
+        73.23254200001247
+      ],
+      "medianMs": 73.64837499998976,
+      "relative": {
+        "bytes": -0.05032771032556138,
+        "medianMs": 0.1078983689537325
+      }
+    },
+    {
+      "name": "bin/tail",
+      "variant": "O2",
+      "bytes": 87344,
+      "format": "ZPB1",
+      "instructions": 9864,
+      "debugBytes": 1187204,
+      "coldMs": 73.59566600000835,
+      "warmMs": [
+        72.96558300001197,
+        73.52845799998613,
+        72.59433399999398,
+        72.56595799999195,
+        72.90975000002072
+      ],
+      "medianMs": 72.90975000002072,
+      "relative": {
+        "bytes": -0.06152358439883954,
+        "medianMs": 0.09678717427042471
+      }
+    },
+    {
+      "name": "bin/tee",
+      "variant": "baseline",
+      "bytes": 66555,
+      "format": "ZPB1",
+      "instructions": 7218,
+      "debugBytes": 865479,
+      "coldMs": 42.70870799999102,
+      "warmMs": [
+        41.80204200002481,
+        41.91545800000313,
+        41.917958999983966,
+        42.110249999997905,
+        41.66833299997961
+      ],
+      "medianMs": 41.91545800000313,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/tee",
+      "variant": "O0",
+      "bytes": 66555,
+      "format": "ZPB1",
+      "instructions": 7218,
+      "debugBytes": 865479,
+      "coldMs": 42.288832999998704,
+      "warmMs": [
+        41.60820800001966,
+        42.24704200000269,
+        41.63379199997871,
+        41.68254199999501,
+        41.59812499998952
+      ],
+      "medianMs": 41.63379199997871,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.006719859771647796
+      }
+    },
+    {
+      "name": "bin/tee",
+      "variant": "O1",
+      "bytes": 62947,
+      "format": "ZPB1",
+      "instructions": 6902,
+      "debugBytes": 827002,
+      "coldMs": 46.953332999983104,
+      "warmMs": [
+        46.253083000017796,
+        49.954375000001164,
+        47.065833000000566,
+        46.99512499998673,
+        46.62700000000768
+      ],
+      "medianMs": 46.99512499998673,
+      "relative": {
+        "bytes": -0.054210803095184446,
+        "medianMs": 0.12118839307405938
+      }
+    },
+    {
+      "name": "bin/tee",
+      "variant": "O2",
+      "bytes": 62291,
+      "format": "ZPB1",
+      "instructions": 6889,
+      "debugBytes": 825194,
+      "coldMs": 47.47516700002598,
+      "warmMs": [
+        47.471166000002995,
+        47.30645800000639,
+        47.384791999997105,
+        46.68187499998021,
+        47.07154200001969
+      ],
+      "medianMs": 47.30645800000639,
+      "relative": {
+        "bytes": -0.06406731274885435,
+        "medianMs": 0.12861603468588734
+      }
+    },
+    {
+      "name": "bin/test",
+      "variant": "baseline",
+      "bytes": 124572,
+      "format": "ZPB1",
+      "instructions": 13307,
+      "debugBytes": 1595819,
+      "coldMs": 81.49620799999684,
+      "warmMs": [
+        80.50545799999963,
+        80.64712499998859,
+        80.4896670000162,
+        79.80866599999717,
+        80.61029099998996
+      ],
+      "medianMs": 80.50545799999963,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/test",
+      "variant": "O0",
+      "bytes": 124572,
+      "format": "ZPB1",
+      "instructions": 13307,
+      "debugBytes": 1595819,
+      "coldMs": 80.49354200001108,
+      "warmMs": [
+        80.25874999997905,
+        80.19129099999554,
+        80.52295799998683,
+        80.5720839999849,
+        81.24162499999511
+      ],
+      "medianMs": 80.52295799998683,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0002173765657875748
+      }
+    },
+    {
+      "name": "bin/test",
+      "variant": "O1",
+      "bytes": 119779,
+      "format": "ZPB1",
+      "instructions": 12962,
+      "debugBytes": 1553411,
+      "coldMs": 90.0264169999864,
+      "warmMs": [
+        89.38687499999651,
+        89.606832999998,
+        90.18887499999255,
+        89.29287499998463,
+        88.95958399999654
+      ],
+      "medianMs": 89.38687499999651,
+      "relative": {
+        "bytes": -0.03847574093696815,
+        "medianMs": 0.1103206816113873
+      }
+    },
+    {
+      "name": "bin/test",
+      "variant": "O2",
+      "bytes": 119962,
+      "format": "ZPB1",
+      "instructions": 13094,
+      "debugBytes": 1568857,
+      "coldMs": 89.92712500001653,
+      "warmMs": [
+        90.52566699997988,
+        89.68074999999953,
+        90.52258300001267,
+        90.05950000000303,
+        89.21000000002095
+      ],
+      "medianMs": 90.05950000000303,
+      "relative": {
+        "bytes": -0.037006710978390034,
+        "medianMs": 0.1186757051926024
+      }
+    },
+    {
+      "name": "bin/touch",
+      "variant": "baseline",
+      "bytes": 84031,
+      "format": "ZPB1",
+      "instructions": 9449,
+      "debugBytes": 1143642,
+      "coldMs": 60.35412500001257,
+      "warmMs": [
+        59.91958300000988,
+        60.45483299999614,
+        60.298291999992216,
+        59.72620800000732,
+        60.11079200002132
+      ],
+      "medianMs": 60.11079200002132,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/touch",
+      "variant": "O0",
+      "bytes": 84031,
+      "format": "ZPB1",
+      "instructions": 9449,
+      "debugBytes": 1143642,
+      "coldMs": 60.16875000001164,
+      "warmMs": [
+        60.59629099999438,
+        60.3554169999843,
+        60.293166999996174,
+        60.22133399997256,
+        59.7607920000155
+      ],
+      "medianMs": 60.293166999996174,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.003033980985889917
+      }
+    },
+    {
+      "name": "bin/touch",
+      "variant": "O1",
+      "bytes": 80017,
+      "format": "ZPB1",
+      "instructions": 9090,
+      "debugBytes": 1099437,
+      "coldMs": 66.81724999999278,
+      "warmMs": [
+        66.68841599998996,
+        67.52229100000113,
+        66.3517920000013,
+        66.15750000000116,
+        66.12229100000695
+      ],
+      "medianMs": 66.3517920000013,
+      "relative": {
+        "bytes": -0.04776808558746182,
+        "medianMs": 0.10382495043448703
+      }
+    },
+    {
+      "name": "bin/touch",
+      "variant": "O2",
+      "bytes": 79371,
+      "format": "ZPB1",
+      "instructions": 9073,
+      "debugBytes": 1096933,
+      "coldMs": 66.58866700000362,
+      "warmMs": [
+        66.4132919999829,
+        67.25791700000991,
+        67.25666700000875,
+        66.38274999998976,
+        66.4910830000008
+      ],
+      "medianMs": 66.4910830000008,
+      "relative": {
+        "bytes": -0.05545572467303728,
+        "medianMs": 0.10614218824428767
+      }
+    },
+    {
+      "name": "bin/tr",
+      "variant": "baseline",
+      "bytes": 141460,
+      "format": "ZPB1",
+      "instructions": 15705,
+      "debugBytes": 1879285,
+      "coldMs": 74.04983300002641,
+      "warmMs": [
+        74.58749999999418,
+        74.25912500001141,
+        74.05683300000965,
+        74.08054200001061,
+        73.85237500001676
+      ],
+      "medianMs": 74.08054200001061,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/tr",
+      "variant": "O0",
+      "bytes": 141460,
+      "format": "ZPB1",
+      "instructions": 15705,
+      "debugBytes": 1879285,
+      "coldMs": 74.11508399999002,
+      "warmMs": [
+        76.06358399998862,
+        74.32758299997658,
+        74.02258300001267,
+        73.46949999997742,
+        73.44262499999604
+      ],
+      "medianMs": 74.02258300001267,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0007823781850559985
+      }
+    },
+    {
+      "name": "bin/tr",
+      "variant": "O1",
+      "bytes": 134854,
+      "format": "ZPB1",
+      "instructions": 15058,
+      "debugBytes": 1800520,
+      "coldMs": 84.09266599998227,
+      "warmMs": [
+        85.20516599999974,
+        84.7614590000012,
+        85.64495899999747,
+        84.25766600001953,
+        84.12358300000778
+      ],
+      "medianMs": 84.7614590000012,
+      "relative": {
+        "bytes": -0.04669871341722043,
+        "medianMs": 0.14417979015311544
+      }
+    },
+    {
+      "name": "bin/tr",
+      "variant": "O2",
+      "bytes": 134520,
+      "format": "ZPB1",
+      "instructions": 15072,
+      "debugBytes": 1802240,
+      "coldMs": 85.61000000001513,
+      "warmMs": [
+        85.0903330000001,
+        86.06537500000559,
+        85.58437500000582,
+        84.79329199998756,
+        85.9368329999852
+      ],
+      "medianMs": 85.58437500000582,
+      "relative": {
+        "bytes": -0.04905980489184225,
+        "medianMs": 0.15528818620135865
+      }
+    },
+    {
+      "name": "bin/true",
+      "variant": "baseline",
+      "bytes": 27924,
+      "format": "ZPB1",
+      "instructions": 2916,
+      "debugBytes": 366147,
+      "coldMs": 25.662208000023384,
+      "warmMs": [
+        24.943083999998635,
+        24.83004100000835,
+        24.852458000008482,
+        25.031333999999333,
+        24.78154200001154
+      ],
+      "medianMs": 24.852458000008482,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/true",
+      "variant": "O0",
+      "bytes": 27924,
+      "format": "ZPB1",
+      "instructions": 2916,
+      "debugBytes": 366147,
+      "coldMs": 25.232832999987295,
+      "warmMs": [
+        24.868209000007482,
+        24.996624999999767,
+        24.799250000010943,
+        24.84095799998613,
+        25.650792000000365
+      ],
+      "medianMs": 24.868209000007482,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0006337803688871713
+      }
+    },
+    {
+      "name": "bin/true",
+      "variant": "O1",
+      "bytes": 25599,
+      "format": "ZPB1",
+      "instructions": 2738,
+      "debugBytes": 343732,
+      "coldMs": 27.189291999995476,
+      "warmMs": [
+        26.58520800000406,
+        26.97462500000256,
+        26.60066700002062,
+        26.65983300001244,
+        27.17833300001803
+      ],
+      "medianMs": 26.65983300001244,
+      "relative": {
+        "bytes": -0.0832617103566824,
+        "medianMs": 0.07272419492684956
+      }
+    },
+    {
+      "name": "bin/true",
+      "variant": "O2",
+      "bytes": 25607,
+      "format": "ZPB1",
+      "instructions": 2771,
+      "debugBytes": 347633,
+      "coldMs": 26.941416999994544,
+      "warmMs": [
+        26.694874999986496,
+        27.603667000017595,
+        26.899709000019357,
+        27.00370900001144,
+        26.8330839999835
+      ],
+      "medianMs": 26.899709000019357,
+      "relative": {
+        "bytes": -0.08297521845007882,
+        "medianMs": 0.08237619796038587
+      }
+    },
+    {
+      "name": "bin/uname",
+      "variant": "baseline",
+      "bytes": 46260,
+      "format": "ZPB1",
+      "instructions": 4944,
+      "debugBytes": 603477,
+      "coldMs": 35.01524999999674,
+      "warmMs": [
+        34.87558300001547,
+        34.704667000012705,
+        35.09204100002535,
+        34.52874999999767,
+        34.41150000001653
+      ],
+      "medianMs": 34.704667000012705,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/uname",
+      "variant": "O0",
+      "bytes": 46260,
+      "format": "ZPB1",
+      "instructions": 4944,
+      "debugBytes": 603477,
+      "coldMs": 35.02883299998939,
+      "warmMs": [
+        34.53929099999368,
+        34.47004200000083,
+        34.73366600001464,
+        34.755291999987094,
+        34.470375000004424
+      ],
+      "medianMs": 34.53929099999368,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.004765238059162513
+      }
+    },
+    {
+      "name": "bin/uname",
+      "variant": "O1",
+      "bytes": 43312,
+      "format": "ZPB1",
+      "instructions": 4708,
+      "debugBytes": 574250,
+      "coldMs": 38.540500000002794,
+      "warmMs": [
+        37.76470899998094,
+        37.90137499998673,
+        38.536458000016864,
+        37.836375000013504,
+        38.43962499999907
+      ],
+      "medianMs": 37.90137499998673,
+      "relative": {
+        "bytes": -0.06372676178123649,
+        "medianMs": 0.09211176122141884
+      }
+    },
+    {
+      "name": "bin/uname",
+      "variant": "O2",
+      "bytes": 42983,
+      "format": "ZPB1",
+      "instructions": 4720,
+      "debugBytes": 575606,
+      "coldMs": 38.461999999999534,
+      "warmMs": [
+        37.87591699999757,
+        38.120083000016166,
+        37.94720799999777,
+        37.550167000008514,
+        38.456583999999566
+      ],
+      "medianMs": 37.94720799999777,
+      "relative": {
+        "bytes": -0.07083873757025505,
+        "medianMs": 0.09343241933379964
+      }
+    },
+    {
+      "name": "bin/uniq",
+      "variant": "baseline",
+      "bytes": 106228,
+      "format": "ZPB1",
+      "instructions": 11576,
+      "debugBytes": 1394160,
+      "coldMs": 74.49575000000186,
+      "warmMs": [
+        73.79183299999568,
+        75.43370799999684,
+        73.72533300000941,
+        73.83987500000512,
+        73.74629100001766
+      ],
+      "medianMs": 73.79183299999568,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/uniq",
+      "variant": "O0",
+      "bytes": 106228,
+      "format": "ZPB1",
+      "instructions": 11576,
+      "debugBytes": 1394160,
+      "coldMs": 74.05262500001118,
+      "warmMs": [
+        73.78483299998334,
+        73.82937500000116,
+        73.58970900002168,
+        73.6659159999981,
+        74.51712500001304
+      ],
+      "medianMs": 73.78483299998334,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.00009486144641968064
+      }
+    },
+    {
+      "name": "bin/uniq",
+      "variant": "O1",
+      "bytes": 101180,
+      "format": "ZPB1",
+      "instructions": 11190,
+      "debugBytes": 1346596,
+      "coldMs": 81.78125,
+      "warmMs": [
+        82.48212500000955,
+        84.02279099999578,
+        82.07970800000476,
+        82.33079199999338,
+        82.56704200000968
+      ],
+      "medianMs": 82.48212500000955,
+      "relative": {
+        "bytes": -0.047520427759159545,
+        "medianMs": 0.11776766678250672
+      }
+    },
+    {
+      "name": "bin/uniq",
+      "variant": "O2",
+      "bytes": 99376,
+      "format": "ZPB1",
+      "instructions": 11109,
+      "debugBytes": 1336833,
+      "coldMs": 81.84241700000712,
+      "warmMs": [
+        82.32066700002179,
+        83.40895799998543,
+        82.59091600001557,
+        81.43458299999475,
+        82.29416699998546
+      ],
+      "medianMs": 82.32066700002179,
+      "relative": {
+        "bytes": -0.06450276763188612,
+        "medianMs": 0.11557964686995392
+      }
+    },
+    {
+      "name": "bin/wc",
+      "variant": "baseline",
+      "bytes": 91870,
+      "format": "ZPB1",
+      "instructions": 10205,
+      "debugBytes": 1206170,
+      "coldMs": 64.44791600000462,
+      "warmMs": [
+        64.49541699999827,
+        64.52825000000303,
+        64.51179200000479,
+        64.17062500002794,
+        63.900041999993846
+      ],
+      "medianMs": 64.49541699999827,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/wc",
+      "variant": "O0",
+      "bytes": 91870,
+      "format": "ZPB1",
+      "instructions": 10205,
+      "debugBytes": 1206170,
+      "coldMs": 64.16562499999418,
+      "warmMs": [
+        63.90416600002209,
+        64.6914580000157,
+        64.29041700001108,
+        64.1409580000036,
+        64.50754200000665
+      ],
+      "medianMs": 64.29041700001108,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.0031785204208727436
+      }
+    },
+    {
+      "name": "bin/wc",
+      "variant": "O1",
+      "bytes": 86330,
+      "format": "ZPB1",
+      "instructions": 9704,
+      "debugBytes": 1146386,
+      "coldMs": 71.55437500000698,
+      "warmMs": [
+        70.84133299998939,
+        72.38312499999302,
+        71.32795800000895,
+        70.72495799997705,
+        71.9435410000151
+      ],
+      "medianMs": 71.32795800000895,
+      "relative": {
+        "bytes": -0.06030260150212252,
+        "medianMs": 0.10593839559190488
+      }
+    },
+    {
+      "name": "bin/wc",
+      "variant": "O2",
+      "bytes": 85649,
+      "format": "ZPB1",
+      "instructions": 9701,
+      "debugBytes": 1146236,
+      "coldMs": 71.37187499998254,
+      "warmMs": [
+        71.18383299998823,
+        71.67041699998663,
+        71.60533399999258,
+        71.25537500000792,
+        70.76199999998789
+      ],
+      "medianMs": 71.25537500000792,
+      "relative": {
+        "bytes": -0.06771524980951349,
+        "medianMs": 0.10481299779812003
+      }
+    },
+    {
+      "name": "bin/which",
+      "variant": "baseline",
+      "bytes": 71925,
+      "format": "ZPB1",
+      "instructions": 7960,
+      "debugBytes": 969254,
+      "coldMs": 52.674583000014536,
+      "warmMs": [
+        54.4328749999986,
+        52.76804200001061,
+        51.8605830000015,
+        52.91433400000096,
+        51.959250000014435
+      ],
+      "medianMs": 52.76804200001061,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/which",
+      "variant": "O0",
+      "bytes": 71925,
+      "format": "ZPB1",
+      "instructions": 7960,
+      "debugBytes": 969254,
+      "coldMs": 53.07741699999315,
+      "warmMs": [
+        52.56408400001237,
+        52.70054200000595,
+        52.46204100002069,
+        52.27483400001074,
+        52.29908300001989
+      ],
+      "medianMs": 52.46204100002069,
+      "relative": {
+        "bytes": 0,
+        "medianMs": -0.005798983407226954
+      }
+    },
+    {
+      "name": "bin/which",
+      "variant": "O1",
+      "bytes": 67979,
+      "format": "ZPB1",
+      "instructions": 7600,
+      "debugBytes": 924891,
+      "coldMs": 58.64162499998929,
+      "warmMs": [
+        58.486000000004424,
+        59.413916000019526,
+        58.19270799998776,
+        57.963292000000365,
+        57.5085830000171
+      ],
+      "medianMs": 58.19270799998776,
+      "relative": {
+        "bytes": -0.054862704205769885,
+        "medianMs": 0.10280210889720065
+      }
+    },
+    {
+      "name": "bin/which",
+      "variant": "O2",
+      "bytes": 67308,
+      "format": "ZPB1",
+      "instructions": 7593,
+      "debugBytes": 923913,
+      "coldMs": 58.34454099999857,
+      "warmMs": [
+        58.258042000001296,
+        58.299540999985766,
+        57.44662500001141,
+        58.0079160000023,
+        57.93141699998523
+      ],
+      "medianMs": 58.0079160000023,
+      "relative": {
+        "bytes": -0.06419186652763298,
+        "medianMs": 0.09930014079337335
+      }
+    },
+    {
+      "name": "bin/whoami",
+      "variant": "baseline",
+      "bytes": 41768,
+      "format": "ZPB1",
+      "instructions": 4467,
+      "debugBytes": 550109,
+      "coldMs": 33.243625000002794,
+      "warmMs": [
+        32.66462500000489,
+        32.326083000021754,
+        32.59366600000067,
+        32.33108300002641,
+        32.40099999998347
+      ],
+      "medianMs": 32.40099999998347,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/whoami",
+      "variant": "O0",
+      "bytes": 41768,
+      "format": "ZPB1",
+      "instructions": 4467,
+      "debugBytes": 550109,
+      "coldMs": 33.01358299999265,
+      "warmMs": [
+        32.38333300000522,
+        32.75433399999747,
+        32.4864579999994,
+        32.30591700001969,
+        32.53841599999578
+      ],
+      "medianMs": 32.4864579999994,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0026375111884193725
+      }
+    },
+    {
+      "name": "bin/whoami",
+      "variant": "O1",
+      "bytes": 38792,
+      "format": "ZPB1",
+      "instructions": 4218,
+      "debugBytes": 519137,
+      "coldMs": 35.63583399998606,
+      "warmMs": [
+        38.48004100000253,
+        35.21875,
+        35.58924999998999,
+        35.25195800000802,
+        35.80354100000113
+      ],
+      "medianMs": 35.58924999998999,
+      "relative": {
+        "bytes": -0.07125071825320817,
+        "medianMs": 0.09839974074899382
+      }
+    },
+    {
+      "name": "bin/whoami",
+      "variant": "O2",
+      "bytes": 38468,
+      "format": "ZPB1",
+      "instructions": 4228,
+      "debugBytes": 520123,
+      "coldMs": 35.64300000001094,
+      "warmMs": [
+        35.91745799998171,
+        35.3360410000023,
+        35.46374999999534,
+        35.19954199998756,
+        36.15200000000186
+      ],
+      "medianMs": 35.46374999999534,
+      "relative": {
+        "bytes": -0.07900785290174295,
+        "medianMs": 0.09452640350647923
+      }
+    },
+    {
+      "name": "bin/xargs",
+      "variant": "baseline",
+      "bytes": 111901,
+      "format": "ZPB1",
+      "instructions": 12558,
+      "debugBytes": 1521837,
+      "coldMs": 83.55066700000316,
+      "warmMs": [
+        82.76350000000093,
+        82.60004200000549,
+        82.88158300000941,
+        82.8468339999963,
+        83.3480419999978
+      ],
+      "medianMs": 82.8468339999963,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/xargs",
+      "variant": "O0",
+      "bytes": 111901,
+      "format": "ZPB1",
+      "instructions": 12558,
+      "debugBytes": 1521837,
+      "coldMs": 83.22237500001211,
+      "warmMs": [
+        82.97066699998686,
+        82.8827089999977,
+        83.26975000000675,
+        82.861791000003,
+        82.94270899999538
+      ],
+      "medianMs": 82.94270899999538,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.0011572560515598074
+      }
+    },
+    {
+      "name": "bin/xargs",
+      "variant": "O1",
+      "bytes": 106235,
+      "format": "ZPB1",
+      "instructions": 12009,
+      "debugBytes": 1454229,
+      "coldMs": 91.76908299999195,
+      "warmMs": [
+        91.57449999998789,
+        91.81133299999055,
+        92.55704200000037,
+        91.34466699999757,
+        91.12712499999907
+      ],
+      "medianMs": 91.57449999998789,
+      "relative": {
+        "bytes": -0.050634042591219064,
+        "medianMs": 0.10534700698389976
+      }
+    },
+    {
+      "name": "bin/xargs",
+      "variant": "O2",
+      "bytes": 105622,
+      "format": "ZPB1",
+      "instructions": 12021,
+      "debugBytes": 1455216,
+      "coldMs": 91.48395799999707,
+      "warmMs": [
+        91.03637499999604,
+        91.09583400000702,
+        91.3044579999987,
+        90.95183299999917,
+        92.18758299999172
+      ],
+      "medianMs": 91.09583400000702,
+      "relative": {
+        "bytes": -0.0561120990875863,
+        "medianMs": 0.09956928468758486
+      }
+    },
+    {
+      "name": "bin/yes",
+      "variant": "baseline",
+      "bytes": 48022,
+      "format": "ZPB1",
+      "instructions": 5129,
+      "debugBytes": 623816,
+      "coldMs": 40.68399999997928,
+      "warmMs": [
+        39.42741699999897,
+        39.207041000016034,
+        40.92249999998603,
+        39.44350000002305,
+        39.93095800001174
+      ],
+      "medianMs": 39.44350000002305,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0
+      }
+    },
+    {
+      "name": "bin/yes",
+      "variant": "O0",
+      "bytes": 48022,
+      "format": "ZPB1",
+      "instructions": 5129,
+      "debugBytes": 623816,
+      "coldMs": 42.280832999997074,
+      "warmMs": [
+        39.53774999998859,
+        39.88679200000479,
+        39.86691699997755,
+        39.75250000000233,
+        39.620166999986395
+      ],
+      "medianMs": 39.75250000000233,
+      "relative": {
+        "bytes": 0,
+        "medianMs": 0.007833990390789358
+      }
+    },
+    {
+      "name": "bin/yes",
+      "variant": "O1",
+      "bytes": 44745,
+      "format": "ZPB1",
+      "instructions": 4868,
+      "debugBytes": 591696,
+      "coldMs": 44.05741599999601,
+      "warmMs": [
+        43.0195830000157,
+        42.87612500000978,
+        43.053458000009414,
+        42.990583000006154,
+        42.744249999988824
+      ],
+      "medianMs": 42.990583000006154,
+      "relative": {
+        "bytes": -0.06823955686976801,
+        "medianMs": 0.08992820109729194
+      }
+    },
+    {
+      "name": "bin/yes",
+      "variant": "O2",
+      "bytes": 44416,
+      "format": "ZPB1",
+      "instructions": 4880,
+      "debugBytes": 593048,
+      "coldMs": 43.533792000001995,
+      "warmMs": [
+        43.045624999998836,
+        42.79033300001174,
+        43.918541999999434,
+        42.99833299999591,
+        43.55549999998766
+      ],
+      "medianMs": 43.045624999998836,
+      "relative": {
+        "bytes": -0.07509058348257047,
+        "medianMs": 0.09132366549554893
+      }
+    }
+  ]
+}

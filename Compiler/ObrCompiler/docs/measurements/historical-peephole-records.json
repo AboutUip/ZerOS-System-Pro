@@ -1,0 +1,133 @@
+{
+  "shallow": "false",
+  "count": 20,
+  "history": [
+    {
+      "commit": "0312037687f8673222036c31c8105d1d6eb37f7e",
+      "matches": [
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/src/codegen/Generate.cpp:2:#include \"Peephole.hpp\"",
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/src/codegen/Generate.cpp:47:      peel(result.text, result.sites, options_);",
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/src/codegen/Peephole.cpp:1:#include \"Peephole.hpp\"",
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/src/codegen/Peephole.cpp:1004:void peel(std::string& text, std::vector<DebugSite>& sites, const OptimizationOptions& options) {",
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/src/codegen/Peephole.hpp:16:void peel(std::string& text, std::vector<DebugSite>& sites, const OptimizationOptions& options = {});",
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/tests/PeepholeCheck.cpp:1:#include \"../src/codegen/Peephole.hpp\"",
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/tests/PeepholeCheck.cpp:20:  obr::peel(text, sites, options);",
+        "0312037687f8673222036c31c8105d1d6eb37f7e:Compiler/ObrCompiler/tests/PeepholeCheck.cpp:34:    obr::peel(runtime, runtimeSites);"
+      ],
+      "status": 0
+    },
+    {
+      "commit": "7bf78874240d695ff384cbf75efc1a3198036677",
+      "matches": [
+        "7bf78874240d695ff384cbf75efc1a3198036677:Compiler/ObrCompiler/src/codegen/Generate.cpp:2:#include \"Peephole.hpp\"",
+        "7bf78874240d695ff384cbf75efc1a3198036677:Compiler/ObrCompiler/src/codegen/Generate.cpp:37:      /* 窥孔编出来的内核停在 Starting，自检画面被固件盖住。先关掉，等内核能到提示符再开。 */",
+        "7bf78874240d695ff384cbf75efc1a3198036677:Compiler/ObrCompiler/src/codegen/Peephole.cpp:1:#include \"Peephole.hpp\"",
+        "7bf78874240d695ff384cbf75efc1a3198036677:Compiler/ObrCompiler/src/codegen/Peephole.cpp:978:void peel(std::string& text, std::vector<DebugSite>& sites) {",
+        "7bf78874240d695ff384cbf75efc1a3198036677:Compiler/ObrCompiler/src/codegen/Peephole.hpp:15:void peel(std::string& text, std::vector<DebugSite>& sites);"
+      ],
+      "status": 0
+    },
+    {
+      "commit": "24708de2f36196c7f71d13e170b47a4f42c4a1aa",
+      "matches": [
+        "24708de2f36196c7f71d13e170b47a4f42c4a1aa:Compiler/Obr/src/codegen/Generate.cpp:2:#include \"Peephole.hpp\"",
+        "24708de2f36196c7f71d13e170b47a4f42c4a1aa:Compiler/Obr/src/codegen/Generate.cpp:37:      /* 窥孔编出来的内核停在 Starting，自检画面被固件盖住。先关掉，等内核能到提示符再开。 */",
+        "24708de2f36196c7f71d13e170b47a4f42c4a1aa:Compiler/Obr/src/codegen/Peephole.cpp:1:#include \"Peephole.hpp\"",
+        "24708de2f36196c7f71d13e170b47a4f42c4a1aa:Compiler/Obr/src/codegen/Peephole.cpp:978:void peel(std::string& text, std::vector<DebugSite>& sites) {",
+        "24708de2f36196c7f71d13e170b47a4f42c4a1aa:Compiler/Obr/src/codegen/Peephole.hpp:15:void peel(std::string& text, std::vector<DebugSite>& sites);"
+      ],
+      "status": 0
+    },
+    {
+      "commit": "109bc7c93bef6407f8ec052a208cc2c425fcd726",
+      "matches": [
+        "109bc7c93bef6407f8ec052a208cc2c425fcd726:Compiler/Obr/src/codegen/Generate.cpp:2:#include \"Peephole.hpp\"",
+        "109bc7c93bef6407f8ec052a208cc2c425fcd726:Compiler/Obr/src/codegen/Generate.cpp:37:      /* 窥孔编出来的内核停在 Starting，自检画面被固件盖住。先关掉，等内核能到提示符再开。 */",
+        "109bc7c93bef6407f8ec052a208cc2c425fcd726:Compiler/Obr/src/codegen/Peephole.cpp:1:#include \"Peephole.hpp\"",
+        "109bc7c93bef6407f8ec052a208cc2c425fcd726:Compiler/Obr/src/codegen/Peephole.cpp:978:void peel(std::string& text, std::vector<DebugSite>& sites) {",
+        "109bc7c93bef6407f8ec052a208cc2c425fcd726:Compiler/Obr/src/codegen/Peephole.hpp:15:void peel(std::string& text, std::vector<DebugSite>& sites);"
+      ],
+      "status": 0
+    },
+    {
+      "commit": "40c56a9f1f57a63185dfa305bbde72cde0233d0f",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "cb913349568a7163f6722bd4d0d2515e4bfb83e9",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "a68b5b007256588450222e7614ce1b4ec9b76e03",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "2752779c0ac0a1fac62707e1932ab533dadb0385",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "b84f83e0abd188ad2661a10bfa0732349f9afe52",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "6d3dcd30cc39ab98219408b67373c6702a4317f2",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "3d5b6fe8712e156ce598dc3ac79f6cf9818d628a",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "3bcacb047d283c9c77c56cba1f097b3109c458a7",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "954d188311624a822a1195895900e877586478b4",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "51ebe9319f26134c40b97c0759510b437b092aa5",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "2eba0e4b8c10b52860604e353779063756be1e4f",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "d7200a6a29a3e3dd6f7f8ccbb1bea4f1bf36e265",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "5c55f604d5d98a0bf7976137b378999334d76363",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "1e2a96772b4d913e86b84daec9152010bd05894c",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "da03908af29f383e630dab861891939df45509e6",
+      "matches": [],
+      "status": 1
+    },
+    {
+      "commit": "f981f7388d06e3b34b821c943a272064fe4f6448",
+      "matches": [],
+      "status": 1
+    }
+  ]
+}

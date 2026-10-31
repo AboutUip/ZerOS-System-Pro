@@ -1,0 +1,96 @@
+{
+  "source": {
+    "file": "<repo>/Compiler/ObrCompiler/tests/fixtures/signal-smoke.obr",
+    "sha256": "7462e827622af7d940a4019e8b3beb10c1e79e6ebe4a75f9c5674020a13ac682"
+  },
+  "companion": {
+    "file": "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+    "sha256": "6c89885c5f924e729aa5b6aad01b43d7d914c5aff4b199f61d22f53499d908b2"
+  },
+  "frozen": {
+    "baseline": {
+      "path": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/bin/baseline",
+      "sha256": "f4c5697da8ac93094f3176e8b7acbabfa68b683fd22b44df04bebc01a41dca3c"
+    },
+    "candidate": {
+      "path": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/bin/candidate",
+      "sha256": "b671ce193549a37de26201cd8d8e2fa3cdc90e9ec1bae4d4eba9768998018359"
+    }
+  },
+  "rows": [
+    {
+      "variant": "baseline",
+      "compiler": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/bin/baseline",
+      "args": [
+        "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/source/signal-smoke.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-debug",
+        "-o",
+        "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/baseline"
+      ],
+      "file": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/baseline",
+      "sha256": "7d16926798948c82da624d70f0d848f6621ad798f0b8a1fcc29f75b662cfe935",
+      "bytes": 29166,
+      "installed": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/baseline/NasRoot/bin/compiler-signal-smoke"
+    },
+    {
+      "variant": "O1",
+      "compiler": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/bin/candidate",
+      "args": [
+        "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/source/signal-smoke.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-O1",
+        "-debug",
+        "-o",
+        "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/O1"
+      ],
+      "file": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/O1",
+      "sha256": "3adc5a838e708eef63cef5aab3a187dfd7a4c2eb3b637d927ef5159fd3e71ae6",
+      "bytes": 26998,
+      "installed": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/O1/NasRoot/bin/compiler-signal-smoke"
+    },
+    {
+      "variant": "O2",
+      "compiler": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/bin/candidate",
+      "args": [
+        "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/source/signal-smoke.obr",
+        "<repo>/Compiler/ObrCompiler/lib/obr.proc.obr",
+        "-pie",
+        "-slot",
+        "0",
+        "-I",
+        "<repo>/Compiler/ObrCompiler/lib",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Memory",
+        "-I",
+        "<repo>/ZerOS-PRO/Hardware/Motherboard",
+        "-O2",
+        "-debug",
+        "-o",
+        "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/O2"
+      ],
+      "file": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/signal-build/O2",
+      "sha256": "21813fc50b5a9eed45450d1df5cc082794e01206296eb5fce6a150ddd7b203c7",
+      "bytes": 26671,
+      "installed": "<repo>/Toolchain/CompilerCheck/integration-strict-v5/O2/NasRoot/bin/compiler-signal-smoke"
+    }
+  ]
+}

@@ -165,7 +165,7 @@ int scaleImmediate(const std::string& token) {
 
 int dispImmediate(const std::string& token) {
   const int64_t value = static_cast<int64_t>(bitsOf(token));
-  if (value < -128 || value > 127) fail("位移放不进 8 位 " + token);
+  if (value < -2147483648LL || value > 2147483647LL) fail("位移放不进 32 位 " + token);
   return static_cast<int>(value);
 }
 
@@ -231,7 +231,7 @@ bool supported(const std::vector<std::string>& parts) {
   return escape != nullptr && static_cast<int>(parts.size()) == escape->registers + 1;
 }
 
-Plan planOf(const std::vector<std::string>& parts) {
+Plan planOf(const std::vector<std::string>& parts, bool compact) {
   const std::string& head = parts[0];
   Plan plan;
   if (head == "rsp.bias" || head == "rsp.restore") {
@@ -255,7 +255,7 @@ Plan planOf(const std::vector<std::string>& parts) {
   if (head == "place") {
     if (parts.size() != 3) fail("无法编码 place");
     plan.kind = Kind::Place;
-    plan.size = 10;
+    plan.size = nativeImmediateSize(zapReg(parts[1]), bitsOf(parts[2]), compact);
     return plan;
   }
   if (head == "jz" || head == "jnz") {
@@ -274,13 +274,15 @@ Plan planOf(const std::vector<std::string>& parts) {
   if (head == "lea" || head == "load.scale" || head == "store.scale") {
     if (parts.size() != 6) fail("无法编码 " + head);
     plan.kind = Kind::Scale;
-    plan.size = 5;
+    const int opcode = head == "store.scale" ? 0x89 : head == "load.scale" ? 0x8B : 0x8D;
+    plan.size = static_cast<int>(nativeScaled(opcode, zapReg(parts[1]), zapReg(parts[2]), zapReg(parts[3]), scaleImmediate(parts[4]), dispImmediate(parts[5]), compact).size());
+    if (plan.size == 0) fail("无法编码 " + head);
     return plan;
   }
   if (absoluteMemory(head)) {
     if (parts.size() != 3 || absoluteAsIndirect(head) == nullptr) fail("无法编码 " + head);
     plan.kind = Kind::Absolute;
-    plan.size = 16;
+    plan.size = nativeImmediateSize(kScratch, bitsOf(parts[2]), compact) + 6;
     return plan;
   }
   const WideForm* indirect = findIndirect(head);
@@ -324,7 +326,7 @@ void appendWide(std::vector<uint8_t>& out, int opcode, int dest, int left, int r
   appendByte(out, static_cast<uint8_t>(right));
 }
 
-void emitOne(std::vector<uint8_t>& out, const std::vector<std::string>& parts, const Plan& plan, int64_t at, const std::vector<int>& starts) {
+void emitOne(std::vector<uint8_t>& out, const std::vector<std::string>& parts, const Plan& plan, int64_t at, const std::vector<int>& starts, bool compact) {
   if (plan.kind == Kind::Bias) {
     const uint8_t bytes[] = {0x48, 0x83, 0xEC, 0x08};
     out.insert(out.end(), bytes, bytes + 4);
@@ -346,7 +348,7 @@ void emitOne(std::vector<uint8_t>& out, const std::vector<std::string>& parts, c
     return;
   }
   if (plan.kind == Kind::Place) {
-    const std::vector<uint8_t> bytes = nativeMovImm(zapReg(parts[1]), bitsOf(parts[2]));
+    const std::vector<uint8_t> bytes = nativeMovImm(zapReg(parts[1]), bitsOf(parts[2]), compact);
     out.insert(out.end(), bytes.begin(), bytes.end());
     return;
   }
@@ -376,7 +378,7 @@ void emitOne(std::vector<uint8_t>& out, const std::vector<std::string>& parts, c
     const int scale = scaleImmediate(parts[4]);
     const int disp = dispImmediate(parts[5]);
     const int opcode = parts[0] == "store.scale" ? 0x89 : parts[0] == "load.scale" ? 0x8B : 0x8D;
-    const std::vector<uint8_t> bytes = nativeScaled(opcode, zapReg(parts[1]), zapReg(parts[2]), zapReg(parts[3]), scale, disp);
+    const std::vector<uint8_t> bytes = nativeScaled(opcode, zapReg(parts[1]), zapReg(parts[2]), zapReg(parts[3]), scale, disp, compact);
     if (bytes.size() != static_cast<std::size_t>(plan.size)) fail("无法编码 " + parts[0]);
     out.insert(out.end(), bytes.begin(), bytes.end());
     return;
@@ -386,7 +388,7 @@ void emitOne(std::vector<uint8_t>& out, const std::vector<std::string>& parts, c
     if (form == nullptr) fail("无法编码 " + parts[0]);
     const uint64_t address = bitsOf(parts[2]);
     if (address % 8 != 0) fail("绝对地址没有按 8 位对齐 " + parts[2]);
-    const std::vector<uint8_t> mov = nativeMovImm(kScratch, address);
+    const std::vector<uint8_t> mov = nativeMovImm(kScratch, address, compact);
     out.insert(out.end(), mov.begin(), mov.end());
     const bool store = form->registers == 1;
     const int value = zapReg(parts[1]);
@@ -425,14 +427,64 @@ void writeName(std::vector<uint8_t>& out, const std::string& name) {
   for (unsigned char item : name) appendByte(out, item);
 }
 
+// 名称/元数不足以证明可编码：寄存器、立即数、返回和跳转目标也必须满足模板。
+std::string nativeReason(const std::vector<std::string>& parts, std::size_t count) {
+  if (!supported(parts)) return "opcode/arity has no registered native encoding";
+  try {
+    const Plan plan = planOf(parts, false);
+    if (plan.kind == Kind::Return) {
+      const int reg = zapReg(parts[1]);
+      if (reg != 9 && reg != 10) return "native return requires r6 or r7";
+    } else if (plan.kind == Kind::Jump || plan.kind == Kind::Call) {
+      const int reg = zapReg(parts[1]);
+      if (plan.kind == Kind::Call && reg != 9 && reg != 10) return "native link requires r6 or r7";
+      if (jumpIndex(parts[2]) >= count) return "jump target outside image";
+    } else if (plan.kind == Kind::Absolute) {
+      (void)zapReg(parts[1]);
+      if (bitsOf(parts[2]) % 8 != 0) return "native absolute address requires octet alignment";
+    } else if (plan.kind == Kind::Indirect || plan.kind == Kind::Wide || plan.kind == Kind::Escape) {
+      for (std::size_t i = 1; i < parts.size(); ++i) (void)zapReg(parts[i]);
+    }
+  } catch (const Error& error) { return error.what(); }
+  return "";
+}
+
 }  // namespace
 
-bool nativeReady(const std::vector<std::string>& lines) {
-  for (const std::string& line : lines) {
-    const std::vector<std::string> parts = tokensOf(line);
+bool nativeLoweringReady(const std::string& text) {
+  std::istringstream input(text);
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.empty() || line.back() == ':') continue;
+    const auto parts = tokensOf(line);
+    if (parts.empty()) continue;
+    if (parts[0] == "ret" && parts.size() == 1) continue;
+    if (parts[0] == "call" && parts.size() == 2) continue;
     if (!supported(parts)) return false;
   }
   return true;
+}
+
+bool nativeReady(const std::vector<std::string>& lines) {
+  for (const std::string& line : lines) {
+    if (!nativeReason(tokensOf(line), lines.size()).empty()) return false;
+  }
+  return true;
+}
+
+void writeNativeCoverage(const std::string& path, const std::vector<std::string>& lines, const std::string& eligibility) {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) fail("写不出 " + path);
+  out << "obrc-native-coverage 1\nselection\t" << eligibility << "\n";
+  std::size_t ready = 0;
+  std::ostringstream issues;
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    const std::string reason = nativeReason(tokensOf(lines[i]), lines.size());
+    if (reason.empty()) ++ready;
+    else issues << i << '\t' << reason << '\t' << lines[i] << '\n';
+  }
+  out << "encodable\t" << ready << "\ntotal\t" << lines.size() << "\nindex\treason\tinstruction\n" << issues.str();
+  if (!out) fail("写不出 " + path);
 }
 
 bool plainField(const std::string& text) {
@@ -459,7 +511,7 @@ void writeNativeDebug(const std::string& path, const std::vector<DebugSite>& sit
   if (!output) fail("写不出 " + path);
 }
 
-void writeNativeProgram(const std::string& path, const std::vector<std::string>& lines, const std::vector<NativeSymbol>& symbols, const std::vector<DebugSite>* sites) {
+void writeNativeProgram(const std::string& path, const std::vector<std::string>& lines, const std::vector<NativeSymbol>& symbols, const std::vector<DebugSite>* sites, const OptimizationOptions& options) {
   if (kUi % 8 != 0 || (kUi / 8) % 16 != 0) fail("硬件栈没有按 16 个八位组对齐");
   std::vector<std::vector<std::string>> tokens;
   std::vector<Plan> plans;
@@ -469,20 +521,19 @@ void writeNativeProgram(const std::string& path, const std::vector<std::string>&
     const std::vector<std::string> parts = tokensOf(line);
     if (parts.empty()) fail("空指令");
     tokens.push_back(parts);
-    plans.push_back(planOf(parts));
+    plans.push_back(planOf(parts, options.compact()));
   }
-  const int prologue = 10;
+  std::vector<uint8_t> code = nativeMovImm(4, static_cast<uint64_t>(kUi / 8), options.compact());
+  const int prologue = static_cast<int>(code.size());
   std::vector<int> starts(lines.size(), 0);
   int cursor = prologue;
   for (std::size_t index = 0; index < plans.size(); index += 1) {
     starts[index] = cursor;
     cursor += plans[index].size;
   }
-  std::vector<uint8_t> code = nativeMovImm(4, static_cast<uint64_t>(kUi / 8));
-  if (static_cast<int>(code.size()) != prologue) fail("栈指针入口长度不对");
   for (std::size_t index = 0; index < plans.size(); index += 1) {
     const std::size_t before = code.size();
-    emitOne(code, tokens[index], plans[index], starts[index], starts);
+    emitOne(code, tokens[index], plans[index], starts[index], starts, options.compact());
     if (static_cast<int>(code.size() - before) != plans[index].size) {
       fail("指令长度和计划不一致 " + lines[index] + " 实际 " + std::to_string(code.size() - before) + " 计划 " + std::to_string(plans[index].size));
     }

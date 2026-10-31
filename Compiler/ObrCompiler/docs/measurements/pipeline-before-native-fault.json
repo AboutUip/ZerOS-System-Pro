@@ -1,0 +1,660 @@
+[
+  {
+    "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518",
+    "variant": "O1",
+    "firstPublicFaultSnapshotTime": 1793357552326.46,
+    "tail": [
+      {
+        "time": 1793357517264.3352,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 455,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 7,
+          "data": "0"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357517276.55,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 456,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357517276.79,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 457,
+        "kind": "reply",
+        "data": {
+          "from": 7,
+          "to": 2,
+          "data": "30064771078"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357517276.7952,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 458,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 7,
+          "service": "6",
+          "native": false,
+          "home": "1880096768",
+          "executed": 5898
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357517397.8452,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 459,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803780"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357517397.86,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 460,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "4",
+          "native": false,
+          "home": "1611661312",
+          "executed": 620581
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521396.705,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 461,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 7,
+          "data": "0"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521432.4202,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 462,
+        "kind": "reply",
+        "data": {
+          "from": 7,
+          "to": 2,
+          "data": "30064771100"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521432.425,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 463,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 7,
+          "service": "28",
+          "native": false,
+          "home": "1880096768",
+          "executed": 6050
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521529.8352,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 464,
+        "kind": "control-write",
+        "data": {
+          "actor": 2,
+          "ordinal": 6,
+          "home": "1611661312",
+          "address": "1611661440",
+          "width": 64,
+          "offset": "128",
+          "value": "1",
+          "token": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3:control-write:105",
+          "evidence": "successful-native-writeback"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521529.84,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 465,
+        "kind": "control-write",
+        "data": {
+          "actor": 2,
+          "ordinal": 6,
+          "home": "1611661312",
+          "address": "1611661504",
+          "width": 64,
+          "offset": "192",
+          "value": "106235",
+          "token": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3:control-write:106",
+          "evidence": "successful-native-writeback"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521529.8452,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 466,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521547.8652,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 467,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803793"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521547.87,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 468,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "17",
+          "native": false,
+          "home": "1611661312",
+          "executed": 628902
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521929.2202,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 469,
+        "kind": "installed",
+        "data": {
+          "target": "3",
+          "length": "106235",
+          "token": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3:install:107",
+          "executed": 15721
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522113.01,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 470,
+        "kind": "reply",
+        "data": {
+          "from": 3,
+          "to": 2,
+          "data": "12884901890"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522113.03,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 471,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15802
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522115.11,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 472,
+        "kind": "control-write",
+        "data": {
+          "actor": 2,
+          "ordinal": 6,
+          "home": "1611661312",
+          "address": "1611661504",
+          "width": 64,
+          "offset": "192",
+          "value": "5",
+          "token": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3:control-write:108",
+          "evidence": "successful-native-writeback"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522115.1152,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 473,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522124.3801,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 474,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 3,
+          "data": "944259456"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522124.5251,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 475,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803801"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522124.53,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 476,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "25",
+          "native": false,
+          "home": "1611661312",
+          "executed": 629256
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522132.4702,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 477,
+        "kind": "reply",
+        "data": {
+          "from": 3,
+          "to": 2,
+          "data": "12884901890"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522132.4702,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 478,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15868
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      }
+    ]
+  },
+  {
+    "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087",
+    "variant": "O2",
+    "firstPublicFaultSnapshotTime": 1793357620115.42,
+    "tail": [
+      {
+        "time": 1793357586710.245,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 458,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 7,
+          "service": "6",
+          "native": false,
+          "home": "1880096768",
+          "executed": 5500
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357586803.07,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 459,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803780"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357586803.09,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 460,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "4",
+          "native": false,
+          "home": "1611661312",
+          "executed": 487415
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589327.615,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 461,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 7,
+          "data": "0"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589362.755,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 462,
+        "kind": "reply",
+        "data": {
+          "from": 7,
+          "to": 2,
+          "data": "30064771100"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589362.76,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 463,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 7,
+          "service": "28",
+          "native": false,
+          "home": "1880096768",
+          "executed": 5652
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589423.335,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 464,
+        "kind": "control-write",
+        "data": {
+          "actor": 2,
+          "ordinal": 6,
+          "home": "1611661312",
+          "address": "1611661440",
+          "width": 64,
+          "offset": "128",
+          "value": "1",
+          "token": "c49171c4-5841-4f7a-a672-250f3e708b1b:control-write:105",
+          "evidence": "successful-native-writeback"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589423.335,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 465,
+        "kind": "control-write",
+        "data": {
+          "actor": 2,
+          "ordinal": 6,
+          "home": "1611661312",
+          "address": "1611661504",
+          "width": 64,
+          "offset": "192",
+          "value": "105622",
+          "token": "c49171c4-5841-4f7a-a672-250f3e708b1b:control-write:106",
+          "evidence": "successful-native-writeback"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589423.35,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 466,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589440.58,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 467,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803793"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589440.595,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 468,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "17",
+          "native": false,
+          "home": "1611661312",
+          "executed": 495655
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589810.515,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 469,
+        "kind": "installed",
+        "data": {
+          "target": "3",
+          "length": "105622",
+          "token": "c49171c4-5841-4f7a-a672-250f3e708b1b:install:107",
+          "executed": 15677
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589934.38,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 470,
+        "kind": "reply",
+        "data": {
+          "from": 3,
+          "to": 2,
+          "data": "12884901890"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589934.4,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 471,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15758
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589936.165,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 472,
+        "kind": "control-write",
+        "data": {
+          "actor": 2,
+          "ordinal": 6,
+          "home": "1611661312",
+          "address": "1611661504",
+          "width": 64,
+          "offset": "192",
+          "value": "5",
+          "token": "c49171c4-5841-4f7a-a672-250f3e708b1b:control-write:108",
+          "evidence": "successful-native-writeback"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589936.175,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 473,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589943.765,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 474,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803801"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589943.775,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 475,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "25",
+          "native": false,
+          "home": "1611661312",
+          "executed": 495982
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589944.31,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 476,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 3,
+          "data": "944259456"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589955.41,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 477,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589955.445,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 478,
+        "kind": "reply",
+        "data": {
+          "from": 3,
+          "to": 2,
+          "data": "12884901890"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589955.45,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 479,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15824
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589962.4,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 480,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803782"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589962.41,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 481,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "6",
+          "native": false,
+          "home": "1611661312",
+          "executed": 496101
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      }
+    ]
+  }
+]

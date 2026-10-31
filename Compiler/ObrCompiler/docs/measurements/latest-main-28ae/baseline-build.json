@@ -1,0 +1,8 @@
+{
+  "ref": "28ae11e0807b88c62aebbbcacc9526a4b26061d7",
+  "cmake": "cmake version 4.4.4",
+  "sha256": "81228fda8930a65e7e8c2311a0d21088df74e8ceeaa99d84cb09c71173d6d5ba",
+  "buildType": "Release",
+  "platform": "darwin",
+  "arch": "arm64"
+}

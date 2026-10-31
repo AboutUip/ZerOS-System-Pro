@@ -1,0 +1,295 @@
+[
+  {
+    "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518",
+    "variant": "O1",
+    "time": 1793357552326.46,
+    "fault": {
+      "Code": 0,
+      "Source": 0,
+      "Text": "ERROR code=0 source=0 core=2 at=4 op=div site=- text=native instruction failed stack=Error: native instruction failed | at Ht (http://127.0.0.1:5290/assets/CpuDispatch.js?cpu=80:1:256664) draw=[ZerOS.Hardware.Motherboard.CpuSeat] fault pict",
+      "Core": -1,
+      "Index": 0,
+      "Op": "",
+      "Site": "-",
+      "Stack": [],
+      "Window": true
+    },
+    "precedingCpu": [
+      {
+        "time": 1793357521547.87,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 468,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "17",
+          "native": false,
+          "home": "1611661312",
+          "executed": 628902
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357521929.2202,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 469,
+        "kind": "installed",
+        "data": {
+          "target": "3",
+          "length": "106235",
+          "token": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3:install:107",
+          "executed": 15721
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522113.01,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 470,
+        "kind": "reply",
+        "data": {
+          "from": 3,
+          "to": 2,
+          "data": "12884901890"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522113.03,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 471,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15802
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522115.1152,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 473,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522124.3801,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 474,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 3,
+          "data": "944259456"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522124.5251,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 475,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803801"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522124.53,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 476,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "25",
+          "native": false,
+          "home": "1611661312",
+          "executed": 629256
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522132.4702,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 477,
+        "kind": "reply",
+        "data": {
+          "from": 3,
+          "to": 2,
+          "data": "12884901890"
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      },
+      {
+        "time": 1793357522132.4702,
+        "source": "3bd25288-6f69-4cf0-aaa2-175dae8d1aa3",
+        "order": 478,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15868
+        },
+        "run": "782fc0f2-d3e5-4962-8bc7-8e2df155d518"
+      }
+    ]
+  },
+  {
+    "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087",
+    "variant": "O2",
+    "time": 1793357620115.42,
+    "fault": {
+      "Code": 0,
+      "Source": 0,
+      "Text": "ERROR code=0 source=0 core=2 at=4 op=div site=- text=native instruction failed stack=Error: native instruction failed | at Ht (http://127.0.0.1:5290/assets/CpuDispatch.js?cpu=80:1:256664) draw=[ZerOS.Hardware.Motherboard.CpuSeat] fault pict",
+      "Core": -1,
+      "Index": 0,
+      "Op": "",
+      "Site": "-",
+      "Stack": [],
+      "Window": true
+    },
+    "precedingCpu": [
+      {
+        "time": 1793357589934.4,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 471,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15758
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589936.175,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 473,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589943.765,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 474,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803801"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589943.775,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 475,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "25",
+          "native": false,
+          "home": "1611661312",
+          "executed": 495982
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589944.31,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 476,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 3,
+          "data": "944259456"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589955.41,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 477,
+        "kind": "reply",
+        "data": {
+          "from": 2,
+          "to": 6,
+          "data": "0"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589955.445,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 478,
+        "kind": "reply",
+        "data": {
+          "from": 3,
+          "to": 2,
+          "data": "12884901890"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589955.45,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 479,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 3,
+          "service": "2",
+          "native": false,
+          "home": "806354944",
+          "executed": 15824
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589962.4,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 480,
+        "kind": "reply",
+        "data": {
+          "from": 6,
+          "to": 2,
+          "data": "25769803782"
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      },
+      {
+        "time": 1793357589962.41,
+        "source": "c49171c4-5841-4f7a-a672-250f3e708b1b",
+        "order": 481,
+        "kind": "syscall",
+        "data": {
+          "ordinal": 6,
+          "service": "6",
+          "native": false,
+          "home": "1611661312",
+          "executed": 496101
+        },
+        "run": "ad6cfb92-05ed-4cf3-b9e6-c2ffea0e9087"
+      }
+    ]
+  }
+]

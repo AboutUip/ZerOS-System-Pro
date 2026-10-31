@@ -15,10 +15,10 @@ bool scaleOf(long long bits, int& scale) {
   return true;
 }
 
-bool matchScaled(const Expr& address, const Expr*& base, const Expr*& index, int& scale, int& disp) {
+bool matchScaled(const Expr& address, const Expr*& base, const Expr*& index, int& scale, int& disp, bool wideDisp) {
   if (address.kind == Expr::Kind::Cast) {
     if (address.kids.empty()) return false;
-    return matchScaled(address.kids[0], base, index, scale, disp);
+    return matchScaled(address.kids[0], base, index, scale, disp, wideDisp);
   }
   const Expr* node = &address;
   disp = 0;
@@ -36,7 +36,7 @@ bool matchScaled(const Expr& address, const Expr*& base, const Expr*& index, int
       const long long bits = lit->integer;
       if (bits % 8 != 0) return false;
       const long long octets = bits / 8;
-      if (octets < -128 || octets > 127) return false;
+      if (wideDisp ? (octets < -2147483648LL || octets > 2147483647LL) : (octets < -128 || octets > 127)) return false;
       disp = static_cast<int>(octets);
       node = rest;
     }
@@ -73,12 +73,22 @@ bool matchScaled(const Expr& address, const Expr*& base, const Expr*& index, int
 }
 
 bool Generator::tryScaled(const Expr& address, const Expr* value, TypeKind type) {
+  if (!nativeTarget_ || (options_.level > 0 && !options_.scaled)) return false;
   if (type != TypeKind::Long && type != TypeKind::Ptr) return false;
   const Expr* base = nullptr;
   const Expr* index = nullptr;
   int scale = 0;
   int disp = 0;
-  if (!matchScaled(address, base, index, scale, disp)) return false;
+  if (!matchScaled(address, base, index, scale, disp, options_.level > 0)) return false;
+  long long baseBits = 0;
+  const bool knownBase = base->kind == Expr::Kind::LitInt
+      ? (baseBits = base->integer, true) : constantPtr(*base, baseBits);
+  const bool provenAligned = knownBase && baseBits >= 0 && baseBits % 8 == 0;
+  // 新增 disp32 匹配只处理可证明的地址表达式。未知基址/有副作用的下标仍走原 lowering，
+  // 保留表达式求值顺序、未对齐 fault 和整数溢出的原行为。
+  if ((disp < -128 || disp > 127)
+      && (!provenAligned || baseBits > 2147483647LL || index->kind != Expr::Kind::LitInt
+          || index->integer < 0 || index->integer > 1048576)) return false;
   int valueSlot = -1;
   if (value != nullptr) {
     gen(*value);
@@ -90,12 +100,14 @@ bool Generator::tryScaled(const Expr& address, const Expr* value, TypeKind type)
     storeSlot(valueSlot, TypeKind::Long);
   }
   gen(*base);
-  emit("place r1, 7");
-  emit("and r1, r0, r1");
-  const std::string aligned = fresh("a");
-  emit("jz r1, " + aligned);
-  emit("halt");
-  emit(aligned + ":");
+  if (!(options_.level > 0 && provenAligned)) {
+    emit("place r1, 7");
+    emit("and r1, r0, r1");
+    const std::string aligned = fresh("a");
+    emit("jz r1, " + aligned);
+    emit("halt");
+    emit(aligned + ":");
+  }
   emit("place r1, 3");
   emit("shr r0, r0, r1");
   const int baseSlot = words_ + temp_;
@@ -635,12 +647,12 @@ void Generator::arith(Tok op, TypeKind left, TypeKind right, TypeKind result) {
     if (result == TypeKind::String && op == Tok::Plus) {
       if (left == TypeKind::Char) {
         copy(0, 1);
-        boxChar();
+        boxChar(1);
         copy(1, 0);
       }
       if (right == TypeKind::Char) {
         copy(0, 2);
-        boxChar();
+        boxChar(2);
         copy(2, 0);
       }
       concat();

@@ -22,6 +22,7 @@ add_subdirectory(
 )
 
 add_test(NAME native-encode-check COMMAND native-encode-check)
+add_test(NAME peephole-check COMMAND peephole-check)
 
 add_test(
   NAME obrc-smoke

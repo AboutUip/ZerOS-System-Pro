@@ -1,5 +1,6 @@
 #include "Generator.hpp"
 #include "Peephole.hpp"
+#include "../image/NativeImage.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -32,9 +33,18 @@ Generated Generator::run(Unit& unit) {
     functions_ = &unit.functions;
     classes_ = &unit.classes;
     structs_ = &unit.structs;
+    // scaled 是 native 后端的内部行，PIE/shared/导入程序必须保留可写入 ZPB1 的通用 lowering。
+    nativeTarget_ = !options_.genericMemory && !unit.pie && !unit.shared && unit.imports.empty();
     auto finish = [&]() {
       Generated result{out_.str(), std::move(sites_)};
-      /* 窥孔编出来的内核停在 Starting，自检画面被固件盖住。先关掉，等内核能到提示符再开。 */
+      // 源位置和原样汇编边界一起经过流水线；O0 与单 pass 开关可回到基线定位。
+      if (nativeTarget_ && (result.text.find("load.scale ") != std::string::npos || result.text.find("store.scale ") != std::string::npos)
+          && !nativeLoweringReady(result.text)) {
+        OptimizationOptions fallback = options_;
+        fallback.genericMemory = true;
+        return Generator(fallback).run(unit);
+      }
+      peel(result.text, result.sites, options_);
       return result;
     };
     auto emitStubs = [&]() {
@@ -99,8 +109,8 @@ Generated Generator::run(Unit& unit) {
     return finish();
   }
 
-Generated generate(Unit& unit) {
-  Generator generator;
+Generated generate(Unit& unit, const OptimizationOptions& options) {
+  Generator generator(options);
   return generator.run(unit);
 }
 

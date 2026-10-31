@@ -18,8 +18,31 @@ bool same(const std::vector<std::uint8_t>& got, const std::vector<std::uint8_t>&
 
 }
 
-std::vector<std::uint8_t> nativeMovImm(int reg, std::uint64_t imm) {
+int nativeImmediateSize(int reg, std::uint64_t imm, bool compact) {
+  if (reg < 0 || reg > 15) return 0;
+  if (compact && imm <= 0xffffffffULL) return reg >= 8 ? 6 : 5;
+  if (compact && imm >= 0xffffffff80000000ULL) return 7;
+  return 10;
+}
+
+std::vector<std::uint8_t> nativeMovImm(int reg, std::uint64_t imm, bool compact) {
+  if (reg < 0 || reg > 15) return {};
   std::vector<std::uint8_t> out;
+  out.reserve(static_cast<std::size_t>(nativeImmediateSize(reg, imm, compact)));
+  // B8 imm32 零扩展；C7 /0 imm32 符号扩展。两者都保留 flags，不能用 xor 清零代替。
+  if (compact && imm <= 0xffffffffULL) {
+    if (reg >= 8) appendRex(out, false, false, false, true);
+    out.push_back(static_cast<std::uint8_t>(0xB8 + (reg & 7)));
+    for (int index = 0; index < 4; ++index) out.push_back(static_cast<std::uint8_t>(imm >> (index * 8)));
+    return out;
+  }
+  if (compact && imm >= 0xffffffff80000000ULL) {
+    appendRex(out, true, false, false, reg >= 8);
+    out.push_back(0xC7);
+    out.push_back(static_cast<std::uint8_t>(0xC0 | (reg & 7)));
+    for (int index = 0; index < 4; ++index) out.push_back(static_cast<std::uint8_t>(imm >> (index * 8)));
+    return out;
+  }
   appendRex(out, true, false, false, reg >= 8);
   out.push_back(static_cast<std::uint8_t>(0xB8 + (reg & 7)));
   for (int index = 0; index < 8; ++index) {
@@ -52,22 +75,30 @@ std::vector<std::uint8_t> nativeMovLoad(int dest, int base) {
   return out;
 }
 
-std::vector<std::uint8_t> nativeScaled(int opcode, int reg, int base, int index, int scale, int disp) {
+std::vector<std::uint8_t> nativeScaled(int opcode, int reg, int base, int index, int scale, int disp, bool compact) {
   int scaleCode = -1;
   if (scale == 1) scaleCode = 0;
   if (scale == 2) scaleCode = 1;
   if (scale == 4) scaleCode = 2;
   if (scale == 8) scaleCode = 3;
-  if (scaleCode < 0 || disp < -128 || disp > 127 || index == 4 || reg > 15 || base > 15 || index > 15) {
+  if (scaleCode < 0 || index == 4 || reg < 0 || base < 0 || index < 0 || reg > 15 || base > 15 || index > 15) {
     return {};
   }
   if (opcode != 0x8D && opcode != 0x8B && opcode != 0x89) return {};
   std::vector<std::uint8_t> out;
+  out.reserve(8);
   appendRex(out, true, reg >= 8, index >= 8, base >= 8);
   out.push_back(static_cast<std::uint8_t>(opcode));
-  out.push_back(static_cast<std::uint8_t>(0x40 | ((reg & 7) << 3) | 0x04));
+  const bool noDisp = compact && disp == 0 && (base & 7) != 5;
+  const bool shortDisp = disp >= -128 && disp <= 127;
+  const int mod = noDisp ? 0 : shortDisp ? 0x40 : 0x80;
+  out.push_back(static_cast<std::uint8_t>(mod | ((reg & 7) << 3) | 0x04));
   out.push_back(static_cast<std::uint8_t>((scaleCode << 6) | ((index & 7) << 3) | (base & 7)));
-  out.push_back(static_cast<std::uint8_t>(disp & 0xFF));
+  if (!noDisp) {
+    const int octets = shortDisp ? 1 : 4;
+    const auto bits = static_cast<std::uint32_t>(disp);
+    for (int at = 0; at < octets; ++at) out.push_back(static_cast<std::uint8_t>(bits >> (at * 8)));
+  }
   return out;
 }
 
@@ -98,6 +129,17 @@ bool nativeEncodeSelfCheck() {
   if (!same(nativeScaled(0x89, 0, 1, 2, 8, 0), {0x48, 0x89, 0x44, 0xD1, 0x00})) return false;
   if (!nativeScaled(0x89, 0, 1, 4, 8, 0).empty()) return false;
   if (!same(nativeMovImm(8, 1), {0x49, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})) return false;
+  if (!same(nativeMovImm(0, 0, true), {0xB8, 0, 0, 0, 0})) return false;
+  if (!same(nativeMovImm(8, 0xffffffffULL, true), {0x41, 0xB8, 0xff, 0xff, 0xff, 0xff})) return false;
+  if (!same(nativeMovImm(15, 0xffffffffffffffffULL, true), {0x49, 0xC7, 0xC7, 0xff, 0xff, 0xff, 0xff})) return false;
+  if (!same(nativeMovImm(0, 0xffffffff80000000ULL, true), {0x48, 0xC7, 0xC0, 0, 0, 0, 0x80})) return false;
+  if (nativeMovImm(0, 0xffffffff7fffffffULL, true).size() != 10) return false;
+  if (nativeMovImm(0, 0x100000000ULL, true).size() != 10) return false;
+  if (!nativeMovImm(16, 1, true).empty()) return false;
+  if (!same(nativeScaled(0x8B, 0, 1, 2, 8, 128), {0x48, 0x8B, 0x84, 0xD1, 0x80, 0, 0, 0})) return false;
+  if (!same(nativeScaled(0x8B, 0, 1, 2, 8, -129), {0x48, 0x8B, 0x84, 0xD1, 0x7f, 0xff, 0xff, 0xff})) return false;
+  if (!same(nativeScaled(0x8B, 0, 1, 2, 8, 0, true), {0x48, 0x8B, 0x04, 0xD1})) return false;
+  if (nativeScaled(0x8B, 0, 5, 2, 8, 0, true).size() != 5) return false;
   if (!same(nativeCore(0), {0x0F, 0x3F, 0x01, 0x00})) return false;
   if (!same(nativeEscape(2, {}), {0x0F, 0x3F, 0x02})) return false;
   if (!same(nativeEscape(3, {0, 1}), {0x0F, 0x3F, 0x03, 0x00, 0x01})) return false;

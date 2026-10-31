@@ -4,6 +4,8 @@
 # Toolchain
 Toolchain/node_modules/
 Toolchain/Dist/
+Toolchain/CompilerBuild/
+Toolchain/CompilerCheck/
 
 # Compiler host products. obrc writes an extensionless program. -zap also writes a .zap sibling.
 Compiler/**/build/

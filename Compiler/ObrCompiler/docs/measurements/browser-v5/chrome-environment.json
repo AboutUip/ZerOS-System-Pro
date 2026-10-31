@@ -1,0 +1,8 @@
+{
+  "observedVia": "Chrome chrome://version, native computer-use accessibility",
+  "runningVersion": "155.0.8059.40",
+  "arch": "arm64",
+  "os": "macOS 26.1 (25B78)",
+  "installedBundleVersion": "156.0.8078.76",
+  "note": "Runtime version is authoritative; the installed bundle has already updated without restarting the running browser."
+}

@@ -59,6 +59,8 @@ void Generator::emitLoad(TypeKind type) {
 
 void Generator::emitZap(const std::string& body, int startLine) {
     const int saved = site_.line;
+    const bool savedOpaque = site_.opaque;
+    site_.opaque = true;
     int current = startLine;
     std::size_t index = 0;
     while (index < body.size()) {
@@ -77,6 +79,7 @@ void Generator::emitZap(const std::string& body, int startLine) {
       if (broke && current > 0) current += 1;
     }
     site_.line = saved;
+    site_.opaque = savedOpaque;
     frameHeld_ = false;
   }
 
