@@ -25,7 +25,7 @@
 
 报告在页面线程读回，不写回。
 
-GPU 和内存线程没有挂 trace 页：它们不写 `Port`/`Insn`，也不写自己的 `Worker` 事件。它们的创建、就绪和 `error`/`messageerror` 由创建它们的主板线程观察；主板线程自己由页面线程观察。创建时还没挂页的线程不会补记 `spawn`/`ready`，只从下一次能看到的生命周期开始。
+GPU 线程在 `bind` 时拿到同一块 trace 页，写 `GpuStage`/`GpuPhase`；它仍不写 `Port`/`Insn`，自己的 `Worker` 生命周期由主板线程观察。内存线程没有挂 trace 页。创建时还没挂页的线程不会补记 `spawn`/`ready`，只从下一次能看到的生命周期开始。
 
 ## 2. 页布局
 
@@ -37,8 +37,8 @@ GPU 和内存线程没有挂 trace 页：它们不写 `Port`/`Insn`，也不写�
 | 版本 | `1` |
 | 容量 | `65536` 条 |
 | 记录宽度 | `32` 字节 |
-| 头部 | `64` 字节 |
-| 页大小 | `64 + 65536 × 32` 字节 |
+| 头部 | `1024` 字节 |
+| 页大小 | `1024 + 65536 × 32` 字节 |
 
 头部按 32 位字：
 
@@ -59,6 +59,12 @@ GPU 和内存线程没有挂 trace 页：它们不写 `Port`/`Insn`，也不写�
 | 13 | `MemTotalSlot` | 访存总耗时，微秒 |
 | 14 | `MemMaxSlot` | 单批最大耗时，微秒 |
 | 15 | 未用 | — |
+| 16–23 | `MemCoreCountSlot` | 每核访存批次数 |
+| 24–31 | `MemCoreTotalSlot` | 每核访存总耗时，微秒 |
+| 32–39 | `MemCoreMaxSlot` | 每核单批最大耗时，微秒 |
+| 40–103 | `MemServiceCountSlot` | 每服务访存批次数，最多 64 个服务号 |
+| 104–167 | `MemServiceTotalSlot` | 每服务总耗时，微秒 |
+| 168–231 | `MemServiceMaxSlot` | 每服务单批最大耗时，微秒 |
 
 注意：10–11 必须留给起始时刻。它们曾经和 `PromptSlot`/`SpanSlot` 重叠，导致 span 编号从浮点高位开始，`clear` 还会清零时钟。当前偏移是 40 字节。
 
@@ -115,10 +121,12 @@ GPU 和内存线程没有挂 trace 页：它们不写 `Port`/`Insn`，也不写�
 | 29 | `Input` | 页面 | `A0` ZKP1/ZPP1 第 7 字关联号，`A1` 键值（键盘）或种类（鼠标） |
 | 30 | `KeyConsumed` | 主板 | `A0` ZKP1 关联号，`A1` 键值 |
 | 31 | `PointerConsumed` | 主板 | `A0` ZPP1 关联号，`A1 = 横坐标 × 65536 + 纵坐标` |
+| 32 | `GpuStage` | GPU | 每次 present：`A0` scene 命令数，`A1` accel 命令数 |
+| 33 | `GpuPhase` | GPU | `A0` 阶段（1=capture，2=compose，3=accel），`A1` 微秒 |
 
 端口种类：1=`xchg`，2=`fill`，3=`carry`，4=`offer`。
 
-`Worker` 种类：1=`board`，2=`cpu`，3=`core`，4=`gpu`，5=`memory`。阶段：1=`spawn`，2=`ready`，3=`error`，4=`message-error`。`spawn`/`ready`/`error`/`message-error` 都只在创建线程上观察；GPU 和内存线程本身没有挂 trace 页，它们的内部代码不写事件。
+`Worker` 种类：1=`board`，2=`cpu`，3=`core`，4=`gpu`，5=`memory`。阶段：1=`spawn`，2=`ready`，3=`error`，4=`message-error`。`spawn`/`ready`/`error`/`message-error` 都只在创建线程上观察；GPU 线程挂 trace 页后只写 `GpuStage`/`GpuPhase`，内存线程本身没有挂 trace 页，内部代码不写事件。
 
 `HostReject` 来源：1=`inbox`，2=`pointer`，3=`frame`，4=`exchange`，5=`debug`，6=`unknown`，7=`buffer`，8=`page`，9=`worker`。原因：1=`shape`，2=`overflow`，3=`unknown`，4=`buffer`，5=`timeout`，6=`invalid`，7=`clone`。`page` 只在页面同步 `postMessage` 失败时出现；`worker` 只在 Worker 的 `error`/`messageerror` 监听上出现。`timeout` 留给已有等待路径，同步发送本身没有超时。
 
@@ -144,7 +152,7 @@ GPU 和内存线程没有挂 trace 页：它们不写 `Port`/`Insn`，也不写�
 - 子核：宿主在 `installImage` 装入子程序时，把正在处理的 svc span 继承给目标核。子核后面的 svc 挂在这个父下。这是真实因果边，不是时间窗猜测。
 - 端口：父由 `beginCommand` 随命令带到核心线程；监督核用当前 svc，其它核用本核命令或继承 span。
 - 安装：父是当前 svc；启动期没有父的安装不记。
-- 显卡：只记 `compose/present`，父是当前 svc/命令。`accel` 不逐条记。
+- 显卡：`Gpu` 只记 `compose/present`，父是当前 svc/命令；`accel` 不逐条记。`GpuStage`/`GpuPhase` 是 GPU 线程自己的按帧聚合，不带父 span。
 - 无法确定父时保持 0。报告把这类 span 放在 `other spans (no command parent)`，不强行归档。
 
 ## 7. API
@@ -160,8 +168,9 @@ GPU 和内存线程没有挂 trace 页：它们不写 `Port`/`Insn`，也不写�
 | `traceSpanBegin(op, layer, core, parent, a0, a1)` | 任意 | 开 span，返回编号；关闭时返回 0 |
 | `traceSpanEnd(op, layer, core, span, a0, a1)` | 任意 | 关 span |
 | `traceSpanEvent(op, layer, core, span, parent, a0, a1)` | 任意 | 写挂已有 span 的事件 |
-| `traceMem(count, total, max)` | 核心 | 累加访存批次计数 |
-| `traceMemStatus()` | 页面 | 读访存计数 |
+| `traceMem(core, count, total, max)` | 核心 | 累加全局和每核访存批次计数 |
+| `traceServiceMem(service, count, total, max)` | CPU | 把服务边界之间的批次记到服务槽 |
+| `traceMemStatus()` | 页面/CPU | 读全局、每核、每服务访存计数 |
 | `traceStatus()` | 页面 | 记录数、pending、dropped、prompts |
 | `readTrace()` | 页面 | 按时间读回记录；写到一半的格子丢掉 |
 | `clearTrace()` | 页面 | 清头、span 计数、访存计数和格子 |
@@ -183,9 +192,11 @@ GPU 和内存线程没有挂 trace 页：它们不写 `Port`/`Insn`，也不写�
 - `longest calls`
 - `exchanges`
 - `protocol ports`：按端口/种类统计次数和字节
-- `core stops`
+- `core stops` 和 `latest stops`：最近一次停机的核、原因、`Pc`、栈窗口和寄存器；解释器路径没有栈范围
 - `wait spans`：按 svc span 配对的 `CoreStop(wait)` → `Wake` 宿主侧区间，显示服务名
-- `memory batches`：全局计数，不按 span 归属
+- `memory batches`：全局、每核、每服务边界；每服务行之后是 `unattributed` 尾巴
+- `gpu stages`：present 次数、scene/accel 命令数
+- `gpu phases`：capture/compose/accel 的次数、总耗时、最大耗时
 - `host events`：按种类计数
 - `host messages`：板级生命周期消息计数
 - `host rejects`：拒绝路径的来源/原因计数
@@ -223,15 +234,16 @@ node ZerOS-PRO/Hardware/Nas/Server/build-guest.mjs --debug-maps
 
 - 记录环 65,536 条（调试模式约 2MB）。`dropped` 大于 0 时，样本不完整。
 - `pending` 在报告时可能仍为 1，因为提示符 svc 的回复可能还没写回。
-- 访存计数是全局的，不区分核、svc 或命令；它只回答「内存批次总共占了多少」，不能单独归因。
-- GPU 只覆盖 `compose/present`；`accel` 顶点/字形命令没有逐条记账。
+- 访存计数按核和服务边界分组；服务行不是逐条访存的精确归属。两次服务边界之间的批次记给后一次服务，服务结束再冲刷一次，剩余显示 `unattributed`。
+- GPU 覆盖 `compose/present` 和每帧的 capture/compose/accel 阶段；`accel` 顶点/字形命令只计数，不逐条 span。
 - 键盘、鼠标、显示器帧、沙盒已有宿主事件/帧 span，但没有端到端配对；时钟 tick、宿主 JS 内部还没有 span。
 - `Worker` 只有创建/就绪/`error`/`messageerror` 四类低频点；没有线程内消息队列深度、每条消息的耗时，也没有 `fault` 消息的第二次记录。
-- GPU 和内存线程没有 trace 页；它们的生命周期只从主板线程观察，线程内部失败仍走原有 `fault`/超时路径。
+- 内存线程没有 trace 页；GPU 线程只挂阶段计数页，不记逐条命令。它们的生命周期只从主板线程观察，线程内部失败仍走原有 `fault`/超时路径。
 - 页面到主板的 `postMessage` 没有 ack；同步失败会记 `HostReject page`，成功只表示已经交给 Worker，不表示主板接受。`keyboard-page`/`pointer-page` 只在同步交给 Worker 成功后出现；页面事件和主板 `inbox`/`keyboard`/`pointer` 计数只能按顺序和时间对照，不能按编号配对。
 - B1 只有采样范围，没有完整指令环。core 2/6 已能映射源行；core 7 的外部命令没有 `.debug` 表。
 - 源行是采样归属，不是逐条全量；同一函数出现次数是采样次数，不是执行次数。`time=` 由相邻采样时间差估算，不能当作函数自耗时。
 - `exec` 只有总条数；`insn` 只有采样，不是逐条全量。
+- 停机快照只在核心停下时读一次。原生核有寄存器、PC、栈指针和 128 字节栈窗口；解释器核只有指令索引，栈字段是 `0x0`，不能当作完整调用栈。
 - 有宿主侧 `CoreStop(wait)` → `Wake` 区间，也有 `TaskWait`/`TaskExit` 和 `TaskSleep`/`TaskWake`；但 `TaskSleep` 只知道任务睡/醒，不解释等待对象。
 - 键盘有页面按下到客侧 key ring 的 `input spans`，按 ZKP1 第 7 字唯一关联号配对；不到回显。
 - 鼠标只在 BIOS 设置页消费指针事件；普通 shell 没有指针消费者，不能声称“鼠标到 shell 指针”。ZPP1 查询码 `10` 在设备层可用。
@@ -262,3 +274,6 @@ node ZerOS-PRO/Hardware/Nas/Server/build-guest.mjs --debug-maps
 | `Hardware/Debug/Host/DebugMap.ts` | `obr-debug 1/2` 源行表 |
 | `Hardware/Nas/Bootstrap/NasRuntime.ts` | 调试对照表只读加载 |
 | `Hardware/Motherboard/Seat/CpuSeat.ts` | 核心挂载与 trace 转发 |
+| `Hardware/Cpu/Structure/CoreStop.ts` / `Hardware/Cpu/Host/PageCoreStop.ts` | 停机记录与现场快照 |
+| `Hardware/Gpu/Host/GpuDispatch.ts` | GPU 阶段事件与 trace 页挂载 |
+| `Hardware/Motherboard/Seat/GpuSeat.ts` | 把 trace 页交给 GPU 线程 |

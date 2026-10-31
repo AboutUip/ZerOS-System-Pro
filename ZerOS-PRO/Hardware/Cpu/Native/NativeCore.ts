@@ -1148,6 +1148,16 @@ export namespace ZerOS {
             }
             return count;
           };
+          /* 画字符串的参数是 itof 之后的位型。先还原成整数，再按八位组去本地缓冲里抄。 */
+          const fontBits = new DataView(new ArrayBuffer(8));
+          const floatInteger = (bits: bigint): number | null => {
+            fontBits.setBigInt64(0, BigInt.asIntN(64, bits), true);
+            const value = fontBits.getFloat64(0, true);
+            if (!Number.isSafeInteger(value)) {
+              return null;
+            }
+            return value;
+          };
           /* 这些出口会让别的核心或设备读刚才写下的字节，必须先整段送出。
              降频、空转和查询只碰邮箱，数据留到回复或下一次这种出口。 */
           const mustExpose = (opcode: number): boolean => {
@@ -1246,6 +1256,43 @@ export namespace ZerOS {
                   || opcode === NativeEscapePortChar
                   || opcode === NativeEscapePortByte;
                 mailboxOnly = dataOctets() < 65536 && (quiet || !expose);
+              }
+              /* 这一行的标量还在本核心缓冲里。抄齐了就交给绘制队列，避免每行再向主板读一次。
+                 缺任何一个八位组就不抄，仍走原来的读取。 */
+              if (typeof outcome === "object" && outcome.opcode === NativeEscapeAccel && ordinal === 2) {
+                const operation = readReg(state, outcome.regs, 1);
+                if (operation === 42n) {
+                  const rawAddress = readReg(state, outcome.regs, 2);
+                  const rawCount = readReg(state, outcome.regs, 3);
+                  if (rawAddress !== null && rawCount !== null) {
+                    const address = floatInteger(rawAddress);
+                    const glyphs = floatInteger(rawCount);
+                    if (
+                      address !== null
+                      && glyphs !== null
+                      && address >= 0
+                      && address % 8 === 0
+                      && glyphs > 0
+                      && glyphs <= 4096
+                    ) {
+                      const octets = glyphs * 4;
+                      const start = address / 8;
+                      const bytes = new Uint8Array(octets);
+                      let complete = true;
+                      for (let step = 0; step < octets; step += 1) {
+                        const found = recallNum(start + step);
+                        if (found === undefined) {
+                          complete = false;
+                          break;
+                        }
+                        bytes[step] = found;
+                      }
+                      if (complete) {
+                        RuntimeRoot.Hardware.Cpu.stageNativeFont(bytes);
+                      }
+                    }
+                  }
+                }
               }
               await flush(mailboxOnly);
               if (outcome === "halt") {

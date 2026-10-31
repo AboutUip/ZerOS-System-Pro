@@ -28,6 +28,7 @@
 import { ZerOS as PageRoot } from "./TracePage";
 import { ZerOS as OpRoot } from "../Enum/TraceOp";
 import { ZerOS as DebugMapRoot } from "../../Debug/Host/DebugMap";
+import { ZerOS as CoreStopRoot } from "../../Cpu/Host/PageCoreStop";
 import { type ZerOS as EntryRoot } from "../Structure/TraceEntry";
 
 export namespace ZerOS {
@@ -38,8 +39,10 @@ export namespace ZerOS {
       const tracePending = PageRoot.Hardware.Diagnostics.tracePending;
       const traceStatus = PageRoot.Hardware.Diagnostics.traceStatus;
       const traceMemStatus = PageRoot.Hardware.Diagnostics.traceMemStatus;
+      const readCoreStop = CoreStopRoot.Hardware.Cpu.readCoreStop;
       const traceOpName = OpRoot.Hardware.Diagnostics.traceOpName;
       const traceServiceName = OpRoot.Hardware.Diagnostics.traceServiceName;
+      const gpuPhaseName = OpRoot.Hardware.Diagnostics.gpuPhaseName;
       const TraceOp = OpRoot.Hardware.Diagnostics.TraceOp;
       const lookupSite = DebugMapRoot.Hardware.Debug.lookupSite;
       type TraceEntry = EntryRoot.Hardware.Diagnostics.TraceEntry;
@@ -826,6 +829,66 @@ export namespace ZerOS {
         if (mem.Count > 0) {
           lines.push("");
           lines.push(`memory batches: ${String(mem.Count)}  total=${millis(mem.Total)}  max=${millis(mem.Max)}`);
+          for (const core of mem.Cores) {
+            lines.push(
+              `  core ${String(core.Core)}  count=${String(core.Count)}  total=${millis(core.Total)}  max=${millis(core.Max)}`,
+            );
+          }
+          if (mem.Services.length > 0) {
+            lines.push("  by service:");
+            let attributed = 0;
+            let attributedTotal = 0;
+            const ordered = [...mem.Services].sort((left, right): number => right.Count - left.Count);
+            for (const service of ordered) {
+              attributed += service.Count;
+              attributedTotal += service.Total;
+              lines.push(
+                `    ${traceServiceName(service.Service).padEnd(10)} count=${String(service.Count)}  total=${millis(service.Total)}`,
+              );
+            }
+            if (mem.Count > attributed) {
+              lines.push(
+                `    ${"(unattributed)".padEnd(10)} count=${String(mem.Count - attributed)}  total=${millis(Math.max(0, mem.Total - attributedTotal))}`,
+              );
+            }
+          }
+        }
+        const stages = entries.filter((entry): boolean => entry.Op === TraceOp.GpuStage);
+        if (stages.length > 0) {
+          let scene = 0;
+          let accel = 0;
+          for (const stage of stages) {
+            scene += stage.A0;
+            accel += stage.A1;
+          }
+          lines.push("");
+          lines.push(`gpu stages: presents=${String(stages.length)} scene=${String(scene)} accel=${String(accel)}`);
+        }
+        const phases = new Map<number, { Count: number; Total: number; Max: number }>();
+        for (const entry of entries) {
+          if (entry.Op !== TraceOp.GpuPhase) {
+            continue;
+          }
+          const phase = phases.get(entry.A0) ?? { Count: 0, Total: 0, Max: 0 };
+          phase.Count += 1;
+          phase.Total += entry.A1;
+          if (entry.A1 > phase.Max) {
+            phase.Max = entry.A1;
+          }
+          phases.set(entry.A0, phase);
+        }
+        if (phases.size > 0) {
+          lines.push("  phases:");
+          const order = [...phases.keys()].sort((left, right): number => left - right);
+          for (const phase of order) {
+            const value = phases.get(phase);
+            if (value === undefined) {
+              continue;
+            }
+            lines.push(
+              `    ${gpuPhaseName(phase).padEnd(8)} count=${String(value.Count)}  total=${millis(value.Total)}  max=${millis(value.Max)}`,
+            );
+          }
         }
         const hostCounts = new Map<number, number>();
         const boardCounts = new Map<number, number>();
@@ -1016,6 +1079,31 @@ export namespace ZerOS {
           lines.push("core stops:");
           for (const stop of stops) {
             lines.push(`  ${stopName(stop.Reason).padEnd(8)} ${String(stop.Count)}`);
+          }
+        }
+        const latest: { Core: number; Reason: number; Index: number; Op: string; Snapshot: { Registers: readonly string[]; Pc: string; StackPointer: string; StackStart: string; StackEnd: string } | null }[] = [];
+        for (let core = 0; core < 8; core += 1) {
+          const stop = readCoreStop(core);
+          if (stop !== null) {
+            latest.push(stop);
+          }
+        }
+        if (latest.length > 0) {
+          lines.push("");
+          lines.push("latest stops:");
+          for (const stop of latest) {
+            lines.push(
+              `  core ${String(stop.Core)}  ${stopName(stop.Reason)}  index=${String(stop.Index)}  op=${stop.Op.length > 0 ? stop.Op : "-"}`,
+            );
+            if (stop.Snapshot !== null) {
+              const snapshot = stop.Snapshot;
+              lines.push(
+                `    pc=${snapshot.Pc}  sp=${snapshot.StackPointer}  stack=${snapshot.StackStart}..${snapshot.StackEnd}`,
+              );
+              if (snapshot.Registers.length > 0) {
+                lines.push(`    registers: ${snapshot.Registers.join(" ")}`);
+              }
+            }
           }
         }
         const waits = waitRuns(entries);

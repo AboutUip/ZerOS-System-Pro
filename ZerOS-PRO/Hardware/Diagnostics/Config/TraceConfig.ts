@@ -21,13 +21,13 @@ export namespace ZerOS {
       /* 1. 形状                                                             */
       /* ------------------------------------------------------------------ */
 
-      /** 诊断页的固定布局。头部 64 字节，随后是定长记录。 */
+      /** 诊断页的固定布局。头部 1024 字节，随后是定长记录。 */
       export const TraceConfig = {
         Magic: 0x5a545243,
         Version: 1,
         Capacity: 65536,
         RecordBytes: 32,
-        HeaderBytes: 64,
+        HeaderBytes: 1024,
         HeadSlot: 0,
         DroppedSlot: 1,
         EnabledSlot: 2,
@@ -43,7 +43,16 @@ export namespace ZerOS {
         MemCountSlot: 12,
         MemTotalSlot: 13,
         MemMaxSlot: 14,
-        PageBytes: 64 + 65536 * 32,
+        /* 16..23 每核批次数，24..31 每核总耗时，32..39 每核最大批。 */
+        MemCoreCountSlot: 16,
+        MemCoreTotalSlot: 24,
+        MemCoreMaxSlot: 32,
+        /* 40..103 每服务批次数，104..167 每服务总耗时，168..231 每服务最大批。 */
+        MemServiceSlots: 64,
+        MemServiceCountSlot: 40,
+        MemServiceTotalSlot: 104,
+        MemServiceMaxSlot: 168,
+        PageBytes: 1024 + 65536 * 32,
       } as const;
     }
   }

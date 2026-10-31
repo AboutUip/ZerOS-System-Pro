@@ -418,6 +418,7 @@ export namespace ZerOS {
           index,
           op,
           detail,
+          snapshot: record["snapshot"] ?? null,
         });
       }
 

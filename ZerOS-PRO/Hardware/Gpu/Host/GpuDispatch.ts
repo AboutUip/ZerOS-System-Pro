@@ -27,6 +27,8 @@ import { ZerOS as FontBytesRoot } from "../Font/FontBytes";
 import { ZerOS as ClockRoot } from "../Bootstrap/GpuClock";
 import { ZerOS as GpuSlotRoot } from "../../Motherboard/Slot/Gpu/GpuSlot";
 import { ZerOS as GpuSelfCheckRoot } from "../Test/GpuSelfCheck";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -38,7 +40,31 @@ export namespace ZerOS {
       const adoptOrigin = ClockRoot.Hardware.Gpu.adoptOrigin;
       const GpuSlot = GpuSlotRoot.Hardware.Motherboard.Slot.GpuSlot;
       const runGpuSelfCheck = GpuSelfCheckRoot.Hardware.Gpu.runGpuSelfCheck;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const attachTracePage = TracePageRoot.Hardware.Diagnostics.attachTracePage;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const GpuPhase = TraceOpRoot.Hardware.Diagnostics.GpuPhase;
       const seatPrefix = "[ZerOS.Hardware.Motherboard.GpuSeat]";
+      /** 上一次 present 之后的场景和 accel 命令数；present 时清零。 */
+      let sceneCommands = 0;
+      let accelCommands = 0;
+      /** 上一次 present 之后各阶段累计的微秒。 */
+      let sceneMicros = 0;
+      let accelMicros = 0;
+
+      function addSceneMicros(started: number): void {
+        sceneMicros += Math.max(0, (performance.now() - started) * 1000);
+      }
+
+      function addAccelMicros(started: number): void {
+        accelMicros += Math.max(0, (performance.now() - started) * 1000);
+      }
+
+      function emitGpuPhase(phase: number, micros: number): void {
+        const value = Math.max(0, Math.min(0x7fffffff, Math.floor(micros)));
+        traceInstant(TraceOp.GpuPhase, TraceLayer.Host, -1, phase, value);
+      }
 
       function asRecord(data: unknown): Record<string, unknown> | null {
         if (typeof data !== "object" || data === null || Array.isArray(data)) {
@@ -67,6 +93,11 @@ export namespace ZerOS {
       }
 
       function onBind(record: Record<string, unknown>): void {
+        /* 诊断页只在开启时从主板转来；关闭时这里是空，GPU 不碰任何共享内存。 */
+        const trace = record["trace"];
+        if (trace instanceof SharedArrayBuffer) {
+          attachTracePage(trace);
+        }
         const supported = readSupported(record);
         if (supported?.includes(provider.ActiveProtocol) !== true) {
           postFault(`${seatPrefix} board does not support the GPU protocol ${provider.ActiveProtocol}`);
@@ -167,6 +198,15 @@ export namespace ZerOS {
        * 客程序带 view 时优先要位图。启动画面那一次由主板不带 view，好让页面认出六个点。
        */
       async function onPresent(record: Record<string, unknown>): Promise<void> {
+        /* 一次 present 交回上一段场景和 accel 的命令数，随后清零。 */
+        traceInstant(TraceOp.GpuStage, TraceLayer.Host, -1, sceneCommands, accelCommands);
+        emitGpuPhase(GpuPhase.Compose, sceneMicros);
+        emitGpuPhase(GpuPhase.Accel, accelMicros);
+        sceneCommands = 0;
+        accelCommands = 0;
+        sceneMicros = 0;
+        accelMicros = 0;
+        const started = performance.now();
         try {
           if (record["view"] === true) {
             postFrame(await provider.PresentView());
@@ -176,6 +216,8 @@ export namespace ZerOS {
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} present failed`;
           postFault(message);
+        } finally {
+          emitGpuPhase(GpuPhase.Capture, (performance.now() - started) * 1000);
         }
       }
 
@@ -220,6 +262,8 @@ export namespace ZerOS {
       }
 
       async function onScene(record: Record<string, unknown>, kind: string): Promise<void> {
+        sceneCommands += 1;
+        const started = performance.now();
         try {
           if (kind === "box") {
             const parent = readNumber(record, "parent");
@@ -290,6 +334,8 @@ export namespace ZerOS {
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} a node command failed`;
           postFault(message);
+        } finally {
+          addSceneMicros(started);
         }
       }
 
@@ -389,6 +435,8 @@ export namespace ZerOS {
           postFault(`${seatPrefix} an accel command is missing arguments`);
           return;
         }
+        accelCommands += 1;
+        const started = performance.now();
         try {
           const raw = record["bytes"];
           stageFontBytes(raw instanceof Uint8Array ? raw : null);
@@ -401,6 +449,8 @@ export namespace ZerOS {
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} an accel command failed`;
           postFault(message);
+        } finally {
+          addAccelMicros(started);
         }
       }
 
@@ -423,6 +473,19 @@ export namespace ZerOS {
               return;
             }
             const gpuOp = command["gpuOp"];
+            if (gpuOp === "accel") {
+              accelCommands += 1;
+            } else if (
+              gpuOp === "box"
+              || gpuOp === "text"
+              || gpuOp === "align"
+              || gpuOp === "paint"
+              || gpuOp === "glyph"
+              || gpuOp === "drop"
+              || gpuOp === "compose"
+            ) {
+              sceneCommands += 1;
+            }
             if (gpuOp === "clear") {
               const pixel = readNumber(command, "pixel");
               if (pixel === null) {
@@ -458,7 +521,9 @@ export namespace ZerOS {
                 postFault(`${seatPrefix} align is missing arguments`);
                 return;
               }
+              const sceneStarted = performance.now();
               await provider.Align(node, alignX, alignY);
+              addSceneMicros(sceneStarted);
             } else if (gpuOp === "paint") {
               const node = readNumber(command, "node");
               const foreground = readNumber(command, "foreground");
@@ -467,7 +532,9 @@ export namespace ZerOS {
                 postFault(`${seatPrefix} paint is missing arguments`);
                 return;
               }
+              const sceneStarted = performance.now();
               await provider.Paint(node, foreground, background);
+              addSceneMicros(sceneStarted);
             } else if (gpuOp === "glyph") {
               const node = readNumber(command, "node");
               const code = readNumber(command, "code");
@@ -475,16 +542,22 @@ export namespace ZerOS {
                 postFault(`${seatPrefix} a glyph is missing arguments`);
                 return;
               }
+              const sceneStarted = performance.now();
               await provider.Glyph(node, code);
+              addSceneMicros(sceneStarted);
             } else if (gpuOp === "drop") {
               const node = readNumber(command, "node");
               if (node === null) {
                 postFault(`${seatPrefix} drop is missing a node`);
                 return;
               }
+              const sceneStarted = performance.now();
               await provider.Drop(node);
+              addSceneMicros(sceneStarted);
             } else if (gpuOp === "compose") {
+              const sceneStarted = performance.now();
               await provider.Compose();
+              addSceneMicros(sceneStarted);
             } else if (gpuOp === "hertz") {
               const hertz = readNumber(command, "hertz");
               if (hertz === null) {
@@ -505,10 +578,12 @@ export namespace ZerOS {
               const raw = command["bytes"];
               stageFontBytes(raw instanceof Uint8Array ? raw : null);
               /* 字形和进度条只往列表里追加。当场做完，避免一帧里几百次让出。 */
+              const accelStarted = performance.now();
               const immediate = provider.AccelImmediate(op, a, b, c, d);
               if (immediate === null) {
                 await provider.Accel(op, a, b, c, d);
               }
+              addAccelMicros(accelStarted);
               if (op === 39) {
                 resized = true;
               }

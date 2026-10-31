@@ -33,7 +33,7 @@
    已经收下的项仍然显示。
 
    遍历用自己的堆栈，最多 32 帧，不用递归。操作数是第 0 帧。
-   标准输出的偏移从 0 累加，一次最多 4096。写失败写 tree: write error，马上退出 1。
+   标准输出先留在 4096 个八位组里，满了或退出时一次写完。写失败写 tree: write error，马上退出 1。
    诊断写描述符 2，偏移每次从 0。有过失败则合计照写，退出 1。没有错误退出 0。
    alloc 的单位是位。 */
 import memory;
@@ -127,6 +127,80 @@ deRfun writeReady(long home, long* place, long count): long {
   return 0L;
 }
 
+/* 标准输出先攒在这里。op 0 查询并在第一次分配，op 1 改已用个数，op 2 改已经写出的偏移，
+   op 3 只查询、还没分配就返回 0。一次 write 要监督核走一拍，框线和名字拆开写会把 tree 拖成几十秒。 */
+deRfun outState(long home, long op, long arg, long* buf, long* used, long* place): long {
+  static long storage = 0L;
+  static long count = 0L;
+  static long cursor = 0L;
+  if (storage == 0L) {
+    if (op == 3L) {
+      return 0L;
+    }
+    storage = obr::proc::alloc(home, 4096L * 8L);
+    if (storage == 0L) {
+      return 0L;
+    }
+  }
+  if (op == 1L) {
+    count = arg;
+  } else if (op == 2L) {
+    cursor = arg;
+  }
+  *buf = storage;
+  *used = count;
+  *place = cursor;
+  return 1L;
+}
+
+/* 缓冲里已有的八位组一次写到描述符 1，然后清空个数。place 是调用方的偏移，成功后记进缓冲状态。 */
+deRfun flushHeld(long home, long* place): long {
+  long buf = 0L;
+  long used = 0L;
+  long held = 0L;
+  if (outState(home, 0L, 0L, &buf, &used, &held) == 0L) {
+    return 1L;
+  }
+  if (used < 1L) {
+    return 0L;
+  }
+  copySpan(buf, obr::proc::bytes(home), used);
+  if (writeReady(home, place, used) != 0L) {
+    return 1L;
+  }
+  if (outState(home, 2L, *place, &buf, &used, &held) == 0L) {
+    return 1L;
+  }
+  if (outState(home, 1L, 0L, &buf, &used, &held) == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 追加一个八位组。缓冲已经有 4096 个时先写出，再放入这一个。 */
+deRfun pushByte(long home, long* place, long byte): long {
+  long buf = 0L;
+  long used = 0L;
+  long held = 0L;
+  if (outState(home, 0L, 0L, &buf, &used, &held) == 0L) {
+    writeErr(home, "tree: out of memory\n");
+    return 1L;
+  }
+  if (used >= 4096L) {
+    if (flushHeld(home, place) != 0L) {
+      return 1L;
+    }
+    if (outState(home, 0L, 0L, &buf, &used, &held) == 0L) {
+      return 1L;
+    }
+  }
+  memory::storeOctet(byte & 255L, buf + used * 8L);
+  if (outState(home, 1L, used + 1L, &buf, &used, &held) == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
 deRfun emitNum(long home, long* place, long value): long {
   long div = 1L;
   long temp = value;
@@ -135,52 +209,37 @@ deRfun emitNum(long home, long* place, long value): long {
     div = div * 10L;
   }
   long rest = value;
-  long count = 0L;
-  long at = obr::proc::bytes(home);
   while (div > 0L) {
     long digit = rest / div;
-    memory::storeOctet(48L + digit, at + count * 8L);
+    if (pushByte(home, place, 48L + digit) != 0L) {
+      return 1L;
+    }
     rest = rest % div;
     div = div / 10L;
-    count = count + 1L;
   }
-  return writeReady(home, place, count);
+  return 0L;
 }
 
 deRfun emitText(long home, long* place, string text): long {
   int raw = length(text);
   long count = raw;
-  long offset = 0L;
-  while (offset < count) {
-    long chunk = count - offset;
-    if (chunk > 4096L) {
-      chunk = 4096L;
-    }
-    long index = 0L;
-    while (index < chunk) {
-      memory::storeOctet(text[offset + index], obr::proc::bytes(home) + index * 8L);
-      index = index + 1L;
-    }
-    if (writeReady(home, place, chunk) != 0L) {
+  long index = 0L;
+  while (index < count) {
+    if (pushByte(home, place, text[index]) != 0L) {
       return 1L;
     }
-    offset = offset + chunk;
+    index = index + 1L;
   }
   return 0L;
 }
 
 deRfun emitSpan(long home, long* place, long addr, long count): long {
-  long offset = 0L;
-  while (offset < count) {
-    long chunk = count - offset;
-    if (chunk > 4096L) {
-      chunk = 4096L;
-    }
-    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
-    if (writeReady(home, place, chunk) != 0L) {
+  long index = 0L;
+  while (index < count) {
+    if (pushByte(home, place, u8(addr + index * 8L)) != 0L) {
       return 1L;
     }
-    offset = offset + chunk;
+    index = index + 1L;
   }
   return 0L;
 }
@@ -189,39 +248,35 @@ deRfun emitSpan(long home, long* place, long addr, long count): long {
    2 是 ├── ，3 是 └── 。横线是 E2 94 80，分支是 E2 94 9C，折角是 E2 94 94。
    显示宽度都是四格，后面的名字才能对齐。 */
 deRfun emitMark(long home, long* place, long kind): long {
-  long at = obr::proc::bytes(home);
-  long count = 4L;
   if (kind == 0L) {
-    memory::storeOctet(32L, at);
-    memory::storeOctet(32L, at + 8L);
-    memory::storeOctet(32L, at + 16L);
-    memory::storeOctet(32L, at + 24L);
-  } else if (kind == 1L) {
-    memory::storeOctet(226L, at);
-    memory::storeOctet(148L, at + 8L);
-    memory::storeOctet(130L, at + 16L);
-    memory::storeOctet(32L, at + 24L);
-    memory::storeOctet(32L, at + 32L);
-    memory::storeOctet(32L, at + 40L);
-    count = 6L;
-  } else {
-    long lead = 156L;
-    if (kind == 3L) {
-      lead = 148L;
+    if (pushByte(home, place, 32L) != 0L || pushByte(home, place, 32L) != 0L || pushByte(home, place, 32L) != 0L || pushByte(home, place, 32L) != 0L) {
+      return 1L;
     }
-    memory::storeOctet(226L, at);
-    memory::storeOctet(148L, at + 8L);
-    memory::storeOctet(lead, at + 16L);
-    memory::storeOctet(226L, at + 24L);
-    memory::storeOctet(148L, at + 32L);
-    memory::storeOctet(128L, at + 40L);
-    memory::storeOctet(226L, at + 48L);
-    memory::storeOctet(148L, at + 56L);
-    memory::storeOctet(128L, at + 64L);
-    memory::storeOctet(32L, at + 72L);
-    count = 10L;
+    return 0L;
   }
-  return writeReady(home, place, count);
+  if (pushByte(home, place, 226L) != 0L || pushByte(home, place, 148L) != 0L) {
+    return 1L;
+  }
+  if (kind == 1L) {
+    if (pushByte(home, place, 130L) != 0L || pushByte(home, place, 32L) != 0L || pushByte(home, place, 32L) != 0L || pushByte(home, place, 32L) != 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  long lead = 156L;
+  if (kind == 3L) {
+    lead = 148L;
+  }
+  if (pushByte(home, place, lead) != 0L) {
+    return 1L;
+  }
+  if (pushByte(home, place, 226L) != 0L || pushByte(home, place, 148L) != 0L || pushByte(home, place, 128L) != 0L) {
+    return 1L;
+  }
+  if (pushByte(home, place, 226L) != 0L || pushByte(home, place, 148L) != 0L || pushByte(home, place, 128L) != 0L || pushByte(home, place, 32L) != 0L) {
+    return 1L;
+  }
+  return 0L;
 }
 
 /* 祖先从第 1 帧算到当前帧的上一帧。那一帧是最后一项就留空，否则留竖线。 */
@@ -253,6 +308,12 @@ deRfun emitNode(long home, long* place, long frames, long sp, long name, long na
 }
 
 deRfun finish(long home, long code): int {
+  long buf = 0L;
+  long used = 0L;
+  long place = 0L;
+  if (outState(home, 3L, 0L, &buf, &used, &place) == 1L) {
+    flushHeld(home, &place);
+  }
   obr::proc::exit(home, code);
   return 0;
 }

@@ -23,12 +23,21 @@ export namespace ZerOS {
        * Index 是指令编号，和 `obrc -debug` 对照表里的编号相同。序列走到头时它等于指令条数。
        * Op 是这一条的操作名。走到头时是空串。Detail 是失败原文，没有失败时是空串。
        */
+      export interface CoreSnapshot {
+        readonly Registers: readonly string[];
+        readonly Pc: string;
+        readonly StackPointer: string;
+        readonly StackStart: string;
+        readonly StackEnd: string;
+      }
+
       export interface CoreStop {
         readonly Core: number;
         readonly Reason: number;
         readonly Index: number;
         readonly Op: string;
         readonly Detail: string;
+        readonly Snapshot: CoreSnapshot | null;
       }
     }
   }

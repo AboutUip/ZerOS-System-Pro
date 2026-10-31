@@ -502,7 +502,7 @@ function wsText(data) {
   return String(data);
 }
 
-function createCdp(socket) {
+function createCdp(socket, onEvent) {
   let nextId = 1;
   let closed = false;
   const pending = new Map();
@@ -537,6 +537,10 @@ function createCdp(socket) {
     }
     if (typeof message.id === "number") {
       settle(message);
+      return;
+    }
+    if (typeof message.method === "string" && typeof onEvent === "function") {
+      onEvent(message);
     }
   }
 
@@ -692,6 +696,20 @@ const DEBUG_FAULTS = `(() => {
   return api.faults();
 })()`;
 
+const DEBUG_STOPS = `(() => {
+  const api = globalThis.ZerOSDebug;
+  if (api === null || typeof api !== "object" || typeof api.stop !== "function") {
+    throw new Error("ZerOSDebug.stop 不可用");
+  }
+  const stops = [];
+  for (let core = 0; core < 8; core += 1) {
+    const stop = api.stop(core);
+    if (stop === null || typeof stop !== "object") continue;
+    stops.push({ ...stop, Core: typeof stop.Core === "number" ? stop.Core : core });
+  }
+  return stops;
+})()`;
+
 const TRACE_CLEAR = `(() => {
   const api = globalThis.ZerOSDebug;
   if (api === null || typeof api !== "object" || api.trace === null || typeof api.trace !== "object") {
@@ -748,6 +766,12 @@ async function readFaults(cdp, signal) {
   return value;
 }
 
+async function readStops(cdp, signal) {
+  const value = await cdp.evaluate(DEBUG_STOPS, signal);
+  if (!Array.isArray(value)) throw new Error("ZerOSDebug.stop() 没有返回数组");
+  return value;
+}
+
 async function clearTrace(cdp, signal) {
   const value = await cdp.evaluate(TRACE_CLEAR, signal);
   if (value !== true) throw new Error("ZerOSDebug.trace.clear() 没有成功");
@@ -763,6 +787,7 @@ async function assertPage(cdp, signal) {
 async function waitForBoot(cdp) {
   const deadline = Date.now() + BOOT_TIMEOUT_MS;
   let lastError = "";
+  let lastMarks = [];
   while (Date.now() < deadline) {
     let marks;
     try {
@@ -780,10 +805,15 @@ async function waitForBoot(cdp) {
       marks = null;
     }
     if (Array.isArray(marks) && marks.includes("term-up")) return marks;
+    if (Array.isArray(marks)) {
+      lastMarks = marks;
+    }
     await sleep(250);
   }
   throw new Error(
-    `等待 __zerosBoot 出现 term-up 超时（${String(BOOT_TIMEOUT_MS)}ms）${lastError.length > 0 ? `：${clip(lastError)}` : ""}`,
+    `等待 __zerosBoot 出现 term-up 超时（${String(BOOT_TIMEOUT_MS)}ms）`
+      + ` marks=${lastMarks.length > 0 ? lastMarks.join(",") : "none"}`
+      + `${lastError.length > 0 ? `：${clip(lastError)}` : ""}`,
   );
 }
 
@@ -981,6 +1011,7 @@ async function captureCommand(cdp, command, options, index, total) {
     const entries = await readDump(cdp, signal);
     const status = await readStatus(cdp, signal);
     const faults = await readFaults(cdp, signal);
+    const stops = await readStops(cdp, signal);
     return {
       command,
       elapsedMs: Date.now() - started,
@@ -988,6 +1019,7 @@ async function captureCommand(cdp, command, options, index, total) {
       report,
       entries,
       faults,
+      stops,
     };
   } catch (error) {
     const timedOut = error instanceof TimeoutError || error?.timedOut === true;
@@ -998,6 +1030,7 @@ async function captureCommand(cdp, command, options, index, total) {
       report: "",
       entries: [],
       faults: [],
+      stops: [],
       error: timedOut ? `timeout after ${String(options.timeoutMs)}ms` : clip(errorMessage(error), 800),
     };
   } finally {
@@ -1241,7 +1274,21 @@ async function main() {
     const targetUrl = String(target.url ?? "");
     log(`target=${targetUrl}`);
     const socket = await connectWebSocket(target.webSocketDebuggerUrl);
-    cdp = createCdp(socket);
+    cdp = createCdp(socket, (message) => {
+      if (message.method === "Runtime.exceptionThrown") {
+        const detail = message.params?.exceptionDetails;
+        const text = detail?.exception?.description ?? detail?.text ?? "page exception";
+        log(`page exception: ${clip(String(text), 800)}`);
+        return;
+      }
+      if (message.method === "Runtime.consoleAPICalled") {
+        const type = String(message.params?.type ?? "log");
+        if (type !== "error" && type !== "warning") return;
+        const parts = Array.isArray(message.params?.args) ? message.params.args : [];
+        const text = parts.map((item) => item?.value ?? item?.description ?? item?.unserializableValue ?? "").join(" ");
+        log(`console.${type}: ${clip(String(text), 800)}`);
+      }
+    });
     await withTimeout(cdp.send("Runtime.enable"), 10000, "Runtime.enable");
     await withTimeout(cdp.send("Page.enable"), 10000, "Page.enable");
     let sameUrl = false;
@@ -1266,8 +1313,9 @@ async function main() {
     const bootReport = await withTimeout(readReport(cdp), COLLECT_TIMEOUT_MS, "boot report");
     const bootEntries = await withTimeout(readDump(cdp), COLLECT_TIMEOUT_MS, "boot entries");
     const bootFaults = await withTimeout(readFaults(cdp), COLLECT_TIMEOUT_MS, "boot faults");
+    const bootStops = await withTimeout(readStops(cdp), COLLECT_TIMEOUT_MS, "boot stops");
     log(
-      `boot report captured records=${String(bootStatus.Records)} prompts=${String(bootStatus.Prompts)} entries=${String(bootEntries.length)} faults=${String(bootFaults.length)} reportChars=${String(bootReport.length)}`,
+      `boot report captured records=${String(bootStatus.Records)} prompts=${String(bootStatus.Prompts)} entries=${String(bootEntries.length)} faults=${String(bootFaults.length)} stops=${String(bootStops.length)} reportChars=${String(bootReport.length)}`,
     );
 
     const commands = [];
@@ -1300,7 +1348,7 @@ async function main() {
       git: metadata.git,
       environment: metadata.environment,
       sourceMaps: metadata.sourceMaps,
-      boot: { status: bootStatus, report: bootReport, entries: bootEntries, faults: bootFaults },
+      boot: { status: bootStatus, report: bootReport, entries: bootEntries, faults: bootFaults, stops: bootStops },
       commands,
       log: logLines,
     };

@@ -121,7 +121,7 @@ export namespace ZerOS {
       /** 打开 CPU 主体线程。核心 Worker 另开，不在这里创建。 */
       export function openCpuWorker(): Worker {
         /* 查询只用来躲开浏览器对上一次核心图的缓存。改了 CpuDispatch 的依赖就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=81`;
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=82`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCpuMessage",

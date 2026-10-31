@@ -22,6 +22,7 @@
 
 import { ZerOS as MailboxRoot } from "../Host/Mailbox";
 import { ZerOS as PageCoreStopRoot } from "../../Cpu/Host/PageCoreStop";
+import { type ZerOS as StopRoot } from "../../Cpu/Structure/CoreStop";
 import { ZerOS as QueuedWorkerRoot } from "../Host/QueuedWorker";
 import { ZerOS as DebugLogRoot } from "../../Debug/Host/DebugLog";
 import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
@@ -49,6 +50,7 @@ export namespace ZerOS {
       const TraceRejectSource = TraceOpRoot.Hardware.Diagnostics.TraceRejectSource;
       const TraceRejectReason = TraceOpRoot.Hardware.Diagnostics.TraceRejectReason;
       type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
+      type CoreStop = StopRoot.Hardware.Cpu.CoreStop;
 
       /** 主板线程。第一次上电时创建。 */
       let boardWorker: Worker | null = null;
@@ -194,6 +196,7 @@ export namespace ZerOS {
               Index: index,
               Op: op,
               Detail: detail,
+              Snapshot: (record["snapshot"] ?? null) as CoreStop["Snapshot"],
             });
           }
           return;

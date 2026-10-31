@@ -45,14 +45,55 @@ deRfun clearArgs(long home): void {
   }
 }
 
-/* 父任务窗口里的参数抄进子任务。调用前要先 argOk。 */
+/* 按字抄 count 个 64 位。count 为 0 时不进循环。 */
+deRfun copyWords(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::store64(memory::load64(from + index * 64L), to + index * 64L);
+    index = index + 1L;
+  }
+}
+
+/* 用不到的长度槽写成 0。读参数的人若越过 argc 去看槽，不会拿到上一个任务的长度。 */
+deRfun zeroWords(long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::store64(0L, to + index * 64L);
+    index = index + 1L;
+  }
+}
+
+/* 八位组按声明的个数抄。loadOctet 是补码，写入前与 255 相与。 */
+deRfun copyOctets(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(memory::loadOctet(from + index * 8L) & 255L, to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 父任务窗口里已经声明的参数和环境抄进子任务。调用前要先 argOk。
+   头四个字、用到的长度、参数八位组和环境八位组按个数抄。
+   用不到的长度字写成 0，这样按长度去读不会走进上一个任务留下的八位组。
+   八位组尾部不整段清零：清掉剩下的 8192 和原来按 2180 个字整段抄是同一笔开销。
+   argLen、envLen 先看条数，条数之外的槽已经是 0，读不到那段尾部。 */
 deRfun handArgs(long from, long to): void {
   long src = argAt(from);
   long dst = argAt(to);
-  long index = 0L;
-  while (index < argSpan()) {
-    memory::store64(memory::load64(src + index), dst + index);
-    index = index + 64L;
+  long argc = memory::load64(src);
+  long envc = memory::load64(src + 64L);
+  long argBytes = memory::load64(src + 128L);
+  long envBytes = memory::load64(src + 192L);
+  copyWords(src, dst, 4L);
+  copyWords(src + 256L, dst + 256L, argc);
+  zeroWords(dst + 256L + argc * 64L, 64L - argc);
+  copyWords(src + 4352L, dst + 4352L, envc);
+  zeroWords(dst + 4352L + envc * 64L, 64L - envc);
+  if (argBytes > 0L) {
+    copyOctets(src + 8448L, dst + 8448L, argBytes);
+  }
+  if (envBytes > 0L) {
+    copyOctets(src + 73984L, dst + 73984L, envBytes);
   }
 }
 
@@ -176,7 +217,7 @@ deRfun execSpawn(long caller, long home): long {
   rankSet(taskByPid(pid), rank);
   commFromPath(taskByPid(pid), home + 16384L);
   vfsHand(taskIndex, taskByPid(pid));
-  /* handArgs 会盖住整段参数区，不必先按字清零。
+  /* handArgs 按声明的条数和八位组数交接，不必先把 139520 位整段清零。
      用子任务所在核心的窗口起点，而不是 query(1,8,core)：子任务还没调度时，
      那颗核心上的 home 仍是上一个任务，参数会抄到旧窗口。 */
   handArgs(home, kArena(core));

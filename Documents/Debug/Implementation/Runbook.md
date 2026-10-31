@@ -62,7 +62,8 @@ node ZerOS-PRO/Hardware/Nas/Server/serve.mjs
 - headless Chrome 没有 WebGPU 适配器时会停在 `board`；用 `--chrome` 指定 Edge，或确认 SwiftShader 开关生效
 - 工具在清空 trace 后等 800ms 再打字，避免抢在 shell 读循环就绪之前
 - `ZerOS-PRO/Hardware/Nas/Root/boot/debug` 是单个字节 `01`；工具只读检查，不打开、不改写
-- 预览 `http://localhost:5173/` 返回 `200`，NAS `http://127.0.0.1:8765/` 返回 `426`
+- 预览默认 `http://localhost:5173/` 返回 `200`，NAS `http://127.0.0.1:8765/` 返回 `426`
+- 本轮规范化环境预览在 `http://localhost:5180/`；5173 被其它项目占用时用 `--url` 指定，`V1.md` 的验收命令已显式传 5180
 
 只抓启动报告：
 
@@ -131,12 +132,36 @@ node dev\Debug\tools\survey-a0.mjs 6
 
 runner 以提示符事件为完成信号，不用固定等待时间判断命令结束。每条命令有硬超时；超时即中止并保留日志。
 
+### 3.3 54 条全命令语料
+
+仓库内语料是 `Documents/Debug/Tools/ztrace-corpus.json`，覆盖 `/bin` 下除 `arg.obr` 外的全部 54 条命令。runner 会先校验语料与目录一致，少一条或多一条都直接失败。
+
+```powershell
+node Documents\Debug\Tools\ztrace-corpus.mjs --url "http://localhost:5180/" --out dev\Debug\ztrace-corpus --key-delay 120 --timeout 60000
+```
+
+默认整个进程有硬超时（`--timeout × 54 + 120000` 毫秒），单条命令仍各有 `--timeout`。结果写到 `corpus-summary.json` 和 `corpus-summary.txt`；只有 54 条全部回到提示符、无 `error` 才返回 0。`--only name,...` 只用于定位，结果会标 `complete=false`，不能当验收。
+
+语料对会永久运行或读标准输入的命令使用有界调用：`xargs echo < /home/test.txt` 用输入重定向制造 EOF，`yes --help` 走非法选项退出。它们验证的是命令入口和退出路径，不验证无限输出本身。
+
+### 3.4 结构对比与门禁
+
+```powershell
+node Documents\Debug\Tools\ztrace-diff.mjs --base dev\Debug\ztrace-baseline\capture.json --head dev\Debug\ztrace-acceptance\capture.json --check
+node Documents\Debug\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-acceptance\capture.json --require-features
+node Documents\Debug\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-corpus\capture.json --require-corpus --require-features
+```
+
+`ztrace-diff` 只比较结构：schema、命令集合/顺序、每条命令的 `error` 类别、事件码集合、报告段落集合和停机快照签名；不比较耗时和记录条数。`--check` 有结构差异返回 1。
+
+`ztrace-gate` 先调用 `ztrace-check`，再按开关要求检查 `memory batches` 的 `by service`/`core` 行、`gpu stages`/`phases`、`latest stops` 和至少一条 `Snapshot`，以及 54 条语料覆盖。结果写到 capture 同目录的 `gate.json`。
+
 ## 4. 读一次结果
 
 ### 4.1 ztrace 采集
 
 - `capture.log`：带时间戳的进度，包含 preflight、浏览器、启动、每条命令和清理。
-- `capture.json`：`schema` 为 `zeros.ztrace.capture/1`；含 `url`、`startedAt`、`debug`、`git`、`environment`、`sourceMaps`、`boot`、`commands`、`log`。`boot` 和每条命令都含 `status`、`report`、`entries`、`faults`；`boot.entries` 是启动期原始记录，`faults` 是 `ZerOSDebug.faults()` 的结构化快照。
+- `capture.json`：`schema` 为 `zeros.ztrace.capture/1`；含 `url`、`startedAt`、`debug`、`git`、`environment`、`sourceMaps`、`boot`、`commands`、`log`。`boot` 和每条命令都含 `status`、`report`、`entries`、`faults`、`stops`；`boot.entries` 是启动期原始记录，`faults` 是 `ZerOSDebug.faults()` 的结构化快照，`stops` 是 `ZerOSDebug.stop(0..7)` 的最近停机记录和 `Snapshot`。
 - `report.txt`：启动报告和每条命令报告的文本拼接。
 - `capture.json` 可用仓库内校验器检查结构：
 
@@ -144,7 +169,7 @@ runner 以提示符事件为完成信号，不用固定等待时间判断命令�
 node Documents\Debug\Tools\ztrace-check.mjs --file dev\Debug\ztrace-check\capture.json
 ```
 
-校验器只检查 schema/字段类型/每条命令的 status/report/entries/faults，不解释 trace 语义。
+校验器只检查 schema/字段类型/每条命令的 status/report/entries/faults/stops，包括 `Snapshot` 的字符串字段，不解释 trace 语义。
 
 `faults` 是 `ZerOSDebug.faults()` 保留的故障历史，不保证只属于当前命令；启动自检留下的故障也会出现在 `boot.faults`。看 `Core/Index/Op/Stack/Window`，不要只看数量。
 
@@ -152,7 +177,7 @@ node Documents\Debug\Tools\ztrace-check.mjs --file dev\Debug\ztrace-check\captur
 
 `Keys.obr` 在写 key ring 次数前写 6592。没有这次写，槽数据和次数可能乱序可见，终端收不到按键；排查“输入没反应”时先确认构建包含这次写，并且没有写到 7296 或 7360。固件扫描键盘口按 `ZKP1` 匹配；设备也用 `ZKP1`。键盘线格式以 `Documents/Protocol/PhysicalHardware/Keyboard/ZKP1.md` 为准。
 
-每条成功命令的对象含 `command`、`elapsedMs`、`status`、`report`、`entries`。`entries` 是 `trace.dump()` 的原始记录数组；`status` 是采集结束时的 `Records/Pending/Dropped/Prompts`。失败命令另有 `error`，此时 `report` 为空、`entries` 为空，`status` 是最后一次成功读到的值或 `null`。
+每条成功命令的对象含 `command`、`elapsedMs`、`status`、`report`、`entries`、`faults`、`stops`。`entries` 是 `trace.dump()` 的原始记录数组；`status` 是采集结束时的 `Records/Pending/Dropped/Prompts`。失败命令另有 `error`，此时 `report` 为空、`entries` 为空、`stops` 为空，`status` 是最后一次成功读到的值或 `null`。
 
 `capture.log` 不写 `report` 正文，也不写 `entries` 明细；大对象只进 `capture.json`。
 
@@ -170,8 +195,8 @@ total=... top=...
 1. `command` 总时长。
 2. `svc` 的 `queue` 和执行时长。
 3. 子 span：`install`、`port`、`gpu.present`。
-4. `memory batches` 全局计数。
-5. `core stops` 和 `dropped`。
+4. `memory batches` 的每核/每服务行，以及 `gpu stages`/`phases`。
+5. `core stops`、`latest stops` 和 `dropped`。
 
 `pending` 为 1 通常表示提示符 svc 的回复尚未写回；不要仅凭 `pending` 判定命令未完成。
 
@@ -208,6 +233,9 @@ total=... top=...
 | 树里出现 `other spans` | 正常。没有父的 span 不强行归档；先确认它是否在命令窗口内 |
 | `queue` 很高 | 先查监督核调度，不要先改服务实现 |
 | 子 span 合计远小于父 | 父里仍有未记账执行段；写「未定位」，不要编原因 |
+| `ztrace-corpus` 报语料与 `/bin` 不一致 | 先更新 `ztrace-corpus.json`，不要改 runner 跳过覆盖检查 |
+| `ztrace-diff --check` 报结构差异 | 先确认是新增/删除事件或报告段落；只有确认是预期变更才更新基线，`--check` 不能当普通 diff 一直红着 |
+| `ztrace-gate` 缺 `by service`/`phases`/`Snapshot` | 先确认采集确实有内存、GPU 和停机样本；没有样本不能伪造段落 |
 
 ## 7. 回归
 
@@ -216,9 +244,10 @@ total=... top=...
 1. 同一批次、同一命令、同一节流重跑。
 2. 记录修复前后范围，不只记录最好的一次；`time=` 至少 3 次才用于排序。
 3. 单次 `time=` 只作线索；批次间差异大于差值时，判定为「无可辨识收益」。
-3. `npm run check`、`npm test` 通过。
-4. 改了 `.obr` 要重编客映像。
-5. 原始输出留在 `--out` 目录，不写入 `Documents/Debug`。
+4. `npm run check`、`npm test` 通过。
+5. 改了观测点：至少跑一次 `ztrace-gate --require-features`；改了命令语料：跑 `ztrace-corpus` 和 `ztrace-gate --require-corpus`。
+6. 改了 `.obr` 要重编客映像。
+7. 原始输出留在 `--out` 目录，不写入 `Documents/Debug`。
 
 ## 8. 禁止
 

@@ -68,7 +68,29 @@ export namespace ZerOS {
         Input: 29,
         KeyConsumed: 30,
         PointerConsumed: 31,
+        GpuStage: 32,
+        GpuPhase: 33,
       } as const;
+
+      /** GPU 阶段的编号，写在 GpuPhase 事件的 A0。 */
+      export const GpuPhase = {
+        Capture: 1,
+        Compose: 2,
+        Accel: 3,
+      } as const;
+
+      export function gpuPhaseName(phase: number): string {
+        if (phase === GpuPhase.Capture) {
+          return "capture";
+        }
+        if (phase === GpuPhase.Compose) {
+          return "compose";
+        }
+        if (phase === GpuPhase.Accel) {
+          return "accel";
+        }
+        return `phase-${String(phase)}`;
+      }
 
       /* ------------------------------------------------------------------ */
       /* 3. 名字                                                             */
@@ -106,6 +128,8 @@ export namespace ZerOS {
         [TraceOp.Input]: "input",
         [TraceOp.KeyConsumed]: "key-consumed",
         [TraceOp.PointerConsumed]: "pointer-consumed",
+        [TraceOp.GpuStage]: "gpu-stage",
+        [TraceOp.GpuPhase]: "gpu-phase",
       };
 
       /** 拒绝路径的来源与原因；都是诊断编号，不是协议。 */

@@ -47,6 +47,7 @@ export namespace ZerOS {
           Index: record.Index,
           Op: record.Op,
           Detail: record.Detail,
+          Snapshot: record.Snapshot,
         });
       }
 
@@ -68,6 +69,7 @@ export namespace ZerOS {
           Index: found.Index,
           Op: found.Op,
           Detail: found.Detail,
+          Snapshot: found.Snapshot,
         };
       }
     }

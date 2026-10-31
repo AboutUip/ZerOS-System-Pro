@@ -43,7 +43,10 @@
 | 工具 | 回答 |
 |------|------|
 | [ztrace.mjs](./Tools/ztrace.mjs) | 从预览页抓取启动报告和逐条命令的原始 trace，输出 `capture.json`、`report.txt`、`capture.log`；按提示符事件判断命令完成 |
-| [ztrace-check.mjs](./Tools/ztrace-check.mjs) | 校验 `capture.json` 的 schema、命令 status、report 和 raw entries 字段 |
+| [ztrace-check.mjs](./Tools/ztrace-check.mjs) | 校验 `capture.json` 的 schema、命令 status、report、raw entries 和停机快照字段 |
+| [ztrace-corpus.json](./Tools/ztrace-corpus.json) / [ztrace-corpus.mjs](./Tools/ztrace-corpus.mjs) | 54 条 `/bin` 命令的全量完成语料、进程级硬超时和逐条汇总 |
+| [ztrace-diff.mjs](./Tools/ztrace-diff.mjs) | 对比两份 capture 的结构、事件码、报告段落和停机签名；`--check` 用作门禁 |
+| [ztrace-gate.mjs](./Tools/ztrace-gate.mjs) | 组合结构校验、特性段、语料覆盖和可选基线 diff |
 
 工具的前置、参数和输出说明见 [Runbook.md](./Implementation/Runbook.md)。
 
@@ -56,7 +59,7 @@
 5. **观测有成本**。关闭时惰性；开启时有预算；高频事件用计数或采样，不逐条写环。
 6. **原始数据不可改**。报告是派生视图；异常先回查原始记录。
 7. **不伪造因果**。没有父子或边就留空；时间窗不能自动变成因果。
-8. **协议与结构边界**。调试设施不改协议。线格式以 `Documents/Protocol/` 为准；要改字段必须先升版本并改协议正文，不能在同一个协议标识下把旧实现变成不兼容。不加 CPU 指令、不改任务结构；客程序不能读原始 trace。
+8. **协议与结构边界**。调试设施默认不改协议。线格式以 `Documents/Protocol/` 为准；开发期可在同一协议标识下原位更新正文并记录，发布后要改字段必须先升版本并改协议正文。不加 CPU 指令、不改任务结构；客程序不能读原始 trace。
 
 ## 维护规则
 

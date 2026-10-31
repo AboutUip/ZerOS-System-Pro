@@ -22,6 +22,7 @@
 import { ZerOS as BoardSupportRoot } from "../Config/BoardSupport";
 import { ZerOS as MetricPageRoot } from "../Host/MetricPage";
 import { ZerOS as ClockRoot } from "../../Clock/Bootstrap/HostClock";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
 import { ZerOS as MailboxRoot } from "../Host/Mailbox";
 import { ZerOS as QueuedRoot } from "../Host/QueuedWorker";
 
@@ -31,6 +32,7 @@ export namespace ZerOS {
       const seatPrefix = "[ZerOS.Hardware.Motherboard.GpuSeat]";
       const PanelSize = MailboxRoot.Hardware.Motherboard.MailMessage.PanelSize;
       const writeMetric = MetricPageRoot.Hardware.Motherboard.writeMetric;
+      const traceBuffer = TracePageRoot.Hardware.Diagnostics.traceBuffer;
 
       let gpuWorker: Worker | null = null;
 
@@ -199,6 +201,7 @@ export namespace ZerOS {
           kind: "bind",
           supported,
           clockOrigin: ClockRoot.Hardware.Clock.clockOrigin(),
+          trace: traceBuffer(),
         });
         const seated = await waitMessage(
           worker,

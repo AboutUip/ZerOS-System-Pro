@@ -74,6 +74,8 @@ export namespace ZerOS {
       const NativeRegisterCount = NativeRegisterRoot.Hardware.Cpu.NativeRegisterCount;
       const NativeRsp = NativeRegisterRoot.Hardware.Cpu.NativeRsp;
       const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const traceMemStatus = TracePageRoot.Hardware.Diagnostics.traceMemStatus;
+      const traceServiceMem = TracePageRoot.Hardware.Diagnostics.traceServiceMem;
       const traceSpanBegin = TracePageRoot.Hardware.Diagnostics.traceSpanBegin;
       const traceSpanEnd = TracePageRoot.Hardware.Diagnostics.traceSpanEnd;
       const traceSpanEvent = TracePageRoot.Hardware.Diagnostics.traceSpanEvent;
@@ -1057,6 +1059,35 @@ export namespace ZerOS {
        * 页面再留成每颗核心最近的一条。这里不写寄存器，也不写客程序能读的内存。
        * 失败用原因 3，不改核心自己的 stopKind，查询字段 11 因此仍是 0、1 或 2。
        */
+      function coreSnapshot(ordinal: number, index: number): { Registers: readonly string[]; Pc: string; StackPointer: string; StackStart: string; StackEnd: string } | null {
+        const core = cores.get(ordinal);
+        if (core === undefined) {
+          return null;
+        }
+        if (core.native !== null) {
+          const registers = core.native.reg.map((value: bigint): string => `0x${value.toString(16)}`);
+          const stack = core.native.reg[NativeRsp] ?? 0n;
+          return {
+            Registers: registers,
+            Pc: `0x${core.native.rip.toString(16)}`,
+            StackPointer: `0x${stack.toString(16)}`,
+            StackStart: `0x${(stack > 64n ? stack - 64n : 0n).toString(16)}`,
+            StackEnd: `0x${(stack + 64n).toString(16)}`,
+          };
+        }
+        /*
+         * 解释执行的寄存器在核心工作者里，宿主这一侧只拿得到指令编号。
+         * 快照仍记下位置，不假装有寄存器映像。
+         */
+        return {
+          Registers: [],
+          Pc: String(index),
+          StackPointer: "0x0",
+          StackStart: "0x0",
+          StackEnd: "0x0",
+        };
+      }
+
       function noteStop(ordinal: number, reason: number, index: number, op: string, detail: string): void {
         globalThis.postMessage({
           kind: CoreStopMessage,
@@ -1065,6 +1096,7 @@ export namespace ZerOS {
           index,
           op,
           detail,
+          snapshot: coreSnapshot(ordinal, index),
         });
       }
 
@@ -1526,6 +1558,10 @@ export namespace ZerOS {
       const commandExecBase = new Map<number, number>();
       /** 监督核已经从保持位取走、正在处理的 svc span。 */
       let gateSvcSpan = 0;
+      /** 上一次服务边界看到的访存汇总；用来把两次边界之间的批次记到下一次调用。 */
+      let svcMemCount = 0;
+      let svcMemTotal = 0;
+      let svcMemMax = 0;
       /** 最近打开、还没被提示符关掉的命令 span。访存兜底挂到它下面。 */
       let activeCommand = 0;
 
@@ -1568,10 +1604,33 @@ export namespace ZerOS {
       }
 
       /**
+       * 把上一次服务边界到这一次边界之间的访存批次记到这次服务名下。
+       * 采集清空时计数会回零，基线也跟着回零，不会把上一条命令的尾巴带进来。
+       */
+      function attributeSvcMemory(service: number): void {
+        const mem = traceMemStatus();
+        if (mem.Count < svcMemCount) {
+          svcMemCount = 0;
+          svcMemTotal = 0;
+          svcMemMax = 0;
+        }
+        const count = Math.max(0, mem.Count - svcMemCount);
+        const total = Math.max(0, mem.Total - svcMemTotal);
+        const max = mem.Max > svcMemMax ? mem.Max : 0;
+        if (count > 0) {
+          traceServiceMem(service, count, total, max);
+        }
+        svcMemCount = mem.Count;
+        svcMemTotal = mem.Total;
+        svcMemMax = mem.Max;
+      }
+
+      /**
        * 系统调用进入。普通调用挂在当前命令 span 下；
        * 服务 36 自己开命令根，服务 35 先关命令根再记提示符。
        */
       function beginSvcSpan(ordinal: number, service: number): void {
+        attributeSvcMemory(service);
         const command = commandSpans.get(ordinal);
         if (service === CommandService) {
           if (command !== undefined) {
@@ -1627,6 +1686,7 @@ export namespace ZerOS {
         if (open === undefined) {
           return;
         }
+        attributeSvcMemory(open.Service);
         svcSpans.delete(ordinal);
         if (gateSvcSpan === open.Span) {
           gateSvcSpan = 0;

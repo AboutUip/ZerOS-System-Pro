@@ -9,7 +9,8 @@ import obr.ui;
 import obr.font;
 
 /* 终端格子紧挨内存文件正文。头 1024 位，行长到 4096，输入队列到 8192，格子到 253952。
-   一次写入只把脏行画出来，再呈现一帧。抽键不呈现。 */
+   一次写入只把脏行画出来，再呈现一帧。抽键不呈现。
+   行长字的低 8 位是这一行有几个格子，其余是这行正文落在哪一条物理行。滚屏只转动这些字。 */
 deRfun gridBase(): long {
   long cached = memory::load64(layoutWord(1L));
   if (cached != 0L) {
@@ -40,7 +41,7 @@ deRfun conInit(): void {
   }
   index = 0L;
   while (index < 48L) {
-    memory::store64(0L, base + 1024L + index * 64L);
+    memory::store64(index * 256L, base + 1024L + index * 64L);
     index = index + 1L;
   }
   memory::store64(1L, base);
@@ -119,20 +120,32 @@ deRfun conMarkAll(): void {
 }
 
 deRfun conRowLen(long row): long {
-  return memory::load64(gridBase() + 1024L + row * 64L);
+  return memory::load64(gridBase() + 1024L + row * 64L) % 256L;
 }
 
 deRfun conSetRow(long row, long len): void {
-  memory::store64(len, gridBase() + 1024L + row * 64L);
+  long packed = memory::load64(gridBase() + 1024L + row * 64L);
+  memory::store64(packed / 256L * 256L + len, gridBase() + 1024L + row * 64L);
 }
 
 deRfun conCell(long row, long col): long {
-  return gridBase() + 8192L + (row * 160L + col) * 32L;
+  long physical = memory::load64(gridBase() + 1024L + row * 64L) / 256L;
+  return gridBase() + 8192L + (physical * 160L + col) * 32L;
 }
 
 deRfun conCursor(long row, long col): void {
   memory::store64(row, gridBase() + 192L);
   memory::store64(col, gridBase() + 256L);
+}
+
+/* 一次写入里的换行次数。大于 1 时滚屏只搬格子，画面留到这次写入结束再画。
+   每一行都先画再搬的话，几十行会把一次 write 拖成十几秒。 */
+deRfun conBulk(long op, long value): long {
+  static long flag = 0L;
+  if (op == 1L) {
+    flag = value;
+  }
+  return flag;
 }
 
 /* 先把最底一行画进已经提交的画面，再整段上移。新的一行留给这次写入结束时的绘制。 */
@@ -165,30 +178,29 @@ deRfun conShift(): void {
 
 deRfun conScroll(): void {
   long rows = conRows();
-  if (rows > 1L) {
+  long bulk = conBulk(0L, 0L);
+  if (bulk == 0L && rows > 1L) {
     conCommitRow(rows - 1L);
     conShift();
   }
   long row = 0L;
-  while (row + 1L < rows) {
-    /* 只搬这一行用到的格子。以前固定搬 160 列，空行也要搬一遍，
-       滚屏时 47×160 次读写全压在写路径上。 */
-    long len = conRowLen(row + 1L);
-    if (len > 160L) {
-      len = 160L;
+  if (rows > 1L) {
+    long base = gridBase();
+    long top = memory::load64(base + 1024L);
+    while (row + 1L < rows) {
+      memory::store64(memory::load64(base + 1024L + (row + 1L) * 64L), base + 1024L + row * 64L);
+      row = row + 1L;
     }
-    long col = 0L;
-    while (col < len) {
-      memory::store32(memory::load32(conCell(row + 1L, col)), conCell(row, col));
-      col = col + 1L;
-    }
-    conSetRow(row, len);
-    row = row + 1L;
+    memory::store64(top / 256L * 256L, base + 1024L + (rows - 1L) * 64L);
   }
   if (rows > 0L) {
     conSetRow(rows - 1L, 0L);
     conCursor(rows - 1L, 0L);
-    conMark(rows - 1L);
+    if (bulk == 1L) {
+      conMarkAll();
+    } else {
+      conMark(rows - 1L);
+    }
   }
 }
 
@@ -554,6 +566,19 @@ deRfun conEmit(long home): void {
   }
   long index = 0L;
   long bytes = byteAt(home);
+  long breaks = 0L;
+  while (index < count) {
+    if (conOctet(bytes + index * 8L) == 10L) {
+      breaks = breaks + 1L;
+    }
+    index = index + 1L;
+  }
+  if (breaks > 1L) {
+    conBulk(1L, 1L);
+  } else {
+    conBulk(1L, 0L);
+  }
+  index = 0L;
   while (index < count) {
     conByte(conOctet(bytes + index * 8L));
     index = index + 1L;
@@ -562,6 +587,7 @@ deRfun conEmit(long home): void {
   if (count > 0L) {
     conPaint();
   }
+  conBulk(1L, 0L);
 }
 
 deRfun pushSeq(long first, long second, long third, long fourth, long count): void {

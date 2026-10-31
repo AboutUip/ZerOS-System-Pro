@@ -39,8 +39,8 @@ export namespace ZerOS {
       /** exit 不回复，不能算进未回复计数；否则每条命令之后 pending 只增不减。 */
       const ExitService = 28;
 
-      /** 头部前 16 个 32 位字。 */
-      const HeaderInts = 16;
+      /** 头部由配置决定；当前是 256 个 32 位字。 */
+      const HeaderInts = Config.HeaderBytes / 4;
       /** 一条记录占 8 个 32 位字，第一个字是序号。 */
       const RecordInts = Config.RecordBytes / 4;
 
@@ -163,6 +163,18 @@ export namespace ZerOS {
         readonly Count: number;
         readonly Total: number;
         readonly Max: number;
+        readonly Cores: readonly {
+          readonly Core: number;
+          readonly Count: number;
+          readonly Total: number;
+          readonly Max: number;
+        }[];
+        readonly Services: readonly {
+          readonly Service: number;
+          readonly Count: number;
+          readonly Total: number;
+          readonly Max: number;
+        }[];
       }
 
       /** 轻量状态。轮询用，不生成报告。 */
@@ -307,17 +319,14 @@ export namespace ZerOS {
         return out;
       }
 
-      /** 累加访存批次的计数、总耗时和最大批。不占记录环。 */
-      export function traceMem(count: number, total: number, max: number): void {
+      function raiseMax(slot: number, value: number): void {
         const header = words;
-        if (header === null || count <= 0 || Atomics.load(header, Config.EnabledSlot) !== 1) {
+        if (header === null) {
           return;
         }
-        Atomics.add(header, Config.MemCountSlot, count);
-        Atomics.add(header, Config.MemTotalSlot, total);
-        let current = Atomics.load(header, Config.MemMaxSlot);
-        while (max > current) {
-          const previous = Atomics.compareExchange(header, Config.MemMaxSlot, current, max);
+        let current = Atomics.load(header, slot);
+        while (value > current) {
+          const previous = Atomics.compareExchange(header, slot, current, value);
           if (previous === current) {
             break;
           }
@@ -325,16 +334,74 @@ export namespace ZerOS {
         }
       }
 
-      /** 访存批次的全局汇总。报告用，不参与 span 配对。 */
+      /** 累加访存批次的计数、总耗时和最大批。按核也留一份。不占记录环。 */
+      export function traceMem(core: number, count: number, total: number, max: number): void {
+        const header = words;
+        if (header === null || count <= 0 || Atomics.load(header, Config.EnabledSlot) !== 1) {
+          return;
+        }
+        Atomics.add(header, Config.MemCountSlot, count);
+        Atomics.add(header, Config.MemTotalSlot, total);
+        raiseMax(Config.MemMaxSlot, max);
+        if (Number.isInteger(core) && core >= 0 && core < 8) {
+          Atomics.add(header, Config.MemCoreCountSlot + core, count);
+          Atomics.add(header, Config.MemCoreTotalSlot + core, total);
+          raiseMax(Config.MemCoreMaxSlot + core, max);
+        }
+      }
+
+      /**
+       * 把一段访存批次记到服务名下。
+       * 服务边界由 CPU 运行时给出；这里只做累加，不判断归属。
+       */
+      export function traceServiceMem(service: number, count: number, total: number, max: number): void {
+        const header = words;
+        if (header === null || count <= 0 || Atomics.load(header, Config.EnabledSlot) !== 1) {
+          return;
+        }
+        if (Number.isInteger(service) && service > 0 && service < Config.MemServiceSlots) {
+          Atomics.add(header, Config.MemServiceCountSlot + service, count);
+          Atomics.add(header, Config.MemServiceTotalSlot + service, total);
+          raiseMax(Config.MemServiceMaxSlot + service, max);
+        }
+      }
+
+      /** 访存批次的汇总。报告用，不参与 span 配对。 */
       export function traceMemStatus(): TraceMem {
         const header = words;
         if (header === null) {
-          return { Count: 0, Total: 0, Max: 0 };
+          return { Count: 0, Total: 0, Max: 0, Cores: [], Services: [] };
+        }
+        const cores: { Core: number; Count: number; Total: number; Max: number }[] = [];
+        for (let core = 0; core < 8; core += 1) {
+          const count = Atomics.load(header, Config.MemCoreCountSlot + core);
+          if (count > 0) {
+            cores.push({
+              Core: core,
+              Count: count,
+              Total: Atomics.load(header, Config.MemCoreTotalSlot + core),
+              Max: Atomics.load(header, Config.MemCoreMaxSlot + core),
+            });
+          }
+        }
+        const services: { Service: number; Count: number; Total: number; Max: number }[] = [];
+        for (let service = 1; service < Config.MemServiceSlots; service += 1) {
+          const count = Atomics.load(header, Config.MemServiceCountSlot + service);
+          if (count > 0) {
+            services.push({
+              Service: service,
+              Count: count,
+              Total: Atomics.load(header, Config.MemServiceTotalSlot + service),
+              Max: Atomics.load(header, Config.MemServiceMaxSlot + service),
+            });
+          }
         }
         return {
           Count: Atomics.load(header, Config.MemCountSlot),
           Total: Atomics.load(header, Config.MemTotalSlot),
           Max: Atomics.load(header, Config.MemMaxSlot),
+          Cores: cores,
+          Services: services,
         };
       }
 
@@ -353,6 +420,16 @@ export namespace ZerOS {
         Atomics.store(header, Config.MemCountSlot, 0);
         Atomics.store(header, Config.MemTotalSlot, 0);
         Atomics.store(header, Config.MemMaxSlot, 0);
+        for (let core = 0; core < 8; core += 1) {
+          Atomics.store(header, Config.MemCoreCountSlot + core, 0);
+          Atomics.store(header, Config.MemCoreTotalSlot + core, 0);
+          Atomics.store(header, Config.MemCoreMaxSlot + core, 0);
+        }
+        for (let service = 0; service < Config.MemServiceSlots; service += 1) {
+          Atomics.store(header, Config.MemServiceCountSlot + service, 0);
+          Atomics.store(header, Config.MemServiceTotalSlot + service, 0);
+          Atomics.store(header, Config.MemServiceMaxSlot + service, 0);
+        }
         marks.fill(0);
       }
     }

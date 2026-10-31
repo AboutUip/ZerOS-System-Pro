@@ -39,6 +39,43 @@ function isNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function checkStops(stops, label) {
+  if (!Array.isArray(stops)) {
+    fail(`${label} 不是数组`);
+  }
+  for (let index = 0; index < stops.length; index += 1) {
+    const stop = stops[index];
+    if (stop === null || typeof stop !== "object") {
+      fail(`${label}[${String(index)}] 不是对象`);
+    }
+    for (const key of ["Core", "Reason", "Index"]) {
+      if (!isNumber(stop[key])) {
+        fail(`${label}[${String(index)}].${key} 不是数字`);
+      }
+    }
+    for (const key of ["Op", "Detail"]) {
+      if (typeof stop[key] !== "string") {
+        fail(`${label}[${String(index)}].${key} 不是字符串`);
+      }
+    }
+    if (stop.Snapshot === null) {
+      continue;
+    }
+    const snapshot = stop.Snapshot;
+    if (snapshot === undefined || typeof snapshot !== "object") {
+      fail(`${label}[${String(index)}].Snapshot 不是对象或 null`);
+    }
+    if (!Array.isArray(snapshot.Registers) || snapshot.Registers.some((item) => typeof item !== "string")) {
+      fail(`${label}[${String(index)}].Snapshot.Registers 不是字符串数组`);
+    }
+    for (const key of ["Pc", "StackPointer", "StackStart", "StackEnd"]) {
+      if (typeof snapshot[key] !== "string") {
+        fail(`${label}[${String(index)}].Snapshot.${key} 不是字符串`);
+      }
+    }
+  }
+}
+
 function checkEntries(entries, label) {
   if (!Array.isArray(entries)) {
     fail(`${label} 不是数组`);
@@ -89,6 +126,7 @@ checkEntries(capture.boot.entries, "boot.entries");
 if (!Array.isArray(capture.boot.faults)) {
   fail("boot.faults 不是数组");
 }
+checkStops(capture.boot.stops, "boot.stops");
 if (!Array.isArray(capture.commands)) {
   fail("commands 不是数组");
 }
@@ -113,6 +151,7 @@ for (let index = 0; index < commands.length; index += 1) {
       fail(`commands[${String(index)}].status.${key} 不是数字`);
     }
   }
+  checkStops(command.stops, `commands[${String(index)}].stops`);
   if (command.error !== undefined) {
     if (typeof command.error !== "string") {
       fail(`commands[${String(index)}].error 不是字符串`);

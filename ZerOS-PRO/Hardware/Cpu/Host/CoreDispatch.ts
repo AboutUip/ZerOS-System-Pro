@@ -1170,7 +1170,7 @@ export namespace ZerOS {
         if (accessCount === 0) {
           return;
         }
-        traceMem(accessCount, accessTotal, accessMax);
+        traceMem(selfOrdinal, accessCount, accessTotal, accessMax);
         accessCount = 0;
         accessTotal = 0;
         accessMax = 0;

@@ -9,7 +9,7 @@
 | # | 点 | 位置 | 触发 | 记录 | 频率 |
 |---|----|------|------|------|------|
 | 1 | 启动阶段 | `BoardDispatch` / `__zerosBoot` | 固件打点 | 启动标记 | 一次启动 |
-| 2 | 核心停机 | `CpuSeat.forwardCoreStop` | 核心停下 | `CoreStop` | 每次停机 |
+| 2 | 核心停机 | `CpuSeat.forwardCoreStop` | 核心停下 | `CoreStop`；`PageCoreStop` 保存 `Snapshot` | 每次停机 |
 | 3 | svc 进入 | `CpuRuntime.nativeSvc` / 解释器 svc | 客程序发系统调用 | `Svc` | 每次 svc |
 | 4 | svc 回复 | `CpuRuntime.acceptNativeReply` / 解释器回复 | 监督核回复 | `SvcReply` | 每次回复 |
 | 5 | 命令开始 | `CpuRuntime.beginSvcSpan`，服务 36 | 壳 `runParsed` | `Command` + `Svc` | 每条命令 |
@@ -18,8 +18,8 @@
 | 8 | 执行量 | `CpuRuntime.emitCommandExec` | 命令结束 | `Exec` | 每命令每核 |
 | 9 | 装载 | `CpuRuntime.installImage` | 装子程序 | `Install` | 每次安装 |
 | 10 | 扩展口 | `CoreDispatch` 的 `onExchange/onFill/onCarry/onOffer` | 端口命令 | `Port` | 每次端口命令 |
-| 11 | 访存批次 | `CoreDispatch.finishAccessBatchTrace` → `traceMem` | 访问批完成 | 全局计数 | 每批一次累加 |
-| 12 | 显卡 | `CpuRuntime.gpu` | compose/present | `Gpu` | 每次呈现/合成 |
+| 11 | 访存批次 | `CoreDispatch.finishAccessBatchTrace` → `traceMem`；`CpuRuntime.attributeSvcMemory` → `traceServiceMem` | 访问批完成；服务进入/结束 | 全局、每核、每服务计数 | 每批一次累加；服务边界冲刷 |
+| 12 | 显卡 | `CpuRuntime.gpu`；`GpuDispatch.onPresent/onScene/onAccel` | compose/present；present 前的阶段结算 | `Gpu`；`GpuStage`；`GpuPhase` | 每次呈现/合成；每 present 各阶段一次 |
 | 13 | 显示帧 | `BoardDispatch.onPresent` | 页面要帧 | `Frame` | 每次 Present |
 | 14 | 页面事件 | `BoardDispatch.acceptBoardMessage` | Inbox/Pointer/Debug/Panel | `HostEvent` | 每批事件 |
 | 15 | 键盘事件 | `KeyboardRuntime.acceptHost` | 收满 6 个字 | `HostEvent keyboard` | 每次按键事件 |
@@ -45,6 +45,10 @@
 | 35 | 键盘环写栅栏 | `Keys.obr` `keyOffer` | 写 key ring 次数之前 | 共享字 6592 写 0 | 每次按键消费 |
 | 36 | 客侧键盘消费 | `CpuSeat.noteKeyRingCount` | 6528 次数增加 | `KeyConsumed`（A0 是 ZKP1 关联号，A1 是键值） | 每次按键消费 |
 | 37 | 故障快照 | `DebugSurface` / `ztrace` | 采集启动和每条命令 | `capture.json` 的 `faults` | 每次采集 |
+| 38 | 停机现场 | `CpuRuntime.coreSnapshot` → `CpuSeat.forwardCoreStop` → `PageCoreStop` | 核心停下 | `CoreStop.Snapshot`：寄存器、PC、栈指针、栈窗口 | 每次停机 |
+| 39 | GPU 分阶段 | `GpuDispatch.onPresent` | 每次 present 前结算 | `GpuStage`（scene/accel 命令数）、`GpuPhase`（capture/compose/accel 微秒） | 每 present |
+| 40 | 服务内存归因 | `CpuRuntime.attributeSvcMemory` | svc 进入、回复 | `MemServiceCount/Total/Max` 槽位 | 每个服务边界 |
+| 41 | 54 条语料 | `ztrace-corpus.mjs` / `ztrace-corpus.json` | 按 `/bin` 全覆盖调用 | `corpus-summary.json`、`capture.json` | 每次语料运行 |
 
 ## 2. 报告检查点
 
@@ -58,7 +62,10 @@
 | `exec` | `Exec` 与命令 span | 客内核执行量 |
 | `instruction samples` | `Insn` 按核/范围聚合 | 采样热区；有源行表时显示文件:行 函数；`time=` 是相邻采样间隔估算 |
 | `source maps` | `__zerosDebugMaps` 状态 | core 2/6 表是否已载入 |
-| `memory batches` | `MemCount/Total/Max` | 访存批次总量 |
+| `memory batches` | `MemCount/Total/Max`、每核槽、每服务槽 | 访存批次总量；`core N` 和 `by service` 分开看 |
+| `gpu stages` | `GpuStage` 聚合 | present 次数与 scene/accel 命令数 |
+| `gpu phases` | `GpuPhase` 聚合 | capture/compose/accel 的次数、总耗时、最大耗时 |
+| `latest stops` | `PageCoreStop.readCoreStop` | 最近一次停机的核、原因、PC、栈和寄存器 |
 | `host events` | `HostEvent` 计数 | 页面/设备事件数 |
 | `host messages` | `HostMessage` 计数 | 板级生命周期消息数 |
 | `host rejects` | `HostReject` 按来源/原因计数 | 拒绝路径；含页面同步发送和 Worker 错误 |
@@ -92,7 +99,7 @@
 | 边界 | 原因 | 下一步 |
 |------|------|--------|
 | 时钟短等待 | `waitSpan` 高频，逐次 span 会污染环 | 总量计数或采样 |
-| GPU `accel` 单条 | 频率高，未逐条记 | 只记 `present` 的 `cmds` 数 |
+| GPU `accel` 单条 | 频率高，未逐条记 | 按 `present` 计数并合并阶段耗时 |
 | 源行映射 | core 2/6 已接；core 7 外部命令没有 `.debug` 表 | 命令构建时生成 `.debug` 或按任务切换表 |
 | 鼠标到 shell 指针 | 普通 shell 没有指针消费者 | 需要 GUI 消费者 |
 | 宿主 JS 内部 | 没有 profiler/sampling | 单独采样 |
@@ -100,7 +107,8 @@
 | 页面到主板 ack | 成功只表示交给 Worker | 需要时做宿主侧计数 |
 | 指令环 | B1/B2 采样和 core 2/6 源行已接；无完整指令环 | 有界全量/指令环 |
 | 协议字节直方图 | 只有 NAS 端口字节数 | 扩展口分类计数 |
-| 显示/GPU 阶段拆分 | 只有 `gpu.present cmds=N` | GPU 线程内部探针 |
+| 服务内存精确归因 | 只在服务边界冲刷，剩余计入 `unattributed` | 需要逐批携带服务上下文 |
+| 解释器栈范围 | `Snapshot` 只有指令索引，栈字段为 `0x0` | CPU 模型提供解释器栈基址 |
 
 ## 5. 维护规则
 
