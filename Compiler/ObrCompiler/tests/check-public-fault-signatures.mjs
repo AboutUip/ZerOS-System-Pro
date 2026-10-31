@@ -8,4 +8,6 @@ const normal=publicFaultSnapshot([event([base],1)]),regression=publicFaultSnapsh
 assert(!same(normal.signatures,publicFaultSnapshot([event([base,copy(base)],1)]).signatures));checks.push('duplicate same core3 div is not globally waived');
 assert.throws(()=>publicFaultSnapshot([event([base,extra],1),event([base],2)]));checks.push('lost historical fault rejected');
 const wrong=event([base],1);wrong.data.last=extra;assert.throws(()=>publicFaultSnapshot([wrong]));checks.push('LastFault mismatch rejected');
+const empty=event([],1);empty.data.last=null;assert(publicFaultSnapshot([empty]).observed);checks.push('empty list with null LastFault accepted');
+for(const last of [extra,undefined]){const wrongEmpty=event([],1);wrongEmpty.data.last=last;assert.throws(()=>publicFaultSnapshot([wrongEmpty]));}checks.push('empty list with non-null or missing LastFault rejected');
 console.log(JSON.stringify({checks:checks.length,passed:true,details:checks},null,2));

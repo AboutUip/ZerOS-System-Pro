@@ -25,6 +25,8 @@ node Compiler/ObrCompiler/tests/serve-integration.mjs
 
 ## 离线复核已提交的原始记录
 
+以下 v5/v3 是 `7bf7887` 产品源码及候选 `b0de7d58…` 的历史流程，必须在该检查点对应的独立源码树重建；当前 `28ae11e` 与新编译器的产物不能用来代替。原始记录恢复和 SHA 校验可直接进行，实际镜像一致性检查则会拒绝跨候选替换。最新检查点的输入与产物身份另见后续报告。
+
 `browser-records.mjs unpack` 仅恢复并验证原始 JSON；完整独立校验还会读取实际 NAS/固件/信号镜像，不能只放 manifest 冒充镜像存在。先完成上面的两个构建脚本，无需启动服务；然后在仓库根目录执行以下准备步骤。`OBRC_ARCHIVE_IMAGE_ROOT` 指向刚构建的隔离产物目录；归档中的旧 manifest 保留不变，校验器会将重建镜像的实际 SHA 与两个历史版本分别核对。若工具链变化导致字节不一致，应保留失败，不能替换归档 manifest。
 
 ```sh
@@ -59,7 +61,7 @@ node Compiler/ObrCompiler/tests/browser-records.mjs unpack \
 node Compiler/ObrCompiler/tests/verify-browser-results.mjs \
   Toolchain/CompilerCheck/archive-review/v5/browser-results.json \
   Toolchain/CompilerCheck/archive-review/report.json \
-  Toolchain/CompilerCheck/archive-review/v3/browser-results.json
+  Toolchain/CompilerCheck/archive-review/v3/browser-results.json --historical-public-faults
 ```
 
 准备目录必须是新目录，避免混入上次复核文件；重复复核应选新目录。已记录的结果是 **4040 检查、46 失败、退出码 1**，不是预期全绿。该流程重查原始采集证据，没有运行新的浏览器样本。v5/v3 原始 SHA、完整性与失败详情复核见 [archive-reverification-20261031.json](measurements/archive-reverification-20261031.json)。
@@ -67,6 +69,10 @@ node Compiler/ObrCompiler/tests/verify-browser-results.mjs \
 ## 采集完整性与可观察结果
 
 完整功能采集要求页面、主板、内存、CPU 和八个核心共十二个 producer。每个 producer 带独立序号，barrier 发出时插入原始 watermark，等截止序号前的 HTTP 批次全部确认后才 ACK。独立校验器重新检查 producer 集合、原始事件无缺号/重复、watermark 与 ACK 的精确对应；不是仅相信页面上的“完成”。
+
+当前功能轮在页面处理 barrier 时，重新调用公开 `Faults()` / `LastFault()`，紧接着记录该 producer 的 watermark。校验器默认强制验证这份全量快照、token、来源及截止序号；结果 JSON 缺失或关闭 `faultsAtBarrierRequired` 字段不能豁免。`node Compiler/ObrCompiler/tests/check-public-fault-barrier.mjs` 覆盖迟到故障、重复 barrier、getter 失败、错误截止点及自报标志绕过的负例。它不读取指令内存，不证明各个 worker 全局同时静止，也不保证该公开采样点之后不会新增故障。
+
+只有复核 v5 等旧归档时才显式使用 `--historical-public-faults`；报告会标明仅支持旧轮最后已观察快照，不能用该模式证明当前候选的新鲜度。上面的 4040/46 是原校验器历史结果，新校验器额外字段和检查应另存为新报告。
 
 校验内容包括真实绘制文本、独立 fixture golden、文件副作用、原始 NAS 请求、syscall、fault、实际 OS wait 状态以及原始 PNG。PNG 被独立解码成像素，只排除最终提示符后的一个 8×16 闪烁光标格；完整原始 PNG 一并保留。
 

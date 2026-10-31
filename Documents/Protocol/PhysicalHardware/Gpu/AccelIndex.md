@@ -46,3 +46,4 @@
 | 40 | FontFace | [Font](./Font.md) |
 | 41 | FontSelect | [Font](./Font.md) |
 | 42 | FontDraw | [Font](./Font.md) |
+| 43 | CopyBand | [AccelRegistry](./AccelRegistry.md) |

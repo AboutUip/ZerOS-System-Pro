@@ -15,7 +15,20 @@ export function publicFaultSnapshot(events,beforeTime=Infinity){
   const list=event.data.faults.map(faultSignature);
   if(list.length<prior.length||prior.some((v,i)=>JSON.stringify(v)!==JSON.stringify(list[i])))throw Error('observed public fault list changed or lost earlier entries');
   if(list.length&&JSON.stringify(faultSignature(event.data.last))!==JSON.stringify(list.at(-1)))throw Error('LastFault differs from the last public list entry');
+  if(!list.length&&event.data.last!==null)throw Error('empty public fault list requires a null LastFault');
   prior=list;last=event;
  }
  return {observed:true,signatures:prior,time:last.time,historyConsistent:true,source:last.source,order:last.order};
+}
+
+/** 页面自己的结束采样点：完整公开列表紧邻该producer的已确认watermark，不推断未来故障。 */
+export function faultSnapshotRequired(run,historicalPublicFaults=false){
+ return run?.mode==='smoke'&&!historicalPublicFaults;
+}
+export function faultSnapshotAtBarrier(events,collection,final){
+ const page=collection?.producers?.find(p=>p.name==='page');
+ const ack=collection?.acks?.find(a=>a.source===page?.source);
+ const snapshots=events.filter(e=>e.kind==='faults'&&e.data.barrierToken===collection?.token);
+ const fresh=Boolean(typeof collection?.token==='string'&&page&&ack&&!ack.error&&ack.token===collection.token&&snapshots.length===1&&snapshots[0].source===page.source&&snapshots[0].order===ack.through&&ack.watermark===ack.through+1&&final.source===page.source&&final.order===ack.through);
+ return{fresh,page,ack,snapshots:snapshots.map(e=>({source:e.source,order:e.order}))};
 }

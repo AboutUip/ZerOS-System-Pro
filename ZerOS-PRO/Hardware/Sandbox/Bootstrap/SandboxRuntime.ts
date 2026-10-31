@@ -24,6 +24,8 @@
 import { ZerOS as AssembleRoot } from "../Host/Assemble";
 import { ZerOS as ConfigRoot } from "../Config/SandboxConfig";
 import { ZerOS as StatusRoot } from "../Enum/SandboxStatus";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -45,6 +47,10 @@ export namespace ZerOS {
       const SandboxStatusPassed = StatusRoot.Hardware.Sandbox.SandboxStatusPassed;
       const SandboxStatusFailed = StatusRoot.Hardware.Sandbox.SandboxStatusFailed;
       const assemble = AssembleRoot.Hardware.Sandbox.assemble;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
       const GuestCore = ConfigRoot.Hardware.Sandbox.SandboxConfig.GuestCore;
       const CoreSlotBits = ConfigRoot.Hardware.Sandbox.SandboxConfig.CoreSlotBits;
       const DataFloor = ConfigRoot.Hardware.Sandbox.SandboxConfig.DataFloor;
@@ -225,6 +231,9 @@ export namespace ZerOS {
       export function exchangeWord(direction: number, payload: Uint8Array): Uint8Array {
         const word = decodeWord(payload);
         if (direction === 0) {
+          /* 沙盒命令低频；A1 放低 16 位命令码，够看复位/追加/运行。 */
+          const command = Number(word & 0xffffn);
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Sandbox, command);
           return encodeWord(accept(word));
         }
         if (direction === 1) {
@@ -256,6 +265,7 @@ export namespace ZerOS {
         if (resultTicket !== ticket || status !== SandboxStatusRunning) {
           return;
         }
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.SandboxResult, ok ? 1 : 0);
         for (let index = 0; index < registers.length; index += 1) {
           registers[index] = values[index] ?? 0n;
         }

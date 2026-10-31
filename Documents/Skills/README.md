@@ -14,6 +14,7 @@
 |------|------|
 | [preview-server.mdc](../Rules/preview-server.mdc) | 预览只用 5173 |
 | [obr-kernel-os.mdc](../Rules/obr-kernel-os.mdc) | 内核与操作系统只用 Obr |
+| [source-isolation.mdc](../Rules/source-isolation.mdc) | Boot、内核、操作系统按职责分文件 |
 | [boot-fault-english.mdc](../Rules/boot-fault-english.mdc) | 字体面打开前的失败说明用英文 |
 
 克隆之后在 `Toolchain` 执行 `npm run skills:sync`，接上这些链接。`npm test` 只确认链接指向本目录和 `Documents/Rules`，不再保留第二份副本。改技能或规则时改这里，不要在 `.cursor` 里另存一份。

@@ -1,0 +1,19 @@
+---
+description: dev 整目录排除出版本库，本地材料按事项分目录
+alwaysApply: true
+---
+
+# 本地 dev
+
+`dev/` 是本地工作区。`.gitignore` 用 `dev/` 排除整棵目录。不要把这里的文件加入提交，也不要改忽略规则放行其中某一份。
+
+根上不放散文件。一件事一个目录。还没有对应目录时，先建目录再放入，不要借别的目录图方便。
+
+- 采集和普查：`dev/Debug/`。一次运行一个子目录，例如 `dev/Debug/ztrace-echo/`。
+- 计划：`dev/Plan/`。只放计划，不放采集。
+- 编译器需求：`dev/Compiler/`。
+- 架构图：`dev/Architecture/`。
+- 板图：`dev/Board/`。
+- 兼容方案：`dev/Compat/`。
+
+新事项另建目录，不塞进已有的无关目录。原始采集不写入 `Documents/`。仓库根的 `ztrace-out/` 也不再用来放新的采集。

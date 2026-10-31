@@ -112,6 +112,9 @@ function obrFirmwarePlugin(): Plugin {
     {
       sources: [
         path.resolve(productRoot, "Boot/Bios.obr"),
+        path.resolve(productRoot, "Boot/Keys.obr"),
+        path.resolve(productRoot, "Boot/Splash.obr"),
+        path.resolve(productRoot, "Boot/Panel.obr"),
         path.resolve(productRoot, "Boot/Clear.obr"),
         path.resolve(repoRoot, "Driver/Pointer/pointer.obr"),
         path.resolve(repoRoot, "Compiler/ObrCompiler/lib/obr.widget.obr"),

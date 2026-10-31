@@ -8,6 +8,8 @@
 import { ZerOS as ConfigRoot } from "../../Keyboard/Config/KeyboardConfig";
 import { ZerOS as KindRoot } from "../../Keyboard/Enum/EventKind";
 import { ZerOS as MotherboardRoot } from "../../Motherboard/Bootstrap/Motherboard";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -17,6 +19,10 @@ export namespace ZerOS {
       const EventKindUp = KindRoot.Hardware.Keyboard.EventKindUp;
       const EventKindPress = KindRoot.Hardware.Keyboard.EventKindPress;
       const page = MotherboardRoot.Hardware.Motherboard.Motherboard;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
 
       /**
        * ZKP1 的键位名最多 8 个可打印 ASCII。
@@ -62,8 +68,16 @@ export namespace ZerOS {
         return word;
       }
 
+      /** 关联号只在一次页面会话内唯一；16 位足够覆盖一次采集。 */
+      let nextCorrelation = 0;
+
+      function correlation(): number {
+        nextCorrelation = nextCorrelation % 65535 + 1;
+        return nextCorrelation;
+      }
+
       /**
-       * 把一次键盘事件收成 ZKP1 的 6 个字。
+       * 把一次键盘事件收成 ZKP1 的 6 个语义字。
        * 种类只区分是哪一种监听被触发，不决定这个键做什么。
        */
       function packEvent(kind: number, event: KeyboardEvent): readonly bigint[] | null {
@@ -103,11 +117,21 @@ export namespace ZerOS {
       function publish(kind: number, event: KeyboardEvent): void {
         event.preventDefault();
         event.stopPropagation();
-        const words = packEvent(kind, event);
-        if (words === null) {
+        const packed = packEvent(kind, event);
+        if (packed === null) {
           return;
         }
+        const id = correlation();
+        const words = [...packed, BigInt(id)];
+        /* 先交给主板；同步投递失败会由 sendBoard 记 HostReject page，这里不再记成功事件。
+           ZKP1 的第 7 个字就是关联号。 */
         page.Publish(words);
+        /* 固件只消费按下和连按；松开不产生 key ring 消费，不记输入区间。 */
+        if (kind !== EventKindUp) {
+          traceInstant(TraceOp.Input, TraceLayer.Host, -1, id, Number(words[4] ?? 0n));
+        }
+        /* 页面侧时间戳和键号；只覆盖主机段，不声称到回显的因果。 */
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.KeyboardPage, Number(words[4] ?? 0n));
       }
 
       /**

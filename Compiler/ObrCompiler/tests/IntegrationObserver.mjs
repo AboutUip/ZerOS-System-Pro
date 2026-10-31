@@ -29,6 +29,9 @@ export function control(operation,address,width,value){
 }
 const pending=[];let timer=null;
 const inflight=new Set();let transportError=null,channel=null;
+let readPublicFaults=null;const barrierResults=new Map();
+/** 只由页面绑定公开故障 getter；不读取来宾内存，不改变产品状态。 */
+export function bindPublicFaults(reader){readPublicFaults=reader;}
 const timingKinds=new Set(['page','power','terminal','page-error','faults','input-error','input-done']);
 function flush(){
  if(timer!==null){clearTimeout(timer);timer=null;}
@@ -45,9 +48,14 @@ void context.then(ctx=>{
  channel=new BroadcastChannel('obrc-test-'+ctx.run);
  channel.onmessage=async({data})=>{
   if(data?.kind!=='barrier'||(data.to&&data.to!==source))return;
-  const through=sequence;report('watermark',{token:data.token,through});const watermark=sequence;flush();
-  await Promise.allSettled([...inflight]);
-  channel.postMessage({kind:'barrier-ack',source,token:data.token,through,watermark,error:transportError});
+  let result=barrierResults.get(data.token);
+  if(!result){result=(async()=>{
+   if(readPublicFaults){try{report('faults',{...readPublicFaults(),barrierToken:data.token});}catch(error){transportError='public fault snapshot failed: '+String(error);}}
+   const through=sequence;report('watermark',{token:data.token,through});const watermark=sequence;flush();
+   await Promise.allSettled([...inflight]);
+   return{kind:'barrier-ack',source,token:data.token,through,watermark,error:transportError};
+  })();barrierResults.set(data.token,result);}
+  channel.postMessage(await result);
  };
  report('producer',{name:typeof window==='undefined'?globalThis.name:'page'});flush();
  channel.postMessage({kind:'producer',source,name:typeof window==='undefined'?globalThis.name:'page'});

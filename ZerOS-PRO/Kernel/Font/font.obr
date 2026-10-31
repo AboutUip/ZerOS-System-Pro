@@ -54,7 +54,9 @@ deRfun fontNote(long index, string path): void {
 
 deRfun fontCensus(): void {
   fontNote(0L, fontPath(0L));
+  bootMark(45L);
   fontNote(1L, fontPath(1L));
+  bootMark(46L);
 }
 
 /* 窗口开头是下标。-1 只回复份数。越界回复 -1。

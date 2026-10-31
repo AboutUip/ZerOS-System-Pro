@@ -52,6 +52,13 @@ ZerOS-PRO/Hardware/Nas/Root/
 # Vite dependency cache
 **/.vite/
 
-# temp
+# Local workspace. The whole tree stays untracked. Do not force-add a file from it.
 dev/
 @dev/
+
+# Local ztrace captures and generated source maps.
+# `build-guest.mjs --debug-maps` writes .debug beside the guest images; those are never source.
+ztrace-out/
+**/*.debug
+
+node_modules/

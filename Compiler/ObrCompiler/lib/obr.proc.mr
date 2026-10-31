@@ -39,6 +39,10 @@ deRfun dup2(long home, long from, long to): long;
 deRfun stat(long home): long;
 /* 服务 9。路径在 +16384。名字八位组写到 +131072，个数在 +256。 */
 deRfun readdir(long home, long index, long capacity): long;
+/* 服务 34。从下标起把这一层放得进字节区的记录一次交回。+256 是条数，+320 是八位组数。
+   每条先是 9 个字：名字长度、种类、大小、权限、属主、属组、访问时间、修改时间、状态时间，随后是名字。
+   下一条紧跟名字。下标已经越过末尾时状态是 2。 */
+deRfun list(long home, long index): long;
 /* 服务 10。路径在 +16384。 */
 deRfun mkdir(long home): long;
 /* 服务 11。路径在 +16384。 */
@@ -74,6 +78,10 @@ deRfun ident(long home): long;
    字节区 12 个字：pid、ppid、状态、核心、uid、gid、euid、egid、地址空间起点、长度、档、名字长度。
    名字从第 12 个字之后起，最多 32 个八位组。状态 1 正在跑，2 就绪，3 在等，4 停住，5 僵尸。 */
 deRfun task(long home, long start): long;
+/* 服务 35。壳画完提示符后调用；只回复 0。宿主在 svc 边界记 prompt 事件，用于诊断。 */
+deRfun prompt(long home): long;
+/* 服务 36。壳开始解析一行命令时调用；只回复 0。宿主在 svc 边界开命令 span。 */
+deRfun command(long home): long;
 /* 服务 2。返回块地址。 */
 deRfun alloc(long home, long size): long;
 /* 服务 3。 */

@@ -29,6 +29,8 @@ import { ZerOS as CompatRoot } from "../Structure/CompatFrame";
 import { ZerOS as NativeRoot } from "../Native/NativeRun";
 import { ZerOS as OpcodeRoot } from "../../Motherboard/Enum/MemoryOpcode";
 import { ZerOS as RuntimeRoot } from "../Bootstrap/CpuRuntime";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 import type { ZerOS as StateRoot } from "../Structure/NativeState";
 
 export namespace ZerOS {
@@ -44,6 +46,28 @@ export namespace ZerOS {
       const stepNative = NativeRoot.Hardware.Cpu.stepNative;
       const isNativeMiss = NativeRoot.Hardware.Cpu.isNativeMiss;
       const nativeMiss = NativeRoot.Hardware.Cpu.nativeMiss;
+      const traceEnabled = TracePageRoot.Hardware.Diagnostics.traceEnabled;
+      const traceSpanEvent = TracePageRoot.Hardware.Diagnostics.traceSpanEvent;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const traceParent = RuntimeRoot.Hardware.Cpu.traceParent;
+      /** B1 原生采样累计：每 1024 条记一条，不逐条写。 */
+      let nativeTraceCarry = 0;
+      const NativeInsnStride = 1024;
+
+      /** 原生指令采样。pc 是相对装入基址的八位组偏移，不是绝对位地址。 */
+      function noteNativeInsn(ordinal: number, state: NativeState, baseBit: number, count: number): void {
+        nativeTraceCarry += count;
+        if (nativeTraceCarry < NativeInsnStride) {
+          return;
+        }
+        nativeTraceCarry = 0;
+        const pc = Math.floor(Number(state.rip - BigInt(Math.trunc(baseBit))));
+        if (!Number.isInteger(pc) || pc < 0) {
+          return;
+        }
+        traceSpanEvent(TraceOp.Insn, TraceLayer.Core, ordinal, traceParent(ordinal), 0, pc, 1);
+      }
       const NativeEscapeCore = EscapeRoot.Hardware.Cpu.NativeEscapeCore;
       const NativeEscapeGate = EscapeRoot.Hardware.Cpu.NativeEscapeGate;
       const NativeEscapePass = EscapeRoot.Hardware.Cpu.NativeEscapePass;
@@ -84,6 +108,7 @@ export namespace ZerOS {
       const nativeBoundFree = RuntimeRoot.Hardware.Cpu.nativeBoundFree;
       const nativeExchange = RuntimeRoot.Hardware.Cpu.nativeExchange;
       const nativeCarry = RuntimeRoot.Hardware.Cpu.nativeCarry;
+      const nativeOffer = RuntimeRoot.Hardware.Cpu.nativeOffer;
       const nativeFill = RuntimeRoot.Hardware.Cpu.nativeFill;
       const nativePortState = RuntimeRoot.Hardware.Cpu.nativePortState;
       const nativePortChar = RuntimeRoot.Hardware.Cpu.nativePortChar;
@@ -131,6 +156,7 @@ export namespace ZerOS {
       const NativeEscapeAccel = EscapeRoot.Hardware.Cpu.NativeEscapeAccel;
       const NativeEscapeExchange = EscapeRoot.Hardware.Cpu.NativeEscapeExchange;
       const NativeEscapeCarry = EscapeRoot.Hardware.Cpu.NativeEscapeCarry;
+      const NativeEscapeOffer = EscapeRoot.Hardware.Cpu.NativeEscapeOffer;
       const NativeEscapePortState = EscapeRoot.Hardware.Cpu.NativeEscapePortState;
       const NativeEscapePortChar = EscapeRoot.Hardware.Cpu.NativeEscapePortChar;
       const NativeEscapePortByte = EscapeRoot.Hardware.Cpu.NativeEscapePortByte;
@@ -470,6 +496,20 @@ export namespace ZerOS {
           state.rip = escape.next;
           return "cont";
         }
+        if (escape.opcode === NativeEscapeOffer) {
+          const dest = regs[0];
+          const port = readReg(state, regs, 1);
+          const request = readReg(state, regs, 2);
+          const length = readReg(state, regs, 3);
+          const reply = readReg(state, regs, 4);
+          const limit = readReg(state, regs, 5);
+          if (dest === undefined || port === null || request === null || length === null || reply === null || limit === null) {
+            return "fault";
+          }
+          state.reg[dest] = await nativeOffer(ordinal, port, request, length, reply, limit);
+          state.rip = escape.next;
+          return "cont";
+        }
         if (escape.opcode === NativeEscapeFill) {
           const dest = regs[0];
           const port = readReg(state, regs, 1);
@@ -621,8 +661,12 @@ export namespace ZerOS {
           };
           let steps = 0;
           let stopped: NativeStop = { kind: "fault", state };
+          const tracing = traceEnabled();
           while (steps < 64) {
             steps += 1;
+            if (tracing) {
+              noteNativeInsn(ordinal, state, Number(baseBit), 1);
+            }
             const outcome = stepNative(state, port);
             if (outcome === "halt") {
               nativeReachedHalt(ordinal);
@@ -1113,6 +1157,7 @@ export namespace ZerOS {
               || opcode === NativeEscapeCharacter
               || opcode === NativeEscapeExchange
               || opcode === NativeEscapeCarry
+              || opcode === NativeEscapeOffer
               || opcode === NativeEscapeFill
               || opcode === NativeEscapeInstall
               || opcode === NativeEscapeAdmit
@@ -1153,7 +1198,11 @@ export namespace ZerOS {
             /* 本拍里已经按旧频率记过的条数。降频指令会先把它们记掉，不能再按新频率记一次。 */
             let billed = 0;
             const sliceAt = performance.now();
+            const tracing = traceEnabled();
             while (ran < budget) {
+              if (tracing) {
+                noteNativeInsn(ordinal, state, baseNum, 1);
+              }
               let outcome: ReturnType<typeof stepNative>;
               try {
                 outcome = stepNative(state, port);
@@ -1230,7 +1279,7 @@ export namespace ZerOS {
                 const nextBudget = nativePaceBudget(ordinal);
                 coastArm[ordinal] = previousBudget > 1 && nextBudget === 1 ? 1 : 0;
               }
-              if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill) {
+              if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill || outcome.opcode === NativeEscapeOffer) {
                 const addressSlot = outcome.opcode === NativeEscapeFill ? 2 : 4;
                 const countSlot = outcome.opcode === NativeEscapeFill ? 3 : 5;
                 const address = readReg(state, outcome.regs, addressSlot);

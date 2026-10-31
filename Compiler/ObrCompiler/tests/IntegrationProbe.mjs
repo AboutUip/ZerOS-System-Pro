@@ -8,7 +8,7 @@ export function integrationProbe(){
   resolveId(id){if(id===moduleId)return '\0'+moduleId;if(id==='virtual:obrc-memory-counter')return fileURLToPath(new URL('./MemoryCounters.mjs',import.meta.url));},
   load(id){if(id==='\0'+moduleId)return fs.readFileSync(new URL('./IntegrationObserver.mjs',import.meta.url),'utf8');},
   transform(source,id){const file=id.split('?')[0];let result=source;
-   const header=`import {report as __obrcReport, glyph as __obrcGlyph, font as __obrcFont, rows as __obrcRows, connectInput as __obrcInput, token as __obrcToken, access as __obrcAccess, accessSnapshot as __obrcAccessSnapshot, metricsEnabled as __obrcEnabled, captureControls as __obrcControls, emitControls as __obrcEmitControls, control as __obrcControl} from '${moduleId}';\n`;
+   const header=`import {report as __obrcReport, glyph as __obrcGlyph, font as __obrcFont, rows as __obrcRows, connectInput as __obrcInput, token as __obrcToken, access as __obrcAccess, accessSnapshot as __obrcAccessSnapshot, metricsEnabled as __obrcEnabled, captureControls as __obrcControls, emitControls as __obrcEmitControls, control as __obrcControl, bindPublicFaults as __obrcBindPublicFaults} from '${moduleId}';\n`;
    if(file.endsWith('/Cpu/Bootstrap/CpuRuntime.ts')){
     result=replace(result,'        terminalLive = true;',`        __obrcReport('terminal', {first: !terminalLive, rows: __obrcRows(), cores: Array.from(cores, ([ordinal, core]) => ({ordinal, executed: core.Executed})), memoryPublished: MetricPageRoot.Hardware.Motherboard.readMetric(2, 6, 0)});\n        terminalLive = true;`);
     result=replace(result,'        const core = requireOrdinal(ordinal);\n        core.nativeReply = reply;',`        const core = requireOrdinal(ordinal);\n        __obrcReport('syscall', {ordinal, service, native: true, home: core.boundOrigin, executed: core.Executed});\n        core.nativeReply = reply;`);
@@ -43,7 +43,7 @@ export function integrationProbe(){
     result=replace(result,'            Board.Power();',`            __obrcReport('power', {});\n            Board.Power();`);
    }else if(file.endsWith('/Display/Host/PageHost.ts')){
     result=replace(result,'      openDisplayPage();',`      __obrcInput();\n      openDisplayPage();`);
-    result=replace(result,'        void import("../../Motherboard/Bootstrap/FirmwarePower");',`        let __faultCount = -1;\n        setInterval(() => { const faults = page.Faults(); if (faults.length !== __faultCount) { __faultCount = faults.length; __obrcReport('faults', {faults, last: page.LastFault()}); } }, 250);\n        void import("../../Motherboard/Bootstrap/FirmwarePower");`);
+    result=replace(result,'        void import("../../Motherboard/Bootstrap/FirmwarePower");',`        __obrcBindPublicFaults(() => ({faults: page.Faults(), last: page.LastFault()}));\n        let __faultCount = -1;\n        setInterval(() => { const faults = page.Faults(); if (faults.length !== __faultCount) { __faultCount = faults.length; __obrcReport('faults', {faults, last: page.LastFault()}); } }, 250);\n        void import("../../Motherboard/Bootstrap/FirmwarePower");`);
    }else return null;
    return header+result;
   }

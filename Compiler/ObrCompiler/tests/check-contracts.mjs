@@ -29,15 +29,16 @@ for(const level of ['-O0','-O1','-O2']){
  const linked=run(app,lib);test(linked.r0==='42','#DYN/import/attach/exports');results.push({level,case:'shared attach on core 1',run:linked});
  for(const flags of [['-pie','-slot','1'],['-shared','-slot','1'],['-shared','-pie'],['-slot','8'],['-slot','-1'],['-O3'],['-passes','unknown']])compile([simple],[level,...flags],'rejected',false);
  const plain=compile([simple],[level],'plain').output;test(!fs.existsSync(plain+'.zap'),'default emitted zap');
+ const plainImage=fs.readFileSync(plain);test(plainImage.subarray(0,4).toString()==='ZNB1'&&plainImage[12]===0x48&&plainImage[13]>=0xb8&&plainImage[13]<=0xbf,'default native prefix must retain fixed-width movabs');
  const named=compile([simple],[level],`named${level}.zap`).output;test(fs.existsSync(named)&&fs.existsSync(named.slice(0,-4)),'-o .zap contract');
 }
 // 执行真实 shell 编辑/拆词用例；构建脚本只编译它，本检查也验证结果三格。
 for(const level of ['-O0','-O1','-O2']){
- const file=compile(['ZerOS-PRO/System/Shell/edit-check.obr','ZerOS-PRO/System/Shell/edit.obr'],[level,'-I','ZerOS-PRO/System/Shell','-debug'],`edit${level}`).output;
+ const file=compile(['ZerOS-PRO/Resource/App/sh/edit-check.obr','ZerOS-PRO/Resource/App/sh/edit.obr'],[level,'-I','ZerOS-PRO/Resource/App/sh','-debug'],`edit${level}`).output;
  const r=spawnSync(process.execPath,[path.join(out,'native-runner.mjs'),file],{encoding:'utf8',timeout:60000,env:{...process.env,OBRC_PROBES:'2097152,2097216,2097280'}});
  test(r.status===0,'edit-check runtime: '+r.stderr);const value=JSON.parse(r.stdout);
- test(value.kind==='halt'&&value.probes['2097152']==='149'&&value.probes['2097216']==='0'&&value.probes['2097280']==='0','shell edit 149 checks');
- results.push({level,case:'System/Shell/edit-check',run:value});
+ test(value.kind==='halt'&&value.probes['2097152']==='151'&&value.probes['2097216']==='0'&&value.probes['2097280']==='0','shell edit 151 checks');
+ results.push({level,case:'Resource/App/sh/edit-check',run:value});
 }
 // 递归七参数 ABI 的结果落在四格共享内存，不能仅检查 main 返回 0。
 for(const level of ['-O0','-O1','-O2']){

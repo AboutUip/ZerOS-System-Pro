@@ -1,0 +1,297 @@
+[
+  {
+    "name": "kernel/start",
+    "bytes": 504898,
+    "sha256": "d924c54a1372ed03ab861567fdd6f62f700e564adcca619507d39ce275586485"
+  },
+  {
+    "name": "kernel/init",
+    "bytes": 19740,
+    "sha256": "576024b4a01fde3c4be265fcef48ad66bfb042661092afdacc289d958d48be91"
+  },
+  {
+    "name": "os/sh",
+    "bytes": 373307,
+    "sha256": "c3179022659f0d14a25eace31e3c509695d9ca75a1fa79a45a3f1c5425f90d49"
+  },
+  {
+    "name": "os/session",
+    "bytes": 16993,
+    "sha256": "f025e43bffe75a0ca51882a805fc23c970e316fb640d5ad4b3041ff5edc91d6d"
+  },
+  {
+    "name": "kernel/idle",
+    "bytes": 418,
+    "sha256": "255b0993fac77ddcd289904f01d903615dcdedfd7da25e2b641b6c2d157a7145"
+  },
+  {
+    "name": "kernel/drv/pulse",
+    "bytes": 1886,
+    "sha256": "bf30add53d1eca73877b80b1e033dde97a52c12f8adda73313068ce29cd92164"
+  },
+  {
+    "name": "bin/basename",
+    "bytes": 40827,
+    "sha256": "db32bf8073bcd21cf3606e2e7ab7592504529967a6017fd9ac5a8083a57377c8"
+  },
+  {
+    "name": "bin/cat",
+    "bytes": 50694,
+    "sha256": "3793e330055acacd5dc5568b7418455817f216d6e01990f7f2ecf1d7ffd4b6cd"
+  },
+  {
+    "name": "bin/chmod",
+    "bytes": 87942,
+    "sha256": "c4c890e897bd337e0cdb6628a1590c3e3c679b6ebc2d2ddfe2c6ff2ea403b31d"
+  },
+  {
+    "name": "bin/chown",
+    "bytes": 84755,
+    "sha256": "2c5b7d19e9e5d68db8f06214caf0022b309923cf6b54a8806df928dea90766d7"
+  },
+  {
+    "name": "bin/cksum",
+    "bytes": 65613,
+    "sha256": "bfc7216bc8317ba0b726713b0fd62807cd320ba04b5c7fc0f739fac3c91158ac"
+  },
+  {
+    "name": "bin/cmp",
+    "bytes": 89692,
+    "sha256": "747689da4d1a471dd9aab776a90575fbf56af4c4deff5337e4a8caac6559c57f"
+  },
+  {
+    "name": "bin/comm",
+    "bytes": 93247,
+    "sha256": "7ad4d402d38ddfcea17dd520b09ff98fda9fe767e292118715c5d987736ba784"
+  },
+  {
+    "name": "bin/cp",
+    "bytes": 180811,
+    "sha256": "278d03874097e32882a347b08db4258359f5b6c3b84a2023cadc5db349a4898d"
+  },
+  {
+    "name": "bin/cut",
+    "bytes": 127345,
+    "sha256": "2d07a8e49339498276ffcf2eff5f41d26e13fc22e78df6ebbfcc68fdb755ff7b"
+  },
+  {
+    "name": "bin/date",
+    "bytes": 152080,
+    "sha256": "ff913402b8929c47912cd871d061a2b82845c3ca658d60ac5055220773b82bc0"
+  },
+  {
+    "name": "bin/dd",
+    "bytes": 121648,
+    "sha256": "0d332ebe38724335a407adeb16d8386b2271505320f2afdd8de781d03a126823"
+  },
+  {
+    "name": "bin/diff",
+    "bytes": 94740,
+    "sha256": "e7b454482a36a1c117cdd8241369c7b93ed185d80131873e67f7be3f1713a19b"
+  },
+  {
+    "name": "bin/dirname",
+    "bytes": 38801,
+    "sha256": "e6410a47cc6511c70e7ae4df169a74827d56513e4860a24e79a5d955d2fa92e5"
+  },
+  {
+    "name": "bin/du",
+    "bytes": 84862,
+    "sha256": "18cc335b7750a5df87b62b78b35a364cebcbf7d04ac58037b66227c7ee438009"
+  },
+  {
+    "name": "bin/echo",
+    "bytes": 29270,
+    "sha256": "ac6540d8ce556263e2fb705db99505a89bae5da736755ba6c1002bf369feb16c"
+  },
+  {
+    "name": "bin/env",
+    "bytes": 125312,
+    "sha256": "2db95bcd867607ddd08263877536f4c337ab30a540afdee599507126f63d9180"
+  },
+  {
+    "name": "bin/expr",
+    "bytes": 80798,
+    "sha256": "11622aa642b316c9d5b46d8ef8256c7fc46a6f60be572733f389780c359bf360"
+  },
+  {
+    "name": "bin/false",
+    "bytes": 25424,
+    "sha256": "04adc5fa2882311cfa1bb424eba324c3924945eb9308b9ef1d5111bf6fa504da"
+  },
+  {
+    "name": "bin/find",
+    "bytes": 231074,
+    "sha256": "4067c30d6b4d93abb04ecf56c3b5bb10fd36af8f453aef696b6c7da484c0a5da"
+  },
+  {
+    "name": "bin/fold",
+    "bytes": 89962,
+    "sha256": "f06965372c8b268628997a57a1d355efd7bed9a4dcc274b502ad328a03492a1e"
+  },
+  {
+    "name": "bin/grep",
+    "bytes": 375816,
+    "sha256": "3d6270d56fbcac0767d89f30b1489827cf18412556306203a053c794d1597f6a"
+  },
+  {
+    "name": "bin/head",
+    "bytes": 68803,
+    "sha256": "11fd0734d57fb415d3b3f74b3123cf923ef31ab37fca563ef0bdc343622f1186"
+  },
+  {
+    "name": "bin/id",
+    "bytes": 59203,
+    "sha256": "f6382e4b327ede11b49764617aa2cd041289ae8bd3b1a63fa93c73c06f4d871d"
+  },
+  {
+    "name": "bin/install",
+    "bytes": 88133,
+    "sha256": "c030e6f134b6ae5c7ae2033f5d74fad5d5db8daddbe94f1cdba5d6ad3b343986"
+  },
+  {
+    "name": "bin/kill",
+    "bytes": 116991,
+    "sha256": "899e399f6a5edba476d0f90c77c78680544c817d9ee8d2466dc4cb73e6599aad"
+  },
+  {
+    "name": "bin/ls",
+    "bytes": 256412,
+    "sha256": "625792f623a7e8013de5951619dd0d1ce2e7c037029dc182b24f0a5c3fa0fb98"
+  },
+  {
+    "name": "bin/mkdir",
+    "bytes": 69675,
+    "sha256": "1fdc02a85ddc6a6879f0766279138efd5db9ad40e292902e2cac13b30f2c9180"
+  },
+  {
+    "name": "bin/mktemp",
+    "bytes": 53453,
+    "sha256": "fe708f83168cddb8afbae77f2a2e9ddcac31d4a198c00a1a709f0d19281b51ce"
+  },
+  {
+    "name": "bin/mv",
+    "bytes": 220329,
+    "sha256": "5a16ed30cf89e6b6277501c2a098ecfcc82a645bbc4f33106818230471a36774"
+  },
+  {
+    "name": "bin/od",
+    "bytes": 132503,
+    "sha256": "a1e47a82d71c20c5ce82ec97ac37838a82645bebe031131d09504c4afb750caa"
+  },
+  {
+    "name": "bin/paste",
+    "bytes": 114274,
+    "sha256": "8c4d665bb175bb64d9127d9e43f82958162ac2a08d341c307c976fcdd8b99bc2"
+  },
+  {
+    "name": "bin/printf",
+    "bytes": 146046,
+    "sha256": "0d8643e96752ba55d0f2214e26baf9bbca9e8af5eb624872cec3743648907237"
+  },
+  {
+    "name": "bin/ps",
+    "bytes": 168718,
+    "sha256": "ff242abd694f571f625f49b0c7636c585c7961af81a92794a1625a8138d8f6f4"
+  },
+  {
+    "name": "bin/pwd",
+    "bytes": 53668,
+    "sha256": "e06687ef84b2121413c7f25dbcd45e1d7a3a16b0eda73135c5732e24bda0fb7a"
+  },
+  {
+    "name": "bin/realpath",
+    "bytes": 62929,
+    "sha256": "e99bb665bd4312b868ea856db09f132db9e2a365a72d23abf7f386d994f7cc94"
+  },
+  {
+    "name": "bin/rm",
+    "bytes": 113771,
+    "sha256": "73f20e755a659a30db4d32300ad7195e7487615ca76e67d94069cdfba03ec33b"
+  },
+  {
+    "name": "bin/rmdir",
+    "bytes": 70755,
+    "sha256": "130d2d9760f351d0d2e1de8a4f3fff116b3417b3cb78b6c9ab478eef631a9473"
+  },
+  {
+    "name": "bin/seq",
+    "bytes": 62939,
+    "sha256": "ac1cfbb1560b8ea3c5680e97d31789afc83dd230396d88bf409c72312d82fa37"
+  },
+  {
+    "name": "bin/sleep",
+    "bytes": 41728,
+    "sha256": "97fd87e027f2163b1ca169412c4ef7cbe17d03bedc117db3766f00dd9400843b"
+  },
+  {
+    "name": "bin/sort",
+    "bytes": 174463,
+    "sha256": "d5fc95d970c80bded3846f34ab5a54f5ec9866bab619b56c5acde9b0e67099c3"
+  },
+  {
+    "name": "bin/tail",
+    "bytes": 88386,
+    "sha256": "0112f568fe13a427aa0ab2381272e71474e47f3084e7d701b571d35ca1f9632c"
+  },
+  {
+    "name": "bin/tee",
+    "bytes": 62947,
+    "sha256": "b3c6d7f8b3805eaaf17321ab653fb438da3a5c7abc83a24e3aef585a162b95e5"
+  },
+  {
+    "name": "bin/test",
+    "bytes": 119779,
+    "sha256": "d8cdc78d8e5664431caba846711b793f72cc60b4ceaee1b1820ddb9217ee41f7"
+  },
+  {
+    "name": "bin/touch",
+    "bytes": 80017,
+    "sha256": "1d9b7d875d31e26b7fe8f898960f051d2c64b0bf908d4913203fc295e4f0e41a"
+  },
+  {
+    "name": "bin/tr",
+    "bytes": 134854,
+    "sha256": "c890f1dce25558a25c443a42a71e141bba14f41617e8f5afda45ad9c7b5e4cf0"
+  },
+  {
+    "name": "bin/true",
+    "bytes": 25599,
+    "sha256": "7bb583c91523cc57b67dd5d041ac3be38091d1ec0409d3bf778159290e4b8b1b"
+  },
+  {
+    "name": "bin/uname",
+    "bytes": 43312,
+    "sha256": "6148ec3a2deae63b8df08a68ce0fd4975cde33ec790dcb7a9bb05c3ee6cfe295"
+  },
+  {
+    "name": "bin/uniq",
+    "bytes": 101180,
+    "sha256": "669a41518c1ed0c81c3159d4fd3d298f06366a49a94655e252ee782b260dd8f9"
+  },
+  {
+    "name": "bin/wc",
+    "bytes": 86330,
+    "sha256": "892e9f961563a02c08a1f6b824cb5c8aee08f83595bae85e30c970e697a8ef4c"
+  },
+  {
+    "name": "bin/which",
+    "bytes": 67979,
+    "sha256": "72cf750c50a97dea32b27236d35f188e0c1c12996efd364b9c292ee64ca29827"
+  },
+  {
+    "name": "bin/whoami",
+    "bytes": 38792,
+    "sha256": "bf67ce68b8c1362f5c80e101763228fdaf60ec65f7b116a1ee70f47ee0400bad"
+  },
+  {
+    "name": "bin/xargs",
+    "bytes": 106235,
+    "sha256": "c22829fb068ff2194233d2d0d1e7d8f5e5bf628a92d4b4eb634b26caaeb18325"
+  },
+  {
+    "name": "bin/yes",
+    "bytes": 44745,
+    "sha256": "b462a8b115d458ff32c461b5fe020e47421a71d7b343e2e80b5ad2b79a68583d"
+  }
+]

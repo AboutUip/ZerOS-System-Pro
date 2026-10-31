@@ -37,7 +37,10 @@ if(sourcePatch.status!==0)throw Error(sourcePatch.stderr);
 fs.writeFileSync(path.join(out,'compiler-source.patch'),sourcePatch.stdout);
 fs.copyFileSync(fileURLToPath(import.meta.url),path.join(out,'benchmark-source.mjs'));
 fs.copyFileSync(fileURLToPath(new URL('./corpus.mjs',import.meta.url)),path.join(out,'corpus-source.mjs'));
-const provenance={sourceRef,baselineRef:process.env.OBRC_BASELINE_REF??null,sourcePatchSha256:createHash('sha256').update(sourcePatch.stdout).digest('hex'),benchmarkSha256:createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex')};
+// 逐文件身份不依赖本机提交是否已经发布，合并/补丁工作区也能与最终 PR 源码核对。
+function compilerSourceFiles(dir){return fs.readdirSync(dir,{withFileTypes:true}).flatMap(entry=>{const file=path.join(dir,entry.name);return entry.isDirectory()?compilerSourceFiles(file):[file];});}
+const compilerSources=[path.join(repo,'Compiler/ObrCompiler/CMakeLists.txt'),...compilerSourceFiles(path.join(repo,'Compiler/ObrCompiler/src'))].sort().map(file=>({path:path.relative(repo,file),sha256:createHash('sha256').update(fs.readFileSync(file)).digest('hex')}));
+const provenance={sourceRef,baselineRef:process.env.OBRC_BASELINE_REF??null,compilerSources,sourcePatchSha256:createHash('sha256').update(sourcePatch.stdout).digest('hex'),benchmarkSha256:createHash('sha256').update(fs.readFileSync(fileURLToPath(import.meta.url))).digest('hex')};
 for(const job of manifest){
  const rows=variants.map(([variant,exe,opt])=>{
   const file=path.join(out,variant,job.name);fs.mkdirSync(path.dirname(file),{recursive:true});

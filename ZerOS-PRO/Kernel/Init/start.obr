@@ -1,5 +1,5 @@
 /* 入口。引导、系统调用分发和回复。回复只给进程层和文件层。 */
-#LINK /task.obr, /vfs.obr
+#LINK /task.obr, /vfs.obr, /pipe.obr, /dev.obr, /console.obr, /sig.obr
 import proc;
 import mm;
 import sched;
@@ -27,6 +27,10 @@ deRfun reply(long caller, long value): void {
      状态若留在调度之后，客程序看见的仍是上一次的停住。 */
   long index = taskFind(caller);
   if (index >= 0L) {
+    /* 4 = 调度唤醒；只有确实在睡的任务才是一条唤醒边。 */
+    if (taskAt(index).state == TaskState::Sleeping) {
+      diagTask(4L, taskAt(index).pid, caller, 0L);
+    }
     taskAt(index).state = TaskState::Running;
   }
   obr::os::pass(caller, value);
@@ -91,25 +95,33 @@ deRfun spawnOn(long core, long uid, long gid, long cap, long state): long {
 }
 
 deRfun boot(): void {
+  bootMark(10L);
   obr::os::gate();
   long me = obr::os::core();
   obr::os::bound(me, kArena(me), kSlot());
   mmReset();
+  bootMark(11L);
   /* 标量和 UTF-8 对不上就停在英文点阵上。字体面还没打开，这里不能画中文。 */
   suiteRun();
+  bootMark(12L);
   taskClear();
   vfsInit();
   /* 核对 /font 上的两份系统字体。缺文件也继续引导，服务 26 会回答不在。 */
   fontCensus();
+  bootMark(16L);
   /* 监督核不进任务表。1 号留给用户态 init，驱动从 2 号起。 */
   reserveOne();
   conPublish();
+  bootMark(43L);
   drvLoad();
+  bootMark(17L);
   noteDone();
+  bootMark(18L);
   conShow();
   bootInit();
   bootIdle();
   bootArm();
+  bootMark(24L);
 }
 
 /* 退出状态只留低 8 位。负数按补码绕回，和 wait 读到的范围一致。 */
@@ -238,7 +250,17 @@ deRfun dispatch(long caller, long service): void {
     reply(caller, doTask(caller, home));
     return;
   }
-  if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L || service == 29L || service == 31L) {
+  /* 壳在提示符画完后调用；只回 0。宿主在 svc 边界记 prompt 事件。 */
+  if (service == 35L) {
+    reply(caller, 0L);
+    return;
+  }
+  /* 壳开始解析一行命令；只回 0。宿主在 svc 边界开命令 span。 */
+  if (service == 36L) {
+    reply(caller, 0L);
+    return;
+  }
+  if ((service >= 4L && service <= 11L) || (service >= 14L && service <= 16L) || service == 20L || service == 23L || service == 24L || service == 25L || service == 29L || service == 31L || service == 34L) {
     long filed = vfsCall(caller, service);
     if (filed != -2L) {
       reply(caller, filed);
@@ -260,6 +282,7 @@ deRfun noteInstall(): void {
     return;
   }
   *flag = 1L;
+  bootMark(34L);
 }
 
 /* 0 还没开始。字体先映进映射，这一段只有网络读，固件继续转圈。
@@ -275,22 +298,27 @@ deRfun termBring(): void {
     if (memory::load64(6336L) == 0L) {
       return;
     }
+    bootMark(38L);
     if (termFont() == 0L) {
       termSet(3L);
       return;
     }
+    bootMark(39L);
     termShow();
     termSet(2L);
+    bootMark(37L);
     return;
   }
   if (termShell() == 0L) {
     return;
   }
+  bootMark(35L);
   if (termMap() == 0L) {
     memory::store64(1L, 6272L);
     termSet(3L);
     return;
   }
+  bootMark(36L);
   memory::store64(1L, 6272L);
   termSet(1L);
 }

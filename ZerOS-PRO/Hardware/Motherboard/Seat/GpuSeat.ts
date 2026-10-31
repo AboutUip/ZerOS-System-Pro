@@ -271,6 +271,7 @@ export namespace ZerOS {
         readonly frameHeight: number;
         readonly originX: number;
         readonly originY: number;
+        readonly scroll: readonly number[];
         readonly pixels: Uint32Array | null;
         readonly bitmap: ImageBitmap | null;
       }> {
@@ -290,17 +291,19 @@ export namespace ZerOS {
         const pixels = frame["pixels"];
         const originX = frame["originX"];
         const originY = frame["originY"];
+        const scroll = frame["scroll"];
         if (typeof frameWidth !== "number" || typeof frameHeight !== "number") {
           throw new Error(`${seatPrefix} the picture size is incomplete`);
         }
         notePace(frame);
         const patchX = typeof originX === "number" ? originX : 0;
         const patchY = typeof originY === "number" ? originY : 0;
+        const bands = Array.isArray(scroll) ? scroll.filter((item): item is number => typeof item === "number") : [];
         if (bitmap instanceof ImageBitmap) {
-          return { frameWidth, frameHeight, originX: patchX, originY: patchY, pixels: null, bitmap };
+          return { frameWidth, frameHeight, originX: patchX, originY: patchY, scroll: bands, pixels: null, bitmap };
         }
         if (pixels instanceof Uint32Array) {
-          return { frameWidth, frameHeight, originX: 0, originY: 0, pixels, bitmap: null };
+          return { frameWidth, frameHeight, originX: 0, originY: 0, scroll: [], pixels, bitmap: null };
         }
         throw new Error(`${seatPrefix} the frame is incomplete`);
       }

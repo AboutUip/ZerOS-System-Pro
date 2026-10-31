@@ -6,6 +6,8 @@
 <button id="signal">真实信号 ABI 验证</button><button id="device">O1 BIOS 设备验证</button>
 <button id="resume">补跑缺失命令</button>
 <button id="xargs-redir">xargs 输入重定向对照</button>
+<button id="pipeline">原管道 baseline / O1 / O2 差分</button>
+<button id="other-commands">其余常规命令差分</button>
 <input id="capture-label" placeholder="设备截图说明"><button id="capture">保存设备截图及原生输入记录</button>
 <p id="state">待运行</p><table><thead><tr><th>变体</th><th>命令</th><th>结果</th><th>启动至终端 present ms</th></tr></thead><tbody id="rows"></tbody></table>
 <iframe id="vm" title="被测 ZerOS"></iframe><pre id="detail"></pre>
@@ -34,7 +36,7 @@ async function one(variant,command='',mode='smoke'){
  let status=terminal?'booted':'boot-timeout';
  if(terminal&&command){frame.contentWindow.postMessage({kind:'obrc-test-input',text:command+'\n'},location.origin);const limit=Date.now()+60000;while(Date.now()<limit){record=await api('/__status?run='+run.run);const last=record.events.filter(e=>e.kind==='terminal').at(-1),rows=texts(last);if(record.events.some(e=>e.kind==='input-done')&&rows.filter(r=>/^root@zeros:.*#/.test(r)).length>=2){status='command-complete';break;}await delay(100);}if(status!=='command-complete')status='command-timeout';}
  const collected=collection?await collection.barrier(Boolean(terminal)):{ok:true,mode:'timing-sparse'};record=await api('/__status?run='+run.run);const last=record.events.filter(e=>e.kind==='terminal').at(-1),power=record.events.find(e=>e.kind==='power');
- const result={run:run.run,status,collection:collected,bootMs:terminal&&power?terminal.time-power.time:null,rows:texts(last),syscalls:record.events.filter(e=>e.kind==='syscall').map(e=>e.data),nasRequests:record.events.filter(e=>e.kind==='nas-request').map(e=>e.data),terminalSnapshot:last?.data??null,...await screenshot(last)};
+ const result={run:run.run,status,collection:collected,faultsAtBarrierRequired:mode==='smoke',bootMs:terminal&&power?terminal.time-power.time:null,rows:texts(last),syscalls:record.events.filter(e=>e.kind==='syscall').map(e=>e.data),nasRequests:record.events.filter(e=>e.kind==='nas-request').map(e=>e.data),terminalSnapshot:last?.data??null,...await screenshot(last)};
  await api('/__finish',result);collection?.close();const tr=document.createElement('tr');for(const value of[variant,command||'启动',status+(collected.ok?'':' / 采集不完整'),result.bootMs?.toFixed(2)??'n/a']){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);detail.textContent=JSON.stringify({run:result.run,status,collection:collected,bootMs:result.bootMs,rows:result.rows,syscalls:result.syscalls.length,nasRequests:result.nasRequests.length,terminalSnapshot:result.terminalSnapshot,pixelHash:result.pixelHash,raw:'原始事件和完整PNG已保存在browser-results.json'},null,2);return result;
 }
 async function suite(work){if(busy)return;busy=true;try{await work();state.textContent='本轮运行完成，原始结果已保存；请检查差分结论。';}catch(error){state.textContent='失败：'+error;detail.textContent=error.stack;}finally{busy=false;}}
@@ -43,10 +45,12 @@ document.querySelector('#legacy').onclick=()=>suite(()=>one('legacy-kernel','','
 document.querySelector('#legacy-firmware').onclick=()=>suite(async()=>{for(const part of['bios','logo','load'])await one('legacy-'+part,'','legacy-control');});
 document.querySelector('#signal').onclick=()=>suite(async()=>{for(const variant of['baseline','O1','O2'])await one(variant,'/bin/compiler-signal-smoke');});
 document.querySelector('#xargs-redir').onclick=()=>suite(async()=>{for(const variant of['baseline','O1','O2'])await one(variant,'xargs echo < /boot/compiler-input');});
+document.querySelector('#pipeline').onclick=()=>suite(async()=>{for(const variant of['baseline','O1','O2'])await one(variant,'cat /boot/compiler-input | xargs echo');});
 document.querySelector('#device').onclick=()=>suite(()=>one('O1','','bios-manual'));
 document.querySelector('#capture').onclick=async()=>{if(!currentRun||currentRun.mode!=='bios-manual')return;const canvas=frame.contentDocument.querySelector('canvas');if(!canvas)throw Error('设备画布不存在');const capture={run:currentRun.run,label:document.querySelector('#capture-label').value,time:performance.timeOrigin+performance.now(),width:canvas.width,height:canvas.height,png:canvas.toDataURL(),setup:'BIOS entry uses synthetic F12; nativeInputs contains only observed isTrusted events',nativeInputs:[...manualInputs]};await api('/__capture',capture);detail.textContent=JSON.stringify({label:capture.label,width:capture.width,height:capture.height,nativeInputs:capture.nativeInputs.length,saved:true},null,2);};
 document.querySelector('#timing').onclick=()=>suite(async()=>{const v=['baseline','O1','O2'];for(let n=0;n<5;n++)for(let k=0;k<3;k++)await one(v[(n+k)%3],'','timing');});
 const commands=['pwd','ls','cat /boot/compiler-input','grep beta /boot/compiler-input','cp /boot/compiler-input /boot/compiler-out','find /boot','sort /boot/compiler-input','head /boot/compiler-input','wc /boot/compiler-input','echo compiler-ok','cat /boot/compiler-input | xargs echo'];
 document.querySelector('#smoke').onclick=()=>suite(async()=>{for(const command of commands)for(const v of['baseline','O1','O2'])await one(v,command);});
+document.querySelector('#other-commands').onclick=()=>suite(async()=>{for(const command of commands.filter(c=>c!=='cat /boot/compiler-input | xargs echo'))for(const v of['baseline','O1','O2'])await one(v,command);});
 document.querySelector('#resume').onclick=()=>suite(async()=>{const {runs}=await api('/__results');for(const command of commands)for(const v of['baseline','O1','O2'])if(!runs.some(r=>r.mode==='smoke'&&r.command===command&&r.variant===v&&r.result?.status==='command-complete'&&r.result.collection?.ok))await one(v,command);});
 </script></html>

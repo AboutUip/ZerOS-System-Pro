@@ -61,6 +61,7 @@ export namespace ZerOS {
         FontFace: 40,
         FontSelect: 41,
         FontDraw: 42,
+        CopyBand: 43,
       } as const;
     }
   }

@@ -16,11 +16,18 @@
  */
 
 
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
+
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Clock {
       /** 宿主一次能分辨的节拍。短于它的等待不挂起。 */
       const HostTickMs = 1;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
 
       const clockPrefix = "[ZerOS.Hardware.Clock.HostClock]";
 
@@ -65,6 +72,11 @@ export namespace ZerOS {
       export function waitSpan(delay: number): Promise<void> {
         if (delay < HostTickMs) {
           return Promise.resolve();
+        }
+        /* 只记 2ms 以上的等待；短等待每秒可能上千次，留给计数/采样。 */
+        if (delay >= 2) {
+          const ms = Math.round(delay);
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Clock, ms > 0x7fffffff ? 0x7fffffff : ms);
         }
         return new Promise((resolve): void => {
           setTimeout((): void => {

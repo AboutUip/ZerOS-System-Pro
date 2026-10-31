@@ -1,0 +1,721 @@
+/* 终端格子、滚屏、绘制和键盘队列。
+   不管命令名，不管目录项怎么挂上 /dev/con。公布时只去调设备登记。 */
+#LINK /vfs.obr, /start.obr, /font.obr, /task.obr, /comm.obr, /sig.obr
+import fs;
+import proc;
+import trap;
+import memory;
+import obr.ui;
+import obr.font;
+
+/* 终端格子紧挨内存文件正文。头 1024 位，行长到 4096，输入队列到 8192，格子到 253952。
+   一次写入只把脏行画出来，再呈现一帧。抽键不呈现。 */
+deRfun gridBase(): long {
+  long cached = memory::load64(layoutWord(1L));
+  if (cached != 0L) {
+    return cached;
+  }
+  long base = vfsEnd() + inodeCount() * 64L + memSlots() * memCap() * 8L;
+  memory::store64(base, layoutWord(1L));
+  return base;
+}
+
+deRfun termFace(): long {
+  return 1048576L + 2L * 268435456L + 20480L + 576L;
+}
+
+deRfun conOctet(long addr): long {
+  return memory::loadOctet(addr) & 255L;
+}
+
+deRfun conInit(): void {
+  long base = gridBase();
+  if (memory::load64(base) == 1L) {
+    return;
+  }
+  long index = 0L;
+  while (index < 16L) {
+    memory::store64(0L, base + index * 64L);
+    index = index + 1L;
+  }
+  index = 0L;
+  while (index < 48L) {
+    memory::store64(0L, base + 1024L + index * 64L);
+    index = index + 1L;
+  }
+  memory::store64(1L, base);
+  memory::store64(-1L, base + 384L);
+}
+
+deRfun conCols(): long {
+  return memory::load64(gridBase() + 64L);
+}
+
+deRfun conRows(): long {
+  return memory::load64(gridBase() + 128L);
+}
+
+deRfun conMeasure(): void {
+  long wide = obr::ui::width();
+  long high = obr::ui::height();
+  long cols = 80L;
+  long rows = 24L;
+  if (wide >= 32L && high >= 32L) {
+    cols = (wide - 16L) / 8L;
+    rows = (high - 16L) / 18L;
+  }
+  if (cols < 1L) {
+    cols = 1L;
+  }
+  if (rows < 1L) {
+    rows = 1L;
+  }
+  if (cols > 160L) {
+    cols = 160L;
+  }
+  if (rows > 48L) {
+    rows = 48L;
+  }
+  memory::store64(cols, gridBase() + 64L);
+  memory::store64(rows, gridBase() + 128L);
+}
+
+/* 脏行收在一个字里。低 6 位是个数，后面每 6 位一个行号。
+   个数 63 表示整屏。移位只保留 32 位，第 32 行以后的标记会缠回低位，
+   于是按一个键就把每一行都画一遍，回读将近整帧。这里只用乘除。 */
+deRfun conMark(long row): void {
+  if (row < 0L || row >= 48L) {
+    return;
+  }
+  long packed = memory::load64(gridBase() + 320L);
+  long count = packed % 64L;
+  if (count == 63L) {
+    return;
+  }
+  long seen = packed / 64L;
+  long index = 0L;
+  while (index < count) {
+    if (seen % 64L == row) {
+      return;
+    }
+    seen = seen / 64L;
+    index = index + 1L;
+  }
+  if (count >= 8L) {
+    memory::store64(63L, gridBase() + 320L);
+    return;
+  }
+  long scale = 64L;
+  index = 0L;
+  while (index < count) {
+    scale = scale * 64L;
+    index = index + 1L;
+  }
+  memory::store64(packed + 1L + row * scale, gridBase() + 320L);
+}
+
+deRfun conMarkAll(): void {
+  memory::store64(63L, gridBase() + 320L);
+}
+
+deRfun conRowLen(long row): long {
+  return memory::load64(gridBase() + 1024L + row * 64L);
+}
+
+deRfun conSetRow(long row, long len): void {
+  memory::store64(len, gridBase() + 1024L + row * 64L);
+}
+
+deRfun conCell(long row, long col): long {
+  return gridBase() + 8192L + (row * 160L + col) * 32L;
+}
+
+deRfun conCursor(long row, long col): void {
+  memory::store64(row, gridBase() + 192L);
+  memory::store64(col, gridBase() + 256L);
+}
+
+/* 先把最底一行画进已经提交的画面，再整段上移。新的一行留给这次写入结束时的绘制。 */
+deRfun conCommitRow(long row): void {
+  long face = memory::load64(termFace());
+  if (face < 1L) {
+    return;
+  }
+  long cols = conCols();
+  long wide = cols * 8L + 16L;
+  if (cols < 1L) {
+    wide = obr::ui::width();
+  }
+  long paper = obr::ui::rgb(30L, 30L, 30L);
+  long ink = obr::ui::rgb(230L, 230L, 230L);
+  conPaintRow(row, wide, paper, ink, face);
+}
+
+deRfun conShift(): void {
+  long rows = conRows();
+  if (rows < 2L) {
+    return;
+  }
+  long wide = conCols() * 8L + 16L;
+  if (conCols() < 1L) {
+    wide = obr::ui::width();
+  }
+  obr::ui::shift(26L, 8L, (rows - 1L) * 18L, wide);
+}
+
+deRfun conScroll(): void {
+  long rows = conRows();
+  if (rows > 1L) {
+    conCommitRow(rows - 1L);
+    conShift();
+  }
+  long row = 0L;
+  while (row + 1L < rows) {
+    /* 只搬这一行用到的格子。以前固定搬 160 列，空行也要搬一遍，
+       滚屏时 47×160 次读写全压在写路径上。 */
+    long len = conRowLen(row + 1L);
+    if (len > 160L) {
+      len = 160L;
+    }
+    long col = 0L;
+    while (col < len) {
+      memory::store32(memory::load32(conCell(row + 1L, col)), conCell(row, col));
+      col = col + 1L;
+    }
+    conSetRow(row, len);
+    row = row + 1L;
+  }
+  if (rows > 0L) {
+    conSetRow(rows - 1L, 0L);
+    conCursor(rows - 1L, 0L);
+    conMark(rows - 1L);
+  }
+}
+
+deRfun conPlace(long scalar): void {
+  long row = memory::load64(gridBase() + 192L);
+  long col = memory::load64(gridBase() + 256L);
+  long cols = conCols();
+  long rows = conRows();
+  if (cols < 1L || rows < 1L) {
+    return;
+  }
+  if (row < 0L) {
+    row = 0L;
+  }
+  if (row >= rows) {
+    conScroll();
+    return;
+  }
+  if (col < 0L) {
+    col = 0L;
+  }
+  if (col >= cols) {
+    col = 0L;
+    row = row + 1L;
+    if (row >= rows) {
+      conScroll();
+      row = conRows() - 1L;
+      col = 0L;
+    }
+  }
+  memory::store32(scalar, conCell(row, col));
+  if (col + 1L > conRowLen(row)) {
+    conSetRow(row, col + 1L);
+  }
+  conMark(row);
+  col = col + 1L;
+  if (col >= cols) {
+    col = 0L;
+    row = row + 1L;
+    if (row >= rows) {
+      conScroll();
+      return;
+    }
+  }
+  conCursor(row, col);
+}
+
+deRfun conNewline(): void {
+  long row = memory::load64(gridBase() + 192L);
+  conMark(row);
+  row = row + 1L;
+  if (row >= conRows()) {
+    conScroll();
+    return;
+  }
+  conCursor(row, 0L);
+  conMark(row);
+}
+
+deRfun conReturn(): void {
+  long row = memory::load64(gridBase() + 192L);
+  conCursor(row, 0L);
+  conMark(row);
+}
+
+deRfun conBack(): void {
+  long row = memory::load64(gridBase() + 192L);
+  long col = memory::load64(gridBase() + 256L);
+  if (col > 0L) {
+    conCursor(row, col - 1L);
+    conMark(row);
+  }
+}
+
+deRfun conClearGrid(): void {
+  long row = 0L;
+  while (row < 48L) {
+    conSetRow(row, 0L);
+    row = row + 1L;
+  }
+  conCursor(0L, 0L);
+  memory::store64(0L, gridBase() + 832L);
+  conMarkAll();
+}
+
+deRfun conTab(): void {
+  long col = memory::load64(gridBase() + 256L);
+  long stop = 8L;
+  if (col % 8L != 0L) {
+    stop = 8L - col % 8L;
+  }
+  while (stop > 0L) {
+    conPlace(32L);
+    stop = stop - 1L;
+  }
+}
+
+deRfun conScalar(long value): void {
+  if (value < 32L || value > 1114111L || (value >= 55296L && value <= 57343L)) {
+    return;
+  }
+  conPlace(value);
+}
+
+deRfun conByte(long value): void {
+  value = value & 255L;
+  long base = gridBase();
+  long need = memory::load64(base + 704L);
+  if (need > 0L) {
+    if (value >= 128L && value <= 191L) {
+      long acc = memory::load64(base + 768L);
+      acc = (acc << 6L) | (value & 63L);
+      need = need - 1L;
+      memory::store64(acc, base + 768L);
+      memory::store64(need, base + 704L);
+      if (need == 0L) {
+        long minimum = memory::load64(base + 896L);
+        if (acc >= minimum) {
+          conScalar(acc);
+        }
+      }
+      return;
+    }
+    memory::store64(0L, base + 704L);
+  }
+  if (value == 10L) {
+    conNewline();
+    return;
+  }
+  if (value == 13L) {
+    conReturn();
+    return;
+  }
+  if (value == 8L || value == 127L) {
+    conBack();
+    return;
+  }
+  if (value == 12L) {
+    conClearGrid();
+    return;
+  }
+  if (value == 9L) {
+    conTab();
+    return;
+  }
+  if (value < 32L) {
+    return;
+  }
+  if (value < 128L) {
+    conPlace(value);
+    return;
+  }
+  if (value >= 194L && value <= 223L) {
+    memory::store64(value & 31L, base + 768L);
+    memory::store64(1L, base + 704L);
+    memory::store64(128L, base + 896L);
+  } else if (value >= 224L && value <= 239L) {
+    memory::store64(value & 15L, base + 768L);
+    memory::store64(2L, base + 704L);
+    memory::store64(2048L, base + 896L);
+  } else if (value >= 240L && value <= 244L) {
+    memory::store64(value & 7L, base + 768L);
+    memory::store64(3L, base + 704L);
+    memory::store64(65536L, base + 896L);
+  }
+}
+
+deRfun qPush(long value): long {
+  long base = gridBase();
+  long count = memory::load64(base + 640L);
+  if (count >= 512L) {
+    return 1L;
+  }
+  long head = memory::load64(base + 576L);
+  long at = head + count;
+  if (at >= 512L) {
+    at = at - 512L;
+  }
+  memory::storeOctet(value, base + 4096L + at * 8L);
+  memory::store64(count + 1L, base + 640L);
+  return 0L;
+}
+
+deRfun qPull(): long {
+  long base = gridBase();
+  long count = memory::load64(base + 640L);
+  if (count < 1L) {
+    return -1L;
+  }
+  long head = memory::load64(base + 576L);
+  long value = conOctet(base + 4096L + head * 8L);
+  head = head + 1L;
+  if (head >= 512L) {
+    head = 0L;
+  }
+  memory::store64(head, base + 576L);
+  memory::store64(count - 1L, base + 640L);
+  return value;
+}
+
+deRfun conCopyOut(long home, long count): long {
+  long got = 0L;
+  while (got < count) {
+    long value = qPull();
+    if (value < 0L) {
+      return got;
+    }
+    memory::storeOctet(value, byteAt(home) + got * 8L);
+    got = got + 1L;
+  }
+  return got;
+}
+
+/* 打断正在跑的程序。键盘等待若就是这颗核，清掉，免得稍后 reply 到已经卸下的核。
+   光标不在 0 列就换一行。提示符由父进程醒来之后再画，这里只拨光标。 */
+deRfun conInterrupt(long core): void {
+  long base = gridBase();
+  if (memory::load64(base + 384L) == core) {
+    memory::store64(-1L, base + 384L);
+  }
+  if (memory::load64(base + 256L) != 0L) {
+    conByte(10L);
+  }
+}
+
+deRfun conWake(): void {
+  long base = gridBase();
+  long waiter = memory::load64(base + 384L);
+  /* 等键盘的那颗核已经收掉时，队列里即使还有字节也不能再 reply。 */
+  if (waiter >= 0L && taskFind(waiter) < 0L) {
+    memory::store64(-1L, base + 384L);
+    return;
+  }
+  if (waiter < 0L || memory::load64(base + 640L) < 1L) {
+    return;
+  }
+  long home = memory::load64(base + 448L);
+  long need = memory::load64(base + 512L);
+  long got = conCopyOut(home, need);
+  if (got < 1L) {
+    return;
+  }
+  memory::store64(got, home + 320L);
+  memory::store64(-1L, base + 384L);
+  reply(waiter, 0L);
+}
+
+deRfun conPull(long caller, long home): long {
+  conInit();
+  long count = memory::load64(home + 256L);
+  if (count <= 0L) {
+    memory::store64(0L, home + 320L);
+    return 0L;
+  }
+  if (memory::load64(gridBase() + 384L) >= 0L) {
+    return 11L;
+  }
+  long got = conCopyOut(home, count);
+  if (got > 0L) {
+    memory::store64(got, home + 320L);
+    return 0L;
+  }
+  long base = gridBase();
+  memory::store64(caller, base + 384L);
+  memory::store64(home, base + 448L);
+  memory::store64(count, base + 512L);
+  return -2L;
+}
+
+deRfun conPaintRow(long row, long wide, long paper, long ink, long face): void {
+  long y = 8L + row * 18L;
+  obr::ui::rect(0L, y, wide, 18L, paper, 255L);
+  long len = conRowLen(row);
+  if (len > conCols()) {
+    len = conCols();
+  }
+  if (len > 0L) {
+    /* 纸色矩形会把当前墨色留成纸色。字形图章沿用它，不先换成浅色就和纸融在一起。
+       左缘点一颗再盖回去，只为换色。笔位是基线，格顶再往下 14 像素。 */
+    obr::ui::rect(0L, y, 1L, 1L, ink, 255L);
+    obr::font::select(face, 8L, y + 14L);
+    obr::font::draw(conCell(row, 0L), len);
+    obr::ui::rect(0L, y, 1L, 1L, paper, 255L);
+  }
+}
+
+deRfun conPaint(): void {
+  conInit();
+  long face = memory::load64(termFace());
+  if (face < 1L) {
+    return;
+  }
+  /* 列数已经量过就用它还原像素宽度，避免每个键都再问一次显卡。 */
+  long colsNow = conCols();
+  long wide = colsNow * 8L + 16L;
+  if (colsNow < 1L) {
+    wide = obr::ui::width();
+  }
+  long paper = obr::ui::rgb(30L, 30L, 30L);
+  long ink = obr::ui::rgb(230L, 230L, 230L);
+  long base = gridBase();
+  if (memory::load64(base + 832L) == 0L) {
+    if (conCols() < 1L) {
+      conMeasure();
+    }
+    long rows = conRows();
+    long cols = conCols();
+    long row = memory::load64(base + 192L);
+    long col = memory::load64(base + 256L);
+    if (row < 0L || row >= rows) {
+      row = 0L;
+    }
+    if (col < 0L || col > cols) {
+      col = 0L;
+    }
+    conCursor(row, col);
+    obr::ui::clear(paper, 255L);
+    memory::store64(1L, base + 832L);
+    conMarkAll();
+  }
+  long rows = conRows();
+  long packed = memory::load64(base + 320L);
+  long count = packed % 64L;
+  memory::store64(0L, base + 320L);
+  if (count == 63L) {
+    long row = 0L;
+    while (row < rows) {
+      conPaintRow(row, wide, paper, ink, face);
+      row = row + 1L;
+    }
+  } else {
+    long seen = packed / 64L;
+    long index = 0L;
+    while (index < count) {
+      long row = seen % 64L;
+      seen = seen / 64L;
+      if (row >= 0L && row < rows) {
+        conPaintRow(row, wide, paper, ink, face);
+      }
+      index = index + 1L;
+    }
+  }
+  long col = memory::load64(base + 256L);
+  long crow = memory::load64(base + 192L);
+  if (crow >= 0L && crow < rows && col >= 0L && col <= conCols()) {
+    obr::ui::rect(8L + col * 8L, 8L + crow * 18L, 2L, 16L, ink, 255L);
+  }
+  obr::ui::present();
+}
+
+deRfun conEmit(long home): void {
+  conInit();
+  if (conCols() < 1L) {
+    conMeasure();
+  }
+  long count = memory::load64(home + 256L);
+  if (count < 0L) {
+    memory::store64(0L, home + 320L);
+    return;
+  }
+  if (count > 4096L) {
+    count = 4096L;
+  }
+  long index = 0L;
+  long bytes = byteAt(home);
+  while (index < count) {
+    conByte(conOctet(bytes + index * 8L));
+    index = index + 1L;
+  }
+  memory::store64(count, home + 320L);
+  if (count > 0L) {
+    conPaint();
+  }
+}
+
+deRfun pushSeq(long first, long second, long third, long fourth, long count): void {
+  if (count >= 1L && qPush(first) != 0L) {
+    return;
+  }
+  if (count >= 2L && qPush(second) != 0L) {
+    return;
+  }
+  if (count >= 3L && qPush(third) != 0L) {
+    return;
+  }
+  if (count >= 4L) {
+    qPush(fourth);
+  }
+}
+
+deRfun conKey(long at): void {
+  long packed = memory::load64(at);
+  long name = memory::load64(at + 64L);
+  long unit = packed % 65536L;
+  long mods = packed / 65536L;
+  if (name == 0x7265746e45L) {
+    qPush(10L);
+    return;
+  }
+  if (name == 0x6b636142L) {
+    qPush(127L);
+    return;
+  }
+  if (name == 0x7466654cL) {
+    pushSeq(27L, 91L, 68L, 0L, 3L);
+    return;
+  }
+  if (name == 0x7468676952L) {
+    pushSeq(27L, 91L, 67L, 0L, 3L);
+    return;
+  }
+  /* 显示器把 ArrowUp 原样交来，七个字符。Down 是 ArrowDown 收成的短名。 */
+  if (name == 0x7055776f727241L) {
+    pushSeq(27L, 91L, 65L, 0L, 3L);
+    return;
+  }
+  if (name == 0x6e776f44L) {
+    pushSeq(27L, 91L, 66L, 0L, 3L);
+    return;
+  }
+  if (name == 0x656d6f48L) {
+    pushSeq(27L, 91L, 72L, 0L, 3L);
+    return;
+  }
+  if (name == 0x646e45L) {
+    pushSeq(27L, 91L, 70L, 0L, 3L);
+    return;
+  }
+  if (name == 0x6574656c6544L) {
+    pushSeq(27L, 91L, 51L, 126L, 4L);
+    return;
+  }
+  /* Tab 交给行编辑。正文里写成制表符，命令行上由 shell 补路径。 */
+  if (name == 0x626154L) {
+    qPush(9L);
+    return;
+  }
+  long ctrl = (mods / 2L) % 2L;
+  /* 小写减 96、大写减 64。只有这一下会变成字节 3 的 Ctrl+C 才问进程层。
+     有人正在等子进程就不入队；没有则仍是字节 3，行编辑照旧。别的控制字节不走这条。 */
+  if (ctrl == 1L && unit >= 97L && unit <= 122L) {
+    long value = unit - 96L;
+    if (value == 3L && procBreak() != 0L) {
+      return;
+    }
+    qPush(value);
+    return;
+  }
+  if (ctrl == 1L && unit >= 65L && unit <= 90L) {
+    long value = unit - 64L;
+    if (value == 3L && procBreak() != 0L) {
+      return;
+    }
+    qPush(value);
+    return;
+  }
+  if (ctrl == 1L) {
+    return;
+  }
+  if (unit >= 32L && unit <= 126L) {
+    qPush(unit);
+  }
+}
+
+deRfun conPump(): void {
+  conInit();
+  long written = memory::load64(6528L);
+  long base = gridBase();
+  long seen = memory::load64(base + 960L);
+  if (written < seen) {
+    seen = 0L;
+  }
+  if (written > seen + 5L) {
+    seen = written - 5L;
+  }
+  while (seen < written) {
+    conKey(6656L + (seen % 5L) * 128L);
+    seen = seen + 1L;
+  }
+  memory::store64(seen, base + 960L);
+  conWake();
+}
+
+/* 4096 是固件模式。0 仍是启动点，加载画面是 1，设置是 2。
+   设置开着时不能干等加载画面，否则空转和驱动都排不上去，CPU 页会一直是 STOP。
+   离开启动点就继续。这里不能 yield：引导还没进主循环，让出之后没有人再把监督核叫醒。
+   这一步不再往控制台写字。 */
+deRfun conShow(): void {
+  __zap__ {
+    conWait:
+    place r1, 4096
+    ldi.64 r0, r1
+    place r2, 0
+    eq r0, r0, r2
+    jnz r0, conWait
+  }
+}
+
+/* /dev/con 挂在监督核上。名字先放在驱动名暂存 537954304，drvLoad 之后会盖掉。
+   旧的两个光标字清掉，终端格子改在内存文件正文之后。
+   四个参数都在寄存器里：核心、pid、名字、长度。长度是 3，不能再塞进栈针。
+   这段不展开进 main，免得占满入口映像。 */
+deRfun conPublish(): void {
+  __zap__ {
+    place r0, 99
+    store.octet r0, 537954304
+    place r0, 111
+    store.octet r0, 537954312
+    place r0, 110
+    store.octet r0, 537954320
+    place r0, 0
+    store.64 r0, 537931968
+    store.64 r0, 537932032
+    store.64 r0, 537932096
+    store.64 r0, 537932160
+    store.64 r0, 537932224
+    store.64 r0, 537932288
+    store.64 r0, 537932352
+    store.64 r0, 537932416
+    store.64 r0, 537932480
+    store.64 r0, 537932544
+    store.64 r0, 537932608
+    store.64 r0, 537932672
+    place r1, 2
+    place r2, 1
+    place r3, 537954304
+    place r4, 3
+    call devPublish
+  }
+}

@@ -126,6 +126,13 @@ export namespace ZerOS {
       export const NativeEscapeAdmit = 30;
 
       /**
+       * 把一段请求交给扩展口，应答写回另一段位地址。
+       * 六个寄存器：结果、口、请求位地址、请求长度、应答位地址、应答上限。
+       * 请求里的字节是该口领域协议的事。客核心不能执行。
+       */
+      export const NativeEscapeOffer = 31;
+
+      /**
        * 这条转义后面固定有几个寄存器编号。
        * 没有计数字节。未登记的编号返回空，调用方必须失败且不改指令指针。
        */
@@ -176,7 +183,7 @@ export namespace ZerOS {
         if (opcode === NativeEscapeCharacter) {
           return 5;
         }
-        if (opcode === NativeEscapeAccel || opcode === NativeEscapeCarry) {
+        if (opcode === NativeEscapeAccel || opcode === NativeEscapeCarry || opcode === NativeEscapeOffer) {
           return 6;
         }
         return null;

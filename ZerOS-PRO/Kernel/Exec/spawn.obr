@@ -1,0 +1,198 @@
+/* 创建子任务，并把调用者的参数交过去。
+   不管引导顺序。参数布局和 Resource/Bin/arg.obr 是同一张。 */
+#LINK /start.obr, /boot.obr
+import proc;
+import fs;
+import exec;
+import sched;
+import board;
+import memory;
+import obr.os;
+
+/* 参数和环境放在界限起点 +4194304。壳和 Resource/Bin/arg.obr 用同一张布局。
+   字 0 个数，字 1 环境条数，字 2 参数八位组数，字 3 环境八位组数。
+   +256 起 64 个参数长度，+4352 起 64 个环境长度。
+   参数八位组从 +8448 起，环境从 +73984 起，相邻隔 8 位。整段 139520 位。 */
+deRfun argAt(long home): long {
+  return home + 4194304L;
+}
+
+deRfun argSpan(): long {
+  return 139520L;
+}
+
+deRfun argOk(long home): long {
+  long base = argAt(home);
+  long argc = memory::load64(base);
+  long envc = memory::load64(base + 64L);
+  long argBytes = memory::load64(base + 128L);
+  long envBytes = memory::load64(base + 192L);
+  if (argc < 0L || argc > 64L || envc < 0L || envc > 64L) {
+    return 0L;
+  }
+  if (argBytes < 0L || argBytes > 8192L || envBytes < 0L || envBytes > 8192L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun clearArgs(long home): void {
+  long at = argAt(home);
+  long index = 0L;
+  while (index < argSpan()) {
+    memory::store64(0L, at + index);
+    index = index + 64L;
+  }
+}
+
+/* 父任务窗口里的参数抄进子任务。调用前要先 argOk。 */
+deRfun handArgs(long from, long to): void {
+  long src = argAt(from);
+  long dst = argAt(to);
+  long index = 0L;
+  while (index < argSpan()) {
+    memory::store64(memory::load64(src + index), dst + index);
+    index = index + 64L;
+  }
+}
+
+deRfun execSpawn(long caller, long home): long {
+  long taskIndex = taskFind(caller);
+  if (taskIndex < 0L) {
+    return -1L;
+  }
+  if (argOk(home) == 0L) {
+    return 13L;
+  }
+  /* 只给 /os/sh 打点。后来的命令也走这里，不能每次派生都写 7296。 */
+  long shell = isShell(home + 16384L);
+  if (shell == 1L) {
+    bootMark(30L);
+  }
+  long status = vfsPrepare(caller, home + 16384L);
+  if (status != 0L) {
+    return status;
+  }
+  if (shell == 1L) {
+    bootMark(31L);
+  }
+  long core = memory::load64(home + 128L);
+  long sharing = 0L;
+  if (core == 0L) {
+    core = 4L;
+    while (core < 8L && freeCore(core) == 0L) {
+      core = core + 1L;
+    }
+    if (core >= 8L && freeCore(3L) == 1L) {
+      core = 3L;
+    }
+    if (core >= 8L) {
+      core = 4L;
+      while (core < 8L && stoppedForSlice(core) == 0L) {
+        core = core + 1L;
+      }
+      if (core >= 8L && stoppedForSlice(3L) == 1L) {
+        core = 3L;
+      }
+      sharing = 1L;
+    }
+  } else if (freeCore(core) == 0L) {
+    if (stoppedForSlice(core) == 0L) {
+      return 11L;
+    }
+    sharing = 1L;
+  }
+  if (userCore(core) == 0L) {
+    return 11L;
+  }
+  long old = -1L;
+  if (sharing == 1L) {
+    if (taskRoom() == 0L) {
+      return 7L;
+    }
+    old = taskFind(core);
+    if (old < 0L) {
+      return 11L;
+    }
+    /* 先抄旧任务。placeAt 里的 install 会清掉这颗核心上的私有栈。槽不够就先不装。 */
+    long slot = slotHold(old);
+    if (slot < 0L) {
+      return 7L;
+    }
+    obr::os::capture(core, slot);
+  }
+  /* 内存文件不向 NAS 要。NAS 上的文件仍走原来的拉取。 */
+  long size = 0L;
+  long planted = vfsPlant(caller, home + 16384L, imageAt(), &size);
+  if (planted == 0L) {
+    if (elfImage(imageAt()) == 1L) {
+      long placed = compatPlace(core, imageAt(), size);
+      if (placed != 0L) {
+        return placed;
+      }
+    } else {
+      obr::os::install(core, imageAt(), size);
+      obr::os::bound(core, kArena(core), kSlot());
+    }
+  } else if (planted != 1L) {
+    return planted;
+  } else {
+    status = placeAt(scratch(), core);
+    if (status != 0L) {
+      return status;
+    }
+  }
+  if (sharing == 1L) {
+    Task* previous = taskAt(old);
+    previous.state = TaskState::Ready;
+  }
+  if (shell == 1L) {
+    bootMark(32L);
+  }
+  Task* parent = taskAt(taskIndex);
+  long pid = taskSpawn(core, nextPid(), parent.cred.uid, parent.cred.gid, parent.cap, TaskState::Running);
+  if (pid == 0L) {
+    if (sharing == 1L) {
+      long back = taskAt(old).held - 1L;
+      if (back >= 0L) {
+        obr::os::restore(core, back);
+      }
+      Task* returned = taskAt(old);
+      returned.state = TaskState::Running;
+      obr::os::schedule(core);
+    }
+    return 7L;
+  }
+  Task* child = taskAt(taskByPid(pid));
+  child.ppid = parent.pid;
+  child.cred.euid = parent.cred.euid;
+  child.cred.egid = parent.cred.egid;
+  child.cap = parent.cap;
+  child.cwd = parent.cwd;
+  long rank = rankGet(taskIndex);
+  if (isShell(home + 16384L) == 1L) {
+    rank = 2L;
+  }
+  rankSet(taskByPid(pid), rank);
+  commFromPath(taskByPid(pid), home + 16384L);
+  vfsHand(taskIndex, taskByPid(pid));
+  /* handArgs 会盖住整段参数区，不必先按字清零。
+     用子任务所在核心的窗口起点，而不是 query(1,8,core)：子任务还没调度时，
+     那颗核心上的 home 仍是上一个任务，参数会抄到旧窗口。 */
+  handArgs(home, kArena(core));
+  /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。
+     再拉到 100000000 测过，按键仍是大约一秒，时间不在客程序的节拍上。 */
+  if (isSession(home + 16384L) == 1L) {
+    obr::os::hertz(core, 30L);
+  } else {
+    obr::os::hertz(core, 1000000L);
+  }
+  schedWake(core);
+  if (shell == 1L) {
+    bootMark(33L);
+  }
+  memory::store64(pid, home + 192L);
+  memory::store64(core, home + 256L);
+  return 0L;
+}
+

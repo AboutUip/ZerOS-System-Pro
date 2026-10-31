@@ -71,6 +71,14 @@ export namespace ZerOS {
         ShowPatch(originX: number, originY: number, bitmap: ImageBitmap): void {
           device.ShowPatch(originX, originY, bitmap);
         },
+
+        /**
+         * 按显卡横带把已经贴上的像素挪到目的位置。
+         * 每四个数是源 y、目的 y、高、宽。空出来的像素留着，随后的补丁盖上。
+         */
+        ShiftBands(scroll: readonly number[]): void {
+          device.ShiftBands(scroll);
+        },
       };
     }
   }

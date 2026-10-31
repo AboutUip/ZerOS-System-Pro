@@ -1,0 +1,851 @@
+{
+  "checks": 221,
+  "results": [
+    {
+      "level": "-O0",
+      "case": "PIE install on core 1",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "346",
+        "steps": "789",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 12777,
+          "writeOctets": 12769,
+          "pages": 5,
+          "memoryReads": 5,
+          "memoryWrites": 4,
+          "batches": 9
+        }
+      }
+    },
+    {
+      "level": "-O0",
+      "case": "shared attach on core 1",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "42",
+        "steps": "83",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 1035,
+          "writeOctets": 1035,
+          "pages": 2,
+          "memoryReads": 0,
+          "memoryWrites": 0,
+          "batches": 0
+        }
+      }
+    },
+    {
+      "level": "-O1",
+      "case": "PIE install on core 1",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "346",
+        "steps": "788",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 12471,
+          "writeOctets": 12463,
+          "pages": 5,
+          "memoryReads": 5,
+          "memoryWrites": 4,
+          "batches": 9
+        }
+      }
+    },
+    {
+      "level": "-O1",
+      "case": "shared attach on core 1",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "42",
+        "steps": "82",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 964,
+          "writeOctets": 964,
+          "pages": 2,
+          "memoryReads": 0,
+          "memoryWrites": 0,
+          "batches": 0
+        }
+      }
+    },
+    {
+      "level": "-O2",
+      "case": "PIE install on core 1",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "346",
+        "steps": "663",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 12691,
+          "writeOctets": 12683,
+          "pages": 5,
+          "memoryReads": 5,
+          "memoryWrites": 4,
+          "batches": 9
+        }
+      }
+    },
+    {
+      "level": "-O2",
+      "case": "shared attach on core 1",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "42",
+        "steps": "82",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 964,
+          "writeOctets": 964,
+          "pages": 2,
+          "memoryReads": 0,
+          "memoryWrites": 0,
+          "batches": 0
+        }
+      }
+    },
+    {
+      "level": "-O0",
+      "case": "Resource/App/sh/edit-check",
+      "run": {
+        "kind": "halt",
+        "r0": "0",
+        "steps": 1390517,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {
+          "2097152": "151",
+          "2097216": "0",
+          "2097280": "0"
+        },
+        "visible": [],
+        "memory": {
+          "readOctets": 12752705,
+          "writeOctets": 1345684,
+          "pages": 90,
+          "fetchOctets": 9742043
+        },
+        "rip": "2147484080",
+        "debug": {
+          "nativeInstructions": 41084,
+          "debugSites": 36501,
+          "valid": 36501
+        }
+      }
+    },
+    {
+      "level": "-O1",
+      "case": "Resource/App/sh/edit-check",
+      "run": {
+        "kind": "halt",
+        "r0": "0",
+        "steps": 1369398,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {
+          "2097152": "151",
+          "2097216": "0",
+          "2097280": "0"
+        },
+        "visible": [],
+        "memory": {
+          "readOctets": 10731546,
+          "writeOctets": 1345684,
+          "pages": 75,
+          "fetchOctets": 7840396
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 40935,
+          "debugSites": 36446,
+          "valid": 36446
+        }
+      }
+    },
+    {
+      "level": "-O2",
+      "case": "Resource/App/sh/edit-check",
+      "run": {
+        "kind": "halt",
+        "r0": "0",
+        "steps": 1327102,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {
+          "2097152": "151",
+          "2097216": "0",
+          "2097280": "0"
+        },
+        "visible": [],
+        "memory": {
+          "readOctets": 10346470,
+          "writeOctets": 1251148,
+          "pages": 75,
+          "fetchOctets": 7591872
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 41121,
+          "debugSites": 36642,
+          "valid": 36642
+        }
+      }
+    },
+    {
+      "level": "-O0",
+      "case": "recursive seven argument ABI",
+      "run": {
+        "kind": "halt",
+        "r0": "0",
+        "steps": 1296,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {
+          "2097152": "42",
+          "2097216": "43",
+          "2097280": "654322",
+          "2097344": "654321"
+        },
+        "visible": [],
+        "memory": {
+          "readOctets": 12513,
+          "writeOctets": 1504,
+          "pages": 6,
+          "fetchOctets": 9377
+        },
+        "rip": "2147484080",
+        "debug": {
+          "nativeInstructions": 734,
+          "debugSites": 653,
+          "valid": 653
+        }
+      }
+    },
+    {
+      "level": "-O1",
+      "case": "recursive seven argument ABI",
+      "run": {
+        "kind": "halt",
+        "r0": "0",
+        "steps": 1262,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {
+          "2097152": "42",
+          "2097216": "43",
+          "2097280": "654322",
+          "2097344": "654321"
+        },
+        "visible": [],
+        "memory": {
+          "readOctets": 10339,
+          "writeOctets": 1504,
+          "pages": 6,
+          "fetchOctets": 7371
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 717,
+          "debugSites": 646,
+          "valid": 646
+        }
+      }
+    },
+    {
+      "level": "-O2",
+      "case": "recursive seven argument ABI",
+      "run": {
+        "kind": "halt",
+        "r0": "0",
+        "steps": 1262,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {
+          "2097152": "42",
+          "2097216": "43",
+          "2097280": "654322",
+          "2097344": "654321"
+        },
+        "visible": [],
+        "memory": {
+          "readOctets": 10339,
+          "writeOctets": 1504,
+          "pages": 6,
+          "fetchOctets": 7371
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 717,
+          "debugSites": 646,
+          "valid": 646
+        }
+      }
+    },
+    {
+      "level": "-O0",
+      "core": 1,
+      "case": "recursive seven argument PIE ABI",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "0",
+        "steps": "1144",
+        "probes": {
+          "270532608": "42",
+          "270532672": "43",
+          "270532736": "654322",
+          "270532800": "654321"
+        },
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 6266,
+          "writeOctets": 6298,
+          "pages": 3,
+          "memoryReads": 0,
+          "memoryWrites": 4,
+          "batches": 4
+        }
+      }
+    },
+    {
+      "level": "-O0",
+      "core": 4,
+      "case": "recursive seven argument PIE ABI",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 4,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "0",
+        "steps": "1144",
+        "probes": {
+          "1075838976": "42",
+          "1075839040": "43",
+          "1075839104": "654322",
+          "1075839168": "654321"
+        },
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 6266,
+          "writeOctets": 6298,
+          "pages": 3,
+          "memoryReads": 0,
+          "memoryWrites": 4,
+          "batches": 4
+        }
+      }
+    },
+    {
+      "level": "-O1",
+      "core": 1,
+      "case": "recursive seven argument PIE ABI",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "0",
+        "steps": "1131",
+        "probes": {
+          "270532608": "42",
+          "270532672": "43",
+          "270532736": "654322",
+          "270532800": "654321"
+        },
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 6011,
+          "writeOctets": 6043,
+          "pages": 3,
+          "memoryReads": 0,
+          "memoryWrites": 4,
+          "batches": 4
+        }
+      }
+    },
+    {
+      "level": "-O1",
+      "core": 4,
+      "case": "recursive seven argument PIE ABI",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 4,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "0",
+        "steps": "1131",
+        "probes": {
+          "1075838976": "42",
+          "1075839040": "43",
+          "1075839104": "654322",
+          "1075839168": "654321"
+        },
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 6011,
+          "writeOctets": 6043,
+          "pages": 3,
+          "memoryReads": 0,
+          "memoryWrites": 4,
+          "batches": 4
+        }
+      }
+    },
+    {
+      "level": "-O2",
+      "core": 1,
+      "case": "recursive seven argument PIE ABI",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 1,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "0",
+        "steps": "1131",
+        "probes": {
+          "270532608": "42",
+          "270532672": "43",
+          "270532736": "654322",
+          "270532800": "654321"
+        },
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 6011,
+          "writeOctets": 6043,
+          "pages": 3,
+          "memoryReads": 0,
+          "memoryWrites": 4,
+          "batches": 4
+        }
+      }
+    },
+    {
+      "level": "-O2",
+      "core": 4,
+      "case": "recursive seven argument PIE ABI",
+      "run": {
+        "kind": "installed",
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 4,
+          "reason": 0,
+          "index": 3,
+          "op": "halt",
+          "detail": ""
+        },
+        "r0": "0",
+        "steps": "1131",
+        "probes": {
+          "1075838976": "42",
+          "1075839040": "43",
+          "1075839104": "654322",
+          "1075839168": "654321"
+        },
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 6011,
+          "writeOctets": 6043,
+          "pages": 3,
+          "memoryReads": 0,
+          "memoryWrites": 4,
+          "batches": 4
+        }
+      }
+    },
+    {
+      "case": "unchanged NativeImageCheck on O0 golden",
+      "status": 0
+    },
+    {
+      "level": "-O0",
+      "case": "sandbox",
+      "run": {
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 0,
+          "reason": 0,
+          "index": 1,
+          "op": "halt",
+          "detail": ""
+        },
+        "sandbox": true,
+        "kind": "halt",
+        "r0": "42",
+        "message": "",
+        "steps": "1",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 0,
+          "writeOctets": 0,
+          "pages": 0,
+          "memoryReads": 0,
+          "memoryWrites": 0,
+          "batches": 0
+        }
+      }
+    },
+    {
+      "level": "-O1",
+      "case": "sandbox",
+      "run": {
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 0,
+          "reason": 0,
+          "index": 1,
+          "op": "halt",
+          "detail": ""
+        },
+        "sandbox": true,
+        "kind": "halt",
+        "r0": "42",
+        "message": "",
+        "steps": "1",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 0,
+          "writeOctets": 0,
+          "pages": 0,
+          "memoryReads": 0,
+          "memoryWrites": 0,
+          "batches": 0
+        }
+      }
+    },
+    {
+      "level": "-O2",
+      "case": "sandbox",
+      "run": {
+        "stop": {
+          "kind": "core-stop",
+          "ordinal": 0,
+          "reason": 0,
+          "index": 1,
+          "op": "halt",
+          "detail": ""
+        },
+        "sandbox": true,
+        "kind": "halt",
+        "r0": "42",
+        "message": "",
+        "steps": "1",
+        "probes": {},
+        "events": [],
+        "visible": [],
+        "memory": {
+          "logical": null,
+          "readOctets": 0,
+          "writeOctets": 0,
+          "pages": 0,
+          "memoryReads": 0,
+          "memoryWrites": 0,
+          "batches": 0
+        }
+      }
+    },
+    {
+      "case": "pass order execution",
+      "sequence": "forward,dce",
+      "run": {
+        "kind": "halt",
+        "r0": "42",
+        "steps": 46,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {},
+        "visible": [],
+        "memory": {
+          "readOctets": 376,
+          "writeOctets": 80,
+          "pages": 4,
+          "fetchOctets": 256
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 46,
+          "debugSites": 38,
+          "valid": 38
+        }
+      }
+    },
+    {
+      "case": "pass order execution",
+      "sequence": "dce,forward,dce",
+      "run": {
+        "kind": "halt",
+        "r0": "42",
+        "steps": 46,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {},
+        "visible": [],
+        "memory": {
+          "readOctets": 376,
+          "writeOctets": 80,
+          "pages": 4,
+          "fetchOctets": 256
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 46,
+          "debugSites": 38,
+          "valid": 38
+        }
+      }
+    },
+    {
+      "case": "pass order execution",
+      "sequence": "forward,forward,dce",
+      "run": {
+        "kind": "halt",
+        "r0": "42",
+        "steps": 46,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {},
+        "visible": [],
+        "memory": {
+          "readOctets": 376,
+          "writeOctets": 80,
+          "pages": 4,
+          "fetchOctets": 256
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 46,
+          "debugSites": 38,
+          "valid": 38
+        }
+      }
+    },
+    {
+      "case": "pass order execution",
+      "sequence": "fold",
+      "run": {
+        "kind": "halt",
+        "r0": "42",
+        "steps": 47,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {},
+        "visible": [],
+        "memory": {
+          "readOctets": 390,
+          "writeOctets": 80,
+          "pages": 4,
+          "fetchOctets": 262
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 47,
+          "debugSites": 38,
+          "valid": 38
+        }
+      }
+    },
+    {
+      "case": "pass order execution",
+      "sequence": "load-forward",
+      "run": {
+        "kind": "halt",
+        "r0": "42",
+        "steps": 46,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {},
+        "visible": [],
+        "memory": {
+          "readOctets": 376,
+          "writeOctets": 80,
+          "pages": 4,
+          "fetchOctets": 256
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 46,
+          "debugSites": 38,
+          "valid": 38
+        }
+      }
+    },
+    {
+      "case": "pass order execution",
+      "sequence": "load-forward,fold,dce",
+      "run": {
+        "kind": "halt",
+        "r0": "42",
+        "steps": 46,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {},
+        "visible": [],
+        "memory": {
+          "readOctets": 376,
+          "writeOctets": 80,
+          "pages": 4,
+          "fetchOctets": 256
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 46,
+          "debugSites": 38,
+          "valid": 38
+        }
+      }
+    },
+    {
+      "case": "pass order execution",
+      "sequence": "fold,load-forward,dce,fold,dce",
+      "run": {
+        "kind": "halt",
+        "r0": "42",
+        "steps": 46,
+        "calleeSaved": true,
+        "rspBalanced": true,
+        "events": [],
+        "probes": {},
+        "visible": [],
+        "memory": {
+          "readOctets": 376,
+          "writeOctets": 80,
+          "pages": 4,
+          "fetchOctets": 256
+        },
+        "rip": "2147483968",
+        "debug": {
+          "nativeInstructions": 46,
+          "debugSites": 38,
+          "valid": 38
+        }
+      }
+    }
+  ]
+}

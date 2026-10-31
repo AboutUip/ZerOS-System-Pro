@@ -1,5 +1,7 @@
-/* 交互式 shell。用 -pie -slot 0 编译，和 edit.obr 一起放到 /os/sh。
+/* 交互式 shell。源码在 Resource/App/sh，用 -pie -slot 0 和 edit.obr 编成客路径 /os/sh。
    提示符是 root@zeros:、当前目录、再加 # 。行编辑在用户态，内核只交原始按键。
+   上方向键是 ArrowUp，下方向键是 Down；行编辑把它们收成历史。
+   Tab 在命令的位置补内建和 PATH 里的程序，其余补路径。
    内置 cd、exit、history、clear。echo 和 pwd 在 /bin。
    cd 按 POSIX.1-2017 的十步走。-L 是缺省，-L 与 -P 以后写的为准。没有操作数就用 HOME，空或未设置则失败。
    cd - 等同 cd "$OLDPWD"，成功时把新的绝对路径写到标准输出。相对路径且首个分量不是 . 或 .. 时才查 CDPATH；
@@ -44,7 +46,8 @@ deRfun linger(): void {
   }
 }
 
-/* 工作区：目录、整理用的两段、重画缓冲、上一行的列数、子任务和管道两端。 */
+/* 工作区：目录、整理用的两段、重画缓冲、上一行的列数、子任务和管道两端。
+   补全前缀在 +60800，公共前缀在 +62848，各 256 个八位组。分配是 65536 位。 */
 deRfun cwdLenAt(long work): long {
   return work;
 }
@@ -84,6 +87,14 @@ deRfun pipeWriteAt(long work, long index): long {
 /* 这一行最多四份 here-document。读端记在这里，-1 表示还没有或已经关掉。 */
 deRfun hereFdAt(long work, long index): long {
   return work + 60000L + index * 64L;
+}
+
+deRfun compNameAt(long work): long {
+  return work + 60800L;
+}
+
+deRfun compCommonAt(long work): long {
+  return work + 62848L;
 }
 
 deRfun putText(long addr, long at, string text): long {
@@ -477,6 +488,9 @@ deRfun paintPrompt(long home, long work): void {
   at = putText(paint, at, "# ");
   writeSpan(home, paint, at);
   memory::store64(columns(paint, at), prevAt(work));
+  /* 提示符画完，发一次 no-op 服务 35。宿主在 svc 边界记 prompt 事件；
+     不是协议字段，也不写保留地址。 */
+  obr::proc::prompt(home);
 }
 
 deRfun writeMissing(long home, string lead, long addr, long count, string tail): void {
@@ -1539,6 +1553,8 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
 
 /* out 里已经是拆好的命令。here-document 的正文在 body，一份 4096 个八位组。 */
 deRfun runParsed(long home, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long {
+  /* 这一行开始执行。宿主在 svc 边界开命令 span，提示符再关。 */
+  obr::proc::command(home);
   long status = previous;
   long lists = listCount(out);
   long index = 0L;
@@ -1585,6 +1601,438 @@ deRfun attach(long home): long {
     obr::proc::close(home, fd);
   }
   return 0L;
+}
+
+/* 空格和这些分隔符结束当前词。引号先不另算。 */
+deRfun isBreak(long value): long {
+  if (value == 32L || value == 9L || value == 124L || value == 38L || value == 59L || value == 60L || value == 62L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 刚列出来的名字和前缀相符就抄到 dest。点开头的名字只在前缀也是点时算。 */
+deRfun takeName(long home, long prefix, long prefixLen, long dest, long* outLen): long {
+  long got = obr::proc::slot(home, 256L);
+  if (got < 1L || got > 255L || got < prefixLen) {
+    return 0L;
+  }
+  long bytes = obr::proc::bytes(home);
+  if ((prefixLen == 0L || u8(prefix) != 46L) && u8(bytes) == 46L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < prefixLen) {
+    if (u8(bytes + index * 8L) != u8(prefix + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  copySpan(bytes, dest, got);
+  *outLen = got;
+  return 1L;
+}
+
+/* 目录末尾没有斜杠就补一个，再接上名字。 */
+deRfun joinDir(long dir, long dirLen, long name, long nameLen, long dest): long {
+  copySpan(dir, dest, dirLen);
+  long out = dirLen;
+  if (out < 1L || u8(dest + (out - 1L) * 8L) != 47L) {
+    memory::storeOctet(47L, dest + out * 8L);
+    out = out + 1L;
+  }
+  copySpan(name, dest + out * 8L, nameLen);
+  return out + nameLen;
+}
+
+/* 把名字并进已有的命中。公共前缀收到 compCommon，条数加一。 */
+deRfun keepCommon(long work, long name, long nameLen, long* matches, long* commonLen): void {
+  if (*matches == 0L) {
+    copySpan(name, compCommonAt(work), nameLen);
+    *commonLen = nameLen;
+  } else {
+    long limit = *commonLen;
+    if (nameLen < limit) {
+      limit = nameLen;
+    }
+    long same = 0L;
+    while (same < limit && u8(compCommonAt(work) + same * 8L) == u8(name + same * 8L)) {
+      same = same + 1L;
+    }
+    *commonLen = same;
+  }
+  *matches = *matches + 1L;
+}
+
+/* 光标前这个词是不是命令。行首、管道、分号、与号，以及 NAME=value 后面，都是。
+   小于号和大于号后面是路径。已经出现过的普通词后面也是路径。 */
+deRfun commandHere(long state, long start): long {
+  long expect = 1L;
+  long index = 0L;
+  while (index < start) {
+    long value = editAt(state, index);
+    if (isBreak(value) == 1L) {
+      if (value == 124L || value == 38L || value == 59L) {
+        expect = 1L;
+      } else if (value == 60L || value == 62L) {
+        expect = 0L;
+      }
+      index = index + 1L;
+    } else {
+      long from = index;
+      long assign = 0L;
+      long slash = 0L;
+      while (index < start && isBreak(editAt(state, index)) == 0L) {
+        if (editAt(state, index) == 47L) {
+          slash = 1L;
+        }
+        if (editAt(state, index) == 61L && slash == 0L) {
+          assign = 1L;
+        }
+        index = index + 1L;
+      }
+      if (assign == 1L && slash == 0L && from < index) {
+        expect = 1L;
+      } else {
+        expect = 0L;
+      }
+    }
+  }
+  return expect;
+}
+
+/* PATH 的正文。没设置时用缺省的 /bin:/os:/kernel，放在工作区里。 */
+deRfun pathValue(long env, long work, long* outLen): long {
+  long name = scratchAt(work);
+  long nameLen = putText(name, 0L, "PATH");
+  long value = 0L;
+  long valueLen = 0L;
+  if (envGet(env, name, nameLen, &value, &valueLen) == 0L) {
+    value = work + 52000L;
+    valueLen = putText(value, 0L, "/bin:/os:/kernel");
+  }
+  *outLen = valueLen;
+  return value;
+}
+
+/* 内建名字。对得上前缀就记进公共前缀，或者在列出时写一行。 */
+deRfun offerText(long home, long work, string text, long prefix, long prefixLen, long* matches, long* commonLen, long listing): void {
+  int raw = length(text);
+  long count = raw;
+  if (count < prefixLen || count > 255L) {
+    return;
+  }
+  long at = scratchAt(work);
+  int step = 0;
+  while (step < raw) {
+    memory::storeOctet(text[step], at + step * 8L);
+    step = step + 1;
+  }
+  long index = 0L;
+  while (index < prefixLen) {
+    if (u8(at + index * 8L) != u8(prefix + index * 8L)) {
+      return;
+    }
+    index = index + 1L;
+  }
+  if (listing == 1L) {
+    writeSpan(home, at, count);
+    writeByte(home, 10L);
+  } else {
+    keepCommon(work, at, count, matches, commonLen);
+  }
+}
+
+deRfun offerBuiltins(long home, long work, long prefix, long prefixLen, long* matches, long* commonLen, long listing): void {
+  offerText(home, work, "cd", prefix, prefixLen, matches, commonLen, listing);
+  offerText(home, work, "exit", prefix, prefixLen, matches, commonLen, listing);
+  offerText(home, work, "history", prefix, prefixLen, matches, commonLen, listing);
+  offerText(home, work, "clear", prefix, prefixLen, matches, commonLen, listing);
+}
+
+/* 名字和前缀相符。点开头的名字只在前缀也是点时算。 */
+deRfun nameHit(long name, long nameLen, long prefix, long prefixLen): long {
+  if (nameLen < 1L || nameLen > 255L || nameLen < prefixLen) {
+    return 0L;
+  }
+  if ((prefixLen == 0L || u8(prefix) != 46L) && u8(name) == 46L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < prefixLen) {
+    if (u8(name + index * 8L) != u8(prefix + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 目录里和前缀相符的普通文件。目录本身不能当命令跑，跳过。种类在记录里。 */
+deRfun offerFiles(long home, long work, long dir, long dirLen, long prefix, long prefixLen, long* matches, long* commonLen, long listing): void {
+  long index = 0L;
+  while (index < 4096L) {
+    plantRaw(home, dir, dirLen);
+    if (obr::proc::list(home, index) != 0L) {
+      break;
+    }
+    long batch = obr::proc::slot(home, 256L);
+    if (batch < 1L || batch > 8192L) {
+      break;
+    }
+    /* write 会盖住字节区里的记录。要列出来时，先把名字抄进工作区，写出后从下一条重新要。 */
+    long at = obr::proc::bytes(home);
+    long item = 0L;
+    long wrote = 0L;
+    while (item < batch) {
+      long got = memory::load64(at);
+      long kind = memory::load64(at + 64L);
+      if (got < 0L || got > 512L) {
+        break;
+      }
+      if ((kind == 1L || kind == 5L) && nameHit(at + 576L, got, prefix, prefixLen) == 1L) {
+        copySpan(at + 576L, scratchAt(work), got);
+        if (listing == 1L) {
+          writeSpan(home, scratchAt(work), got);
+          writeByte(home, 10L);
+          wrote = 1L;
+          break;
+        }
+        keepCommon(work, scratchAt(work), got, matches, commonLen);
+      }
+      at = at + 576L + got * 8L;
+      item = item + 1L;
+    }
+    if (wrote == 1L) {
+      index = index + item + 1L;
+    } else {
+      index = index + batch;
+    }
+  }
+}
+
+/* PATH 的每一段收成目录，再收里面的程序。空段是当前目录。 */
+deRfun offerPath(long home, long work, long env, long prefix, long prefixLen, long* matches, long* commonLen, long listing): void {
+  long pathLen = 0L;
+  long path = pathValue(env, work, &pathLen);
+  long cwdLen = memory::load64(cwdLenAt(work));
+  long cursor = 0L;
+  while (cursor <= pathLen) {
+    long from = cursor;
+    while (cursor < pathLen && u8(path + cursor * 8L) != 58L) {
+      cursor = cursor + 1L;
+    }
+    long compLen = cursor - from;
+    long normLen = 0L;
+    if (pathNorm(cwdAt(work), cwdLen, path + from * 8L, compLen, destAt(work), scratchAt(work), &normLen) == 0L) {
+      offerFiles(home, work, destAt(work), normLen, prefix, prefixLen, matches, commonLen, listing);
+    }
+    if (cursor >= pathLen) {
+      break;
+    }
+    cursor = cursor + 1L;
+  }
+}
+
+/* 命令位置、词里没有斜杠：补内建和 PATH。唯一就补完并加空格。分不清就一行一个列出来。 */
+deRfun completeCommand(long home, long state, long work, long env, long cur, long nameFrom, long nameLen): void {
+  if (nameLen > 255L) {
+    return;
+  }
+  copySpan(lineBytes(state) + nameFrom * 8L, compNameAt(work), nameLen);
+  long matches = 0L;
+  long commonLen = 0L;
+  offerBuiltins(home, work, compNameAt(work), nameLen, &matches, &commonLen, 0L);
+  offerPath(home, work, env, compNameAt(work), nameLen, &matches, &commonLen, 0L);
+  if (matches < 1L || commonLen < nameLen) {
+    return;
+  }
+  long extra = commonLen - nameLen;
+  if (matches > 1L && extra == 0L) {
+    writeByte(home, 10L);
+    offerBuiltins(home, work, compNameAt(work), nameLen, &matches, &commonLen, 1L);
+    offerPath(home, work, env, compNameAt(work), nameLen, &matches, &commonLen, 1L);
+    return;
+  }
+  copySpan(compCommonAt(work) + nameLen * 8L, scratchAt(work), extra);
+  long suffix = extra;
+  if (matches == 1L && (cur >= editLen(state) || isBreak(editAt(state, cur)) == 1L)) {
+    memory::storeOctet(32L, scratchAt(work) + suffix * 8L);
+    suffix = suffix + 1L;
+  }
+  if (suffix > 0L) {
+    editSplice(state, cur, 0L, scratchAt(work), suffix);
+  }
+}
+
+/* 多个名字对不上更多公共前缀时，一行一个写出来。目录后面加斜杠。 */
+deRfun listMatches(long home, long work, long dir, long dirLen, long prefix, long prefixLen): void {
+  writeByte(home, 10L);
+  long index = 0L;
+  while (index < 4096L) {
+    plantRaw(home, dir, dirLen);
+    if (obr::proc::list(home, index) != 0L) {
+      break;
+    }
+    long batch = obr::proc::slot(home, 256L);
+    if (batch < 1L || batch > 8192L) {
+      break;
+    }
+    long at = obr::proc::bytes(home);
+    long item = 0L;
+    long wrote = 0L;
+    while (item < batch) {
+      long got = memory::load64(at);
+      long kind = memory::load64(at + 64L);
+      if (got < 0L || got > 512L) {
+        break;
+      }
+      if (nameHit(at + 576L, got, prefix, prefixLen) == 1L) {
+        copySpan(at + 576L, scratchAt(work), got);
+        writeSpan(home, scratchAt(work), got);
+        if (kind == 2L || kind == 4L || kind == 6L) {
+          writeByte(home, 47L);
+        }
+        writeByte(home, 10L);
+        wrote = 1L;
+        break;
+      }
+      at = at + 576L + got * 8L;
+      item = item + 1L;
+    }
+    if (wrote == 1L) {
+      index = index + item + 1L;
+    } else {
+      index = index + batch;
+    }
+  }
+}
+
+/* Tab：命令位置且没有斜杠时补命令，否则补路径。
+   唯一就补完。目录加斜杠，文件和命令加空格。
+   有更长的公共前缀就只补这一段。仍然分不清就把名字列出来。 */
+deRfun completeLine(long home, long state, long work, long env): void {
+  long cur = editCursor(state);
+  long start = cur;
+  while (start > 0L && isBreak(editAt(state, start - 1L)) == 0L) {
+    start = start - 1L;
+  }
+  long slash = 0L;
+  long index = start;
+  while (index < cur) {
+    if (editAt(state, index) == 47L) {
+      slash = 1L;
+    }
+    index = index + 1L;
+  }
+  if (slash == 0L && commandHere(state, start) == 1L) {
+    completeCommand(home, state, work, env, cur, start, cur - start);
+    return;
+  }
+  completePath(home, state, work);
+}
+
+deRfun completePath(long home, long state, long work): void {
+  long cur = editCursor(state);
+  long start = cur;
+  while (start > 0L && isBreak(editAt(state, start - 1L)) == 0L) {
+    start = start - 1L;
+  }
+  long tokLen = cur - start;
+  long slash = -1L;
+  long index = 0L;
+  while (index < tokLen) {
+    if (editAt(state, start + index) == 47L) {
+      slash = index;
+    }
+    index = index + 1L;
+  }
+  long dirLen = 0L;
+  long nameFrom = start;
+  if (slash >= 0L) {
+    dirLen = slash + 1L;
+    nameFrom = start + slash + 1L;
+  }
+  long nameLen = cur - nameFrom;
+  long normLen = 0L;
+  long cwdLen = memory::load64(cwdLenAt(work));
+  if (pathNorm(cwdAt(work), cwdLen, lineBytes(state) + start * 8L, dirLen, destAt(work), scratchAt(work), &normLen) != 0L) {
+    return;
+  }
+  if (nameLen > 255L) {
+    return;
+  }
+  copySpan(lineBytes(state) + nameFrom * 8L, compNameAt(work), nameLen);
+  long matches = 0L;
+  long commonLen = 0L;
+  long hitKind = 0L;
+  index = 0L;
+  while (index < 4096L) {
+    plantRaw(home, destAt(work), normLen);
+    if (obr::proc::list(home, index) != 0L) {
+      break;
+    }
+    long batch = obr::proc::slot(home, 256L);
+    if (batch < 1L || batch > 8192L) {
+      break;
+    }
+    long at = obr::proc::bytes(home);
+    long item = 0L;
+    while (item < batch) {
+      long got = memory::load64(at);
+      if (got < 0L || got > 512L) {
+        break;
+      }
+      if (nameHit(at + 576L, got, compNameAt(work), nameLen) == 1L) {
+        copySpan(at + 576L, scratchAt(work), got);
+        if (matches == 0L) {
+          copySpan(scratchAt(work), compCommonAt(work), got);
+          commonLen = got;
+        } else {
+          long limit = commonLen;
+          if (got < limit) {
+            limit = got;
+          }
+          long same = 0L;
+          while (same < limit && u8(compCommonAt(work) + same * 8L) == u8(scratchAt(work) + same * 8L)) {
+            same = same + 1L;
+          }
+          commonLen = same;
+        }
+        hitKind = memory::load64(at + 64L);
+        matches = matches + 1L;
+      }
+      at = at + 576L + got * 8L;
+      item = item + 1L;
+    }
+    index = index + batch;
+  }
+  if (matches < 1L || commonLen < nameLen) {
+    return;
+  }
+  long extra = commonLen - nameLen;
+  if (matches > 1L && extra == 0L) {
+    listMatches(home, work, destAt(work), normLen, compNameAt(work), nameLen);
+    return;
+  }
+  copySpan(compCommonAt(work) + nameLen * 8L, scratchAt(work), extra);
+  long suffix = extra;
+  long atEnd = 0L;
+  if (cur >= editLen(state) || isBreak(editAt(state, cur)) == 1L) {
+    atEnd = 1L;
+  }
+  if (matches == 1L && atEnd == 1L) {
+    if (hitKind == 2L || hitKind == 4L || hitKind == 6L) {
+      memory::storeOctet(47L, scratchAt(work) + suffix * 8L);
+      suffix = suffix + 1L;
+    } else {
+      memory::storeOctet(32L, scratchAt(work) + suffix * 8L);
+      suffix = suffix + 1L;
+    }
+  }
+  if (suffix > 0L) {
+    editSplice(state, cur, 0L, scratchAt(work), suffix);
+  }
 }
 
 deRfun main(): int {
@@ -1704,6 +2152,11 @@ deRfun main(): int {
       writeByte(home, 12L);
       memory::store64(0L, prevAt(work));
       paintEdit(home, state, work);
+    } else if (action == 5L) {
+      if (gathering == 0L) {
+        completeLine(home, state, work, env);
+        paintEdit(home, state, work);
+      }
     } else {
       paintStep(home, state, work, beforeLen, beforeCur);
     }

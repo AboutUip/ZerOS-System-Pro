@@ -6,7 +6,7 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 只按 ZKP1 收下或读回一个字。不碰显示器，也不认识浏览器事件。
- * 一次事件要满 6 个合法字才记下。中途不合法则丢掉未完成的字。
+ * 一次事件要满 7 个字才记下：前 6 个是语义字，第 7 个是关联号。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -20,6 +20,8 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as ConfigRoot } from "../Config/KeyboardConfig";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -30,7 +32,12 @@ export namespace ZerOS {
       const QueryKind = ConfigRoot.Hardware.Keyboard.KeyboardConfig.QueryKind;
       const QueryKey = ConfigRoot.Hardware.Keyboard.KeyboardConfig.QueryKey;
       const QueryCode = ConfigRoot.Hardware.Keyboard.KeyboardConfig.QueryCode;
+      const QueryCorrelation = ConfigRoot.Hardware.Keyboard.KeyboardConfig.QueryCorrelation;
       const runtimePrefix = "[ZerOS.Hardware.Keyboard.KeyboardRuntime]";
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
 
       const pending: bigint[] = [];
       let completed = 0n;
@@ -40,6 +47,7 @@ export namespace ZerOS {
       let lastModifiers = 0n;
       let lastKey = 0n;
       let lastCode = 0n;
+      let lastCorrelation = 0n;
 
       function fail(message: string): never {
         throw new Error(`${runtimePrefix} ${message}`);
@@ -106,7 +114,11 @@ export namespace ZerOS {
         if (slot === 4) {
           return word >= 0n && word <= 65535n;
         }
-        return acceptCode(word);
+        if (slot === 5) {
+          return acceptCode(word);
+        }
+        /* 第 7 个字是关联号，任何 64 位值都合法。 */
+        return true;
       }
 
       /**
@@ -127,8 +139,11 @@ export namespace ZerOS {
           lastModifiers = pending[3] ?? 0n;
           lastKey = pending[4] ?? 0n;
           lastCode = pending[5] ?? 0n;
+          lastCorrelation = pending[6] ?? 0n;
           pending.length = 0;
           completed += 1n;
+          /* 一次事件收满 7 个字才记；键号进 A1，关联号由查询码 7 读回。 */
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Keyboard, Number(lastKey));
         }
         return encodeWord(completed);
       }
@@ -156,6 +171,9 @@ export namespace ZerOS {
         }
         if (query === 6n) {
           return encodeWord(lastModifiers);
+        }
+        if (query === BigInt(QueryCorrelation)) {
+          return encodeWord(lastCorrelation);
         }
         fail("键盘没有这种读回请求");
       }

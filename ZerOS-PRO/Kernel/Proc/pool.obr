@@ -1,0 +1,179 @@
+/* 客核的堆池。从映像后面切到槽尾，按空闲块借出和归还。
+   不管任务状态。监督核的堆起点向文件层要。 */
+#LINK /task.obr, /mm.obr
+import proc;
+import fs;
+import memory;
+
+/* 编译器映像占窗口前 137904128 位。后面到槽尾是这一核的堆池，约 16316416 个八位组。
+   不再按份切死。先给 4194304 个八位组，池里不够就先给 65536，之后紧挨着的空闲块还能长。 */
+deRfun heapGrant(): long {
+  return 33554432L;
+}
+
+deRfun heapMinimum(): long {
+  return 524288L;
+}
+
+deRfun poolBase(long core): long {
+  return kArena(core) + kSpan();
+}
+
+deRfun poolLimit(long core): long {
+  return kArena(core) + kSlot();
+}
+
+deRfun poolHead(long core): long {
+  return poolBase(core) + 64L;
+}
+
+/* 池头一个字是 1 表示已经切开。空闲块从池头 +128 起，头两个字是位数和下一格。 */
+deRfun poolReady(long core): void {
+  long base = poolBase(core);
+  if (memory::load64(base) == 1L) {
+    return;
+  }
+  memory::store64(1L, base);
+  long block = base + 128L;
+  long room = poolLimit(core) - block;
+  memory::store64(room - 128L, block);
+  memory::store64(0L, block + 64L);
+  memory::store64(block, poolHead(core));
+}
+
+deRfun poolTake(long core, long need): long {
+  if (core < 3L || core > 7L || need < 64L) {
+    return 0L;
+  }
+  poolReady(core);
+  long prev = 0L;
+  long cursor = memory::load64(poolHead(core));
+  while (cursor != 0L) {
+    long span = memory::load64(cursor);
+    long next = memory::load64(cursor + 64L);
+    if (span >= need) {
+      long remain = span - need;
+      if (remain >= 192L) {
+        memory::store64(need, cursor);
+        long rest = cursor + 128L + need;
+        memory::store64(remain - 128L, rest);
+        memory::store64(next, rest + 64L);
+        if (prev == 0L) {
+          memory::store64(rest, poolHead(core));
+        } else {
+          memory::store64(rest, prev + 64L);
+        }
+      } else if (prev == 0L) {
+        memory::store64(next, poolHead(core));
+      } else {
+        memory::store64(next, prev + 64L);
+      }
+      return cursor + 128L;
+    }
+    prev = cursor;
+    cursor = next;
+  }
+  return 0L;
+}
+
+deRfun poolGive(long core, long origin, long span): void {
+  if (core < 3L || core > 7L || origin == 0L || span < 64L) {
+    return;
+  }
+  long block = origin - 128L;
+  if (block < poolBase(core) + 128L || origin + span > poolLimit(core)) {
+    return;
+  }
+  memory::store64(span, block);
+  long prev = 0L;
+  long cursor = memory::load64(poolHead(core));
+  while (cursor != 0L && cursor < block) {
+    prev = cursor;
+    cursor = memory::load64(cursor + 64L);
+  }
+  memory::store64(cursor, block + 64L);
+  if (prev == 0L) {
+    memory::store64(block, poolHead(core));
+  } else {
+    memory::store64(block, prev + 64L);
+  }
+  long payload = memory::load64(block);
+  long nxt = memory::load64(block + 64L);
+  if (nxt != 0L && block + 128L + payload == nxt) {
+    long merged = payload + 128L + memory::load64(nxt);
+    memory::store64(merged, block);
+    memory::store64(memory::load64(nxt + 64L), block + 64L);
+  }
+  if (prev != 0L) {
+    long prevSpan = memory::load64(prev);
+    if (prev + 128L + prevSpan == block) {
+      long merged = prevSpan + 128L + memory::load64(block);
+      memory::store64(merged, prev);
+      memory::store64(memory::load64(block + 64L), prev + 64L);
+    }
+  }
+}
+
+/* 当前堆正好顶到一块空闲区时，把相邻的位数并进来。并不到就回复 0。 */
+deRfun poolGrow(long core, long extra): long {
+  long index = taskFind(core);
+  if (index < 0L || extra < 64L) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  if (task.core < 3L || task.mm.heap == 0L) {
+    return 0L;
+  }
+  long block = task.mm.origin + task.mm.length;
+  long prev = 0L;
+  long cursor = memory::load64(poolHead(core));
+  while (cursor != 0L && cursor != block) {
+    prev = cursor;
+    cursor = memory::load64(cursor + 64L);
+  }
+  if (cursor == 0L) {
+    return 0L;
+  }
+  long payload = memory::load64(cursor);
+  long next = memory::load64(cursor + 64L);
+  long whole = payload + 128L;
+  if (whole < extra) {
+    return 0L;
+  }
+  long take = extra;
+  if (whole - extra < 192L) {
+    take = whole;
+  }
+  if (prev == 0L) {
+    memory::store64(next, poolHead(core));
+  } else {
+    memory::store64(next, prev + 64L);
+  }
+  task.mm.length = task.mm.length + take;
+  long left = whole - take;
+  if (left >= 192L) {
+    long rest = block + take;
+    memory::store64(left - 128L, rest);
+    memory::store64(next, rest + 64L);
+    if (prev == 0L) {
+      memory::store64(rest, poolHead(core));
+    } else {
+      memory::store64(rest, prev + 64L);
+    }
+  }
+  return 1L;
+}
+
+deRfun heapOf(long core): long {
+  if (core == 2L) {
+    return vfsEnd();
+  }
+  if (core < 3L || core > 7L) {
+    return 0L;
+  }
+  long got = poolTake(core, heapGrant());
+  if (got == 0L) {
+    got = poolTake(core, heapMinimum());
+  }
+  return got;
+}

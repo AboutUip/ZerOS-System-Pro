@@ -1,6 +1,66 @@
-/* 文件。入口处理系统调用，执行准备路径，进程在丢掉任务时关掉描述符。 */
+/* 文件层对外的形状和函数头。字段只写在这里，各文件引用，不另抄一份。
+   管道、设备环、终端格子和命令名的实现不在 vfs.obr。 */
+/* 11 个字、704 位。末尾三个字是访问、修改、状态时间，从 Unix 纪元起的毫秒。 */
+struct Inode {
+  long used;
+  long kind;
+  long mode;
+  long uid;
+  long gid;
+  long size;
+  long parent;
+  long nlink;
+  /* 从 Unix 纪元起的毫秒。atime 访问，mtime 修改，ctime 状态。 */
+  long atime;
+  long mtime;
+  long ctime;
+}
+
+struct Dentry {
+  long used;
+  long parent;
+  long ino;
+  long nameLen;
+}
+
+struct File {
+  long used;
+  long ino;
+  long offset;
+  long flags;
+  long handle;
+}
+
+struct Pipe {
+  long used;
+  long readers;
+  long writers;
+  long head;
+  long count;
+  long readWait;
+  long writeWait;
+}
+
+/* 12 个字。环不在这个结构里，按设备下标排在设备头后面。每条环 ringRoom 个八位组。 */
+struct Dev {
+  long used;
+  long core;
+  long pid;
+  long ino;
+  long upHead;
+  long upCount;
+  long downHead;
+  long downCount;
+  long userReadWait;
+  long userWriteWait;
+  long drvRecvWait;
+  long drvSendWait;
+}
+
 deRfun vfsEnd(): long;
 deRfun vfsInit(): void;
+/* 引导探针。把阶段编号写到位地址 7296。主板看见后记宿主时刻。不是协议字段。 */
+deRfun bootMark(long id): void;
 deRfun vfsForget(long core): void;
 deRfun vfsForgetTask(long taskIndex): void;
 deRfun vfsCall(long caller, long service): long;
@@ -30,3 +90,39 @@ deRfun commByte(long index, long at): long;
 /* 临时：shell 还在任务表里时记下进度，退出后画终端仍能看见。 */
 /* 兼容任务的 write。src 是用户字节的位地址。成功返回写入个数，失败返回负数。 */
 deRfun compatWrite(long caller, long home, long fd, long src, long count): long;
+/* 下面这些给拆开的文件互相调用。布局数字仍由文件层算。 */
+deRfun inodeCount(): long;
+deRfun dentryCount(): long;
+deRfun pipeCount(): long;
+deRfun ringRoom(): long;
+deRfun pipeRoom(): long;
+deRfun byteAt(long home): long;
+deRfun devCount(): long;
+deRfun layoutWord(long slot): long;
+deRfun memCap(): long;
+deRfun memSlots(): long;
+deRfun devAt(long index): Dev*;
+deRfun devUp(long index): long;
+deRfun devDown(long index): long;
+deRfun dentryAt(long index): Dentry*;
+deRfun nameAt(long index): long;
+deRfun fileAt(long slot): File*;
+deRfun pipeAt(long index): Pipe*;
+deRfun pipeData(long index): long;
+deRfun scratchClear(): void;
+deRfun modeDev(): long;
+deRfun findChild(long parent, long path, long from, long count): long;
+deRfun takeChild(long parent, long path, long from, long count, long kind, long size, long uid, long gid, long mode): long;
+deRfun slotOf(long taskIndex, long fd): long;
+deRfun allocFd(long taskIndex): long;
+deRfun gridBase(): long;
+deRfun pipeShut(long index, long flags): void;
+deRfun pipeHold(long index, long flags): void;
+deRfun pipeCopy(File* file, long home, long writing, long caller): long;
+deRfun doPipe(long caller, long home): long;
+deRfun devMove(long index, long home, long which, long into, long caller, long waitKind): long;
+deRfun devIo(long caller, long home): long;
+deRfun devList(long dent, long home): long;
+deRfun devDir(): long;
+deRfun conPull(long caller, long home): long;
+deRfun conEmit(long home): void;

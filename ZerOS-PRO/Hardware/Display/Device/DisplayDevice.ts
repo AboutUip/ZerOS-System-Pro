@@ -74,6 +74,9 @@ export namespace ZerOS {
         /** 页面线程上的二维上下文。封印宿主之后仍然使用这一份。 */
         private context: CanvasRenderingContext2D | null = null;
 
+        /** 横带中转。源和目的重叠时先抄到这里，再贴回面板。 */
+        private bandScratch: HTMLCanvasElement | null = null;
+
         /** 时间轴起点，单位毫秒。 */
         private origin = 0;
 
@@ -291,6 +294,57 @@ export namespace ZerOS {
           this.splash = null;
           this.splashDone = true;
           this.shown = true;
+        }
+
+        /**
+         * 把已经贴上的一条横带从源 y 挪到目的 y。
+         * 先抄到中转画布，源和目的重叠时也不会读到刚盖上的像素。
+         * 越界或宽高不是正数的一条跳过，其余照做。空出来的像素不擦。
+         */
+        public ShiftBands(scroll: readonly number[]): void {
+          const context = this.context;
+          const canvas = this.canvas;
+          if (context === null || canvas === null) {
+            return;
+          }
+          for (let index = 0; index + 3 < scroll.length; index += 4) {
+            const srcY = scroll[index];
+            const dstY = scroll[index + 1];
+            const bandHeight = scroll[index + 2];
+            const bandWidth = scroll[index + 3];
+            if (
+              srcY === undefined
+              || dstY === undefined
+              || bandHeight === undefined
+              || bandWidth === undefined
+              || !Number.isInteger(srcY)
+              || !Number.isInteger(dstY)
+              || !Number.isInteger(bandHeight)
+              || !Number.isInteger(bandWidth)
+              || bandHeight < 1
+              || bandWidth < 1
+              || srcY === dstY
+              || srcY < 0
+              || dstY < 0
+              || srcY + bandHeight > this.height
+              || dstY + bandHeight > this.height
+              || bandWidth > this.width
+            ) {
+              continue;
+            }
+            const scratch = this.bandScratch ?? document.createElement("canvas");
+            this.bandScratch = scratch;
+            if (scratch.width < bandWidth || scratch.height < bandHeight) {
+              scratch.width = bandWidth;
+              scratch.height = bandHeight;
+            }
+            const scratchContext = scratch.getContext("2d");
+            if (scratchContext === null) {
+              continue;
+            }
+            scratchContext.drawImage(canvas, 0, srcY, bandWidth, bandHeight, 0, 0, bandWidth, bandHeight);
+            context.drawImage(scratch, 0, 0, bandWidth, bandHeight, 0, dstY, bandWidth, bandHeight);
+          }
         }
 
         /** 让画布栅格等于当前分辨率。改属性会清掉旧位图，随后由 Redraw 重画。 */

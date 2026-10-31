@@ -32,7 +32,9 @@ struct OptimizationOptions {
   bool fold = true;
   bool loadForward = true;
   bool deadCode = true;
-  bool compactNative = true;
+  // 可选的短立即数/零位移形式在真实内核上关联新增故障，先保留既有编码以保证兼容。
+  // 这不证明编码自身错误，也不修复产品装入区与堆池的地址归属问题。
+  bool compactNative = false;
   bool scaled = true;
   bool inlineSmall = true;
   std::string nativeReport;

@@ -98,7 +98,10 @@ deRfun editCases(): void {
   editClear(state);
   expect(feedText(state, "keep") == 0L && editFeed(state, 12L) == 4L && lineIs(state, "keep") == 1L, 21L);
   editClear(state);
-  expect(editFeed(state, 9L) == 0L && editLen(state) == 0L, 22L);
+  expect(editFeed(state, 9L) == 5L && editLen(state) == 0L, 22L);
+  expect(feedText(state, "ab") == 0L && editFeed(state, 9L) == 5L && lineIs(state, "ab") == 1L, 139L);
+  editSplice(state, 1L, 0L, blobAt(), plant(blobAt(), "XY"));
+  expect(lineIs(state, "aXYb") == 1L && editCursor(state) == 3L, 140L);
   editClear(state);
   expect(editFeed(state, 10L) == 1L && editHistCount(state) == 0L, 23L);
   editClear(state);

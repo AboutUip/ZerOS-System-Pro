@@ -8,12 +8,13 @@ const sha=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 const baseline=path.resolve(process.env.OBRC_BASELINE??'Toolchain/CompilerCheck/baseline-built/obrc');
 const candidate=path.resolve(process.env.OBRC??'Compiler/ObrCompiler/obrc');
 const legacy=path.resolve('Toolchain/CompilerCheck/legacy-peel/obrc');
-const provenance={base:'7bf78874240d695ff384cbf75efc1a3198036677',baseline:sha(baseline),candidate:sha(candidate),observer:sha(new URL('./IntegrationObserver.mjs',import.meta.url)),plugin:sha(new URL('./IntegrationProbe.mjs',import.meta.url)),counter:sha(new URL('./MemoryCounters.mjs',import.meta.url)),node:process.version,os:os.release(),cpu:os.cpus()[0].model};
+const baselineManifest=fs.existsSync(baseline+'.json')?JSON.parse(fs.readFileSync(baseline+'.json')):null;
+const provenance={base:process.env.OBRC_BASELINE_REF??baselineManifest?.ref??null,baseline:sha(baseline),candidate:sha(candidate),observer:sha(new URL('./IntegrationObserver.mjs',import.meta.url)),plugin:sha(new URL('./IntegrationProbe.mjs',import.meta.url)),counter:sha(new URL('./MemoryCounters.mjs',import.meta.url)),node:process.version,os:os.release(),cpu:os.cpus()[0].model};
 const frozen={};for(const [name,file]of[['baseline',baseline],['candidate',candidate]]){const dest=path.join(out,name+'-obrc');fs.copyFileSync(file,dest);fs.chmodSync(dest,0o755);frozen[name]=dest;}
 const jobs=guestCorpus(repo),lib=path.join(repo,'Compiler/ObrCompiler/lib'),product=path.join(repo,'ZerOS-PRO');
 const includes=['-I',lib,'-I',path.join(repo,'Driver/Gpu'),'-I',path.join(product,'Hardware/Gpu'),'-I',path.join(product,'Hardware/Motherboard'),'-I',path.join(product,'Hardware/Memory')];
 const firmware=[
- {name:'Bios',exportName:'biosProgram',sources:['ZerOS-PRO/Boot/Bios.obr','ZerOS-PRO/Boot/Clear.obr','Driver/Pointer/pointer.obr','Compiler/ObrCompiler/lib/obr.widget.obr','Compiler/ObrCompiler/lib/obr.nas.obr','Driver/Display/panel.obr','Driver/Gpu/gl.obr'],flags:[]},
+ {name:'Bios',exportName:'biosProgram',sources:['ZerOS-PRO/Boot/Bios.obr','ZerOS-PRO/Boot/Keys.obr','ZerOS-PRO/Boot/Splash.obr','ZerOS-PRO/Boot/Panel.obr','ZerOS-PRO/Boot/Clear.obr','Driver/Pointer/pointer.obr','Compiler/ObrCompiler/lib/obr.widget.obr','Compiler/ObrCompiler/lib/obr.nas.obr','Driver/Display/panel.obr','Driver/Gpu/gl.obr'],flags:[]},
  {name:'Logo',exportName:'logoProgram',sources:['ZerOS-PRO/Boot/Logo.obr','Driver/Gpu/gl.obr'],flags:[]},
  {name:'Load',exportName:'loadProgram',sources:['ZerOS-PRO/Boot/Load.obr','Compiler/ObrCompiler/lib/obr.nas.obr'],flags:['-slot','3']}
 ];
@@ -37,7 +38,8 @@ for(const [variant,exe,opt]of[['baseline',frozen.baseline,[]],['O0',frozen.candi
  await browser(variant);
  fs.writeFileSync(manifest,JSON.stringify({variant,provenance,programs:jobs.map(j=>({name:j.name,sha256:sha(path.join(root,j.name)),bytes:fs.statSync(path.join(root,j.name)).size})),firmware:firmware.map(j=>({name:j.name,sha256:sha(path.join(dir,'firmware',j.name))}))},null,2)+'\n');console.log('Built full integration',variant);
 }
-if(fs.existsSync(legacy)){
+// 历史窥孔控制只能在对应旧产品源码上显式构建；不能将旧编译器默默用于新增 opcode 的新产品。
+if(process.env.OBRC_INCLUDE_LEGACY==='1'&&fs.existsSync(legacy)){
  const dir=path.join(out,'legacy-kernel');if(!fs.existsSync(dir))fs.cpSync(path.join(out,'baseline'),dir,{recursive:true});
  compile(legacy,jobs[0].sources,[...jobs[0].flags,'-debug'],path.join(dir,'NasRoot/kernel/start'));
  fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({variant:'legacy-kernel',provenance,legacy:JSON.parse(fs.readFileSync('Toolchain/CompilerCheck/legacy-peel/manifest.json')),change:'Only NAS kernel/start compiled with dormant legacy peel enabled; original baseline firmware and remaining programs retained'},null,2)+'\n');

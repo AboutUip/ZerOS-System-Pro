@@ -25,7 +25,7 @@ export namespace ZerOS {
         /** 一个字的八位组数。方向 0 和方向 1 的载荷都是这个长度。 */
         WordOctets: 8,
         /** 一次事件要连续收下的字数。少一个都不记。 */
-        WordCount: 6,
+        WordCount: 7,
         /** 官方参考实现 Bind 的扩展口。协议不强制这个编号。 */
         OfficialPort: 0,
         /** 已完成次数。方向 1 的请求码。 */
@@ -36,6 +36,8 @@ export namespace ZerOS {
         QueryKey: 2,
         /** 上一次码值。 */
         QueryCode: 3,
+        /** 上一次事件的关联号。 */
+        QueryCorrelation: 7,
       } as const;
     }
   }

@@ -29,6 +29,8 @@ export namespace ZerOS {
         readonly length: number;
         readonly index: number;
         readonly data: string;
+        /** 列目录时一次能放下的应答八位组。0 表示仍按一项名字返回。 */
+        readonly limit: number;
       }
 
       /** 参考服务的答复。data 是结果八位组的 base64。 */
@@ -41,6 +43,12 @@ export namespace ZerOS {
         readonly data: string;
         /** 读到或写下的八位组数。查看和打开不用它。 */
         readonly length: number;
+        /**
+         * 从 Unix 纪元起的毫秒，二进制补码。
+         * 查看必须给出整数。列目录的修改时间在 data 的记录里，这个字段不用。
+         * 服务没给出整数时是 NaN，插头不得把它编成 1970。
+         */
+        readonly mtime: number;
       }
     }
   }

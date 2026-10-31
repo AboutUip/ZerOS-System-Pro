@@ -1,0 +1,39 @@
+{
+  "rawSha256": "8dc685fa26f7d75263f9e7b55e1b8e205b924559bdc98ea2476cf8731b939f3c",
+  "rawBytes": 9787090,
+  "top": {
+    "updated": "2026-10-31T03:03:45.754Z"
+  },
+  "entries": [
+    {
+      "file": "000-eddfdceb-d0f2-445e-8e93-d1ce99657542.json.gz",
+      "run": "eddfdceb-d0f2-445e-8e93-d1ce99657542",
+      "variant": "baseline",
+      "command": "cat /boot/compiler-input | xargs echo",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "dd9e3e1346cacd3faa0d5d0e22493f082d4dc5cf708799990715eb0707165f59",
+      "compressedSha256": "840d7c8293efbac14a8acd0a37e87b54d3eeefd95655a87228eeac9b110b8974"
+    },
+    {
+      "file": "001-5cfa96ab-8228-4967-9763-140222570e75.json.gz",
+      "run": "5cfa96ab-8228-4967-9763-140222570e75",
+      "variant": "O1",
+      "command": "cat /boot/compiler-input | xargs echo",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "da7fa88797eea7020569a7d2faab7244006ee21f8bd0add5b415a3a7734c44bb",
+      "compressedSha256": "67a87ee6effe907321c9bfa61691d29c5a61b7fccec26f2207219bb5d5bf58ae"
+    },
+    {
+      "file": "002-e6bea490-5625-49d8-82d7-0c7f41cb476b.json.gz",
+      "run": "e6bea490-5625-49d8-82d7-0c7f41cb476b",
+      "variant": "O2",
+      "command": "cat /boot/compiler-input | xargs echo",
+      "mode": "smoke",
+      "status": "command-timeout",
+      "rawSha256": "fe20d7c50d9fa7e3cbacf9c0ade9c0eaaf88423b03c5b9c22c75fd063b5834f0",
+      "compressedSha256": "6624c93353b8fa26f491d238052ad4ae617a22d0bdbd41ec5458a5d9f84d392b"
+    }
+  ]
+}

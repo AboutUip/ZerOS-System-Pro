@@ -28,6 +28,9 @@ import { ZerOS as DebugRunRoot } from "../../Debug/Host/DebugRun";
 import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
 import { ZerOS as FaultRecordRoot } from "../../Cpu/Structure/FaultRecord";
 import { ZerOS as SevereRoot } from "../../Debug/Host/SevereConsole";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
+import { ZerOS as WorkerTraceRoot } from "../../Diagnostics/Host/WorkerTrace";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -41,6 +44,10 @@ export namespace ZerOS {
       const debugRunDecision = DebugRunRoot.Hardware.Debug.debugRunDecision;
       const debugEnabled = FlagRoot.Hardware.Debug.debugEnabled;
       const reportSevere = SevereRoot.Hardware.Debug.reportSevere;
+      const acceptBootMark = BootTraceRoot.Hardware.Debug.acceptBootMark;
+      const traceHostReject = WorkerTraceRoot.Hardware.Diagnostics.traceHostReject;
+      const TraceRejectSource = TraceOpRoot.Hardware.Diagnostics.TraceRejectSource;
+      const TraceRejectReason = TraceOpRoot.Hardware.Diagnostics.TraceRejectReason;
       type FaultRecord = FaultRecordRoot.Hardware.Cpu.FaultRecord;
 
       /** 主板线程。第一次上电时创建。 */
@@ -63,6 +70,7 @@ export namespace ZerOS {
         bitmap: ImageBitmap | null,
         originX?: number,
         originY?: number,
+        scroll?: readonly number[],
       ) => void) | null = null;
 
       /** 显卡换成新的帧尺寸时调用。页面再把同一组宽高交给显示器。 */
@@ -102,6 +110,56 @@ export namespace ZerOS {
         return data as Record<string, unknown>;
       }
 
+      /** postMessage 同步失败的原因编号。只区分能稳定认出的几类，不存原句。 */
+      function sendFailureReason(error: unknown): number {
+        if (error instanceof Error) {
+          if (error.name === "DataCloneError") {
+            return TraceRejectReason.Clone;
+          }
+          if (error.name === "InvalidStateError") {
+            return TraceRejectReason.Shape;
+          }
+        }
+        return TraceRejectReason.Unknown;
+      }
+
+      /**
+       * 页面到主板线程的唯一发送口。
+       * 同步失败时先清掉对应的等待状态，再记一条拒绝并抛回调用方；
+       * 不能留下已经置位的 powerAccepted/debugWait/exchangeWait 让下一次永远被拒。
+       */
+      function sendBoard(message: Record<string, unknown>): void {
+        try {
+          ensureBoard().postMessage(message);
+        } catch (error: unknown) {
+          const kind = message["kind"];
+          if (kind === MailMessage.Power) {
+            powerAccepted = false;
+          }
+          if (kind === MailMessage.DebugRun) {
+            debugWait = null;
+          }
+          if (kind === MailMessage.Exchange) {
+            exchangeWait = null;
+            exchangeFail = null;
+          }
+          traceHostReject(TraceRejectSource.Page, sendFailureReason(error));
+          throw error;
+        }
+      }
+
+      /** 主板线程停下时，页面侧还在等的两类结果不能永久挂着。 */
+      function failPendingBoardWork(): void {
+        powerAccepted = false;
+        const rejectExchange = exchangeFail;
+        exchangeWait = null;
+        exchangeFail = null;
+        rejectExchange?.(new Error("[ZerOS.Hardware.Motherboard.Motherboard] 主板线程停了"));
+        const finishDebug = debugWait;
+        debugWait = null;
+        finishDebug?.("debug run was interrupted");
+      }
+
       /** 主板线程报回来的失败。页面不把它变成同步异常，因为 Power 已经返回。 */
       function onBoardMessage(event: MessageEvent): void {
         const record = asRecord(messageData(event));
@@ -111,6 +169,15 @@ export namespace ZerOS {
         const kind = record["kind"];
         const message = record["message"];
         if (kind === MailMessage.Trace) {
+          return;
+        }
+        if (kind === MailMessage.BootMark) {
+          const name = record["name"];
+          const at = record["at"];
+          /* 主板线程打的点送到这里才进表。页面自己打的点不走这条消息。 */
+          if (typeof name === "string" && typeof at === "number") {
+            acceptBootMark(name, at);
+          }
           return;
         }
         if (kind === MailMessage.CoreStop) {
@@ -153,6 +220,7 @@ export namespace ZerOS {
           const bitmap = record["bitmap"];
           const originX = record["originX"];
           const originY = record["originY"];
+          const scroll = record["scroll"];
           const listener = frameListener;
           if (typeof frameWidth !== "number" || typeof frameHeight !== "number" || listener === null) {
             if (bitmap instanceof ImageBitmap) {
@@ -168,6 +236,7 @@ export namespace ZerOS {
               bitmap,
               typeof originX === "number" ? originX : 0,
               typeof originY === "number" ? originY : 0,
+              Array.isArray(scroll) ? scroll.filter((item): item is number => typeof item === "number") : [],
             );
             return;
           }
@@ -221,9 +290,10 @@ export namespace ZerOS {
       function ensureBoard(): Worker {
         if (boardWorker === null) {
           boardWorker = QueuedWorkerRoot.Hardware.Motherboard.openBoardWorker();
-          boardWorker.onerror = (): void => {
-            powerAccepted = false;
-          };
+          /* 只用 addEventListener；onmessage 仍留给现有的板级消息处理。 */
+          boardWorker.addEventListener("error", (): void => {
+            failPendingBoardWork();
+          });
           boardWorker.onmessage = (event: MessageEvent): void => {
             onBoardMessage(event);
           };
@@ -248,7 +318,7 @@ export namespace ZerOS {
             return;
           }
           powerAccepted = true;
-          ensureBoard().postMessage({
+          sendBoard({
             kind: MailMessage.Power,
             logo: logoLines,
             drive: driveLines,
@@ -260,11 +330,19 @@ export namespace ZerOS {
         },
 
         /**
+         * 把诊断页交给主板线程。null 表示摘掉。
+         * 只有页面在调试开关打开时调用；开关关闭后不再写。
+         */
+        Trace(buffer: SharedArrayBuffer | null): void {
+          sendBoard({ kind: MailMessage.TracePage, buffer });
+        },
+
+        /**
          * 把一段整数交给主板线程的入站队列。
          * 主板不解释这些数。放不下时由主板整段丢掉。
          */
         Publish(words: readonly bigint[]): void {
-          ensureBoard().postMessage({
+          sendBoard({
             kind: MailMessage.Inbox,
             words,
           });
@@ -275,7 +353,7 @@ export namespace ZerOS {
          * 主板写进鼠标扩展口，不放进键盘用的入站队列。
          */
         PublishPointer(words: readonly bigint[]): void {
-          ensureBoard().postMessage({
+          sendBoard({
             kind: MailMessage.Pointer,
             words,
           });
@@ -283,7 +361,7 @@ export namespace ZerOS {
 
         /** 报上当前面板的宽、高和刷新率。主板只记下这三个整数。 */
         PublishPanel(width: number, height: number, hertz: number): void {
-          ensureBoard().postMessage({
+          sendBoard({
             kind: MailMessage.Panel,
             width,
             height,
@@ -304,7 +382,7 @@ export namespace ZerOS {
          * 必须在面板自检之后调用。副本由 WhenFrame 接收。
          */
         Present(): void {
-          ensureBoard().postMessage({ kind: MailMessage.Present });
+          sendBoard({ kind: MailMessage.Present });
         },
 
         /** 登记帧的接收者。显示器模块不由主板导入。像素和位图最多有一个。 */
@@ -315,6 +393,7 @@ export namespace ZerOS {
           bitmap: ImageBitmap | null,
           originX?: number,
           originY?: number,
+          scroll?: readonly number[],
         ) => void): void {
           frameListener = listener;
         },
@@ -393,7 +472,7 @@ export namespace ZerOS {
               return;
             }
             debugWait = resolve;
-            ensureBoard().postMessage({
+            sendBoard({
               kind: MailMessage.DebugRun,
               lines,
               enabled: on,
@@ -413,7 +492,7 @@ export namespace ZerOS {
             }
             exchangeWait = resolve;
             exchangeFail = reject;
-            ensureBoard().postMessage({
+            sendBoard({
               kind: MailMessage.Exchange,
               index,
               direction,

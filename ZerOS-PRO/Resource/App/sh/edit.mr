@@ -1,6 +1,8 @@
 /* 行编辑、拆词和路径整理。shell 和自检共用，不发系统调用。 */
 deRfun editInit(long state): void;
+/* 0 继续，1 提交，2 空行 Ctrl-D，3 Ctrl-C，4 Ctrl-L，5 制表符交给调用方补路径。 */
 deRfun editFeed(long state, long unit): long;
+deRfun editSplice(long state, long at, long span, long src, long srcLen): void;
 deRfun editLen(long state): long;
 deRfun editCursor(long state): long;
 deRfun editAt(long state, long index): long;

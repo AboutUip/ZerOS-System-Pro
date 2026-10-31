@@ -20,4 +20,6 @@ deRfun held(): long;
 deRfun depth(): long;
 /* 移出最旧的一次，返回剩下的个数。队列空时返回 0。 */
 deRfun pop(): long;
+/* 最旧未读事件的关联号。ZPP1 的查询码 10。 */
+deRfun correlation(): long;
 }

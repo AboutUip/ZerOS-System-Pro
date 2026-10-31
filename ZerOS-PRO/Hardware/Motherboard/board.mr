@@ -10,4 +10,6 @@ deRfun xchg(long port, long direction, long data): long;
 deRfun bulk(long port, long address, long count): long;
 /* 按句柄读一段，一次做完。发出的指令是 carry。成功时返回写入个数，失败时返回状态的相反数。 */
 deRfun carry(long port, long handle, long offset, long address, long count): long;
+/* 把一段请求交给扩展口，应答写到另一段位地址。发出的指令是 offer。成功时返回写入个数，失败时返回状态的相反数，且不写应答。 */
+deRfun offer(long port, long request, long length, long reply, long limit): long;
 deRfun halt(): void;

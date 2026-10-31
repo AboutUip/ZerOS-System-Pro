@@ -17,12 +17,56 @@ import { ZerOS as FlagRoot } from "../../Debug/Config/DebugFlag";
 import { ZerOS as SurfaceRoot } from "../../Debug/Host/DebugSurface";
 import { type ZerOS as FaultRoot } from "../../Cpu/Structure/FaultRecord";
 import { type ZerOS as StopRoot } from "../../Cpu/Structure/CoreStop";
+import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
+import { ZerOS as DebugMapRoot } from "../../Debug/Host/DebugMap";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceReportRoot } from "../../Diagnostics/Host/TraceReport";
+import { type ZerOS as EntryRoot } from "../../Diagnostics/Structure/TraceEntry";
 
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Display {
+      type DebugSiteRun = DebugMapRoot.Hardware.Debug.DebugSiteRun;
+      const parseDebugText = DebugMapRoot.Hardware.Debug.parseDebugText;
+      const readTraceText = NasRuntimeRoot.Hardware.Nas.readNasText;
+
+      interface DebugMapWindow {
+        __zerosDebugMaps?: ReadonlyMap<number, readonly DebugSiteRun[]>;
+        __zerosDebugMapsStatus?: string;
+      }
+
+      /** 读两份对照表：core 2 是原生内核，core 6 是壳。失败时保持空表。 */
+      async function loadTraceMaps(): Promise<void> {
+        const state = globalThis as DebugMapWindow;
+        state.__zerosDebugMapsStatus = "loading";
+        const [kernel, shell] = await Promise.all([
+          readTraceText("/kernel/start.debug"),
+          readTraceText("/os/sh.debug"),
+        ]);
+        const maps = new Map<number, readonly DebugSiteRun[]>();
+        let kernelRuns = 0;
+        let shellRuns = 0;
+        if (kernel !== null) {
+          const runs = parseDebugText(kernel);
+          kernelRuns = runs.length;
+          if (runs.length > 0) {
+            maps.set(2, runs);
+          }
+        }
+        if (shell !== null) {
+          const runs = parseDebugText(shell);
+          shellRuns = runs.length;
+          if (runs.length > 0) {
+            maps.set(6, runs);
+          }
+        }
+        state.__zerosDebugMaps = maps;
+        state.__zerosDebugMapsStatus = `kernel=${kernel === null ? "null" : String(kernel.length)}/${String(kernelRuns)} shell=${shell === null ? "null" : String(shell.length)}/${String(shellRuns)}`;
+      }
+
       /** 找到唯一画布，启动显示器，然后才允许机器加电。 */
       function openDisplayPage(): void {
+        BootTraceRoot.Hardware.Debug.markBoot("page");
         const canvas = document.querySelector("canvas");
         if (!(canvas instanceof HTMLCanvasElement)) {
           throw new Error("[ZerOS.Hardware.Display.PageHost] 页面没有画布");
@@ -48,9 +92,12 @@ export namespace ZerOS {
           /* 面板已经换成这一档，再把宽高落进 NAS 的 /boot/display。 */
           void saveDisplaySize(width, height);
         });
-        page.WhenFrame((frameWidth, frameHeight, pixels, bitmap, originX, originY): void => {
+        page.WhenFrame((frameWidth, frameHeight, pixels, bitmap, originX, originY, scroll): void => {
           try {
             if (bitmap !== null) {
+              if (scroll !== undefined && scroll.length >= 4) {
+                display.ShiftBands(scroll);
+              }
               acceptGpuBitmap(frameWidth, frameHeight, bitmap, originX ?? 0, originY ?? 0);
               return;
             }
@@ -72,12 +119,19 @@ export namespace ZerOS {
         const saveBootOctet = NasRuntimeRoot.Hardware.Nas.saveBootOctet;
         type FaultRecord = FaultRoot.Hardware.Cpu.FaultRecord;
         type CoreStop = StopRoot.Hardware.Cpu.CoreStop;
+        type TraceEntry = EntryRoot.Hardware.Diagnostics.TraceEntry;
         const hooks = {
           faults: (): readonly FaultRecord[] => page.Faults(),
           last: (): FaultRecord | null => page.LastFault(),
           stop: (ordinal: number): CoreStop | null => readCoreStop(ordinal),
           exchange: (index: number, direction: number, word: bigint): Promise<bigint> => page.Exchange(index, direction, word),
           run: (lines: readonly string[]): Promise<string> => page.DebugRun(lines),
+          report: (): string => TraceReportRoot.Hardware.Diagnostics.reportTrace(),
+          dump: (): readonly TraceEntry[] => TracePageRoot.Hardware.Diagnostics.readTrace(),
+          clear: (): void => {
+            TracePageRoot.Hardware.Diagnostics.clearTrace();
+          },
+          status: (): { readonly Records: number; readonly Pending: number; readonly Dropped: number; readonly Prompts: number } => TracePageRoot.Hardware.Diagnostics.traceStatus(),
         };
         /**
          * 已经挂上的那一档。null 表示还没按文件或固件摆过。
@@ -92,6 +146,14 @@ export namespace ZerOS {
             return;
           }
           applied = on;
+          if (on) {
+            page.Trace(TracePageRoot.Hardware.Diagnostics.openTracePage());
+            void loadTraceMaps();
+          } else if (TracePageRoot.Hardware.Diagnostics.traceBuffer() !== null) {
+            page.Trace(null);
+            TracePageRoot.Hardware.Diagnostics.closeTracePage();
+            (globalThis as DebugMapWindow).__zerosDebugMaps = new Map();
+          }
           /* 关闭时摘掉入口。打开时全局和被封住的控制台各有一份。 */
           SurfaceRoot.Hardware.Debug.installDebugSurface(globalThis, on, hooks);
           try {

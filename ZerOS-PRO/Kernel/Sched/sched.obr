@@ -1,7 +1,7 @@
 /* 调度。用户核上的任务数不再按核封顶。同一核上前台优先：更高档立刻抢占，同一档轮转。
    后台只有在没有更高档就绪时才换上。前台自己停住或时间片让出之后，后台马上可以上。
    停在系统调用里的不换。停机的交给进程层。领不到槽的不换。跨核的让法在宿主，不在这一圈。 */
-#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr
+#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr, /pipe.obr, /dev.obr, /sig.obr, /boot.obr, /spawn.obr
 import proc;
 import board;
 import obr.os;
@@ -12,6 +12,10 @@ export deRfun schedWake(long core): void {
     return;
   }
   Task* task = taskAt(index);
+  /* 4 = 调度唤醒；只有确实在睡的任务才是一条唤醒边。 */
+  if (task.state == TaskState::Sleeping) {
+    diagTask(4L, task.pid, core, 0L);
+  }
   task.state = TaskState::Running;
   rankPublish(core);
   obr::os::schedule(core);
@@ -22,6 +26,8 @@ deRfun schedSleep(long core): void {
   if (index < 0L) {
     return;
   }
+  /* 3 = 调度睡眠；a 是任务 pid，b 是核心。 */
+  diagTask(3L, taskAt(index).pid, core, 0L);
   taskAt(index).state = TaskState::Sleeping;
 }
 

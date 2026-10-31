@@ -64,7 +64,8 @@ deRfun decimal(long at, long len, long start): long {
 
 /* 小数收成毫秒：只留小数点后前四位，再往后的截掉。不足四位就在右边补 0。
    (这四位 + 5) / 10 用整数除法向零取整，即四舍五入到毫秒。满 1000 进到秒。
-   1.5 补成 5000，(5000 + 5) / 10 = 500。整数部分放不进有符号 64 位则失败。 */
+   1.5 补成 5000，(5000 + 5) / 10 = 500。整数部分超过 1000000 秒则失败；
+   这个上限低于 1048576，避免 -pie 把这个比较收成一次大立即数数据重定位。 */
 deRfun scale(long at, long len, long* seconds, long* millis): long {
   if (decimal(at, len, 0L) == 0L) {
     return 0L;
@@ -81,7 +82,7 @@ deRfun scale(long at, long len, long* seconds, long* millis): long {
     } else {
       long digit = bit - 48L;
       if (seenDot == 0L) {
-        if (whole > 922337203685477580L || (whole == 922337203685477580L && digit > 7L)) {
+        if (whole > 1000000L || (whole == 1000000L && digit > 0L)) {
           return 0L;
         }
         whole = whole * 10L + digit;
@@ -98,7 +99,7 @@ deRfun scale(long at, long len, long* seconds, long* millis): long {
   }
   long milli = (frac + 5L) / 10L;
   if (milli == 1000L) {
-    if (whole == 9223372036854775807L) {
+    if (whole >= 1000000L) {
       return 0L;
     }
     whole = whole + 1L;

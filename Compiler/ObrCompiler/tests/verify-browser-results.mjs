@@ -3,14 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
-import {publicFaultSnapshot} from './PublicFaultSignatures.mjs';
+import {publicFaultSnapshot,faultSnapshotAtBarrier,faultSnapshotRequired} from './PublicFaultSignatures.mjs';
 // Derived from independent strict_requirements_test audit; no product runtime mutations.
-if(!process.argv[2])throw Error('Usage: node verify-browser-results.mjs browser-results.json [report.json] [timing-browser-results.json]');
-const defaultInput=process.argv[2];
-const input=path.resolve(process.argv[2]??defaultInput),artifact=path.dirname(input);
-const output=path.resolve(process.argv[3]??path.join(artifact,'independent-browser-verification.json'));
+const historicalPublicFaults=process.argv.includes('--historical-public-faults');
+const args=process.argv.slice(2).filter(arg=>arg!=='--historical-public-faults');
+if(!args[0]||args.some(arg=>arg.startsWith('--')))throw Error('Usage: node verify-browser-results.mjs browser-results.json [report.json] [timing-browser-results.json] [--historical-public-faults]');
+const input=path.resolve(args[0]),artifact=path.dirname(input);
+const output=path.resolve(args[1]??path.join(artifact,'independent-browser-verification.json'));
 const inputBytes=fs.readFileSync(input),data=JSON.parse(inputBytes);
-const timingInput=process.argv[4]?path.resolve(process.argv[4]):input;
+const timingInput=args[2]?path.resolve(args[2]):input;
 const timingBytes=timingInput===input?inputBytes:fs.readFileSync(timingInput);
 const timingData=timingInput===input?data:JSON.parse(timingBytes);
 const failures=[],checks=[],notes=[],incomplete=[],historical=[],manualEvidence=[];
@@ -166,13 +167,19 @@ function manual(run){
 }
 const referenceRun=latestSamples.get('baseline pwd'),referenceEvents=referenceRun?eventsOf(referenceRun):[],referenceKernel=referenceEvents.find(e=>e.kind==='installed'&&String(e.data.target)==='2');
 let publicFaultReference=null;try{publicFaultReference=publicFaultSnapshot(referenceEvents,referenceKernel?.time??-Infinity);check(publicFaultReference.observed,'public faults reference','baseline has an observed pre-kernel public fault list');if(publicFaultReference.observed)check(publicFaultReference.signatures.every(f=>referenceEvents.some(e=>e.kind==='stop'&&e.time<referenceKernel.time&&e.data.reason===3&&e.data.ordinal===f.Core&&e.data.index===f.Index&&e.data.op===f.Op)),'public faults reference','every reference signature is backed by an actual pre-kernel fault stop');}catch(error){check(false,'public faults reference','reference public fault list is valid',String(error));}
-function publicFaultEvidence(events,scope,formal=true){
+function publicFaultEvidence(events,scope,formal=true,run=null){
  try{const final=publicFaultSnapshot(events),same=Boolean(final.observed&&publicFaultReference?.observed&&equal(final.signatures,publicFaultReference.signatures)),extra=final.observed&&publicFaultReference?.observed?final.signatures.filter(v=>!publicFaultReference.signatures.some(r=>equal(v,r))):[];
   if(formal){check(final.observed,scope,'a public Faults/LastFault snapshot is observed');check(same,scope,'observed final public fault signatures equal the full intentional baseline boot reference',{reference:publicFaultReference?.signatures,actual:final.signatures,newPublicFaults:extra});}
-  return {...final,passed:same,newPublicFaults:extra,verdict:same?'observed-signatures-match':'failed-new-or-missing-public-fault',freshAtBarrier:false};
+  let freshAtBarrier=false;
+  const requireFresh=faultSnapshotRequired(run,historicalPublicFaults);
+  if(requireFresh){
+   const freshness=faultSnapshotAtBarrier(events,run.result.collection,final);freshAtBarrier=freshness.fresh;
+   if(formal)check(freshAtBarrier,scope,'final public fault list is captured at the page producer barrier cutoff',freshness);
+  }
+  return {...final,passed:same&&(!requireFresh||freshAtBarrier),newPublicFaults:extra,verdict:!same?'failed-new-or-missing-public-fault':requireFresh&&!freshAtBarrier?'failed-stale-public-fault-snapshot':'observed-signatures-match',freshAtBarrier,requireFresh};
  }catch(error){if(formal)check(false,scope,'public fault snapshots have a valid append-only signature history',String(error));return{passed:false,verdict:'invalid-public-fault-evidence',error:String(error),freshAtBarrier:false};}
 }
-notes.push({scope:'public faults freshness',text:'The v5 observer polls page.Faults every 250 ms and emits only when count changes. The last observed full signature list is checked, including Code12 install failures. Producer ACK proves transport prefix completeness, not a fresh read of page.Faults at the barrier endpoint. This limitation is retained.'});
+notes.push({scope:'public faults freshness',historicalPublicFaults,text:historicalPublicFaults?'Explicit historical-public-faults mode: v5 records only support their last observed 250ms snapshot. This mode cannot establish the current candidate barrier freshness.':'All formal smoke records require a full page Faults/LastFault read immediately before that page producer watermark, regardless of any self-declared result flag. This is the explicit page sampling point, not a guarantee about future faults or physical display scanout.'});
 const derived=new Map();
 for(const run of data.runs){
  const scope=`${run.variant} ${run.command||run.mode} ${run.run}`,rawEvents=eventsOf(run);
@@ -196,7 +203,7 @@ for(const run of data.runs){
  const postKernelFaults=events.filter(e=>e.kind==='stop'&&e.data.reason===3&&(!kernel||e.time>=kernel.time)).map(e=>e.data);
  if(run.mode!=='timing')check(Boolean(kernel),scope,'actual kernel install boundary observed');
  if(run.mode!=='timing')check(postKernelFaults.length===0,scope,'no execution faults after actual kernel install',postKernelFaults);
- const publicFaults=publicFaultEvidence(events,scope);
+ const publicFaults=publicFaultEvidence(events,scope,true,run);
  const final=events.filter(e=>e.kind==='terminal').at(-1),rows=rowsOf(final);
  check(equal(run.result.rows,rows),scope,'recorded rows equal latest raw terminal frame',{recorded:run.result.rows,raw:rows});
  if(run.command){
@@ -259,5 +266,5 @@ const legacy=data.runs.filter(r=>r.variant==='legacy-kernel');if(legacy.some(r=>
 notes.push({scope:'independence',text:'This is an independent software-agent check, not owner/third-party human acceptance.'});
 notes.push({scope:'clock',text:'bootMs measures power to nativePresent ACK containing prompt; no claim of physical scanout timing or 60 FPS.'});
 const observations=[...derived].map(([run,row])=>({run,scope:row.scope,stdout:row.stdout,exit:row.exit,returnValues:row.returnValues,signal:row.signal,publicFaults:row.publicFaults,pixelHash:row.picture?.hash,preKernelFaults:row.preKernelFaults,postKernelFaults:row.postKernelFaults}));
-const result={created:new Date().toISOString(),input,inputSha256:sha(inputBytes),timingInput,timingInputSha256:sha(timingBytes),checks:checks.length,failures,passed:failures.length===0,timing,comparisons,coverage,coverageSummary:{required:coverage.length,observed:coverage.filter(r=>r.run!==null).length,commandComplete:coverage.filter(r=>r.status==='command-complete').length,timeouts:coverage.filter(r=>r.status==='command-timeout').length},observations,incomplete,historical,publicFaultReference,revision:'public-fault-signatures-v2',manualEvidence,notes};fs.writeFileSync(output+'.input.json',inputBytes);if(timingInput!==input)fs.writeFileSync(output+'.timing-input.json',timingBytes);fs.writeFileSync(output,JSON.stringify(result,null,2)+'\n');
+const result={created:new Date().toISOString(),input,inputSha256:sha(inputBytes),timingInput,timingInputSha256:sha(timingBytes),checks:checks.length,failures,passed:failures.length===0,timing,comparisons,coverage,coverageSummary:{required:coverage.length,observed:coverage.filter(r=>r.run!==null).length,commandComplete:coverage.filter(r=>r.status==='command-complete').length,timeouts:coverage.filter(r=>r.status==='command-timeout').length},observations,incomplete,historical,publicFaultReference,revision:'public-fault-signatures-v3-barrier',manualEvidence,notes};fs.writeFileSync(output+'.input.json',inputBytes);if(timingInput!==input)fs.writeFileSync(output+'.timing-input.json',timingBytes);fs.writeFileSync(output,JSON.stringify(result,null,2)+'\n');
 console.log(JSON.stringify({checks:checks.length,failures:failures.length,passed:result.passed,output,timing},null,2));process.exitCode=failures.length?1:0;

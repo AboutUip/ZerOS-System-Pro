@@ -26,6 +26,7 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"xchg", "xchg", TypeKind::Long, 3, 1, false, true},
       {"bulk", "fill", TypeKind::Long, 3, 1, false, false},
       {"carry", "carry", TypeKind::Long, 5, 1, false, false},
+      {"offer", "offer", TypeKind::Long, 5, 1, false, false},
       {"halt", "halt", TypeKind::Void, 0, 0, false, false},
       {"memory::loadOctet", "ldi.octet", TypeKind::Long, 1, 1, false, false},
       {"memory::load16", "ldi.16", TypeKind::Long, 1, 1, false, false},
@@ -104,7 +105,9 @@ bool libraryFunction(const Function& function) {
     return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::String, TypeKind::Long, TypeKind::Long}, TypeKind::Void)
         || sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::String, TypeKind::Long, TypeKind::Long}, TypeKind::Void);
   }
-  if (function.name == "obr::ui::clip") return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Void);
+  if (function.name == "obr::ui::clip" || function.name == "obr::ui::shift") {
+    return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Void);
+  }
   if (function.name == "obr::ui::round") {
     return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Void);
   }

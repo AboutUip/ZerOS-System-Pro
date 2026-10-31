@@ -5,8 +5,9 @@
  * ---------------------------------------------------------------------------
  * 文件职责
  * ---------------------------------------------------------------------------
- * 解析 obrc -debug 写下的 obr-debug 1 对照表，并按指令编号查出文件名、行号和函数名。
- * 对照表不进程序二进制。查不到时源位置保持 `-`，不编造文件名。
+ * 解析 obrc -debug 写下的 obr-debug 1（ZAP 指令号）和 obr-debug 2（原生位地址）对照表，
+ * 按编号/地址查出文件名、行号和函数名。对照表不进程序二进制。
+ * 查不到时源位置保持 `-`，不编造文件名。
  * 全路径不进面板。只留文件名，避免把本机目录画到屏幕上。
  *
  * ---------------------------------------------------------------------------
@@ -66,12 +67,15 @@ export namespace ZerOS {
 
       /**
        * 把对照表正文收成连续段。
-       * 首行不是 obr-debug 1，或某一行缺字段，整份当作没有对照，避免半份表把编号对错。
+       * 首行是 obr-debug 1 或 2；地址/行号非法时整份当作没有对照，避免半份表把编号对错。
+       * 无名行（编译生成的代码）跳过，不丢整份表。
        */
       export function parseDebugText(text: string): readonly DebugSiteRun[] {
         const lines = text.split("\n");
         const header = lines[0] ?? "";
-        if (header.trim() !== "obr-debug 1") {
+        const trimmed = header.trim();
+        const native = trimmed === "obr-debug 2";
+        if (!native && trimmed !== "obr-debug 1") {
           return [];
         }
         const runs: DebugSiteRun[] = [];
@@ -93,8 +97,27 @@ export namespace ZerOS {
           const row = Number(parts[2]);
           const nextFile = baseName(parts[1] ?? "");
           const nextName = asciiName(parts[3] ?? "");
-          if (!Number.isInteger(at) || at < 0 || !Number.isInteger(row) || row < 1) {
+          if (!Number.isInteger(at) || at < 0) {
             return [];
+          }
+          /* 原生表的首列是位地址；无名行只表示没有源位置，跳过，不丢整份表。 */
+          if (native) {
+            if (!Number.isInteger(row) || row < 1 || (parts[1] ?? "") === "" || (parts[3] ?? "") === "") {
+              continue;
+            }
+            runs.push({ From: at, Until: at + 1, File: nextFile, Line: row, Name: nextName });
+            continue;
+          }
+          if (!Number.isInteger(row) || row < 1 || (parts[1] ?? "") === "" || (parts[3] ?? "") === "") {
+            if (from >= 0) {
+              runs.push({ From: from, Until: until, File: file, Line: lineNo, Name: name });
+              from = -1;
+              until = -1;
+              file = "";
+              lineNo = 0;
+              name = "";
+            }
+            continue;
           }
           const same = from >= 0 && at === until && nextFile === file && row === lineNo && nextName === name;
           if (same) {
@@ -112,6 +135,25 @@ export namespace ZerOS {
         }
         if (from >= 0) {
           runs.push({ From: from, Until: until, File: file, Line: lineNo, Name: name });
+        }
+        if (native) {
+          /* 原生表只给指令起始地址；把区间补到下一条起始地址，采样落在指令中间也能查。 */
+          const fixed: DebugSiteRun[] = [];
+          for (let index = 0; index < runs.length; index += 1) {
+            const run = runs[index];
+            if (run === undefined) {
+              continue;
+            }
+            const next = runs[index + 1];
+            fixed.push({
+              From: run.From,
+              Until: next === undefined ? run.From + 1 : next.From,
+              File: run.File,
+              Line: run.Line,
+              Name: run.Name,
+            });
+          }
+          return fixed;
         }
         return runs;
       }

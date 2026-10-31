@@ -1,74 +1,21 @@
-/* 文件层。目录项和索引节点在监督核的窗口里。NAS 只负责字节，属主和权限位在这里。
+/* 文件层。目录项、索引节点、路径和已经打开的文件。
+   NAS 只负责字节，属主、权限和时间在这里。
    种类 1 是 NAS 上的文件，2 是 NAS 上的目录，3 是字符设备，4 是只活在这张表里的目录。/dev 是种类 4。
    种类 5 是内存文件，6 是内存目录。根在 NAS 没就绪，或 /boot/root 正好是 mem 时，用种类 6。
-   索引节点 11 个字、704 位。末尾三个字是访问、修改、状态时间，从 Unix 纪元起的毫秒。
+   索引节点、目录项、打开文件、管道和设备的字段在 fs.mr，这里不另抄一份。
+   管道、设备环、终端格子和命令名各自在旁边的文件里。系统调用只负责转过去。
    描述符可以复制。几个描述符共用同一个打开对象时，关掉一个不关掉其余的。
    派生会把调用者已经打开的描述符交给子任务，两边各算一份。 */
-#LINK /start.obr, /exec.obr, /task.obr, /font.obr
+#LINK /start.obr, /exec.obr, /task.obr, /font.obr, /pipe.obr, /dev.obr, /console.obr, /comm.obr, /pool.obr, /boot.obr, /spawn.obr
+import fs;
 import proc;
 import sched;
 import trap;
 import board;
 import memory;
-import obr.ui;
-import obr.font;
 import obr.nas;
+import obr.os;
 
-struct Inode {
-  long used;
-  long kind;
-  long mode;
-  long uid;
-  long gid;
-  long size;
-  long parent;
-  long nlink;
-  /* 从 Unix 纪元起的毫秒。atime 访问，mtime 修改，ctime 状态。 */
-  long atime;
-  long mtime;
-  long ctime;
-}
-
-struct Dentry {
-  long used;
-  long parent;
-  long ino;
-  long nameLen;
-}
-
-struct File {
-  long used;
-  long ino;
-  long offset;
-  long flags;
-  long handle;
-}
-
-struct Pipe {
-  long used;
-  long readers;
-  long writers;
-  long head;
-  long count;
-  long readWait;
-  long writeWait;
-}
-
-/* 12 个字。环不在这个结构里，按设备下标排在设备头后面。每条环 ringRoom 个八位组。 */
-struct Dev {
-  long used;
-  long core;
-  long pid;
-  long ino;
-  long upHead;
-  long upCount;
-  long downHead;
-  long downCount;
-  long userReadWait;
-  long userWriteWait;
-  long drvRecvWait;
-  long drvSendWait;
-}
 
 deRfun vfsBase(): long {
   return tableBase() + taskLimit() * taskStride();
@@ -344,6 +291,13 @@ deRfun stampAccess(Inode* node): void {
   }
 }
 
+/* 设备只给出修改时间。登记时三项都用它。之后的读、写和改权限仍按各自的规则改其中一项。 */
+deRfun stampAdopt(Inode* node, long stamp): void {
+  node.atime = stamp;
+  node.mtime = stamp;
+  node.ctime = stamp;
+}
+
 /* 内存文件的槽号表紧挨在设备环后面。每个索引节点一个字，-1 表示没有正文。
    正文 6 份，每份 1048576 个八位组。以前一份只有 262144，连入口映像都放不下。
    份数停在编译器栈之前，栈在窗口 +67125248。 */
@@ -472,59 +426,39 @@ deRfun memoryRoot(): long {
   return 1L;
 }
 
+/* 引导探针。7296 在键盘环之后、显示器尺寸之前，整字必须出核心。
+   编号只给这一轮测量用。主板按宿主时钟记下写入时刻。 */
+deRfun bootMark(long id): void {
+  /* 监督核是原生映像。这一字先留在本核心，dwell(0) 才把邮箱送上主板。 */
+  *(long*)7296 = id;
+  obr::os::dwell(0L);
+}
+
 deRfun vfsInit(): void {
+  bootMark(13L);
+  /* 上电后的内存每个八位组都是 0。文件槽清空后仍是全 0，不再逐项重写。
+     目录项的 parent、内存文件槽、管道两端的等待号必须是 -1。写成 0 会被当成下标。 */
   long index = 0L;
   while (index < inodeCount()) {
-    Inode* node = inodeAt(index);
-    node.used = 0L;
-    node.kind = 0L;
-    node.mode = 0L;
-    node.uid = 0L;
-    node.gid = 0L;
-    node.size = 0L;
-    node.parent = 0L;
-    node.nlink = 0L;
-    node.atime = 0L;
-    node.mtime = 0L;
-    node.ctime = 0L;
     memory::store64(-1L, memSlotAt(index));
-    Dentry* dent = dentryAt(index);
-    dent.used = 0L;
-    dent.parent = -1L;
-    dent.ino = 0L;
-    dent.nameLen = 0L;
     index = index + 1L;
   }
+  bootMark(40L);
+  index = 0L;
   while (index < dentryCount()) {
     Dentry* dent = dentryAt(index);
-    dent.used = 0L;
     dent.parent = -1L;
-    dent.ino = 0L;
-    dent.nameLen = 0L;
     index = index + 1L;
   }
-  index = 0L;
-  while (index < fileCount()) {
-    File* file = fileAt(index);
-    file.used = 0L;
-    file.ino = 0L;
-    file.offset = 0L;
-    file.flags = 0L;
-    file.handle = 0L;
-    index = index + 1L;
-  }
+  bootMark(41L);
   index = 0L;
   while (index < pipeCount()) {
     Pipe* pipe = pipeAt(index);
-    pipe.used = 0L;
-    pipe.readers = 0L;
-    pipe.writers = 0L;
-    pipe.head = 0L;
-    pipe.count = 0L;
     pipe.readWait = -1L;
     pipe.writeWait = -1L;
     index = index + 1L;
   }
+  bootMark(42L);
   Inode* root = inodeAt(0L);
   root.used = 1L;
   root.kind = 2L;
@@ -532,6 +466,7 @@ deRfun vfsInit(): void {
   root.uid = 0L;
   root.gid = 0L;
   root.nlink = 1L;
+  bootMark(14L);
   if (memoryRoot() == 1L) {
     root.kind = 6L;
   }
@@ -543,8 +478,6 @@ deRfun vfsInit(): void {
   index = 0L;
   while (index < devCount()) {
     Dev* dev = devAt(index);
-    dev.used = 0L;
-    dev.pid = 0L;
     dev.userReadWait = -1L;
     dev.userWriteWait = -1L;
     dev.drvRecvWait = -1L;
@@ -557,6 +490,7 @@ deRfun vfsInit(): void {
   scratchPush(118L);
   takeChild(0L, scratch(), 0L, 3L, 4L, 0L, 0L, 0L, modeDir());
   scratchClear();
+  bootMark(15L);
 }
 
 deRfun classBits(long mode, long which): long {
@@ -600,6 +534,9 @@ deRfun may(long taskIndex, long ino, long want): long {
 }
 
 deRfun nameEq(long dent, long path, long from, long count): long {
+  if (count < 0L || count > 512L) {
+    return 0L;
+  }
   Dentry* entry = dentryAt(dent);
   if (entry.nameLen != count) {
     return 0L;
@@ -729,7 +666,9 @@ deRfun fillNode(long ino, long parent, long kind, long mode, long uid, long gid,
   node.size = size;
   node.parent = parent;
   node.nlink = 1L;
-  stampCreate(node);
+  node.atime = 0L;
+  node.mtime = 0L;
+  node.ctime = 0L;
 }
 
 deRfun takeChild(long parent, long path, long from, long count, long kind, long size, long uid, long gid, long mode): long {
@@ -740,6 +679,25 @@ deRfun takeChild(long parent, long path, long from, long count, long kind, long 
   }
   long parentIno = dentryAt(parent).ino;
   fillNode(ino, parentIno, kind, mode, uid, gid, size);
+  stampCreate(inodeAt(ino));
+  Dentry* entry = dentryAt(dent);
+  entry.used = 1L;
+  entry.parent = parent;
+  entry.ino = ino;
+  copyName(dent, path, from, count);
+  return dent;
+}
+
+/* 已有名字按设备给出的修改时间登记，不改成现在。 */
+deRfun takeKnown(long parent, long path, long from, long count, long kind, long size, long uid, long gid, long mode, long stamp): long {
+  long ino = allocInode();
+  long dent = allocDentry();
+  if (ino < 0L || dent < 0L) {
+    return -1L;
+  }
+  long parentIno = dentryAt(parent).ino;
+  fillNode(ino, parentIno, kind, mode, uid, gid, size);
+  stampAdopt(inodeAt(ino), stamp);
   Dentry* entry = dentryAt(dent);
   entry.used = 1L;
   entry.parent = parent;
@@ -768,7 +726,7 @@ deRfun attachChild(long parent, long path, long from, long count, long* out): lo
   if (kind == 2L) {
     mode = modeDir();
   }
-  long dent = takeChild(parent, path, from, count, kind, size, 0L, 0L, mode);
+  long dent = takeKnown(parent, path, from, count, kind, size, 0L, 0L, mode, obr::nas::statStamp());
   if (dent < 0L) {
     return 7L;
   }
@@ -934,195 +892,6 @@ deRfun wantOf(long flags): long {
 }
 
 deRfun nasBusy(): long {
-  return 0L;
-}
-
-deRfun pipeShut(long index, long flags): void {
-  Pipe* pipe = pipeAt(index);
-  if (flags == 0L && pipe.readers > 0L) {
-    pipe.readers = pipe.readers - 1L;
-  }
-  if (flags != 0L && pipe.writers > 0L) {
-    pipe.writers = pipe.writers - 1L;
-  }
-  if (pipe.readers > 0L || pipe.writers > 0L) {
-    pipeFinish(index);
-  }
-  if (pipe.writers == 0L && pipe.readWait >= 0L && pipe.count == 0L) {
-    long waiter = pipe.readWait;
-    pipe.readWait = -1L;
-    memory::store64(0L, query(1L, 8L, waiter) + 320L);
-    reply(waiter, 0L);
-  }
-  if (pipe.readers == 0L && pipe.writeWait >= 0L) {
-    long waiter = pipe.writeWait;
-    pipe.writeWait = -1L;
-    reply(waiter, 5L);
-  }
-  if (pipe.readers == 0L && pipe.writers == 0L) {
-    pipe.used = 0L;
-    pipe.count = 0L;
-    pipe.readWait = -1L;
-    pipe.writeWait = -1L;
-  }
-}
-
-/* 又有一个描述符握住这条管道端。关闭只减一份，最后一份才把端拆掉。 */
-deRfun pipeHold(long index, long flags): void {
-  Pipe* pipe = pipeAt(index);
-  if (flags == 0L) {
-    pipe.readers = pipe.readers + 1L;
-  }
-  if (flags != 0L) {
-    pipe.writers = pipe.writers + 1L;
-  }
-}
-
-/* 把已经堵在这条管道上的另一端放行。读端要有字节才醒，写端要有空位才醒。 */
-deRfun pipeFinish(long slot): void {
-  long pass = 0L;
-  while (pass < 2L) {
-    Pipe* pipe = pipeAt(slot);
-    if (pipe.readWait >= 0L && pipe.count > 0L) {
-      long waiter = pipe.readWait;
-      pipe.readWait = -1L;
-      long home = query(1L, 8L, waiter);
-      long count = memory::load64(home + 256L);
-      long got = 0L;
-      while (got < count && pipe.count > 0L) {
-        long value = memory::loadOctet(pipeData(slot) + pipe.head * 8L);
-        memory::storeOctet(value, byteAt(home) + got * 8L);
-        pipe.head = pipe.head + 1L;
-        if (pipe.head == pipeRoom()) {
-          pipe.head = 0L;
-        }
-        pipe.count = pipe.count - 1L;
-        got = got + 1L;
-      }
-      memory::store64(got, home + 320L);
-      reply(waiter, 0L);
-    }
-    pipe = pipeAt(slot);
-    if (pipe.writeWait >= 0L && pipe.count < pipeRoom() && pipe.readers > 0L) {
-      long waiter = pipe.writeWait;
-      pipe.writeWait = -1L;
-      long home = query(1L, 8L, waiter);
-      long count = memory::load64(home + 256L);
-      long got = 0L;
-      while (got < count && pipe.count < pipeRoom()) {
-        long value = memory::loadOctet(byteAt(home) + got * 8L);
-        long at = pipe.head + pipe.count;
-        if (at >= pipeRoom()) {
-          at = at - pipeRoom();
-        }
-        memory::storeOctet(value, pipeData(slot) + at * 8L);
-        pipe.count = pipe.count + 1L;
-        got = got + 1L;
-      }
-      memory::store64(got, home + 320L);
-      reply(waiter, 0L);
-    }
-    pass = pass + 1L;
-  }
-}
-
-deRfun pipeCopy(File* file, long home, long writing, long caller): long {
-  Pipe* pipe = pipeAt(file.handle);
-  if (pipe.used == 0L) {
-    return 5L;
-  }
-  long count = memory::load64(home + 256L);
-  if (count < 0L) {
-    return 13L;
-  }
-  long got = 0L;
-  if (writing == 0L) {
-    while (got < count && pipe.count > 0L) {
-      long value = memory::loadOctet(pipeData(file.handle) + pipe.head * 8L);
-      memory::storeOctet(value, byteAt(home) + got * 8L);
-      pipe.head = pipe.head + 1L;
-      if (pipe.head == pipeRoom()) {
-        pipe.head = 0L;
-      }
-      pipe.count = pipe.count - 1L;
-      got = got + 1L;
-    }
-  } else {
-    if (pipe.readers == 0L) {
-      return 5L;
-    }
-    while (got < count && pipe.count < pipeRoom()) {
-      long value = memory::loadOctet(byteAt(home) + got * 8L);
-      long at = pipe.head + pipe.count;
-      if (at >= pipeRoom()) {
-        at = at - pipeRoom();
-      }
-      memory::storeOctet(value, pipeData(file.handle) + at * 8L);
-      pipe.count = pipe.count + 1L;
-      got = got + 1L;
-    }
-  }
-  memory::store64(got, home + 320L);
-  pipeFinish(file.handle);
-  if (writing == 0L && got == 0L && pipeAt(file.handle).writers > 0L) {
-    if (pipeAt(file.handle).readWait >= 0L) {
-      return 11L;
-    }
-    pipeAt(file.handle).readWait = caller;
-    schedSleep(caller);
-    return -2L;
-  }
-  if (writing == 1L && got == 0L && count > 0L && pipeAt(file.handle).readers > 0L) {
-    if (pipeAt(file.handle).writeWait >= 0L) {
-      return 11L;
-    }
-    pipeAt(file.handle).writeWait = caller;
-    schedSleep(caller);
-    return -2L;
-  }
-  return 0L;
-}
-
-deRfun doPipe(long caller, long home): long {
-  long taskIndex = taskFind(caller);
-  long slot = 0L;
-  while (slot < pipeCount() && pipeAt(slot).used == 1L) {
-    slot = slot + 1L;
-  }
-  if (slot >= pipeCount()) {
-    return 7L;
-  }
-  long readFd = allocFd(taskIndex);
-  if (readFd < 0L) {
-    return 7L;
-  }
-  File* reading = fileAt(slotOf(taskIndex, readFd));
-  reading.used = 1L;
-  long writeFd = allocFd(taskIndex);
-  if (writeFd < 0L) {
-    reading.used = 0L;
-    return 7L;
-  }
-  Pipe* pipe = pipeAt(slot);
-  pipe.used = 1L;
-  pipe.readers = 1L;
-  pipe.writers = 1L;
-  pipe.head = 0L;
-  pipe.count = 0L;
-  pipe.readWait = -1L;
-  pipe.writeWait = -1L;
-  reading.ino = -1L;
-  reading.offset = 0L;
-  reading.flags = 0L;
-  reading.handle = slot;
-  File* writing = fileAt(slotOf(taskIndex, writeFd));
-  writing.used = 1L;
-  writing.ino = -1L;
-  writing.offset = 0L;
-  writing.flags = 1L;
-  writing.handle = slot;
-  memory::store64(readFd, home + 128L);
-  memory::store64(writeFd, home + 192L);
   return 0L;
 }
 
@@ -1657,6 +1426,18 @@ deRfun doReaddir(long caller, long home): long {
     return status;
   }
   memory::store64(got, home + 256L);
+  /* 名字刚从目录窗取出。种类、大小和修改时间记进目录项，随后 stat 不再访问设备。 */
+  if (got > 0L && findChild(dent, byteAt(home), 0L, got) < 0L) {
+    long kind = obr::nas::readdirKind();
+    long size = obr::nas::readdirSize();
+    if (kind == 1L || kind == 2L) {
+      long mode = modeFile();
+      if (kind == 2L) {
+        mode = modeDir();
+      }
+      takeKnown(dent, byteAt(home), 0L, got, kind, size, 0L, 0L, mode, obr::nas::readdirStamp());
+    }
+  }
   return 0L;
 }
 
@@ -1873,1102 +1654,153 @@ deRfun doChdir(long caller, long home): long {
   return 0L;
 }
 
-deRfun devBytes(long index, long which): long {
-  if (which == 0L) {
-    return devUp(index);
-  }
-  return devDown(index);
+
+
+
+
+/* 一条目录记录：9 个字，然后是名字。下一条紧跟名字。 */
+deRfun writeRec(long at, long nameLen, long kind, long size, long mode, long uid, long gid, long atime, long mtime, long ctime): void {
+  memory::store64(nameLen, at);
+  memory::store64(kind, at + 64L);
+  memory::store64(size, at + 128L);
+  memory::store64(mode, at + 192L);
+  memory::store64(uid, at + 256L);
+  memory::store64(gid, at + 320L);
+  memory::store64(atime, at + 384L);
+  memory::store64(mtime, at + 448L);
+  memory::store64(ctime, at + 512L);
 }
 
-deRfun devLive(Dev* dev): long {
-  if (dev.used == 0L || dev.pid == 0L) {
+/* 名字已经写在 at+576。有目录项就用它的权限和时间，没有就按种类登记。 */
+deRfun bindRec(long parent, long name, long nameLen, long kind, long size, long stamp, long at): long {
+  long child = findChild(parent, name, 0L, nameLen);
+  if (child < 0L && (kind == 1L || kind == 2L)) {
+    long mode = modeFile();
+    if (kind == 2L) {
+      mode = modeDir();
+    }
+    child = takeKnown(parent, name, 0L, nameLen, kind, size, 0L, 0L, mode, stamp);
+  }
+  if (child >= 0L) {
+    Inode* node = inodeAt(dentryAt(child).ino);
+    writeRec(at, nameLen, node.kind, node.size, node.mode, node.uid, node.gid, node.atime, node.mtime, node.ctime);
     return 0L;
   }
-  if (taskByPid(dev.pid) < 0L) {
-    return 0L;
+  long mode = modeFile();
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    mode = modeDir();
   }
-  return 1L;
+  writeRec(at, nameLen, kind, size, mode, 0L, 0L, stamp, stamp, stamp);
+  return 0L;
 }
 
-/* into 为 0 时从环里取出，为 1 时放进环。which 为 0 是发给用户的那条，为 1 是用户发来的那条。 */
-deRfun ringMove(Dev* dev, long index, long which, long addr, long count, long into): long {
-  long got = 0L;
-  while (got < count) {
-    long have = dev.upCount;
-    long head = dev.upHead;
-    if (which == 1L) {
-      have = dev.downCount;
-      head = dev.downHead;
-    }
-    if (into == 0L && have < 1L) {
-      return got;
-    }
-    if (into == 1L && have >= ringRoom()) {
-      return got;
-    }
-    long at = head;
-    if (into == 1L) {
-      at = head + have;
-      if (at >= ringRoom()) {
-        at = at - ringRoom();
-      }
-      memory::storeOctet(memory::loadOctet(addr + got * 8L), devBytes(index, which) + at * 8L);
-      have = have + 1L;
-    } else {
-      memory::storeOctet(memory::loadOctet(devBytes(index, which) + at * 8L), addr + got * 8L);
-      head = head + 1L;
-      if (head == ringRoom()) {
-        head = 0L;
-      }
-      have = have - 1L;
-    }
-    if (which == 0L) {
-      dev.upHead = head;
-      dev.upCount = have;
-    } else {
-      dev.downHead = head;
-      dev.downCount = have;
-    }
-    got = got + 1L;
-  }
-  return got;
-}
-
-/* 有字节或有空位时，把堵着的那一端放行。一次调用至多搬满一条环。 */
-deRfun devWake(long index): void {
-  long pass = 0L;
-  while (pass < 2L) {
-    Dev* dev = devAt(index);
-    if (dev.userReadWait >= 0L && dev.upCount > 0L) {
-      long waiter = dev.userReadWait;
-      dev.userReadWait = -1L;
-      long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 0L, byteAt(home), memory::load64(home + 256L), 0L);
-      memory::store64(got, home + 320L);
-      reply(waiter, 0L);
-    }
-    dev = devAt(index);
-    if (dev.drvRecvWait >= 0L && dev.downCount > 0L) {
-      long waiter = dev.drvRecvWait;
-      dev.drvRecvWait = -1L;
-      long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 1L, byteAt(home), memory::load64(home + 256L), 0L);
-      memory::store64(got, home + 320L);
-      reply(waiter, 0L);
-    }
-    dev = devAt(index);
-    if (dev.userWriteWait >= 0L && dev.downCount < ringRoom()) {
-      long waiter = dev.userWriteWait;
-      dev.userWriteWait = -1L;
-      long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 1L, byteAt(home), memory::load64(home + 256L), 1L);
-      memory::store64(got, home + 320L);
-      reply(waiter, 0L);
-    }
-    dev = devAt(index);
-    if (dev.drvSendWait >= 0L && dev.upCount < ringRoom()) {
-      long waiter = dev.drvSendWait;
-      dev.drvSendWait = -1L;
-      long home = query(1L, 8L, waiter);
-      long got = ringMove(dev, index, 0L, byteAt(home), memory::load64(home + 256L), 1L);
-      memory::store64(got, home + 320L);
-      reply(waiter, 0L);
-    }
-    pass = pass + 1L;
-  }
-}
-
-/* waitKind：1 用户读，2 用户写，3 驱动取，4 驱动送。into 与 ringMove 相同。 */
-deRfun devMove(long index, long home, long which, long into, long caller, long waitKind): long {
-  if (index < 0L || index >= devCount()) {
-    return 5L;
-  }
-  Dev* dev = devAt(index);
-  if (dev.used == 0L) {
-    return 5L;
-  }
-  long count = memory::load64(home + 256L);
-  if (count < 0L) {
-    return 13L;
-  }
-  if (into == 1L && waitKind == 2L && devLive(dev) == 0L) {
-    return 5L;
-  }
-  long got = ringMove(dev, index, which, byteAt(home), count, into);
-  memory::store64(got, home + 320L);
-  devWake(index);
-  dev = devAt(index);
-  if (got > 0L || count == 0L) {
-    return 0L;
-  }
-  if (waitKind < 3L && devLive(dev) == 0L) {
-    if (waitKind == 2L) {
-      return 5L;
-    }
-    return 0L;
-  }
-  long waiting = dev.userReadWait;
-  if (waitKind == 2L) {
-    waiting = dev.userWriteWait;
-  }
-  if (waitKind == 3L) {
-    waiting = dev.drvRecvWait;
-  }
-  if (waitKind == 4L) {
-    waiting = dev.drvSendWait;
-  }
-  if (waiting >= 0L) {
-    return 11L;
-  }
-  if (waitKind == 1L) {
-    dev.userReadWait = caller;
-  }
-  if (waitKind == 2L) {
-    dev.userWriteWait = caller;
-  }
-  if (waitKind == 3L) {
-    dev.drvRecvWait = caller;
-  }
-  if (waitKind == 4L) {
-    dev.drvSendWait = caller;
-  }
-  schedSleep(caller);
-  return -2L;
-}
-
-deRfun devIo(long caller, long home): long {
+/* 服务 34。从下标起，把这一层放得进字节区的记录一次交回。
+   +256 是条数，+320 是八位组数。下标已经越过末尾时返回 2。 */
+deRfun doList(long caller, long home): long {
   long taskIndex = taskFind(caller);
-  if (taskIndex < 0L) {
+  long dent = 0L;
+  long status = walk(taskIndex, home + 16384L, &dent);
+  if (status != 0L) {
+    return status;
+  }
+  Inode* node = inodeAt(dentryAt(dent).ino);
+  if (isDir(node.kind) == 0L) {
+    return 3L;
+  }
+  if (may(taskIndex, dentryAt(dent).ino, 5L) == 0L) {
     return -1L;
   }
-  long pid = taskAt(taskIndex).pid;
-  long index = 0L;
-  while (index < devCount() && (devAt(index).used == 0L || devAt(index).pid != pid)) {
-    index = index + 1L;
-  }
-  if (index >= devCount()) {
-    return -1L;
-  }
-  long dir = memory::load64(home + 128L);
-  if (dir == 0L) {
-    return devMove(index, home, 1L, 0L, caller, 3L);
-  }
-  if (dir == 1L) {
-    return devMove(index, home, 0L, 1L, caller, 4L);
-  }
-  return 13L;
-}
-
-deRfun devList(long dent, long home): long {
-  long nth = memory::load64(home + 128L);
+  long index = memory::load64(home + 128L);
   long cap = memory::load64(home + 192L);
-  if (nth < 0L || cap < 0L) {
+  if (index < 0L || cap < 0L) {
     return 13L;
   }
-  long seen = 0L;
-  long index = 1L;
-  while (index < dentryCount()) {
-    Dentry* entry = dentryAt(index);
-    if (entry.used == 1L && entry.parent == dent) {
-      if (seen == nth) {
-        if (cap < entry.nameLen) {
-          return 6L;
+  if (cap > byteRoom()) {
+    cap = byteRoom();
+  }
+  if (cap < 73L) {
+    return 7L;
+  }
+  long out = byteAt(home);
+  long used = 0L;
+  long produced = 0L;
+  if (node.kind == 4L || node.kind == 6L) {
+    long seen = 0L;
+    long slot = 1L;
+    long reading = 1L;
+    long guard = 0L;
+    while (reading == 1L && slot < dentryCount() && guard < 8192L) {
+      guard = guard + 1L;
+      Dentry* entry = dentryAt(slot);
+      if (entry.used == 1L && entry.parent == dent && entry.nameLen >= 0L && entry.nameLen <= 512L) {
+        if (seen >= index) {
+          long need = 72L + entry.nameLen;
+          if (used / 8L + need > cap) {
+            reading = 0L;
+          } else {
+            long at = out + used;
+            long step = 0L;
+            while (step < entry.nameLen) {
+              memory::storeOctet(memory::loadOctet(nameAt(slot) + step * 8L), at + 576L + step * 8L);
+              step = step + 1L;
+            }
+            Inode* child = inodeAt(entry.ino);
+            writeRec(at, entry.nameLen, child.kind, child.size, child.mode, child.uid, child.gid, child.atime, child.mtime, child.ctime);
+            used = used + 576L + entry.nameLen * 8L;
+            produced = produced + 1L;
+          }
         }
-        long step = 0L;
-        while (step < entry.nameLen) {
-          memory::storeOctet(memory::loadOctet(nameAt(index) + step * 8L), byteAt(home) + step * 8L);
-          step = step + 1L;
-        }
-        memory::store64(entry.nameLen, home + 256L);
-        return 0L;
+        seen = seen + 1L;
       }
-      seen = seen + 1L;
-    }
-    index = index + 1L;
-  }
-  memory::store64(0L, home + 256L);
-  return 0L;
-}
-
-/* 引导时第一个目录项就是 /dev。 */
-deRfun devDir(): long {
-  return 1L;
-}
-
-/* 终端格子紧挨内存文件正文。头 1024 位，行长到 4096，输入队列到 8192，格子到 253952。
-   一次写入只把脏行画出来，再呈现一帧。抽键不呈现。 */
-deRfun gridBase(): long {
-  long cached = memory::load64(layoutWord(1L));
-  if (cached != 0L) {
-    return cached;
-  }
-  long base = vfsEnd() + inodeCount() * 64L + memSlots() * memCap() * 8L;
-  memory::store64(base, layoutWord(1L));
-  return base;
-}
-
-/* 命令名不进任务的 19 个字。终端格子用到 +253952，这里从 +262144 起，中间留一截。
-   每份先是长度字，再 32 个八位组。512 份大约 16 万位，仍在编译器栈 +67125248 之前。 */
-deRfun commBase(long index): long {
-  return gridBase() + 262144L + index * 320L;
-}
-
-deRfun commClear(long index): void {
-  if (index < 0L || index >= taskLimit()) {
-    return;
-  }
-  memory::store64(0L, commBase(index));
-}
-
-deRfun commPut(long index, long addr, long count): void {
-  if (index < 0L || index >= taskLimit()) {
-    return;
-  }
-  if (count < 0L) {
-    count = 0L;
-  }
-  if (count > 32L) {
-    count = 32L;
-  }
-  long at = commBase(index);
-  memory::store64(count, at);
-  long step = 0L;
-  while (step < count) {
-    long value = memory::loadOctet(addr + step * 8L);
-    if (value < 0L) {
-      value = value + 256L;
-    }
-    memory::storeOctet(value, at + 64L + step * 8L);
-    step = step + 1L;
-  }
-}
-
-/* 路径是计数字符串。去掉末尾的斜杠，只留下最后一段，超长就留末尾 32 个八位组。 */
-deRfun commFromPath(long index, long path): void {
-  long len = memory::load64(path);
-  if (len < 1L || len > 8192L) {
-    commClear(index);
-    return;
-  }
-  long end = len;
-  while (end > 0L) {
-    long value = memory::loadOctet(path + 64L + (end - 1L) * 8L);
-    if (value < 0L) {
-      value = value + 256L;
-    }
-    if (value != 47L) {
-      break;
-    }
-    end = end - 1L;
-  }
-  long start = end;
-  while (start > 0L) {
-    long value = memory::loadOctet(path + 64L + (start - 1L) * 8L);
-    if (value < 0L) {
-      value = value + 256L;
-    }
-    if (value == 47L) {
-      break;
-    }
-    start = start - 1L;
-  }
-  long count = end - start;
-  if (count > 32L) {
-    start = end - 32L;
-    count = 32L;
-  }
-  commPut(index, path + 64L + start * 8L, count);
-}
-
-deRfun commNamed(long index, long which): void {
-  long at = commBase(index);
-  if (index < 0L || index >= taskLimit()) {
-    return;
-  }
-  if (which == 0L) {
-    memory::store64(4L, at);
-    memory::storeOctet(105L, at + 64L);
-    memory::storeOctet(110L, at + 72L);
-    memory::storeOctet(105L, at + 80L);
-    memory::storeOctet(116L, at + 88L);
-    return;
-  }
-  if (which == 1L) {
-    memory::store64(5L, at);
-    memory::storeOctet(112L, at + 64L);
-    memory::storeOctet(117L, at + 72L);
-    memory::storeOctet(108L, at + 80L);
-    memory::storeOctet(115L, at + 88L);
-    memory::storeOctet(101L, at + 96L);
-    return;
-  }
-  memory::store64(0L, at);
-}
-
-deRfun commLen(long index): long {
-  if (index < 0L || index >= taskLimit()) {
-    return 0L;
-  }
-  long count = memory::load64(commBase(index));
-  if (count < 0L) {
-    return 0L;
-  }
-  if (count > 32L) {
-    return 32L;
-  }
-  return count;
-}
-
-deRfun commByte(long index, long at): long {
-  if (index < 0L || index >= taskLimit() || at < 0L || at >= commLen(index)) {
-    return 0L;
-  }
-  long value = memory::loadOctet(commBase(index) + 64L + at * 8L);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
-}
-
-deRfun termFace(): long {
-  return 1048576L + 2L * 268435456L + 20480L + 576L;
-}
-
-deRfun conOctet(long addr): long {
-  return memory::loadOctet(addr) & 255L;
-}
-
-deRfun conInit(): void {
-  long base = gridBase();
-  if (memory::load64(base) == 1L) {
-    return;
-  }
-  long index = 0L;
-  while (index < 16L) {
-    memory::store64(0L, base + index * 64L);
-    index = index + 1L;
-  }
-  index = 0L;
-  while (index < 48L) {
-    memory::store64(0L, base + 1024L + index * 64L);
-    index = index + 1L;
-  }
-  memory::store64(1L, base);
-  memory::store64(-1L, base + 384L);
-}
-
-deRfun conCols(): long {
-  return memory::load64(gridBase() + 64L);
-}
-
-deRfun conRows(): long {
-  return memory::load64(gridBase() + 128L);
-}
-
-deRfun conMeasure(): void {
-  long wide = obr::ui::width();
-  long high = obr::ui::height();
-  long cols = 80L;
-  long rows = 24L;
-  if (wide >= 32L && high >= 32L) {
-    cols = (wide - 16L) / 8L;
-    rows = (high - 16L) / 18L;
-  }
-  if (cols < 1L) {
-    cols = 1L;
-  }
-  if (rows < 1L) {
-    rows = 1L;
-  }
-  if (cols > 160L) {
-    cols = 160L;
-  }
-  if (rows > 48L) {
-    rows = 48L;
-  }
-  memory::store64(cols, gridBase() + 64L);
-  memory::store64(rows, gridBase() + 128L);
-}
-
-/* 脏行收在一个字里。低 6 位是个数，后面每 6 位一个行号。
-   个数 63 表示整屏。移位只保留 32 位，第 32 行以后的标记会缠回低位，
-   于是按一个键就把每一行都画一遍，回读将近整帧。这里只用乘除。 */
-deRfun conMark(long row): void {
-  if (row < 0L || row >= 48L) {
-    return;
-  }
-  long packed = memory::load64(gridBase() + 320L);
-  long count = packed % 64L;
-  if (count == 63L) {
-    return;
-  }
-  long seen = packed / 64L;
-  long index = 0L;
-  while (index < count) {
-    if (seen % 64L == row) {
-      return;
-    }
-    seen = seen / 64L;
-    index = index + 1L;
-  }
-  if (count >= 8L) {
-    memory::store64(63L, gridBase() + 320L);
-    return;
-  }
-  long scale = 64L;
-  index = 0L;
-  while (index < count) {
-    scale = scale * 64L;
-    index = index + 1L;
-  }
-  memory::store64(packed + 1L + row * scale, gridBase() + 320L);
-}
-
-deRfun conMarkAll(): void {
-  memory::store64(63L, gridBase() + 320L);
-}
-
-deRfun conRowLen(long row): long {
-  return memory::load64(gridBase() + 1024L + row * 64L);
-}
-
-deRfun conSetRow(long row, long len): void {
-  memory::store64(len, gridBase() + 1024L + row * 64L);
-}
-
-deRfun conCell(long row, long col): long {
-  return gridBase() + 8192L + (row * 160L + col) * 32L;
-}
-
-deRfun conCursor(long row, long col): void {
-  memory::store64(row, gridBase() + 192L);
-  memory::store64(col, gridBase() + 256L);
-}
-
-deRfun conScroll(): void {
-  long rows = conRows();
-  long row = 0L;
-  while (row + 1L < rows) {
-    long col = 0L;
-    while (col < 160L) {
-      memory::store32(memory::load32(conCell(row + 1L, col)), conCell(row, col));
-      col = col + 1L;
-    }
-    conSetRow(row, conRowLen(row + 1L));
-    row = row + 1L;
-  }
-  if (rows > 0L) {
-    conSetRow(rows - 1L, 0L);
-    conCursor(rows - 1L, 0L);
-  }
-  conMarkAll();
-}
-
-deRfun conPlace(long scalar): void {
-  long row = memory::load64(gridBase() + 192L);
-  long col = memory::load64(gridBase() + 256L);
-  long cols = conCols();
-  long rows = conRows();
-  if (cols < 1L || rows < 1L) {
-    return;
-  }
-  if (row < 0L) {
-    row = 0L;
-  }
-  if (row >= rows) {
-    conScroll();
-    return;
-  }
-  if (col < 0L) {
-    col = 0L;
-  }
-  if (col >= cols) {
-    col = 0L;
-    row = row + 1L;
-    if (row >= rows) {
-      conScroll();
-      row = conRows() - 1L;
-      col = 0L;
-    }
-  }
-  memory::store32(scalar, conCell(row, col));
-  if (col + 1L > conRowLen(row)) {
-    conSetRow(row, col + 1L);
-  }
-  conMark(row);
-  col = col + 1L;
-  if (col >= cols) {
-    col = 0L;
-    row = row + 1L;
-    if (row >= rows) {
-      conScroll();
-      return;
-    }
-  }
-  conCursor(row, col);
-}
-
-deRfun conNewline(): void {
-  long row = memory::load64(gridBase() + 192L);
-  conMark(row);
-  row = row + 1L;
-  if (row >= conRows()) {
-    conScroll();
-    return;
-  }
-  conCursor(row, 0L);
-  conMark(row);
-}
-
-deRfun conReturn(): void {
-  long row = memory::load64(gridBase() + 192L);
-  conCursor(row, 0L);
-  conMark(row);
-}
-
-deRfun conBack(): void {
-  long row = memory::load64(gridBase() + 192L);
-  long col = memory::load64(gridBase() + 256L);
-  if (col > 0L) {
-    conCursor(row, col - 1L);
-    conMark(row);
-  }
-}
-
-deRfun conClearGrid(): void {
-  long row = 0L;
-  while (row < 48L) {
-    conSetRow(row, 0L);
-    row = row + 1L;
-  }
-  conCursor(0L, 0L);
-  memory::store64(0L, gridBase() + 832L);
-  conMarkAll();
-}
-
-deRfun conTab(): void {
-  long col = memory::load64(gridBase() + 256L);
-  long stop = 8L;
-  if (col % 8L != 0L) {
-    stop = 8L - col % 8L;
-  }
-  while (stop > 0L) {
-    conPlace(32L);
-    stop = stop - 1L;
-  }
-}
-
-deRfun conScalar(long value): void {
-  if (value < 32L || value > 1114111L || (value >= 55296L && value <= 57343L)) {
-    return;
-  }
-  conPlace(value);
-}
-
-deRfun conByte(long value): void {
-  value = value & 255L;
-  long base = gridBase();
-  long need = memory::load64(base + 704L);
-  if (need > 0L) {
-    if (value >= 128L && value <= 191L) {
-      long acc = memory::load64(base + 768L);
-      acc = (acc << 6L) | (value & 63L);
-      need = need - 1L;
-      memory::store64(acc, base + 768L);
-      memory::store64(need, base + 704L);
-      if (need == 0L) {
-        long minimum = memory::load64(base + 896L);
-        if (acc >= minimum) {
-          conScalar(acc);
-        }
+      if (reading == 1L) {
+        slot = slot + 1L;
       }
-      return;
-    }
-    memory::store64(0L, base + 704L);
-  }
-  if (value == 10L) {
-    conNewline();
-    return;
-  }
-  if (value == 13L) {
-    conReturn();
-    return;
-  }
-  if (value == 8L || value == 127L) {
-    conBack();
-    return;
-  }
-  if (value == 12L) {
-    conClearGrid();
-    return;
-  }
-  if (value == 9L) {
-    conTab();
-    return;
-  }
-  if (value < 32L) {
-    return;
-  }
-  if (value < 128L) {
-    conPlace(value);
-    return;
-  }
-  if (value >= 194L && value <= 223L) {
-    memory::store64(value & 31L, base + 768L);
-    memory::store64(1L, base + 704L);
-    memory::store64(128L, base + 896L);
-  } else if (value >= 224L && value <= 239L) {
-    memory::store64(value & 15L, base + 768L);
-    memory::store64(2L, base + 704L);
-    memory::store64(2048L, base + 896L);
-  } else if (value >= 240L && value <= 244L) {
-    memory::store64(value & 7L, base + 768L);
-    memory::store64(3L, base + 704L);
-    memory::store64(65536L, base + 896L);
-  }
-}
-
-deRfun qPush(long value): long {
-  long base = gridBase();
-  long count = memory::load64(base + 640L);
-  if (count >= 512L) {
-    return 1L;
-  }
-  long head = memory::load64(base + 576L);
-  long at = head + count;
-  if (at >= 512L) {
-    at = at - 512L;
-  }
-  memory::storeOctet(value, base + 4096L + at * 8L);
-  memory::store64(count + 1L, base + 640L);
-  return 0L;
-}
-
-deRfun qPull(): long {
-  long base = gridBase();
-  long count = memory::load64(base + 640L);
-  if (count < 1L) {
-    return -1L;
-  }
-  long head = memory::load64(base + 576L);
-  long value = conOctet(base + 4096L + head * 8L);
-  head = head + 1L;
-  if (head >= 512L) {
-    head = 0L;
-  }
-  memory::store64(head, base + 576L);
-  memory::store64(count - 1L, base + 640L);
-  return value;
-}
-
-deRfun conCopyOut(long home, long count): long {
-  long got = 0L;
-  while (got < count) {
-    long value = qPull();
-    if (value < 0L) {
-      return got;
-    }
-    memory::storeOctet(value, byteAt(home) + got * 8L);
-    got = got + 1L;
-  }
-  return got;
-}
-
-/* 打断正在跑的程序。键盘等待若就是这颗核，清掉，免得稍后 reply 到已经卸下的核。
-   光标不在 0 列就换一行。提示符由父进程醒来之后再画，这里只拨光标。 */
-deRfun conInterrupt(long core): void {
-  long base = gridBase();
-  if (memory::load64(base + 384L) == core) {
-    memory::store64(-1L, base + 384L);
-  }
-  if (memory::load64(base + 256L) != 0L) {
-    conByte(10L);
-  }
-}
-
-deRfun conWake(): void {
-  long base = gridBase();
-  long waiter = memory::load64(base + 384L);
-  /* 等键盘的那颗核已经收掉时，队列里即使还有字节也不能再 reply。 */
-  if (waiter >= 0L && taskFind(waiter) < 0L) {
-    memory::store64(-1L, base + 384L);
-    return;
-  }
-  if (waiter < 0L || memory::load64(base + 640L) < 1L) {
-    return;
-  }
-  long home = memory::load64(base + 448L);
-  long need = memory::load64(base + 512L);
-  long got = conCopyOut(home, need);
-  if (got < 1L) {
-    return;
-  }
-  memory::store64(got, home + 320L);
-  memory::store64(-1L, base + 384L);
-  reply(waiter, 0L);
-}
-
-deRfun conPull(long caller, long home): long {
-  conInit();
-  long count = memory::load64(home + 256L);
-  if (count <= 0L) {
-    memory::store64(0L, home + 320L);
-    return 0L;
-  }
-  if (memory::load64(gridBase() + 384L) >= 0L) {
-    return 11L;
-  }
-  long got = conCopyOut(home, count);
-  if (got > 0L) {
-    memory::store64(got, home + 320L);
-    return 0L;
-  }
-  long base = gridBase();
-  memory::store64(caller, base + 384L);
-  memory::store64(home, base + 448L);
-  memory::store64(count, base + 512L);
-  return -2L;
-}
-
-deRfun conPaintRow(long row, long wide, long paper, long ink, long face): void {
-  long y = 8L + row * 18L;
-  obr::ui::rect(0L, y, wide, 18L, paper, 255L);
-  long len = conRowLen(row);
-  if (len > conCols()) {
-    len = conCols();
-  }
-  if (len > 0L) {
-    /* 纸色矩形会把当前墨色留成纸色。字形图章沿用它，不先换成浅色就和纸融在一起。
-       左缘点一颗再盖回去，只为换色。笔位是基线，格顶再往下 14 像素。 */
-    obr::ui::rect(0L, y, 1L, 1L, ink, 255L);
-    obr::font::select(face, 8L, y + 14L);
-    obr::font::draw(conCell(row, 0L), len);
-    obr::ui::rect(0L, y, 1L, 1L, paper, 255L);
-  }
-}
-
-deRfun conPaint(): void {
-  conInit();
-  long face = memory::load64(termFace());
-  if (face < 1L) {
-    return;
-  }
-  /* 列数已经量过就用它还原像素宽度，避免每个键都再问一次显卡。 */
-  long colsNow = conCols();
-  long wide = colsNow * 8L + 16L;
-  if (colsNow < 1L) {
-    wide = obr::ui::width();
-  }
-  long paper = obr::ui::rgb(30L, 30L, 30L);
-  long ink = obr::ui::rgb(230L, 230L, 230L);
-  long base = gridBase();
-  if (memory::load64(base + 832L) == 0L) {
-    if (conCols() < 1L) {
-      conMeasure();
-    }
-    long rows = conRows();
-    long cols = conCols();
-    long row = memory::load64(base + 192L);
-    long col = memory::load64(base + 256L);
-    if (row < 0L || row >= rows) {
-      row = 0L;
-    }
-    if (col < 0L || col > cols) {
-      col = 0L;
-    }
-    conCursor(row, col);
-    obr::ui::clear(paper, 255L);
-    memory::store64(1L, base + 832L);
-    conMarkAll();
-  }
-  long rows = conRows();
-  long packed = memory::load64(base + 320L);
-  long count = packed % 64L;
-  memory::store64(0L, base + 320L);
-  if (count == 63L) {
-    long row = 0L;
-    while (row < rows) {
-      conPaintRow(row, wide, paper, ink, face);
-      row = row + 1L;
     }
   } else {
-    long seen = packed / 64L;
-    long index = 0L;
-    while (index < count) {
-      long row = seen % 64L;
-      seen = seen / 64L;
-      if (row >= 0L && row < rows) {
-        conPaintRow(row, wide, paper, ink, face);
+    status = pathOf(dent);
+    if (status != 0L) {
+      return status;
+    }
+    long cursor = index;
+    long reading = 1L;
+    long guard = 0L;
+    while (reading == 1L && guard < 8192L) {
+      guard = guard + 1L;
+      long room = cap - used / 8L;
+      if (room < 73L) {
+        reading = 0L;
+      } else {
+        long at = out + used;
+        long got = 0L;
+        long nameCap = room - 72L;
+        if (nameCap > 512L) {
+          nameCap = 512L;
+        }
+        long listed = obr::nas::readdirAt(scratch(), cursor, at + 576L, nameCap, &got);
+        if (listed == 2L) {
+          reading = 0L;
+        } else if (listed == 7L && produced > 0L) {
+          reading = 0L;
+        } else if (listed != 0L) {
+          if (produced == 0L) {
+            return listed;
+          }
+          reading = 0L;
+        } else {
+          bindRec(dent, at + 576L, got, obr::nas::readdirKind(), obr::nas::readdirSize(), obr::nas::readdirStamp(), at);
+          used = used + 576L + got * 8L;
+          produced = produced + 1L;
+          cursor = cursor + 1L;
+        }
       }
-      index = index + 1L;
     }
   }
-  long col = memory::load64(base + 256L);
-  long crow = memory::load64(base + 192L);
-  if (crow >= 0L && crow < rows && col >= 0L && col <= conCols()) {
-    obr::ui::rect(8L + col * 8L, 8L + crow * 18L, 2L, 16L, ink, 255L);
+  memory::store64(produced, home + 256L);
+  memory::store64(used / 8L, home + 320L);
+  if (produced == 0L) {
+    return 2L;
   }
-  obr::ui::present();
-}
-
-deRfun conEmit(long home): void {
-  conInit();
-  if (conCols() < 1L) {
-    conMeasure();
-  }
-  long count = memory::load64(home + 256L);
-  if (count < 0L) {
-    memory::store64(0L, home + 320L);
-    return;
-  }
-  if (count > 4096L) {
-    count = 4096L;
-  }
-  long index = 0L;
-  long bytes = byteAt(home);
-  while (index < count) {
-    conByte(conOctet(bytes + index * 8L));
-    index = index + 1L;
-  }
-  memory::store64(count, home + 320L);
-  if (count > 0L) {
-    conPaint();
-  }
-}
-
-deRfun pushSeq(long first, long second, long third, long fourth, long count): void {
-  if (count >= 1L && qPush(first) != 0L) {
-    return;
-  }
-  if (count >= 2L && qPush(second) != 0L) {
-    return;
-  }
-  if (count >= 3L && qPush(third) != 0L) {
-    return;
-  }
-  if (count >= 4L) {
-    qPush(fourth);
-  }
-}
-
-deRfun conKey(long at): void {
-  long packed = memory::load64(at);
-  long name = memory::load64(at + 64L);
-  long unit = packed % 65536L;
-  long mods = packed / 65536L;
-  if (name == 0x7265746e45L) {
-    qPush(10L);
-    return;
-  }
-  if (name == 0x6b636142L) {
-    qPush(127L);
-    return;
-  }
-  if (name == 0x7466654cL) {
-    pushSeq(27L, 91L, 68L, 0L, 3L);
-    return;
-  }
-  if (name == 0x7468676952L) {
-    pushSeq(27L, 91L, 67L, 0L, 3L);
-    return;
-  }
-  if (name == 0x7055L) {
-    pushSeq(27L, 91L, 65L, 0L, 3L);
-    return;
-  }
-  if (name == 0x6e776f44L) {
-    pushSeq(27L, 91L, 66L, 0L, 3L);
-    return;
-  }
-  if (name == 0x656d6f48L) {
-    pushSeq(27L, 91L, 72L, 0L, 3L);
-    return;
-  }
-  if (name == 0x646e45L) {
-    pushSeq(27L, 91L, 70L, 0L, 3L);
-    return;
-  }
-  if (name == 0x6574656c6544L) {
-    pushSeq(27L, 91L, 51L, 126L, 4L);
-    return;
-  }
-  if (name == 0x626154L) {
-    return;
-  }
-  long ctrl = (mods / 2L) % 2L;
-  /* 小写减 96、大写减 64。只有这一下会变成字节 3 的 Ctrl+C 才问进程层。
-     有人正在等子进程就不入队；没有则仍是字节 3，行编辑照旧。别的控制字节不走这条。 */
-  if (ctrl == 1L && unit >= 97L && unit <= 122L) {
-    long value = unit - 96L;
-    if (value == 3L && procBreak() != 0L) {
-      return;
-    }
-    qPush(value);
-    return;
-  }
-  if (ctrl == 1L && unit >= 65L && unit <= 90L) {
-    long value = unit - 64L;
-    if (value == 3L && procBreak() != 0L) {
-      return;
-    }
-    qPush(value);
-    return;
-  }
-  if (ctrl == 1L) {
-    return;
-  }
-  if (unit >= 32L && unit <= 126L) {
-    qPush(unit);
-  }
-}
-
-deRfun conPump(): void {
-  conInit();
-  long written = memory::load64(6528L);
-  long base = gridBase();
-  long seen = memory::load64(base + 960L);
-  if (written < seen) {
-    seen = 0L;
-  }
-  if (written > seen + 5L) {
-    seen = written - 5L;
-  }
-  while (seen < written) {
-    conKey(6656L + (seen % 5L) * 128L);
-    seen = seen + 1L;
-  }
-  memory::store64(seen, base + 960L);
-  conWake();
-}
-
-/* 4096 是固件模式。0 仍是启动点，加载画面是 1，设置是 2。
-   设置开着时不能干等加载画面，否则空转和驱动都排不上去，CPU 页会一直是 STOP。
-   离开启动点就继续。这里不能 yield：引导还没进主循环，让出之后没有人再把监督核叫醒。
-   这一步不再往控制台写字。 */
-deRfun conShow(): void {
-  __zap__ {
-    conWait:
-    place r1, 4096
-    ldi.64 r0, r1
-    place r2, 0
-    eq r0, r0, r2
-    jnz r0, conWait
-  }
-}
-
-/* /dev/con 挂在监督核上。名字先放在驱动名暂存 537954304，drvLoad 之后会盖掉。
-   旧的两个光标字清掉，终端格子改在内存文件正文之后。
-   四个参数都在寄存器里：核心、pid、名字、长度。长度是 3，不能再塞进栈针。
-   这段不展开进 main，免得占满入口映像。 */
-deRfun conPublish(): void {
-  __zap__ {
-    place r0, 99
-    store.octet r0, 537954304
-    place r0, 111
-    store.octet r0, 537954312
-    place r0, 110
-    store.octet r0, 537954320
-    place r0, 0
-    store.64 r0, 537931968
-    store.64 r0, 537932032
-    store.64 r0, 537932096
-    store.64 r0, 537932160
-    store.64 r0, 537932224
-    store.64 r0, 537932288
-    store.64 r0, 537932352
-    store.64 r0, 537932416
-    store.64 r0, 537932480
-    store.64 r0, 537932544
-    store.64 r0, 537932608
-    store.64 r0, 537932672
-    place r1, 2
-    place r2, 1
-    place r3, 537954304
-    place r4, 3
-    call devPublish
-  }
-}
-
-/* 导出是为了让 conPublish 的机器码能按名字调用。标号挡住内联，避免再复制一份。 */
-export deRfun devPublish(long core, long pid, long name, long nameLen): long {
-  __zap__ {
-    conKeep:
-  }
-  if (pid < 1L || nameLen < 1L || nameLen > 32L) {
-    return 6L;
-  }
-  if (core != 2L && (core < 4L || core > 7L)) {
-    return 6L;
-  }
-  long dir = devDir();
-  if (dir < 0L) {
-    return 7L;
-  }
-  scratchClear();
-  memory::store64(nameLen, scratch());
-  long step = 0L;
-  while (step < nameLen) {
-    memory::storeOctet(memory::loadOctet(name + step * 8L), scratch() + 64L + step * 8L);
-    step = step + 1L;
-  }
-  if (findChild(dir, scratch(), 0L, nameLen) >= 0L) {
-    scratchClear();
-    return 0L;
-  }
-  long slot = 0L;
-  while (slot < devCount() && devAt(slot).used == 1L) {
-    slot = slot + 1L;
-  }
-  if (slot >= devCount()) {
-    scratchClear();
-    return 7L;
-  }
-  long dent = takeChild(dir, scratch(), 0L, nameLen, 3L, 0L, 0L, 0L, modeDev());
-  scratchClear();
-  if (dent < 0L) {
-    return 7L;
-  }
-  Dev* dev = devAt(slot);
-  dev.used = 1L;
-  dev.core = core;
-  dev.pid = pid;
-  dev.ino = dentryAt(dent).ino;
-  dev.upHead = 0L;
-  dev.upCount = 0L;
-  dev.downHead = 0L;
-  dev.downCount = 0L;
-  dev.userReadWait = -1L;
-  dev.userWriteWait = -1L;
-  dev.drvRecvWait = -1L;
-  dev.drvSendWait = -1L;
   return 0L;
-}
-
-deRfun devDrop(long pid): void {
-  if (pid < 1L) {
-    return;
-  }
-  long index = 0L;
-  while (index < devCount()) {
-    Dev* dev = devAt(index);
-    if (dev.used == 1L && dev.pid == pid) {
-      if (dev.userReadWait >= 0L) {
-        long waiter = dev.userReadWait;
-        dev.userReadWait = -1L;
-        memory::store64(0L, query(1L, 8L, waiter) + 320L);
-        reply(waiter, 0L);
-      }
-      if (dev.userWriteWait >= 0L) {
-        long waiter = dev.userWriteWait;
-        dev.userWriteWait = -1L;
-        reply(waiter, 5L);
-      }
-      dev.drvRecvWait = -1L;
-      dev.drvSendWait = -1L;
-      dev.pid = 0L;
-    }
-    index = index + 1L;
-  }
 }
 
 deRfun vfsCall(long caller, long service): long {
@@ -2993,6 +1825,9 @@ deRfun vfsCall(long caller, long service): long {
   }
   if (service == 9L) {
     return doReaddir(caller, home);
+  }
+  if (service == 34L) {
+    return doList(caller, home);
   }
   if (service == 10L) {
     return doMkdir(caller, home);

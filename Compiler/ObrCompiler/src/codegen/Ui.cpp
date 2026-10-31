@@ -571,6 +571,27 @@ void Generator::emitUi(const Expr& expr, const Function& target) {
     accel(24);
     return;
   }
+  if (name == "obr::ui::shift") {
+    const int srcY = keep(0);
+    const int dstY = keep(1);
+    const int high = keep(2);
+    const int wide = keep(3);
+    loadSlot(srcY, TypeKind::Long);
+    emit("or r1, r0, r0");
+    emit("itof r1, r1");
+    loadSlot(dstY, TypeKind::Long);
+    emit("or r2, r0, r0");
+    emit("itof r2, r2");
+    loadSlot(high, TypeKind::Long);
+    emit("or r3, r0, r0");
+    emit("itof r3, r3");
+    loadSlot(wide, TypeKind::Long);
+    emit("or r4, r0, r0");
+    emit("itof r4, r4");
+    accel(43);
+    drop(4);
+    return;
+  }
   if (name == "obr::ui::present") {
     emit("gpu.present");
     frameHeld_ = false;

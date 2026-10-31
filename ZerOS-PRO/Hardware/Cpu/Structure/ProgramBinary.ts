@@ -112,6 +112,7 @@ export namespace ZerOS {
       const ProgramBinaryCore = CodeRoot.Hardware.Cpu.ProgramBinaryCore;
       const ProgramBinaryFill = CodeRoot.Hardware.Cpu.ProgramBinaryFill;
       const ProgramBinaryCarry = CodeRoot.Hardware.Cpu.ProgramBinaryCarry;
+      const ProgramBinaryOffer = CodeRoot.Hardware.Cpu.ProgramBinaryOffer;
       const ProgramBinaryCapture = CodeRoot.Hardware.Cpu.ProgramBinaryCapture;
       const ProgramBinaryRestore = CodeRoot.Hardware.Cpu.ProgramBinaryRestore;
       const ProgramBinaryAttach = CodeRoot.Hardware.Cpu.ProgramBinaryAttach;
@@ -362,6 +363,10 @@ export namespace ZerOS {
           case "carry":
             writeCode(writer, ProgramBinaryCarry);
             writeRegisters(writer, [step.Destination, step.Port, step.Handle, step.Offset, step.Address, step.Count]);
+            return;
+          case "offer":
+            writeCode(writer, ProgramBinaryOffer);
+            writeRegisters(writer, [step.Destination, step.Port, step.Request, step.Length, step.Reply, step.Limit]);
             return;
           case "capture":
             writeCode(writer, ProgramBinaryCapture);
@@ -804,6 +809,17 @@ export namespace ZerOS {
             Offset: readRegister(reader),
             Address: readRegister(reader),
             Count: readRegister(reader),
+          };
+        }
+        if (code === ProgramBinaryOffer) {
+          return {
+            Op: "offer",
+            Destination: readRegister(reader),
+            Port: readRegister(reader),
+            Request: readRegister(reader),
+            Length: readRegister(reader),
+            Reply: readRegister(reader),
+            Limit: readRegister(reader),
           };
         }
         if (code === ProgramBinaryCapture) {

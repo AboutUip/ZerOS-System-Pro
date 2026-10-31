@@ -2,11 +2,11 @@
 
 ## 基线与范围
 
-实现基线是 upstream `main` 的 `7bf78874240d695ff384cbf75efc1a3198036677`。优化只修改编译器、构建测试和语言说明；CPU、内存控制器、调度器、协议正文、布局常量和运行时依赖不变。`ZPB1` v1/v2、`ZNB1` v1 及 `obr-debug` v1/v2 的结构不变。
+初始实现基线是 upstream `main` 的 `7bf7887`，当前已同步到 `28ae11e0807b88c62aebbbcacc9526a4b26061d7`。本 PR 相对该上游只修改编译器、构建测试和语言说明；不要求 CPU、内存控制器、调度器、协议正文、布局常量或运行时依赖为本优化作配套修改。`ZPB1` v1/v2、`ZNB1` v1 及 `obr-debug` v1/v2 的结构不变。
 
 `-O0` 保留既有 lowering 和固定宽度 native 立即数，关闭新 pass，但不撤销明确的正确性修复。修复了两处原有选择失败：PIE/shared/import 程序不再生成只能写入 native 的 scaled 中间指令；native 无法表达的寄存器返回或未对齐绝对访问可以回退到既有 ZAP 映像。原来编译失败的这些输入不属于逐字节基线。
 
-默认 `-O1` 启用保守前向传播、私有栈槽装入转发、CFG 活跃性删除和紧凑 native 编码。`-O2` 在此基础上允许有界的小叶函数多调用内联。它没有新增 SSA、全局寄存器分配、循环展开、native PIE 或新 opcode。
+默认 `-O1` 启用保守前向传播、已证明私有访问的装入转发和 CFG 活跃性删除。`-O2` 在此基础上允许有界的小叶函数多调用内联。可选的 native 紧凑立即数和零位移缩短暂不发布，O0/O1/O2 均保留固定宽度 movabs 与原零位移形式，继续支持 disp32 与 ZNB1。这是在真实管道对照发现新增故障后采取的兼容回退；没有证明短编码本身错误，也没有修复产品地址冲突。它没有新增 SSA、全局寄存器分配、循环展开、native PIE 或新 opcode。
 
 ## 中间表示与 pass
 
@@ -23,7 +23,7 @@ AST 内联、lowering 与最终编码属于不同表示阶段，不能把二进�
 | `-fno-fold` | 禁用小整数折叠及复制/恒等运算改写 |
 | `-fno-load-forward` | 禁用私有帧槽的装入转发 |
 | `-fno-dce` | 禁用 CFG 活跃性删除 |
-| `-fno-native-compact` | native 恢复固定 movabs 和原有零位移形式 |
+| `-fno-native-compact` | 兼容保留；当前默认已采用固定 movabs 和原有零位移形式 |
 | `-fno-scaled` | O1/O2 使用通用访存 lowering |
 | `-fno-inline-small` | O2 不扩展多调用小叶函数；既有单调用内联保留 |
 
@@ -57,7 +57,7 @@ CFG 的后向活跃性按块逆序迭代到不动点，再决定删除；不动�
 
 保持原有八个文本寄存器映射，`r11` 仍只用于绝对地址临时值。不分配 `rbx/rbp/r12..r15`，遵守现有 CallingConvention，无需调整保存/恢复协议。
 
-立即数根据**位型**选择已登记的编码：
+编码器保留以下根据**位型**选择已登记编码的能力，供独立字节测试使用；当前生产 O0/O1/O2 默认不启用这套缩短规则：
 
 - `0..0xffffffff`：`B8+rd imm32`，按需带 REX.B，高 32 位清零。
 - `0xffffffff80000000..0xffffffffffffffff`：`REX.W C7 /0 imm32`，符号扩展。
@@ -65,7 +65,7 @@ CFG 的后向活跃性按块逆序迭代到不动点，再决定删除；不动�
 
 不以 `xor` 代替 `mov 0`，避免改变 flags。入口 rsp、每条 plan、绝对访问、相对跳转、call、导出和 debug 地址均使用真实长度，不假定 prologue 长十字节。
 
-scaled 编码支持 disp8/disp32，已知零位移且基址允许时省略位移。AST 新增的大位移匹配只用于可证明对齐、无额外求值/溢出歧义的常量地址表达式；不明确的表达式沿用通用路径。已有的未知基址仍保留对齐检查。PIE/shared/import 以及无法整段 native 的程序保留通用访存；不把 scaled 中间指令泄漏给 ZPB1。
+scaled 编码支持 disp8/disp32；编码器保留的零位移省略同属当前默认关闭的紧凑规则。AST 新增的大位移匹配只用于可证明对齐、无额外求值/溢出歧义的常量地址表达式；不明确的表达式沿用通用路径。已有的未知基址仍保留对齐检查。PIE/shared/import 以及无法整段 native 的程序保留通用访存；不把 scaled 中间指令泄漏给 ZPB1。
 
 `-native-report 文件` 输出宿主 TSV 覆盖报告：选择限制、可编码行数、总行数、失败行下标/原因/指令。资格检查包括操作数、返回寄存器、比例/位移、目标范围和对齐；不只检查 mnemonic/元数。整段回退机制保留，禁止通过新增 opcode 或 native PIE 扩大覆盖。未登记 native 的 GPU 节点指令等仍需 ZAP，报告必须显示这些限制。
 
@@ -80,12 +80,15 @@ scaled 编码支持 disp8/disp32，已知零位移且基址允许时省略位移
 先在仓库安装既有 Toolchain 依赖，使用 C++20 构建宿主编译器。基线编译器必须由固定提交、相同 Release 工具链生成，保持不可变。`node Compiler/ObrCompiler/tests/build-baseline.mjs` 从 Git archive 单独构建基线，拒绝覆盖已有输出；可用 `OBRC_CMAKE` 指向本机 CMake。测试不修改产品 CPU 或 NAS 源码。
 
 ```sh
+OBRC_BASE_REF=28ae11e0807b88c62aebbbcacc9526a4b26061d7 node Compiler/ObrCompiler/tests/build-baseline.mjs
 cmake -S Compiler/BuildSystem -B Toolchain/CompilerBuild -DCMAKE_BUILD_TYPE=Release
 cmake --build Toolchain/CompilerBuild --parallel 4
 ctest --test-dir Toolchain/CompilerBuild --output-on-failure
 OBRC_BASELINE=/absolute/path/to/baseline-obrc node Compiler/ObrCompiler/tests/check-compiler.mjs
 node Compiler/ObrCompiler/tests/check-contracts.mjs
 node Compiler/ObrCompiler/tests/check-integration-probe.mjs
+node Compiler/ObrCompiler/tests/check-public-fault-signatures.mjs
+node Compiler/ObrCompiler/tests/check-public-fault-barrier.mjs
 OBRC_TEST_PASSES=dce,load-forward,fold,dce OBRC_CHECK_OUT=Toolchain/CompilerCheck/pass-order OBRC_BASELINE=/absolute/path/to/baseline-obrc node Compiler/ObrCompiler/tests/check-compiler.mjs
 OBRC_BASELINE=/absolute/path/to/baseline-obrc node Compiler/ObrCompiler/tests/benchmark.mjs
 node ZerOS-PRO/Hardware/Nas/Server/build-guest.mjs

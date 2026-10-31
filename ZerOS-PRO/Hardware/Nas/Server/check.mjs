@@ -47,13 +47,30 @@ const listed = store.call({ op: "readdir", path: "/docs", index: 0 });
 expect(listed.status === 0 && listed.name === "note.txt", "目录第一项不是 note.txt");
 expect(store.call({ op: "readdir", path: "/docs", index: 1 }).status === 2, "目录末尾之后不是未找到");
 
+const extra = store.call({ op: "open", path: "/docs/a.txt", mode: 1 });
+expect(extra.status === 0, "第二个文件创建失败");
+expect(store.call({ op: "close", handle: extra.handle }).status === 0, "第二个文件关闭失败");
+const batch = store.call({ op: "readdir", path: "/docs", index: 0, limit: 64 });
+const raw = Buffer.from(batch.data, "base64");
+expect(batch.status === 0 && raw.length === batch.length && raw.length > 20, "批量列目录失败");
+expect(raw[0] === 1 && raw.readUInt16LE(13) === 5 && raw.subarray(15, 20).toString("utf8") === "a.txt", "批量第一项不是 a.txt");
+const fileStamp = BigInt(Math.trunc(fs.statSync(path.join(temp, "docs", "a.txt")).mtimeMs));
+expect(raw.readBigInt64LE(5) === fileStamp, "批量修改时间不是宿主文件的");
+expect(store.call({ op: "readdir", path: "/docs", index: 0, limit: 11 }).status === 7, "一项都放不下时不是超出上界");
+const one = store.call({ op: "readdir", path: "/docs", index: 0, limit: 20 });
+expect(one.status === 0 && one.length === 20, "预算只够一项时仍返回了两项");
+
 const seen = store.call({ op: "stat", path: "/docs/note.txt" });
-expect(seen.status === 0 && seen.kind === 1 && seen.size === 5, "查看文件的种类或大小不对");
-expect(store.call({ op: "stat", path: "/docs" }).kind === 2, "目录种类不是 2");
+const noteStamp = Math.trunc(fs.statSync(path.join(temp, "docs", "note.txt")).mtimeMs);
+expect(seen.status === 0 && seen.kind === 1 && seen.size === 5 && seen.mtime === noteStamp, "查看文件的种类、大小或修改时间不对");
+const docs = store.call({ op: "stat", path: "/docs" });
+const docsStamp = Math.trunc(fs.statSync(path.join(temp, "docs")).mtimeMs);
+expect(docs.kind === 2 && docs.size === 0 && docs.mtime === docsStamp, "目录的修改时间不是宿主目录的");
 
 expect(store.call({ op: "rename", from: "/docs/note.txt", to: "/docs/moved.txt" }).status === 0, "改名失败");
 expect(store.call({ op: "stat", path: "/docs/moved.txt" }).status === 0, "改名后的路径不存在");
 expect(store.call({ op: "remove", path: "/docs/moved.txt" }).status === 0, "删除文件失败");
+expect(store.call({ op: "remove", path: "/docs/a.txt" }).status === 0, "删除批量文件失败");
 expect(store.call({ op: "remove", path: "/docs" }).status === 0, "删除空目录失败");
 expect(fs.existsSync(path.join(temp, "docs")) === false, "客根里还留着 docs");
 expect(store.call({ op: "open", path: "C:/windows", mode: 0 }).status === 6, "盘符路径被接受");

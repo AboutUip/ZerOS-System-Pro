@@ -1,4 +1,4 @@
-/* 装入。只有入口可以拉映像、装驱动和创建子任务。 */
+/* 装入。映像在 exec.obr，引导顺序在 boot.obr，创建子任务在 spawn.obr。 */
 deRfun imageAt(): long;
 deRfun compatTail(): long;
 deRfun pull(string path, long* size): long;
@@ -11,3 +11,14 @@ deRfun termShell(): long;
 deRfun bootPump(): void;
 deRfun execSpawn(long caller, long home): long;
 deRfun loadLib(long caller, long home): long;
+deRfun drvPath(): long;
+deRfun drvName(): long;
+deRfun elfImage(long base): long;
+deRfun compatPlace(long core, long base, long bytes): long;
+deRfun clearArgs(long home): void;
+deRfun userCore(long core): long;
+deRfun freeCore(long core): long;
+deRfun taskRoom(): long;
+deRfun stoppedForSlice(long core): long;
+deRfun isShell(long path): long;
+deRfun isSession(long path): long;

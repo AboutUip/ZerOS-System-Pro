@@ -9,6 +9,7 @@
  * 那时 onmessage 还没装上，第一条消息就丢了。内存信箱的绑定就是这样超时的。
  * 这里用一段没有静态导入的经典脚本先把消息排进队列，再动态装入真正的调度模块。
  * 调度模块装完之后才向父线程回报就绪。父线程在这之前不把信箱交出去。
+ * 同一个打开口顺手记下 Worker 的 spawn，并挂 ready/error/messageerror 监听；这是宿主诊断，不参与消息调度。
  * 调度模块仍按原文件拆开。这段脚本不包含硬件逻辑。
  *
  * ---------------------------------------------------------------------------
@@ -24,18 +25,24 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as MailboxRoot } from "./Mailbox";
+import { ZerOS as WorkerTraceRoot } from "../../Diagnostics/Host/WorkerTrace";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
     export namespace Motherboard {
       const readyKind = JSON.stringify(MailboxRoot.Hardware.Motherboard.MailMessage.Ready);
       const faultKind = JSON.stringify(MailboxRoot.Hardware.Motherboard.MailMessage.Fault);
+      const traceWorker = WorkerTraceRoot.Hardware.Diagnostics.traceWorker;
+      const observeWorker = WorkerTraceRoot.Hardware.Diagnostics.observeWorker;
+      const TraceWorkerKind = TraceOpRoot.Hardware.Diagnostics.TraceWorkerKind;
+      const TraceWorkerPhase = TraceOpRoot.Hardware.Diagnostics.TraceWorkerPhase;
 
       /**
        * 经典引导脚本。
        * acceptLookup 是调度模块上的函数路径，只由下面两个函数传入。
        */
-      function openQueued(moduleUrl: string, acceptLookup: string, name: string): Worker {
+      function openQueued(moduleUrl: string, acceptLookup: string, name: string, kind: number, detail = 0): Worker {
         const source = [
           "const pending = [];",
           "let accept = null;",
@@ -61,7 +68,11 @@ export namespace ZerOS {
           "});",
         ].join("\n");
         const blob = new Blob([source], { type: "text/javascript" });
-        return new Worker(URL.createObjectURL(blob), { name });
+        const worker = new Worker(URL.createObjectURL(blob), { name });
+        /* 创建线程可能还没有 trace 页；写入端会直接返回。只记低频生命周期，不记消息内容。 */
+        traceWorker(kind, TraceWorkerPhase.Spawn, detail);
+        observeWorker(worker, kind, detail);
+        return worker;
       }
 
       /**
@@ -84,11 +95,12 @@ export namespace ZerOS {
        */
       export function openBoardWorker(): Worker {
         /* 查询用来躲开上一次主板线程的模块缓存。改了座位上的搬运就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("./BoardDispatch.ts")}?board=22`;
+        const moduleUrl = `${resolveModuleUrl("./BoardDispatch.ts")}?board=29`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Motherboard.acceptBoardMessage",
           "ZerOS.Hardware.Motherboard",
+          TraceWorkerKind.Board,
         );
       }
 
@@ -102,39 +114,44 @@ export namespace ZerOS {
           moduleUrl,
           "mod.ZerOS.Hardware.Memory.acceptMemoryMessage",
           "ZerOS.Hardware.Memory",
+          TraceWorkerKind.Memory,
         );
       }
 
       /** 打开 CPU 主体线程。核心 Worker 另开，不在这里创建。 */
       export function openCpuWorker(): Worker {
         /* 查询只用来躲开浏览器对上一次核心图的缓存。改了 CpuDispatch 的依赖就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=80`;
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CpuDispatch.ts")}?cpu=81`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCpuMessage",
           "ZerOS.Hardware.Cpu",
+          TraceWorkerKind.Cpu,
         );
       }
 
       /** 打开一个核心线程。主板每挂载一个核心调用一次。 */
-      export function openCoreWorker(): Worker {
+      export function openCoreWorker(ordinal: number): Worker {
         /* 和 CPU 主体一样，查询用来躲开上一次核心线程的模块缓存。 */
-        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts")}?core=15`;
+        const moduleUrl = `${resolveModuleUrl("../../Cpu/Host/CoreDispatch.ts")}?core=16`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Cpu.acceptCoreMessage",
           "ZerOS.Hardware.Cpu.Core",
+          TraceWorkerKind.Core,
+          ordinal,
         );
       }
 
       /** 打开显卡线程。帧存储在那条线程里，不在主板线程里。 */
       export function openGpuWorker(): Worker {
         /* 查询用来躲开上一次显卡线程的模块缓存。改了呈现记账就要把数字加一。 */
-        const moduleUrl = `${resolveModuleUrl("../../Gpu/Host/GpuDispatch.ts")}?gpu=9`;
+        const moduleUrl = `${resolveModuleUrl("../../Gpu/Host/GpuDispatch.ts")}?gpu=11`;
         return openQueued(
           moduleUrl,
           "mod.ZerOS.Hardware.Gpu.acceptGpuMessage",
           "ZerOS.Hardware.Gpu",
+          TraceWorkerKind.Gpu,
         );
       }
     }

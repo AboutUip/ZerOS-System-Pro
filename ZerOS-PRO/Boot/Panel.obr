@@ -1,0 +1,111 @@
+/* 显示器档位。五档宽高、比例，以及 /boot/display 里记住的那一档。
+   设置页上的选择栏由设置页画。7360 和 7424 的含义记在 Bios.obr。 */
+import firmware;
+import panel;
+import obr.nas;
+import memory;
+
+/* 预设宽度。0 到 4 分别是 640、800、1024、1280、1920。 */
+deRfun sizeWidth(long index): long {
+  if (index == 1L) {
+    return 800L;
+  }
+  if (index == 2L) {
+    return 1024L;
+  }
+  if (index == 3L) {
+    return 1280L;
+  }
+  if (index == 4L) {
+    return 1920L;
+  }
+  return panel::defaultWidth();
+}
+
+/* 这一档在原始比例下的高度。比例不是 0 时不用它。 */
+deRfun sizeHeight(long index): long {
+  if (index == 1L) {
+    return 600L;
+  }
+  if (index == 2L) {
+    return 768L;
+  }
+  if (index == 3L) {
+    return 720L;
+  }
+  if (index == 4L) {
+    return 1080L;
+  }
+  return panel::defaultHeight();
+}
+
+/* 0 用预设自己的高。1 是 4:3，2 是 16:9，3 是 16:10。宽仍是这一档的宽。 */
+deRfun aspectHeight(long index, long aspect): long {
+  long width = sizeWidth(index);
+  if (aspect == 1L) {
+    return width * 3L / 4L;
+  }
+  if (aspect == 2L) {
+    return width * 9L / 16L;
+  }
+  if (aspect == 3L) {
+    return width * 5L / 8L;
+  }
+  return sizeHeight(index);
+}
+
+/* 经显示器驱动把当前选择交给显卡。宽高是浮点加速参数。显卡换帧后，页面再改面板。 */
+deRfun commitPanel(): void {
+  long index = *(long*)7360;
+  long aspect = *(long*)7424;
+  long applied = panel::apply(sizeWidth(index), aspectHeight(index, aspect));
+  /* 换帧会拆掉旧节点。4224 里的编号已经作废，清掉，免得离开设置时再摘一次。 */
+  *(long*)4224 = 0L;
+  if (applied != 0L) {
+    return;
+  }
+}
+
+/* 宽高对上哪一档。同一宽高先碰到原始比例。对上之后不是 640×480 原始就立刻应用。 */
+deRfun matchPanel(long width, long height): void {
+  long index = 0L;
+  while (index < 5L) {
+    long aspect = 0L;
+    while (aspect < 4L) {
+      if (sizeWidth(index) == width && aspectHeight(index, aspect) == height) {
+        *(long*)7360 = index;
+        *(long*)7424 = aspect;
+        if (index != 0L || aspect != 0L) {
+          commitPanel();
+        }
+        return;
+      }
+      aspect = aspect + 1L;
+    }
+    index = index + 1L;
+  }
+}
+
+/* 读 /boot/display 的四个八位组。服务没起来或内容对不上就留着默认档。 */
+deRfun loadPanel(): void {
+  long kind = 0L;
+  long size = 0L;
+  long looked = obr::nas::stat("/boot/display", &kind, &size);
+  if (looked != 0L || kind != 1L || size != 4L) {
+    return;
+  }
+  long handle = 0L;
+  long opened = obr::nas::open("/boot/display", 0L, &handle);
+  if (opened != 0L) {
+    return;
+  }
+  long got = 0L;
+  long read = obr::nas::read(handle, 0L, 7872L, 4L, &got);
+  long closed = obr::nas::close(handle);
+  if (read != 0L || closed != 0L || got != 4L) {
+    return;
+  }
+  long width = memory::loadOctet(7872L) + memory::loadOctet(7880L) * 256L;
+  long height = memory::loadOctet(7888L) + memory::loadOctet(7896L) * 256L;
+  matchPanel(width, height);
+}

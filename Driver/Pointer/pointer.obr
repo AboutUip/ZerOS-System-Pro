@@ -41,3 +41,7 @@ deRfun pointer::depth(): long {
 deRfun pointer::pop(): long {
   return xchg(3L, 1L, 9L);
 }
+
+deRfun pointer::correlation(): long {
+  return xchg(3L, 1L, 10L);
+}

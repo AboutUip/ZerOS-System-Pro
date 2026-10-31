@@ -69,8 +69,8 @@ export namespace ZerOS {
         return payload;
       }
 
-      function answered(status: number, kind = 0, size = 0, handle = 0, name = "", data = "", length = 0): NasReply {
-        return { status, kind, size, handle, name, data, length };
+      function answered(status: number, kind = 0, size = 0, handle = 0, name = "", data = "", length = 0, mtime = 0): NasReply {
+        return { status, kind, size, handle, name, data, length, mtime };
       }
 
       function drive(session: NasSession, payload: Uint8Array, fetched: NasReply | null = null): Uint8Array {

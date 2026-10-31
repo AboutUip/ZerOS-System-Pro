@@ -21,6 +21,8 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as ConfigRoot } from "../Config/PointerConfig";
+import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
+import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -38,8 +40,13 @@ export namespace ZerOS {
       const QueryHeld = ConfigRoot.Hardware.Pointer.PointerConfig.QueryHeld;
       const QueryDepth = ConfigRoot.Hardware.Pointer.PointerConfig.QueryDepth;
       const QueryPop = ConfigRoot.Hardware.Pointer.PointerConfig.QueryPop;
+      const QueryCorrelation = ConfigRoot.Hardware.Pointer.PointerConfig.QueryCorrelation;
       const QueueMin = ConfigRoot.Hardware.Pointer.PointerConfig.QueueMin;
       const runtimePrefix = "[ZerOS.Hardware.Pointer.PointerRuntime]";
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
+      const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
+      const TraceHostEvent = TraceOpRoot.Hardware.Diagnostics.TraceHostEvent;
 
       /** 一次已经收满的事件。队列按收下的顺序排，下标 0 是最旧的。 */
       interface QueuedEvent {
@@ -49,12 +56,13 @@ export namespace ZerOS {
         readonly y: bigint;
         readonly modifiers: bigint;
         readonly wheel: bigint;
+        readonly correlation: bigint;
       }
 
       const pending: bigint[] = [];
       const queue: QueuedEvent[] = [];
       let completed = 0n;
-      let departed: QueuedEvent = { kind: 0n, button: 0n, x: 0n, y: 0n, modifiers: 0n, wheel: 0n };
+      let departed: QueuedEvent = { kind: 0n, button: 0n, x: 0n, y: 0n, modifiers: 0n, wheel: 0n, correlation: 0n };
       let held = 0n;
 
       function fail(message: string): never {
@@ -112,6 +120,10 @@ export namespace ZerOS {
         if (slot === 4) {
           return word >= 0n && word <= 15n;
         }
+        if (slot === 6) {
+          /* 第 7 个字是关联号，任何 64 位值都合法。 */
+          return true;
+        }
         const kind = pending[0] ?? 0n;
         if (kind !== 3n) {
           return word === 0n;
@@ -143,6 +155,7 @@ export namespace ZerOS {
             y: pending[3] ?? 0n,
             modifiers: pending[4] ?? 0n,
             wheel: pending[5] ?? 0n,
+            correlation: pending[6] ?? 0n,
           };
           if (event.kind === 1n) {
             held |= buttonBit(event.button);
@@ -153,6 +166,8 @@ export namespace ZerOS {
           remember(event);
           pending.length = 0;
           completed += 1n;
+          /* 一次事件收满 7 个字才记；A1 放事件种类，关联号由查询码 10 读回。 */
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.PointerDevice, Number(event.kind));
         }
         return encodeWord(completed);
       }
@@ -218,6 +233,9 @@ export namespace ZerOS {
             departed = removed;
           }
           return encodeWord(BigInt(queue.length));
+        }
+        if (query === BigInt(QueryCorrelation)) {
+          return encodeWord(shown.correlation);
         }
         fail("鼠标没有这种读回请求");
       }
