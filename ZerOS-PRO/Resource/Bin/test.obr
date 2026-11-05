@@ -33,18 +33,15 @@
    操作数仍然必须在，缺了是语法错误；文件不存在则对应的存在类测试为假，不另写诊断。
    路径先写入 path，长度字在起点，八位组从 +64 起。stat 之后立刻抄走种类和大小。
    不关闭描述符 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

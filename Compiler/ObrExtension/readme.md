@@ -32,3 +32,9 @@ cursor --install-extension ./objective-r-file-support-0.6.2.vsix --force
 ## 与语言实现
 
 Obr 表面以 ZerOS `Compiler/ObrCompiler` 为准，ZAP 以 ZCP1 指令表为准。本扩展不嵌入编译器。改完贡献项后重新安装 VSIX，再执行 `Developer: Restart Extension Host`，图标和语法才会换上。
+
+## 版本
+
+- **0.7.1**：修“重复函数签名”误报。类/接口方法按 `Class::method` 限定（与编译器报错名一致），不同类的同名同签名方法不再互相判重；接口方法声明以 `;` 结束不算“应以 `{` 开始函数体”。补全对方法插入短名（`obj.method(...)`），悬停/大纲标签分出“类 / 接口 / 方法”；带 `owner` 的方法按短名配裸调用（算“可能的调用方”）。
+- **0.7.0**：支持 `#VERSION 2`。`#VERSION` 校验接受 1/2；识别 `interface` / `implements` / `const` / `switch` / `case` / `default` / `fallthrough` / `in`（着色、补全、语义高亮、调用提取、悬停）；大纲新增 `class` / `interface` 符号，接口方法标成接口声明（`;` 结束不再被报“应以 `{` 开始函数体”）；补 `interface` / `implements` / `const` / `switch` 片段；`byte` 悬停文案改为 8 位无符号八位组。
+- **0.6.2**：ZNB1/ZPB1 映像预览与 `.lib` 预览。

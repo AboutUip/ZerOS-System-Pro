@@ -11,6 +11,10 @@ void Generator::emitLibrary(const Expr& expr, const Function& target) {
     emitFont(expr, target);
     return;
   }
+  if (target.name == "obr::text::from") {
+    emitFrom(expr);
+    return;
+  }
   const TypeKind type = target.ret;
   if (target.name == "obr::math::abs") {
     gen(expr.kids[0]);

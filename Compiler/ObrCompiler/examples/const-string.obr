@@ -1,0 +1,24 @@
+/* Plan 1：const string 静态字符串表、编译期替换、运行时分配不覆盖。结果 0。 */
+const string GREETING = "hello";
+const string EMPTY = "";
+
+deRfun main(): int {
+  if (length(GREETING) != 5) return 1;
+  if (GREETING[0] != 'h') return 2;
+  if (GREETING[4] != 'o') return 3;
+  if (length(EMPTY) != 0) return 4;
+
+  const string LOCAL = "local";
+  if (length(LOCAL) != 5) return 5;
+  if (LOCAL[0] != 'l') return 6;
+
+  array[long] junk = new array[long](8);
+  junk[0] = 7;
+  if (length(GREETING) != 5) return 7;
+  if (GREETING[1] != 'e') return 8;
+
+  string runtime = "runtime";
+  if (length(runtime) != 7) return 9;
+  if (runtime[0] != 'r') return 10;
+  return 0;
+}

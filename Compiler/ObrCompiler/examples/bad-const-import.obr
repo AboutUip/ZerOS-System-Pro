@@ -1,0 +1,4 @@
+/* 未 import 头文件就使用头文件常量，编译应当失败。 */
+deRfun main(): int {
+  return HEADER_VALUE;
+}

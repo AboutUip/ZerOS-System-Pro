@@ -16,11 +16,15 @@ struct Inode {
   long ctime;
 }
 
+/* 6 个字、384 位。child 是第一个孩子的槽号，next 是同一父目录的下一项。
+   0 表示这条链到头。根在 0 号槽，parent 为 -1，不会挂到别人的 next 上。 */
 struct Dentry {
   long used;
   long parent;
   long ino;
   long nameLen;
+  long child;
+  long next;
 }
 
 struct File {
@@ -76,8 +80,26 @@ deRfun devDrop(long pid): void;
 deRfun conPublish(): void;
 deRfun conShow(): void;
 deRfun conPump(): void;
+/* 任务收掉时清掉它的键盘等待。核心号对不上就不动。 */
+deRfun conForget(long core): void;
 deRfun conPaint(): void;
-/* 这颗核正被打断。它若占着键盘等待就放开。光标不在行首就换行，下一行提示符才不会粘在半行后面。 */
+deRfun conDevice(): long;
+deRfun conPending(): long;
+deRfun conFeed(): void;
+deRfun conPresent(): void;
+/* 标记字的低六位不是 0，就还有行没画上。 */
+deRfun rowsDirty(): long;
+/* 座位 4 字段 3 是宿主显示器已经走完的拍。没有人等时是 0。 */
+deRfun frameEpoch(): long;
+/* 睡到下一拍。已经有一份在等则返回 -1。返回 -2 时调用方先不要应答。 */
+deRfun frameWait(long caller): long;
+/* 拍号变了就返回正在等的核心，否则返回 -1。force 为 1 时同一拍也交出去。 */
+deRfun frameRelease(long force): long;
+deRfun frameWake(): long;
+/* 没有脏行时记下拍号，不把显示程序叫醒。 */
+deRfun frameHold(): void;
+deRfun frameWaiting(): long;
+/* 这颗核正被打断。它若占着键盘等待就放开。光标不在行首就换行，下一行才不会粘在半行后面。 */
 deRfun conInterrupt(long core): void;
 /* 命令名不在 Task 的 19 个字里。格子用到 253952，名字表从 +262144 起，每份 32 个八位组。 */
 deRfun commClear(long index): void;
@@ -87,7 +109,6 @@ deRfun commFromPath(long index, long path): void;
 deRfun commNamed(long index, long which): void;
 deRfun commLen(long index): long;
 deRfun commByte(long index, long at): long;
-/* 临时：shell 还在任务表里时记下进度，退出后画终端仍能看见。 */
 /* 兼容任务的 write。src 是用户字节的位地址。成功返回写入个数，失败返回负数。 */
 deRfun compatWrite(long caller, long home, long fd, long src, long count): long;
 /* 下面这些给拆开的文件互相调用。布局数字仍由文件层算。 */
@@ -120,9 +141,10 @@ deRfun pipeShut(long index, long flags): void;
 deRfun pipeHold(long index, long flags): void;
 deRfun pipeCopy(File* file, long home, long writing, long caller): long;
 deRfun doPipe(long caller, long home): long;
+deRfun devPullDown(long index): long;
+deRfun devWake(long index): void;
 deRfun devMove(long index, long home, long which, long into, long caller, long waitKind): long;
 deRfun devIo(long caller, long home): long;
 deRfun devList(long dent, long home): long;
 deRfun devDir(): long;
 deRfun conPull(long caller, long home): long;
-deRfun conEmit(long home): void;

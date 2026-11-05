@@ -348,7 +348,7 @@ export namespace ZerOS {
           linesOf(["place r1, 20", "place r2, 22", "link r7, 4", "halt", "halt"]),
           1,
           [],
-          [{ name: "add", index: 2 }],
+          [{ name: "add", module: "calc", index: 2 }],
           [],
         );
         const library = withLink(
@@ -520,7 +520,7 @@ export namespace ZerOS {
         steps: readonly InstructionRoot.Hardware.Cpu.CpuInstruction[],
         kind: number,
         symbols: readonly { readonly name: string; readonly index: number }[],
-        imports: readonly { readonly name: string; readonly index: number }[],
+        imports: readonly { readonly name: string; readonly module: string; readonly index: number }[],
         relocs: readonly { readonly index: number; readonly field: number; readonly addend: bigint }[],
       ): Uint8Array {
         const raw = encodeProgramBinary(steps);
@@ -529,7 +529,7 @@ export namespace ZerOS {
           trailer += 1 + item.name.length + 4;
         }
         for (const item of imports) {
-          trailer += 1 + item.name.length + 4;
+          trailer += 1 + item.name.length + 1 + item.module.length + 4;
         }
         trailer += relocs.length * 14;
         const bytes = new Uint8Array(raw.length + trailer);
@@ -547,21 +547,24 @@ export namespace ZerOS {
         at += 4;
         view.setUint32(at, relocs.length, true);
         at += 4;
-        const writeName = (name: string, index: number): void => {
+        const writeName = (name: string): void => {
           view.setUint8(at, name.length);
           at += 1;
           for (let cursor = 0; cursor < name.length; cursor += 1) {
             view.setUint8(at, name.charCodeAt(cursor));
             at += 1;
           }
-          view.setUint32(at, index, true);
-          at += 4;
         };
         for (const item of symbols) {
-          writeName(item.name, item.index);
+          writeName(item.name);
+          view.setUint32(at, item.index, true);
+          at += 4;
         }
         for (const item of imports) {
-          writeName(item.name, item.index);
+          writeName(item.name);
+          writeName(item.module);
+          view.setUint32(at, item.index, true);
+          at += 4;
         }
         for (const item of relocs) {
           view.setUint32(at, item.index, true);

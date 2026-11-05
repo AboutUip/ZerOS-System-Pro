@@ -1,0 +1,57 @@
+/* Plan 1 M4：array/list for-in、break/continue、嵌套和空集合。结果 0。 */
+deRfun main(): int {
+  array[long] values = new array[long](4);
+  values[0] = 1;
+  values[1] = 2;
+  values[2] = 3;
+  values[3] = 4;
+
+  var[long] sum = 0;
+  for (var[long] value in values) {
+    sum = sum + value;
+  }
+  if (sum != 10L) return 1;
+
+  var[long] existing = 0;
+  for (existing in values) {
+    if (existing == 3L) continue;
+    if (existing == 4L) break;
+    sum = sum + existing;
+  }
+  if (sum != 13L) return 2;
+
+  array[long] other = new array[long](2);
+  other[0] = 10;
+  other[1] = 20;
+  var[long] nested = 0;
+  for (var[long] left in values) {
+    for (var[long] right in other) {
+      nested = nested + left + right;
+    }
+  }
+  if (nested != 140L) return 3;
+
+  array[long] empty = new array[long](0);
+  var[long] count = 0;
+  for (var[long] value in empty) {
+    count = count + 1;
+  }
+  if (count != 0L) return 4;
+
+  list[long] items = new list[long]();
+  items.push(5);
+  items.push(6);
+  sum = 0;
+  for (var[long] item in items) {
+    sum = sum + item;
+  }
+  if (sum != 11L) return 5;
+
+  list[long] emptyList = new list[long]();
+  count = 0;
+  for (var[long] item in emptyList) {
+    count = count + 1;
+  }
+  if (count != 0L) return 6;
+  return 0;
+}

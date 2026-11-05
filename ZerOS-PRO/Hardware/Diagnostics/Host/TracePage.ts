@@ -95,6 +95,14 @@ export namespace ZerOS {
 
       /** 主板或 CPU 线程挂上页面线程交来的那一块。 */
       export function attachTracePage(buffer: SharedArrayBuffer): void {
+        if (buffer.byteLength !== Config.PageBytes) {
+          return;
+        }
+        /* 页版本不同说明写入方和读取方的记录布局不一致；宁可不挂，也不按错偏移读。 */
+        const versionView = new Int32Array(buffer, 0, HeaderInts);
+        if (Atomics.load(versionView, Config.VersionSlot) !== Config.Version) {
+          return;
+        }
         if (!bind(buffer)) {
           return;
         }
@@ -126,6 +134,15 @@ export namespace ZerOS {
       /** 交给别的线程的那一块。没有开页时是 null。 */
       export function traceBuffer(): SharedArrayBuffer | null {
         return owned;
+      }
+
+      /** 当前会话的微秒时间。页没建立或尚未校时时是 0。 */
+      export function traceNow(): number {
+        const clock = origin;
+        if (clock === null) {
+          return 0;
+        }
+        return Math.max(0, Math.floor((performance.timeOrigin + performance.now() - (clock[0] ?? 0)) * 1000));
       }
 
       /** 这一份视图是否在收记录。 */
@@ -237,11 +254,12 @@ export namespace ZerOS {
         view.setUint8(base + 5, layer & 0xff);
         /* 核号 0–255；宿主事件是 -1。用有符号 16 位，读回不变成 65535。 */
         view.setInt16(base + 6, core, true);
-        view.setUint32(base + 8, at >>> 0, true);
-        view.setInt32(base + 12, a0, true);
-        view.setInt32(base + 16, a1, true);
-        view.setUint32(base + 20, span >>> 0, true);
-        view.setUint32(base + 24, parent >>> 0, true);
+        /* 32 字节记录：At 占 8..15；A0/A1/Span/Parent 后移 4 字节。 */
+        view.setBigUint64(base + 8, BigInt(at), true);
+        view.setInt32(base + 16, a0, true);
+        view.setInt32(base + 20, a1, true);
+        view.setUint32(base + 24, span >>> 0, true);
+        view.setUint32(base + 28, parent >>> 0, true);
         Atomics.store(marks, slot * RecordInts, seq);
         if (head >= Config.Capacity) {
           Atomics.add(header, Config.DroppedSlot, 1);
@@ -304,11 +322,11 @@ export namespace ZerOS {
             Op: view.getUint8(base + 4),
             Layer: view.getUint8(base + 5),
             Core: view.getInt16(base + 6, true),
-            At: view.getUint32(base + 8, true),
-            A0: view.getInt32(base + 12, true),
-            A1: view.getInt32(base + 16, true),
-            Span: view.getUint32(base + 20, true),
-            Parent: view.getUint32(base + 24, true),
+            At: Number(view.getBigUint64(base + 8, true)),
+            A0: view.getInt32(base + 16, true),
+            A1: view.getInt32(base + 20, true),
+            Span: view.getUint32(base + 24, true),
+            Parent: view.getUint32(base + 28, true),
           };
           if (Atomics.load(marks, slot * RecordInts) !== before) {
             continue;

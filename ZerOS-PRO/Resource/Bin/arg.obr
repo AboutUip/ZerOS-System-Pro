@@ -1,18 +1,15 @@
 /* 读子任务窗口里的参数和环境。不发系统调用。 */
+#DYN
 import memory;
+import obr.oct;
+import obr.proc;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
-/* 和壳的参数块同一处。65536*64 才是 4194304。
-   写成一个不小于 1048576 的立即数时，pie 会把它当成数据地址再加一槽。 */
 deRfun argBase(long home): long {
-  return home + 65536L * 64L;
+  return obr::proc::args(home);
 }
 
 deRfun argc(long home): long {

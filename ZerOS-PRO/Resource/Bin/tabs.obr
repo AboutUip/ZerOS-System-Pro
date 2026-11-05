@@ -1,0 +1,315 @@
+/* POSIX.1-2017 tabs（utilities/tabs.html）。形式是 tabs [-n|-a|-a2|-c|-c2|-c3|-f|-p|-s|-u] [tabstop-list]。
+   本系统没有 termios，也不能发送终端制表位控制序列。
+   本系统选定：参数合法时退出 0，不向标准输出写任何八位组；
+   参数不合法时写 tabs: invalid tabs 到描述符 2，退出 1。
+   -- 结束选项。不认识的字母 tabs: invalid option，退出 1。
+   -n 表示后面跟显式制表位列表；列表也可单独写在最后一个参数里。
+   制表位必须是严格递增的正十进制整数，第一个至少为 1，至多 512 个。
+   -a -a2 -c -c2 -c3 -f -p -s -u 是预设；同一命令里只能选一个预设，或与 -n 和显式列表配合。
+   只有预设、没有显式列表时，用该预设的缺省制表位。显式列表覆盖预设缺省。
+   -T 和其它长选项不做。结束用服务 28。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun fail(long home): int {
+  writeErr(home, "tabs: invalid tabs\n");
+  return finish(home, 1L);
+}
+
+deRfun parseNum(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    value = value * 10L + bit - 48L;
+    if (value < 1L) {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun loadPreset(long preset, long base): long {
+  long count = 0L;
+  if (preset == 97L) {
+    memory::store64(1L, base);
+    memory::store64(10L, base + 64L);
+    memory::store64(16L, base + 128L);
+    memory::store64(36L, base + 192L);
+    memory::store64(72L, base + 256L);
+    count = 5L;
+  } else if (preset == 972L) {
+    memory::store64(1L, base);
+    memory::store64(10L, base + 64L);
+    memory::store64(16L, base + 128L);
+    memory::store64(40L, base + 192L);
+    memory::store64(72L, base + 256L);
+    count = 5L;
+  } else if (preset == 99L) {
+    memory::store64(1L, base);
+    memory::store64(8L, base + 64L);
+    memory::store64(12L, base + 128L);
+    memory::store64(16L, base + 192L);
+    memory::store64(20L, base + 256L);
+    memory::store64(55L, base + 320L);
+    count = 6L;
+  } else if (preset == 982L) {
+    memory::store64(1L, base);
+    memory::store64(6L, base + 64L);
+    memory::store64(10L, base + 128L);
+    memory::store64(14L, base + 192L);
+    memory::store64(49L, base + 256L);
+    count = 5L;
+  } else if (preset == 983L) {
+    long step = 0L;
+    long val = 1L;
+    while (step < 15L) {
+      memory::store64(val, base + step * 64L);
+      if (step < 14L) {
+        val = val + 4L;
+      } else {
+        val = 67L;
+      }
+      step = step + 1L;
+    }
+    count = 15L;
+  } else if (preset == 102L) {
+    memory::store64(1L, base);
+    memory::store64(7L, base + 64L);
+    memory::store64(11L, base + 128L);
+    memory::store64(15L, base + 192L);
+    memory::store64(19L, base + 256L);
+    memory::store64(23L, base + 320L);
+    count = 6L;
+  } else if (preset == 112L) {
+    long step = 0L;
+    long val = 1L;
+    while (step < 16L) {
+      memory::store64(val, base + step * 64L);
+      if (step == 0L) {
+        val = 10L;
+      } else if (step < 15L) {
+        val = val + 4L;
+      } else {
+        val = 67L;
+      }
+      step = step + 1L;
+    }
+    count = 16L;
+  } else if (preset == 115L) {
+    long step = 0L;
+    while (step < 20L) {
+      memory::store64(step * 8L + 1L, base + step * 64L);
+      step = step + 1L;
+    }
+    count = 20L;
+  } else if (preset == 117L) {
+    long step = 0L;
+    while (step < 10L) {
+      memory::store64(step * 8L + 1L, base + step * 64L);
+      step = step + 1L;
+    }
+    count = 10L;
+  }
+  return count;
+}
+
+deRfun parseList(long at, long len, long base, long* count): long {
+  long filled = 0L;
+  long prev = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long start = cursor;
+    while (cursor < len && u8(at + cursor * 8L) != 44L && u8(at + cursor * 8L) != 32L && u8(at + cursor * 8L) != 9L) {
+      cursor = cursor + 1L;
+    }
+    if (cursor > start) {
+      long num = 0L;
+      if (parseNum(at + start * 8L, cursor - start, &num) == 0L) {
+        return 0L;
+      }
+      if (filled > 0L && num <= prev) {
+        return 0L;
+      }
+      if (filled >= 512L) {
+        return 0L;
+      }
+      memory::store64(num, base + filled * 64L);
+      prev = num;
+      filled = filled + 1L;
+    }
+    while (cursor < len && (u8(at + cursor * 8L) == 44L || u8(at + cursor * 8L) == 32L || u8(at + cursor * 8L) == 9L)) {
+      cursor = cursor + 1L;
+    }
+  }
+  if (filled < 1L) {
+    return 0L;
+  }
+  *count = filled;
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long preset = 0L;
+  long wantList = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 110L) {
+          wantList = 1L;
+        } else if (bit == 97L) {
+          if (cursor + 1L < len && u8(at + (cursor + 1L) * 8L) == 50L) {
+            if (preset != 0L) {
+              return fail(home);
+            }
+            preset = 972L;
+            cursor = cursor + 2L;
+          } else {
+            if (preset != 0L) {
+              return fail(home);
+            }
+            preset = 97L;
+            cursor = cursor + 1L;
+          }
+        } else if (bit == 99L) {
+          if (cursor + 1L < len && u8(at + (cursor + 1L) * 8L) == 50L) {
+            if (preset != 0L) {
+              return fail(home);
+            }
+            preset = 982L;
+            cursor = cursor + 2L;
+          } else if (cursor + 1L < len && u8(at + (cursor + 1L) * 8L) == 51L) {
+            if (preset != 0L) {
+              return fail(home);
+            }
+            preset = 983L;
+            cursor = cursor + 2L;
+          } else {
+            if (preset != 0L) {
+              return fail(home);
+            }
+            preset = 99L;
+            cursor = cursor + 1L;
+          }
+        } else if (bit == 102L) {
+          if (preset != 0L) {
+            return fail(home);
+          }
+          preset = 102L;
+          cursor = cursor + 1L;
+        } else if (bit == 112L) {
+          if (preset != 0L) {
+            return fail(home);
+          }
+          preset = 112L;
+          cursor = cursor + 1L;
+        } else if (bit == 115L) {
+          if (preset != 0L) {
+            return fail(home);
+          }
+          preset = 115L;
+          cursor = cursor + 1L;
+        } else if (bit == 117L) {
+          if (preset != 0L) {
+            return fail(home);
+          }
+          preset = 117L;
+          cursor = cursor + 1L;
+        } else {
+          writeErr(home, "tabs: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  long hold = home + 8192L;
+  long stops = 0L;
+  long prev = 0L;
+  if (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len > 0L && u8(at) >= 48L && u8(at) <= 57L && parseList(at, len, hold, &stops) == 1L) {
+      index = index + 1L;
+      prev = memory::load64(hold + (stops - 1L) * 64L);
+      while (index < count) {
+        long num = 0L;
+        if (parseNum(argPtr(home, index), argLen(home, index), &num) == 0L) {
+          return fail(home);
+        }
+        if (num <= prev) {
+          return fail(home);
+        }
+        memory::store64(num, hold + stops * 64L);
+        prev = num;
+        stops = stops + 1L;
+        index = index + 1L;
+      }
+    } else if (wantList == 1L) {
+      return fail(home);
+    } else if (preset != 0L) {
+      stops = loadPreset(preset, hold);
+    } else {
+      stops = loadPreset(115L, hold);
+    }
+  } else if (wantList == 1L) {
+    return fail(home);
+  } else if (preset != 0L) {
+    stops = loadPreset(preset, hold);
+  } else {
+    stops = loadPreset(115L, hold);
+  }
+  if (stops < 1L) {
+    return fail(home);
+  }
+  return finish(home, 0L);
+}

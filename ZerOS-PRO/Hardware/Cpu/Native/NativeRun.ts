@@ -43,6 +43,9 @@ export namespace ZerOS {
       const signBit = 1n << 63n;
       const floatBytes = new ArrayBuffer(8);
       const floatView = new DataView(floatBytes);
+      /* 八位组拼成一个 64 位字。每次读写只造一个大整数，不再按字节左移。 */
+      const wordBytes = new Uint8Array(8);
+      const wordView = new DataView(wordBytes.buffer);
 
       /** 这一拍的存储还不在调用方的缓冲里。调用方补上之后必须重试同一条。 */
       export class NativeMiss extends Error {
@@ -98,6 +101,10 @@ export namespace ZerOS {
       }
 
       function signed(value: bigint): bigint {
+        /* 已经落在正的 63 位里就不必再掩码。地址加减走这里，掩码会每条指令多造一个大整数。 */
+        if (value >= 0n && value < signBit) {
+          return value;
+        }
         const bits = wrap(value);
         return bits >= signBit ? bits - (wordMask + 1n) : bits;
       }
@@ -224,18 +231,21 @@ export namespace ZerOS {
       }
 
       function readImm(port: NativeOctetPort, bit: bigint, count: number): bigint | null {
-        if (port.loadNumber !== undefined) {
-          let cursor = Number(bit);
-          let value = 0n;
-          for (let index = 0; index < count; index += 1) {
-            const octet = readOctetNumber(port, cursor);
-            if (octet === null) {
-              return null;
+        if (port.loadNumber !== undefined && count >= 1 && count <= 8) {
+          const cursor = Number(bit);
+          if (Number.isSafeInteger(cursor) && cursor >= 0 && (cursor & 7) === 0) {
+            wordBytes.fill(0);
+            let at = cursor;
+            for (let index = 0; index < count; index += 1) {
+              const octet = readOctetNumber(port, at);
+              if (octet === null) {
+                return null;
+              }
+              wordBytes[index] = octet;
+              at += 8;
             }
-            cursor += 8;
-            value += BigInt(octet) << BigInt(index * 8);
+            return wordView.getBigUint64(0, true);
           }
-          return value;
         }
         let value = 0n;
         for (let index = 0; index < count; index += 1) {
@@ -250,6 +260,23 @@ export namespace ZerOS {
 
       function writeImm(port: NativeOctetPort, bit: bigint, value: bigint): boolean {
         const bits = wrap(value);
+        const storeNumber = port.storeNumber;
+        if (storeNumber !== undefined) {
+          const cursor = Number(bit);
+          if (Number.isSafeInteger(cursor) && cursor >= 0 && (cursor & 7) === 0) {
+            /* 先确认八个八位组都在界内，再写。中途失败不能留下半个字。 */
+            for (let index = 0; index < 8; index += 1) {
+              if (readOctetNumber(port, cursor + index * 8) === null) {
+                return false;
+              }
+            }
+            wordView.setBigUint64(0, bits, true);
+            for (let index = 0; index < 8; index += 1) {
+              storeNumber(cursor + index * 8, wordBytes[index] ?? 0);
+            }
+            return true;
+          }
+        }
         for (let index = 0; index < 8; index += 1) {
           const at = bit + BigInt(index) * 8n;
           if (readOctet(port, at) === null) {
@@ -452,6 +479,18 @@ export namespace ZerOS {
         return value;
       }
 
+      /* 一条指令里的内存操作数用完才解码下一条。复用这一份，避免每次访存都建对象。 */
+      const reusedMem: Mem = { base: null, index: null, scale: 1, disp: 0n, ripRelative: false };
+
+      function takeMem(base: number | null, index: number | null, scale: number, disp: bigint, ripRelative: boolean): Mem {
+        reusedMem.base = base;
+        reusedMem.index = index;
+        reusedMem.scale = scale;
+        reusedMem.disp = disp;
+        reusedMem.ripRelative = ripRelative;
+        return reusedMem;
+      }
+
       function parseMem(source: Reader, mod: number, rmLow: number, rexB: boolean, rexX: boolean): Mem | null {
         if (rmLow === 4) {
           const sib = source.take();
@@ -467,7 +506,7 @@ export namespace ZerOS {
             if (disp === null) {
               return null;
             }
-            return { base: null, index, scale, disp, ripRelative: false };
+            return takeMem(null, index, scale, disp, false);
           }
           let disp = 0n;
           if (mod === 1) {
@@ -487,14 +526,14 @@ export namespace ZerOS {
           if (mod === 3) {
             return null;
           }
-          return { base: baseLow + (rexB ? 8 : 0), index, scale, disp, ripRelative: false };
+          return takeMem(baseLow + (rexB ? 8 : 0), index, scale, disp, false);
         }
         if (mod === 0 && rmLow === 5) {
           const disp = disp32(source);
           if (disp === null) {
             return null;
           }
-          return { base: null, index: null, scale: 1, disp, ripRelative: true };
+          return takeMem(null, null, 1, disp, true);
         }
         let disp = 0n;
         if (mod === 1) {
@@ -511,7 +550,7 @@ export namespace ZerOS {
           }
           disp = next;
         }
-        return { base: rmLow + (rexB ? 8 : 0), index: null, scale: 1, disp, ripRelative: false };
+        return takeMem(rmLow + (rexB ? 8 : 0), null, 1, disp, false);
       }
 
       /** 本条的 FS 基址。0x64 把它加到非相对内存地址上，相对指令指针不加。 */

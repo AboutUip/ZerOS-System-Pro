@@ -1,15 +1,14 @@
 /* 用户态 1 号任务。用 -pie -slot 0 编译，放到 /kernel/init。
-   操作系统起来之后只调度 /os/sh。没有这一份就直接去等。
-   shell 打开控制台后停在读键盘上，这里等不到它退出，驱动才能在这次等待之后放行。 */
-import board;
+   只派生 /os/session，然后等待。显示和壳由会话拉起。
+   会话停在空转上，这里等不到它退出，驱动才能在这次等待之后放行。 */
 import memory;
 import obr.os;
 import obr.proc;
 import obr.text;
 
 deRfun main(): int {
-  long home = query(1L, 8L, obr::os::core());
-  if (obr::text::put(obr::proc::path(home), "/os/sh") == 0L) {
+  long home = obr::proc::home();
+  if (obr::text::put(obr::proc::path(home), "/os/session") == 0L) {
     obr::proc::spawn(home, 0L);
   }
   while (1) {

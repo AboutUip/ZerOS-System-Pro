@@ -1,0 +1,323 @@
+/* POSIX.1-2017 uudecode（utilities/uudecode.html）的本系统选定。
+   形式是 uudecode [-o outfile] [file]。
+   能解历史性 uuencode 与 begin-base64（-m）两种编码。
+   没有 file 时读标准输入。缺 -o 时用 begin 行里的名字作为输出路径。
+   成功退出 0。诊断英文，描述符 2。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun uuDec(long unit): long {
+  return (unit - 32L) % 64L;
+}
+
+deRfun b64Val(long unit): long {
+  if (unit >= 65L && unit <= 90L) {
+    return unit - 65L;
+  }
+  if (unit >= 97L && unit <= 122L) {
+    return unit - 71L;
+  }
+  if (unit >= 48L && unit <= 57L) {
+    return unit + 4L;
+  }
+  if (unit == 43L) {
+    return 62L;
+  }
+  if (unit == 47L) {
+    return 63L;
+  }
+  if (unit == 61L) {
+    return -2L;
+  }
+  return -1L;
+}
+
+deRfun writeFile(long home, long fd, long addr, long count, long* offset): void {
+  long cursor = 0L;
+  while (cursor < count) {
+    long chunk = count - cursor;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (cursor + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, *offset, chunk);
+    *offset = *offset + chunk;
+    cursor = cursor + chunk;
+  }
+}
+
+deRfun nameEq(long addr, long count, string name): long {
+  int raw = length(name);
+  long need = raw;
+  if (count != need) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < need) {
+    long bit = (long)name[index];
+    if (u8(addr + index * 8L) != bit) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long outAt = 0L;
+  long outLen = 0L;
+  long haveOut = 0L;
+  long index = 1L;
+  long count = argc(home);
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 111L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "uudecode: missing operand\n");
+        return finish(home, 1L);
+      }
+      outAt = argPtr(home, index);
+      outLen = argLen(home, index);
+      haveOut = 1L;
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  long fdIn = 0L;
+  if (index < count) {
+    if (index + 1L < count) {
+      writeErr(home, "uudecode: too many operands\n");
+      return finish(home, 1L);
+    }
+    long pathAt = argPtr(home, index);
+    long pathLen = argLen(home, index);
+    if (pathLen > 8192L) {
+      writeErr(home, "uudecode: file name too long\n");
+      return finish(home, 1L);
+    }
+    plant(home, pathAt, pathLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "uudecode: cannot open input\n");
+      return finish(home, 1L);
+    }
+    fdIn = obr::proc::slot(home, 192L);
+  }
+  long line = obr::proc::alloc(home, 8192L * 8L);
+  long data = obr::proc::alloc(home, 8192L * 8L);
+  if (line == 0L || data == 0L) {
+    writeErr(home, "uudecode: out of memory\n");
+    return finish(home, 1L);
+  }
+  long mode = 0L;
+  long outFd = -1L;
+  long fileOff = 0L;
+  long lineLen = 0L;
+  long reading = 1L;
+  long inOff = 0L;
+  long b64Acc = 0L;
+  long b64Bits = 0L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fdIn, inOff, 4096L) != 0L) {
+      writeErr(home, "uudecode: read error\n");
+      return finish(home, 1L);
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "uudecode: read error\n");
+      return finish(home, 1L);
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      long base = obr::proc::bytes(home);
+      long cursor = 0L;
+      while (cursor < n) {
+        long unit = u8(base + cursor * 8L);
+        if (unit == 10L) {
+          if (lineLen > 0L) {
+            if (mode == 0L) {
+              long base64 = 0L;
+              long start = 0L;
+              if (lineLen >= 12L && nameEq(line, 12L, "begin-base64") == 1L) {
+                base64 = 1L;
+                start = 12L;
+              } else if (lineLen >= 5L && nameEq(line, 5L, "begin") == 1L) {
+                start = 5L;
+              }
+              if (start > 0L) {
+                while (start < lineLen && u8(line + start * 8L) == 32L) {
+                  start = start + 1L;
+                }
+                while (start < lineLen && u8(line + start * 8L) >= 48L && u8(line + start * 8L) <= 57L) {
+                  start = start + 1L;
+                }
+                while (start < lineLen && u8(line + start * 8L) == 32L) {
+                  start = start + 1L;
+                }
+                long nameStart = start;
+                long pathAt = line + nameStart * 8L;
+                long pathLen = lineLen - nameStart;
+                if (haveOut == 1L) {
+                  pathAt = outAt;
+                  pathLen = outLen;
+                }
+                if (pathLen < 1L || pathLen > 8192L) {
+                  writeErr(home, "uudecode: bad begin line\n");
+                  return finish(home, 1L);
+                }
+                plant(home, pathAt, pathLen);
+                if (obr::proc::open(home, 1L) != 0L) {
+                  writeErr(home, "uudecode: cannot open output\n");
+                  return finish(home, 1L);
+                }
+                outFd = obr::proc::slot(home, 192L);
+                b64Acc = 0L;
+                b64Bits = 0L;
+                if (base64 == 1L) {
+                  mode = 2L;
+                } else {
+                  mode = 1L;
+                }
+              }
+            } else if (mode == 1L) {
+              if (lineLen == 3L && nameEq(line, 3L, "end") == 1L) {
+                mode = 3L;
+              } else if (lineLen > 0L) {
+                long expect = uuDec(u8(line));
+                long pos = 1L;
+                long outCount = 0L;
+                while (pos + 3L <= lineLen && outCount + 3L <= expect) {
+                  long c0 = uuDec(u8(line + pos * 8L));
+                  long c1 = uuDec(u8(line + (pos + 1L) * 8L));
+                  long c2 = uuDec(u8(line + (pos + 2L) * 8L));
+                  long c3 = uuDec(u8(line + (pos + 3L) * 8L));
+                  long b0 = c0 * 4L + c1 / 16L;
+                  long b1 = (c1 % 16L) * 16L + c2 / 4L;
+                  long b2 = (c2 % 4L) * 64L + c3;
+                  memory::storeOctet(b0, data + outCount * 8L);
+                  memory::storeOctet(b1, data + (outCount + 1L) * 8L);
+                  memory::storeOctet(b2, data + (outCount + 2L) * 8L);
+                  outCount = outCount + 3L;
+                  pos = pos + 4L;
+                }
+                if (outCount > expect) {
+                  outCount = expect;
+                }
+                writeFile(home, outFd, data, outCount, &fileOff);
+              }
+            } else if (mode == 2L) {
+              if (lineLen == 4L && nameEq(line, 4L, "====") == 1L) {
+                long outCount = 0L;
+                if (b64Bits == 2L) {
+                  long b0 = b64Acc / 4L;
+                  memory::storeOctet(b0, data);
+                  outCount = 1L;
+                } else if (b64Bits == 3L) {
+                  long b0 = b64Acc / 16L;
+                  long b1 = b64Acc % 16L;
+                  memory::storeOctet(b0, data);
+                  memory::storeOctet(b1 * 16L, data + 8L);
+                  outCount = 2L;
+                }
+                if (outCount > 0L) {
+                  writeFile(home, outFd, data, outCount, &fileOff);
+                }
+                b64Acc = 0L;
+                b64Bits = 0L;
+                mode = 3L;
+              } else {
+                long pos = 0L;
+                long outCount = 0L;
+                while (pos < lineLen) {
+                  long v = b64Val(u8(line + pos * 8L));
+                  if (v == -2L) {
+                    pos = lineLen;
+                  } else if (v >= 0L) {
+                    b64Acc = b64Acc * 64L + v;
+                    b64Bits = b64Bits + 1L;
+                    if (b64Bits == 4L) {
+                      long b0 = b64Acc / 65536L;
+                      long b1 = (b64Acc / 256L) % 256L;
+                      long b2 = b64Acc % 256L;
+                      memory::storeOctet(b0, data + outCount * 8L);
+                      memory::storeOctet(b1, data + (outCount + 1L) * 8L);
+                      memory::storeOctet(b2, data + (outCount + 2L) * 8L);
+                      outCount = outCount + 3L;
+                      b64Acc = 0L;
+                      b64Bits = 0L;
+                    }
+                  }
+                  pos = pos + 1L;
+                }
+                if (outCount > 0L) {
+                  writeFile(home, outFd, data, outCount, &fileOff);
+                }
+              }
+            }
+          }
+          lineLen = 0L;
+        } else if (lineLen < 8192L) {
+          memory::storeOctet(unit, line + lineLen * 8L);
+          lineLen = lineLen + 1L;
+        } else {
+          writeErr(home, "uudecode: line too long\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      inOff = inOff + n;
+    }
+  }
+  if (mode == 0L || outFd < 0L) {
+    writeErr(home, "uudecode: no begin line\n");
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

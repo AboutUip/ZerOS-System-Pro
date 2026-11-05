@@ -13,7 +13,9 @@
    读失败写 fold: read error，继续后面的文件。写失败写 fold: write error，立刻退出 1。
    还没决定拆点的那段留在 obr::proc::alloc 的块里。宽度最大按 4096 列，块按 4096 个八位组留。
    移位先收成 32 位，列号可以到 4096，制表停靠除法，不用 1L << n。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -37,13 +39,8 @@ deRfun room(): long {
   return 4096L;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

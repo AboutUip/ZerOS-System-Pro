@@ -30,18 +30,15 @@
    一次读写最多 4096 个八位组。两边各有自己的行缓冲和读入暂存，
    因为字节区只有一块。标准输出的偏移从 0 累加。诊断写描述符 2，偏移每次从 0。
    结束用服务 28。alloc 的单位是位。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。负值加上 256 才是 0 到 255 的八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

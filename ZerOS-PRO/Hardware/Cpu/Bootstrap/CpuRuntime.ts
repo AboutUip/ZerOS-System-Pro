@@ -9,7 +9,7 @@
  * 调度和 Pass / Take 不经过主板。Place 与 Add 只改核心上的寄存器。
  * Load / Store 把一条访存命令交给那个核心，由核心送给主板。
  * install 替换另一颗核心的指令序列，不创建进程。目标正在执行时，先停在下一条指令边界再换。
- * 动态库必须用 attach 接到末尾。本地指令突发仍按 Hz 逐条记账，短于 1 毫秒才不挂起。
+ * 动态库必须用 attach 接到末尾。Hz 只作时间片基线，不按 1000/Hz 把还有指令的核心睡住。
  * 没被核心吸收的访存、查询和端口，只要后一条不读前一条写入的寄存器，就并成一次消息。
  * halt、yield、svc、gate、schedule、release、bound、slice、抢占和时间片仍是单条边界。
  * capture 与 restore 在官方标定的 64 个槽里保存或放回寄存器、下一条、已装入序列和链接目录，也不创建进程。
@@ -73,7 +73,9 @@ export namespace ZerOS {
       const StopReasonFailed = StopReasonRoot.Hardware.Cpu.StopReasonFailed;
       const NativeRegisterCount = NativeRegisterRoot.Hardware.Cpu.NativeRegisterCount;
       const NativeRsp = NativeRegisterRoot.Hardware.Cpu.NativeRsp;
+      const traceEnabled = TracePageRoot.Hardware.Diagnostics.traceEnabled;
       const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
+      const traceNow = TracePageRoot.Hardware.Diagnostics.traceNow;
       const traceMemStatus = TracePageRoot.Hardware.Diagnostics.traceMemStatus;
       const traceServiceMem = TracePageRoot.Hardware.Diagnostics.traceServiceMem;
       const traceSpanBegin = TracePageRoot.Hardware.Diagnostics.traceSpanBegin;
@@ -138,6 +140,8 @@ export namespace ZerOS {
         readonly executed: number;
         readonly message: string;
         readonly hostFault: string;
+        /** 这一批里方向 2 带回了一次事件。下一拍突发写完环之后再清入站标记。 */
+        readonly key: boolean;
       }
 
       interface MountedCore {
@@ -165,13 +169,8 @@ export namespace ZerOS {
         Executed: number;
         /** 节拍起点。改频率时重新记下，避免沿用旧间隔。 */
         paceOrigin: number;
-        /** 从起点起已经排过的拍数。 */
+        /** 从起点起已经排过的拍数。只记账，不再拿它换 setTimeout。 */
         paceIndex: number;
-        /**
-         * 这一拍不要按 Hz 睡。
-         * 空转核心在快客程序运行时只让出一次宏任务，避免十几毫秒的睡眠把按键排成长队。
-         */
-        paceYield: boolean;
         /** 装入后等着执行的指令序列。没有装入时是空。 */
         installed: CpuInstruction[] | null;
         /** 已经接到这颗核心上的导出。编号是当前序列里的指令下标。 */
@@ -206,6 +205,10 @@ export namespace ZerOS {
          * 没有失败时是空。宿主记录读完就清掉。不是查询字段。
          */
         faultIndex: number | null;
+        /** 最近一次局部执行结束时核心线程交回的 8 个寄存器。 */
+        lastRegisters: readonly bigint[] | null;
+        /** 最近一次 svc 前交回的编译器栈指针；没有交回时是空。 */
+        lastSp: bigint | null;
         /** 0 表示一直跑到 halt。其它正数是每轮最多执行的指令数。 */
         sliceQuota: number;
         sliceLeft: number;
@@ -279,6 +282,18 @@ export namespace ZerOS {
       const coreRank = [0, 0, 0, 0, 0, 0, 0, 0];
       /** 连续执行 core 的次数。空转循环会一直涨，普通程序问一次编号就清零。 */
       const idleSpins = new Map<number, number>();
+      /**
+       * 这颗核心正停在 dwell 的墙钟上。
+       * sequenceBusy 还在，但没有指令在跑。监督核不能把它当成客程序正在执行。
+       */
+      const dwelling = new Set<number>();
+      /**
+       * 30 Hz 的 core() 空转已经让出这一拍。
+       * 程序还装着，核心也不拆。只是不再跟真正的指令抢这一条宿主线程。
+       */
+      const idleParked = new Set<number>();
+      /** 空转或 dwell 在等「有真实工作了」。用微任务叫醒，避免在调用方栈上重入。 */
+      const schedWaiters: (() => void)[] = [];
 
       /**
        * 这颗核心正在执行的指令序列。
@@ -305,6 +320,7 @@ export namespace ZerOS {
         readonly index: number;
         readonly op: string;
         readonly code: number;
+        readonly at: number;
       }[] = [];
       /**
        * 等 0 号核心走到下一条指令边界后要跑的失败帧。
@@ -538,7 +554,6 @@ export namespace ZerOS {
           Executed: 0,
           paceOrigin: clockOrigin(),
           paceIndex: 0,
-          paceYield: false,
           installed: null,
           exports: [],
           imports: [],
@@ -556,6 +571,8 @@ export namespace ZerOS {
           resumeCursor: null,
           stopKind: 0,
           faultIndex: null,
+          lastRegisters: null,
+          lastSp: null,
           sliceQuota: 0,
           sliceLeft: 0,
           boundOrigin: 0n,
@@ -640,6 +657,21 @@ export namespace ZerOS {
           if (resolve === null || reject === null) {
             return;
           }
+          const reportedRegisters = record["registers"];
+          if (Array.isArray(reportedRegisters) && reportedRegisters.length === RegisterCount) {
+            const next: bigint[] = [];
+            let valid = true;
+            for (const item of reportedRegisters) {
+              if (typeof item !== "bigint") {
+                valid = false;
+                break;
+              }
+              next.push(item);
+            }
+            if (valid) {
+              core.lastRegisters = next;
+            }
+          }
           if (record["ok"] !== true) {
             const message = record["message"];
             const reported = record["cursor"];
@@ -681,6 +713,7 @@ export namespace ZerOS {
             executed,
             message: typeof message === "string" ? message : "",
             hostFault: typeof hostFault === "string" ? hostFault : "",
+            key: record["key"] === true,
           });
           return;
         }
@@ -766,6 +799,14 @@ export namespace ZerOS {
           return;
         }
         if (record["kind"] === "published") {
+          const bytes = record["bytes"];
+          if (record["ok"] === true && record["present"] === true && bytes instanceof Uint8Array && bytes.length === 8) {
+            let value = 0n;
+            for (let index = 0; index < 8; index += 1) {
+              value |= BigInt(bytes[index] ?? 0) << BigInt(index * 8);
+            }
+            core.lastSp = value;
+          }
           const resolve = publishWait.get(core);
           publishWait.delete(core);
           if (resolve !== undefined) {
@@ -864,6 +905,7 @@ export namespace ZerOS {
         readonly index: number;
         readonly op: string;
         readonly code: number;
+        readonly at: number;
       }[] {
         return parkedFaults.slice();
       }
@@ -939,7 +981,11 @@ export namespace ZerOS {
         const message = error instanceof Error ? error.message : "the installed program failed";
         const stack = error instanceof Error && typeof error.stack === "string" ? error.stack : "";
         const noted = notedFault.get(ordinal);
-        const record = faultFromText(message, ordinal, noted?.index ?? 0, noted?.op ?? "", stack);
+        const snapshot = coreSnapshot(ordinal, noted?.index ?? 0);
+        const guestStack = snapshot === null
+          ? []
+          : [`sp=${snapshot.StackPointer}`, `range=${snapshot.StackStart}..${snapshot.StackEnd}`];
+        const record = faultFromText(message, ordinal, noted?.index ?? 0, noted?.op ?? "", stack, traceNow(), guestStack);
         rememberFault(record);
         traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, TraceHostEvent.Fault, record.Code);
         const guestTask = userCore(ordinal) && requireOrdinal(ordinal).guest;
@@ -953,6 +999,7 @@ export namespace ZerOS {
             index: record.Index,
             op: record.Op,
             code: record.Code,
+            at: record.At,
           });
           return false;
         }
@@ -965,7 +1012,9 @@ export namespace ZerOS {
           index: record.Index,
           op: record.Op,
           site: record.Site,
+          at: record.At,
           stack: record.Stack,
+          guestStack: record.GuestStack,
           window: record.Window,
         });
         return machine;
@@ -973,11 +1022,15 @@ export namespace ZerOS {
 
       /** 已挂载核心进入执行中。已装入且当前没在跑时，从第一条开始执行那段序列。 */
       export function schedule(ordinal: number): void {
+        /* 新的可运行核心要叫醒停在空转或 dwell 上的人。叫醒排到当前栈结束之后，避免重入。 */
+        notifySched();
         const core = requireOrdinal(ordinal);
         /* 回复来了就结束固件空转，接着跑留下的客程序。 */
         core.blockToken = null;
         core.state = CoreStateRunning;
         core.port.postMessage({ kind: "state", running: true });
+        /* 页上立刻改成正在跑。否则上一拍的「已停止」会留到下一次出核心访问，扫表会把刚拉起来的任务再停一次。 */
+        publishCpuQuery();
         /* 原生系统调用或 yield 没有 ZAP 序列。回复到了，或让出后再次调度，都从留下的位地址继续。 */
         const nativeSvc = core.nativeReply !== null && core.installed === null;
         const nativeYield = core.installed === null
@@ -1059,7 +1112,7 @@ export namespace ZerOS {
        * 页面再留成每颗核心最近的一条。这里不写寄存器，也不写客程序能读的内存。
        * 失败用原因 3，不改核心自己的 stopKind，查询字段 11 因此仍是 0、1 或 2。
        */
-      function coreSnapshot(ordinal: number, index: number): { Registers: readonly string[]; Pc: string; StackPointer: string; StackStart: string; StackEnd: string } | null {
+      function coreSnapshot(ordinal: number, index: number): { Mode: string; Registers: readonly string[]; Pc: string; StackPointer: string; StackStart: string; StackEnd: string; StackBytes: string } | null {
         const core = cores.get(ordinal);
         if (core === undefined) {
           return null;
@@ -1068,27 +1121,73 @@ export namespace ZerOS {
           const registers = core.native.reg.map((value: bigint): string => `0x${value.toString(16)}`);
           const stack = core.native.reg[NativeRsp] ?? 0n;
           return {
+            Mode: "native",
             Registers: registers,
             Pc: `0x${core.native.rip.toString(16)}`,
             StackPointer: `0x${stack.toString(16)}`,
             StackStart: `0x${(stack > 64n ? stack - 64n : 0n).toString(16)}`,
             StackEnd: `0x${(stack + 64n).toString(16)}`,
+            StackBytes: "",
           };
         }
-        /*
-         * 解释执行的寄存器在核心工作者里，宿主这一侧只拿得到指令编号。
-         * 快照仍记下位置，不假装有寄存器映像。
-         */
+        /* 局部执行结束时核心线程会交回寄存器映像；没有交回时只保留指令编号。 */
+        const saved = core.lastRegisters;
+        const registers = saved === null
+          ? []
+          : saved.map((value: bigint): string => `0x${value.toString(16)}`);
+        const stack = core.lastSp ?? 0n;
         return {
-          Registers: [],
+          Mode: "interpreter",
+          Registers: registers,
           Pc: String(index),
-          StackPointer: "0x0",
-          StackStart: "0x0",
-          StackEnd: "0x0",
+          StackPointer: `0x${stack.toString(16)}`,
+          StackStart: `0x${(stack > 64n ? stack - 64n : 0n).toString(16)}`,
+          StackEnd: `0x${(stack + 64n).toString(16)}`,
+          StackBytes: "",
         };
       }
 
+      /**
+       * 失败停机时补读栈窗口。只读 128 字节，失败就保持空串；
+       * 页面的 At 比较会挡住晚到的旧快照，不会盖掉更新的记录。
+       */
+      async function enrichStack(
+        ordinal: number,
+        reason: number,
+        index: number,
+        op: string,
+        detail: string,
+        at: number,
+        snapshot: { Mode: string; Registers: readonly string[]; Pc: string; StackPointer: string; StackStart: string; StackEnd: string; StackBytes: string },
+      ): Promise<void> {
+        try {
+          const start = BigInt(snapshot.StackStart);
+          const bytes = await readSpan(ordinal, start, 128);
+          if (bytes.length < 1) {
+            return;
+          }
+          let hex = "";
+          for (const byte of bytes) {
+            hex += byte.toString(16).padStart(2, "0");
+          }
+          globalThis.postMessage({
+            kind: CoreStopMessage,
+            ordinal,
+            reason,
+            index,
+            op,
+            detail,
+            at,
+            snapshot: { ...snapshot, StackBytes: hex },
+          });
+        } catch {
+          /* 核心已经换了状态或内存不可读时，保留没有字节的快照。 */
+        }
+      }
+
       function noteStop(ordinal: number, reason: number, index: number, op: string, detail: string): void {
+        const at = traceNow();
+        const snapshot = coreSnapshot(ordinal, index);
         globalThis.postMessage({
           kind: CoreStopMessage,
           ordinal,
@@ -1096,8 +1195,12 @@ export namespace ZerOS {
           index,
           op,
           detail,
-          snapshot: coreSnapshot(ordinal, index),
+          at,
+          snapshot,
         });
+        if (snapshot !== null && reason === StopReasonFailed && snapshot.StackStart !== "0x0") {
+          void enrichStack(ordinal, reason, index, op, detail, at, snapshot);
+        }
       }
 
       /** 正在执行的那条指令的操作名。编号越过末尾，或这颗核心没在跑序列时，是空串。 */
@@ -1113,11 +1216,14 @@ export namespace ZerOS {
         return step.Op;
       }
 
-      /** 已挂载核心进入停止。停止后不再执行命令。 */
+      /** 已挂载核心进入停止。停止后不再执行命令。
+       *  查询读的是指标页。这里不写的话，页上仍是「正在跑」，
+       *  刚被抢占的客程序会一直被扫表跳过，没有人再 schedule。 */
       export function halt(ordinal: number): void {
         const core = requireOrdinal(ordinal);
         core.state = CoreStateHalted;
         core.port.postMessage({ kind: "state", running: false });
+        publishCpuQuery();
       }
 
       /**
@@ -1171,6 +1277,8 @@ export namespace ZerOS {
         core.blockToken = token;
         core.state = CoreStateRunning;
         core.port.postMessage({ kind: "state", running: true });
+        /* 系统调用把原因写成 2 之后才到这里。页上要同时看见「正在跑」和原因 2，扫表才不会把这次等待当成时间片。 */
+        publishCpuQuery();
         /* 不在这里睡觉，也不空转取指。回复到达时 schedule 会清掉令牌并直接续跑。 */
       }
 
@@ -1401,31 +1509,6 @@ export namespace ZerOS {
       }
 
       /**
-       * 频率不变，把节拍起点拨回一分钟。
-       * 监督核降到 30 Hz 后，第一条普通指令睡一个节拍；同一段里其余取数不再逐条挂起。
-       */
-      export function nativeCoast(ordinal: number): void {
-        const core = requireOrdinal(ordinal);
-        core.paceOrigin = performance.now() - 60000;
-        core.paceIndex = 0;
-      }
-
-      /**
-       * 降到 30 Hz 后的第一拍。
-       * 和其它核心已经排上的长等待合在一起，不额外再睡满 33 毫秒。
-       */
-      export function nativeIdleTick(ordinal: number): Promise<void> {
-        /* 降频后的第一拍不再睡觉。Hz 仍记在这颗核心上，下一条指令马上取。 */
-        nativeYieldPace(ordinal);
-        return Promise.resolve();
-      }
-
-      /** 监督核降到 30 Hz 后，客程序正在等键盘时不要再合睡 8 毫秒。下一拍只让出一次。 */
-      export function nativeYieldPace(ordinal: number): void {
-        requireOrdinal(ordinal).paceYield = true;
-      }
-
-      /**
        * 有前台停在系统调用里，且没有客程序正在取指。
        * 壳等键盘是这种。有命令在跑时仍让监督核合睡，把这条线程留给命令。
        */
@@ -1490,6 +1573,8 @@ export namespace ZerOS {
        * 别的核心里有没有前台正在取指。
        * 档是 2，或者还没发布但频率不低于 1000，都算前台。档是 1 的后台不算。
        * 停在系统调用里的不算：壳在等键盘时并不要算力。
+       * dwell 和空转停车也不算。sequenceBusy 在这两种等待里仍在，但核心没有在执行指令。
+       * 把它们算成忙，监督核会去等一条永远不会来的调用。
        */
       function foregroundBusy(except: number): boolean {
         for (const [ordinal, core] of cores) {
@@ -1500,27 +1585,7 @@ export namespace ZerOS {
           if (!sequenceBusy.has(ordinal) || core.stopKind === StopReasonWaiting) {
             continue;
           }
-          if (rankOf(ordinal) === 1) {
-            continue;
-          }
-          return true;
-        }
-        return false;
-      }
-
-      /**
-       * 前台没在取指，但有一颗前台停在系统调用里。壳等键盘就是这种。
-       * 这时不能让空转连发突发，否则按键进不了监督核。后台只被限速，不会被拆掉。
-       */
-      function foregroundWaiting(except: number): boolean {
-        if (foregroundBusy(except)) {
-          return false;
-        }
-        for (const [ordinal, core] of cores) {
-          if (ordinal === except || ordinal < 3 || core.Hertz < 1000) {
-            continue;
-          }
-          if (core.stopKind !== StopReasonWaiting) {
+          if (dwelling.has(ordinal) || idleParked.has(ordinal) || idleSpinner(ordinal)) {
             continue;
           }
           if (rankOf(ordinal) === 1) {
@@ -1694,50 +1759,10 @@ export namespace ZerOS {
         /* 回复到达就是这次 wait 的宿主侧唤醒；Span 指回同一个 svc，报告不靠核猜。 */
         traceSpanEvent(TraceOp.Wake, TraceLayer.Sched, ordinal, open.Span, 0, open.Service, 0);
         traceSpanEnd(TraceOp.SvcReply, TraceLayer.Syscall, ordinal, open.Span, open.Service, 0);
+        notifySched();
       }
 
-      function firmwareMayPoll(): boolean {
-        /* 终端还没画出时，壳也会停在读键盘。这时仍给固件 128 条，监督核就画不出第一帧。 */
-        if (!terminalLive || !foregroundWaiting(0)) {
-          return false;
-        }
-        let readWait = false;
-        for (const [ordinal, service] of openSvc) {
-          if (ordinal < 3) {
-            continue;
-          }
-          const core = cores.get(ordinal);
-          if (core?.stopKind !== StopReasonWaiting || rankOf(ordinal) === 1) {
-            continue;
-          }
-          if (service !== ReadService) {
-            return false;
-          }
-          readWait = true;
-        }
-        return readWait;
-      }
-
-      /**
-       * 这颗核上的客程序正在算一条命令。
-       * 频率不低于 1000，没有驱动那种时间片，档不是后台。
-       * 这种核一拍吃满突发上限，不再按 paceBudget 的一千条来回。
-       * 频率、paceBudget 和驱动时间片都不改。
-       */
-      function guestSprint(ordinal: number, core: MountedCore): boolean {
-        if (ordinal < 3 || !core.guest || core.Hertz < 1000 || core.sliceQuota !== 0) {
-          return false;
-        }
-        return rankOf(ordinal) !== 1;
-      }
-
-      /**
-       * 有没有别的核心需要宿主定时器，并且频率至少 1000 Hz。
-       * 正在取指（sequenceBusy）算。停在系统调用里也算：壳等键盘时 sequenceBusy 已经清掉，
-       * 停止原因仍是 2，频率仍是 1000000。监督核若只走消息通道，按键进不了环。
-       * 空转和驱动是 30 Hz，两种情况都不算。这里不改频率，也不把 30 Hz 的核心拿住。
-       */
-      /** 有前台正在取指。停在系统调用里的不算。监督核要把线程让给它。 */
+      /** 有前台正在取指。停在系统调用、dwell 或空转里的不算。监督核要把线程让给正在执行的客程序。 */
       export function nativeGuestBusy(self: number): boolean {
         return foregroundBusy(self);
       }
@@ -1748,6 +1773,18 @@ export namespace ZerOS {
           return false;
         }
         return requireOrdinal(gateOrdinal).latch !== null;
+      }
+
+      /**
+       * 固件正等着一次交换或突发的结果。
+       * 监督核再把这一拍跑满，键写进环就要等这一拍结束。
+       */
+      export function nativeFirmwareAwaiting(): boolean {
+        const firmware = cores.get(0);
+        if (firmware === undefined) {
+          return false;
+        }
+        return firmware.pending !== null || firmware.burst !== null || firmware.access !== null;
       }
 
       /** 终端已经呈现过一帧。在这之前停住监督核，引导就走不完。 */
@@ -1765,7 +1802,8 @@ export namespace ZerOS {
       let gateWait: (() => void) | null = null;
 
       export function nativeWaitLatch(): Promise<void> {
-        if (nativeGatePending()) {
+        /* 环里已经有键时不能睡。这一拍的取指还没读到，睡下去要等下一拍显示才醒。 */
+        if (nativeGatePending() || keyRingFresh) {
           return Promise.resolve();
         }
         return new Promise((resolve): void => {
@@ -1773,7 +1811,7 @@ export namespace ZerOS {
             gateWait = null;
             resolve();
           };
-          if (nativeGatePending()) {
+          if (nativeGatePending() || keyRingFresh) {
             const resume = gateWait;
             gateWait = null;
             resume();
@@ -1781,24 +1819,64 @@ export namespace ZerOS {
         });
       }
 
-      function releaseGateWait(): void {
+      /** 监督核正停在消息通道让出上。键、调用和显示拍要把它立刻拉回来，不能再等这一拍排到帧末。 */
+      let yieldPoke: (() => void) | null = null;
+
+      export function bindYieldPoke(poke: () => void): void {
+        yieldPoke = poke;
+      }
+
+      export function pokeYield(): void {
+        const poke = yieldPoke;
+        if (poke !== null) {
+          poke();
+        }
+      }
+
+      export function releaseGateWait(): void {
         const resume = gateWait;
         gateWait = null;
         if (resume !== null) {
           resume();
         }
+        const poke = yieldPoke;
+        if (poke !== null) {
+          poke();
+        }
+        notifySched();
       }
 
-      export function nativeGuestHot(self: number): boolean {
-        for (const [ordinal, core] of cores) {
-          if (ordinal === self || core.Hertz < 1000) {
-            continue;
-          }
-          if (sequenceBusy.has(ordinal) || core.stopKind === StopReasonWaiting) {
-            return true;
-          }
+      /** 固件已经把这一次键写入环。监督核下一次读环前要丢掉自己的旧计数。 */
+      let keyRingFresh = false;
+      /* 入站序号只在主板上增加。监督核读到环之后才算取完。
+         写环当时就记账的话，这一拍还拿着旧计数，conPump 会错过这一键。 */
+      let handledSerial = 0;
+      let pendingHandled = 0;
+
+      export function noteKeyRing(): void {
+        keyRingFresh = true;
+        pendingHandled += 1;
+      }
+
+      /** 环已经写上、监督核这一拍还没读。松开键还在收件箱里时不算，免得把回显的写出切开。 */
+      export function keyUnwritten(): boolean {
+        return pendingHandled > 0;
+      }
+
+      export function takeKeyRing(): number {
+        if (!keyRingFresh) {
+          return 0;
         }
-        return false;
+        const taken = pendingHandled;
+        keyRingFresh = false;
+        handledSerial += pendingHandled;
+        pendingHandled = 0;
+        return taken;
+      }
+
+      /** 环已经写上、监督核还没读。这一拍末尾不要再排一次消息通道。 */
+      export function keyRingPending(): boolean {
+        return keyRingFresh;
       }
 
       /**
@@ -1810,82 +1888,423 @@ export namespace ZerOS {
       }
 
       /**
-       * 按这个核心当前的 Hz 等到下一拍。
-       * 节拍是绝对的：起点 + 拍号 × 1000 / Hz。
-       * 不足 1 毫秒不挂起，一个宿主节拍里可以连续送出多条命令。
+       * 按这个核心当前的 Hz 记一拍。
+       * 不再把 1000/Hz 睡进这条线程。调用方还有指令时，chargePace 立刻返回。
        */
       function waitPace(core: MountedCore): Promise<void> {
         return chargePace(core, 1);
       }
 
       /**
-       * 连续完成的指令仍逐条占拍。
-       * 合并进一次突发时不能少记账。拍点仍按 Hz 推进。
-       * 到点的核心等到下一帧，线程让给还有真实指令的核心。动画仍落在原来的 Hz 上，间隙不空等。
-       * 客程序的突发用 paceYield 跳过这次等待，调用不会被自己的条数按住。
+       * 把「有真实工作了」交给正在等的空转和 dwell。
+       * 微任务里叫醒。若在 pass 或 schedule 的栈上直接续跑，会重入同一颗核心的寄存器。
+       */
+      function notifySched(): void {
+        if (schedWaiters.length < 1) {
+          return;
+        }
+        const pending = schedWaiters.splice(0, schedWaiters.length);
+        for (const wake of pending) {
+          queueMicrotask(wake);
+        }
+      }
+
+      /** 等到下一次 notifySched。没有超时，所以不会按 Hz 冻住后来才变得可运行的客程序。 */
+      function waitSched(): Promise<void> {
+        return new Promise((resolve): void => {
+          schedWaiters.push((): void => {
+            resolve();
+          });
+        });
+      }
+
+      /**
+       * 让出这一次 JS 回合。
+       * 用消息通道，不用 setTimeout。0 毫秒定时器会被宿主抬到大约 4 毫秒，按键和命令都排在那截后面。
+       * 多个等待者共用一条通道，一次投递全部叫醒。
+       */
+      const hostYieldWaiters: (() => void)[] = [];
+      let hostYieldArmed = false;
+      const hostYieldChannel = new MessageChannel();
+      hostYieldChannel.port1.onmessage = (): void => {
+        hostYieldArmed = false;
+        const pending = hostYieldWaiters.splice(0, hostYieldWaiters.length);
+        for (const wake of pending) {
+          wake();
+        }
+      };
+
+      function yieldHostTurn(): Promise<void> {
+        return new Promise((resolve): void => {
+          hostYieldWaiters.push(resolve);
+          if (!hostYieldArmed) {
+            hostYieldArmed = true;
+            hostYieldChannel.port2.postMessage(null);
+          }
+        });
+      }
+
+      /**
+       * 固件单独一条让出。
+       * 键已经进了收件箱时，监督核可以直接叫醒这一条，不必等共用通道排到下一帧。
+       * 空转驱动仍走上面的共用通道，按键不会把它们整组拉起来。
+       * 终端铺上之后，没人叫醒时最多再等 8 毫秒，固件不会停死。
+       * 每一等带自己的代号。提前叫醒之后，这条通道里残留的旧消息不能把下一次让出也立刻放掉，
+       * 否则固件会占住线程，监督核的写出就排到下一帧。
+       */
+      let firmwareResume: (() => void) | null = null;
+      let firmwareEpoch = 0;
+      /* 叫醒落在固件还在跑的时候。下一次让出不要再睡，否则这一键要等定时器。 */
+      let firmwareOwed = false;
+      /* 这次叫醒确实拉起了正在等的固件。监督核据此决定要不要记住这次入站计数。 */
+      let firmwareCaught = false;
+      let firmwareTimer: ReturnType<typeof setTimeout> | null = null;
+      const firmwareChannel = new MessageChannel();
+      firmwareChannel.port1.onmessage = (event: MessageEvent): void => {
+        if (event.data !== firmwareEpoch) {
+          return;
+        }
+        const resume = firmwareResume;
+        firmwareResume = null;
+        if (resume !== null) {
+          resume();
+        }
+      };
+
+      function yieldFirmwareTurn(): Promise<void> {
+        if (firmwareOwed) {
+          firmwareOwed = false;
+          return Promise.resolve();
+        }
+        const epoch = firmwareEpoch + 1;
+        firmwareEpoch = epoch;
+        return new Promise((resolve): void => {
+          let settled = false;
+          const finish = (): void => {
+            if (settled || epoch !== firmwareEpoch) {
+              return;
+            }
+            settled = true;
+            if (firmwareTimer !== null) {
+              clearTimeout(firmwareTimer);
+              firmwareTimer = null;
+            }
+            if (firmwareResume === finish) {
+              firmwareResume = null;
+            }
+            resolve();
+          };
+          firmwareResume = finish;
+          /* 引导阶段靠通道，加载圈才走得动。
+             终端铺上之后，入站计数一变就起来 poll。定时器只是计数没变时的退路。 */
+          if (!nativeTerminalLive()) {
+            firmwareChannel.port2.postMessage(epoch);
+            return;
+          }
+          const mark = MetricPageRoot.Hardware.Motherboard.keyAttentionWords();
+          if (mark !== null && typeof Atomics.waitAsync === "function") {
+            const current = Atomics.load(mark, 0);
+            const waited = Atomics.waitAsync(mark, 0, current);
+            if (waited.async) {
+              void waited.value.then((): void => {
+                finish();
+              });
+            } else {
+              finish();
+              return;
+            }
+          }
+          firmwareTimer = setTimeout(finish, 8);
+        });
+      }
+
+      /** 只拉起正停在让出上的固件。这一拍还在跑时记下，下一次让出立刻继续。空转驱动不在这条上。 */
+      export function pokeFirmwareYield(): void {
+        const resume = firmwareResume;
+        if (resume !== null) {
+          firmwareResume = null;
+          firmwareCaught = true;
+          resume();
+          return;
+        }
+        firmwareOwed = true;
+      }
+
+      /** 自上次读取后，有一次叫醒落在正在等待的固件上。读完就清掉。 */
+      export function takeFirmwareCatch(): boolean {
+        const caught = firmwareCaught;
+        firmwareCaught = false;
+        return caught;
+      }
+
+      /** 入站还有字、固件又停着时，显示拍顺手拉它一次。计数不归零时也不会每拍空转。 */
+      export function pokeFirmwareIfAttention(): void {
+        const mark = MetricPageRoot.Hardware.Motherboard.keyAttentionWords();
+        if (mark === null || Atomics.load(mark, 0) === 0) {
+          return;
+        }
+        pokeFirmwareYield();
+      }
+
+      /**
+       * 低于 1000 Hz、而且已经连着执行 core() 的核心。
+       * idle、session 和还没放行的 30 Hz 驱动都是这种。监督核和固件不是。
+       * 监督核每圈也调用一次 core()，但夹在取调用和 frameWake 中间，频率随即升回 100 MHz。
+       */
+      function idleSpinner(ordinal: number): boolean {
+        if (ordinal === 0 || ordinal === gateOrdinal) {
+          return false;
+        }
+        const core = cores.get(ordinal);
+        if (core === undefined || core.Hertz >= 1000) {
+          return false;
+        }
+        return (idleSpins.get(ordinal) ?? 0) >= 2;
+      }
+
+      /** 原生循环用来在第二条 core() 之后结束这一毫秒，避免空转把切片跑满。 */
+      export function idleSpinning(ordinal: number): boolean {
+        return idleSpinner(ordinal);
+      }
+
+      /**
+       * 客程序正在执行指令。
+       * 停在系统调用、dwell 或空转停车里的都不算。壳等键盘时 stopKind 是 2，sequenceBusy 已经清掉。
+       */
+      function guestActuallyExecuting(except: number): boolean {
+        for (const [ordinal, core] of cores) {
+          if (ordinal === except || ordinal < 3) {
+            continue;
+          }
+          if (!sequenceBusy.has(ordinal) || core.stopKind === StopReasonWaiting) {
+            continue;
+          }
+          if (dwelling.has(ordinal) || idleParked.has(ordinal) || idleSpinner(ordinal)) {
+            continue;
+          }
+          return true;
+        }
+        return false;
+      }
+
+      /**
+       * 壳停在读键盘，固件还在自己的循环里，而且不在 dwell。
+       * 这时固件要 poll/keyOffer。空转核不能占住这一拍。
+       */
+      export function firmwareOwesKeyPoll(): boolean {
+        if (!terminalLive || !sequenceBusy.has(0) || dwelling.has(0)) {
+          return false;
+        }
+        const firmware = cores.get(0);
+        if (firmware === undefined || firmware.stopKind === StopReasonWaiting) {
+          return false;
+        }
+        for (const [ordinal, service] of openSvc) {
+          if (ordinal < 3 || service !== ReadService) {
+            continue;
+          }
+          const core = cores.get(ordinal);
+          if (core?.stopKind === StopReasonWaiting && rankOf(ordinal) !== 1) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      /** 监督核正拿着一条调用，或保持位里还有没取走的。空转不能插到它前面。 */
+      function supervisorNeedsCpu(): boolean {
+        return nativeGatePending() || gateSvcSpan !== 0;
+      }
+
+      /**
+       * 除了空转之外没有人能跑。
+       * 这时不能靠 MessageChannel 空转把这条线程占满，要停在一次可被叫醒的等待上。
+       */
+      function onlyIdleLeft(ordinal: number): boolean {
+        if (supervisorNeedsCpu() || guestActuallyExecuting(ordinal) || firmwareOwesKeyPoll()) {
+          return false;
+        }
+        for (const [other, core] of cores) {
+          if (other === ordinal || idleParked.has(other) || dwelling.has(other)) {
+            continue;
+          }
+          if (!sequenceBusy.has(other) || core.stopKind === StopReasonWaiting || idleSpinner(other)) {
+            continue;
+          }
+          return false;
+        }
+        return true;
+      }
+
+      /**
+       * 记下这条是不是 core()。
+       * 跳转不算工作，否则 while (core()) 中间的 jmp 会把空转计数清掉。
+       * 访存、系统调用和其它转义才把计数清零。清零之后这颗核就不再被当成空转。
+       */
+      export function noteIdleShape(ordinal: number, coreOp: boolean): void {
+        if (coreOp) {
+          idleSpins.set(ordinal, (idleSpins.get(ordinal) ?? 0) + 1);
+          return;
+        }
+        if ((idleSpins.get(ordinal) ?? 0) !== 0) {
+          idleSpins.set(ordinal, 0);
+        }
+      }
+
+      /**
+       * 空转核在真实工作面前让路。
+       * 返回 true 表示抢占已经到了，调用方要停在指令边界。
+       * 返回 false 表示可以再执行一条。客程序正在算、保持位有调用、或固件欠着一次收键时，
+       * 这里不执行 core()。只剩下空转时也不空转消息通道，停在 waitSched 上。
+       * 壳已经在等键、但驱动还要看见放行字时，每次叫醒只放一条，随即再让开。
+       */
+      export async function pauseIdleSpin(ordinal: number): Promise<boolean> {
+        if (!idleSpinner(ordinal)) {
+          return false;
+        }
+        const core = requireOrdinal(ordinal);
+        /* 读属性放进函数。循环和 await 之后，类型收窄会把外部写上的抢占看成永远是假。 */
+        const stopNow = (): boolean => core.preemptRequested;
+        if (stopNow()) {
+          return true;
+        }
+        idleParked.add(ordinal);
+        notifySched();
+        try {
+          for (;;) {
+            if (stopNow()) {
+              return true;
+            }
+            const guest = guestActuallyExecuting(ordinal);
+            const supervisor = supervisorNeedsCpu();
+            const keys = firmwareOwesKeyPoll();
+            if (!guest && !supervisor && !keys) {
+              if (!onlyIdleLeft(ordinal)) {
+                return false;
+              }
+              await waitSched();
+              continue;
+            }
+            await waitSched();
+            if (stopNow()) {
+              return true;
+            }
+            /* 客程序还在执行，或调用还在保持位里：继续停。放行一条会把 ls 再次切开。 */
+            if (guestActuallyExecuting(ordinal) || supervisorNeedsCpu()) {
+              continue;
+            }
+            /* 键已经在收件箱里。这一拍留给固件的 poll，空转核继续停。 */
+            if (MetricPageRoot.Hardware.Motherboard.keyAttention()) {
+              continue;
+            }
+            /* 只剩固件收键。放一条，让 30 Hz 驱动能读到放行字，然后调用方必须再让出。 */
+            return false;
+          }
+        } finally {
+          idleParked.delete(ordinal);
+        }
+      }
+
+      /**
+       * 监督核这一拍结束。
+       * 没有客程序在执行、保持位也空着时，叫醒停着的空转，让驱动有机会看一眼放行字。
+       * 客程序正在算时不叫。叫了也只会让空转立刻再睡，白占一次回合。
+       */
+      /** 上次把空转核叫醒的墙钟。按键路径上不能每毫秒都叫一次。 */
+      let lastIdlePoke = 0;
+
+      export function supervisorPoke(ordinal: number): void {
+        if (gateOrdinal === null || ordinal !== gateOrdinal) {
+          return;
+        }
+        if (guestActuallyExecuting(ordinal) || supervisorNeedsCpu()) {
+          return;
+        }
+        /* 收件箱里有键时，固件的 poll 才是要执行的指令。空转核继续停。 */
+        if (MetricPageRoot.Hardware.Motherboard.keyAttention()) {
+          return;
+        }
+        const now = performance.now();
+        if (now - lastIdlePoke < 33) {
+          return;
+        }
+        lastIdlePoke = now;
+        notifySched();
+      }
+
+      /**
+       * 这颗核心按墙钟等完，其它核心照常跑。
+       * 有客程序、未取走的调用或固件收键时，只让出 JS 回合，不把 waitSpan 压在唯一的 CPU 线程上。
+       * 谁都不跑时才睡剩余的毫秒，并且和 waitSched 赛跑。客程序若在睡眠中变得可运行，立刻改成让出。
+       */
+      async function dwellUntil(ordinal: number, milliseconds: number): Promise<void> {
+        const deadline = performance.now() + milliseconds;
+        dwelling.add(ordinal);
+        notifySched();
+        try {
+          while (performance.now() < deadline) {
+            if (
+              guestActuallyExecuting(ordinal)
+              || supervisorNeedsCpu()
+              || (ordinal !== 0 && firmwareOwesKeyPoll())
+            ) {
+              await yieldHostTurn();
+              continue;
+            }
+            const left = deadline - performance.now();
+            if (left < HostTickMs) {
+              break;
+            }
+            await Promise.race([waitSpan(left), waitSched()]);
+          }
+        } finally {
+          dwelling.delete(ordinal);
+          notifySched();
+        }
+      }
+
+      /**
+       * 连续完成的指令仍记下拍号，但拍号不再变成睡眠。
+       *
+       * Hz 只是时间片的基线。start.obr 里先 hertz(30 或面板) 再 hertz(100000000)，
+       * schedDue 仍大约 33 毫秒抢占一次。宿主不再把「这条核心跑在节拍前面」翻译成
+       * waitSpan(1000/Hz) 或 setTimeout。
+       *
+       * (1) 调用方刚执行完 count 条，自己的下一条还在。它就是一个还没结束的指令流。
+       *     唯一的消费者若在这里睡觉，命令会被自己的条数按住。
+       * (2) 30 Hz 时旧的 paceBudget 先得到 0，再改成 1。一条指令的到期时刻大约是 33 毫秒。
+       *     这颗核心在 await 期间一直留在 sequenceBusy 里。监督核把 sequenceBusy 看成
+       *     「客程序正在执行」，于是停在 nativeWaitLatch，直到有系统调用写入保持位。
+       *     睡在定时器里的客程序不会交调用，conPump、take 和 frameWake 都停。
+       * (3) 多个真实消费者要分这条约线程时，由大约 1 毫秒的同步切片加上消息通道让出。
+       *     那不是 16 或 33 毫秒的定时器。
+       * (4) 真正可以睡的只有：键盘读已经排空、显示程序停在 frameWait、核心已经停机，
+       *     以及下面 dwellUntil 里「没有其它真实消费者」的那一截。空转的 core() 不是工作。
        */
       function chargePace(core: MountedCore, count: number): Promise<void> {
         if (count <= 0) {
           return Promise.resolve();
         }
-        if (core.paceYield) {
-          core.paceYield = false;
-          core.paceOrigin = performance.now();
-          core.paceIndex = 0;
-          /* 突发本身已经在等工作者回信，这一拍不必再排一次定时器。
-             定时器留着的话，访存把突发截断时每一小段都要多等一截，一条命令会拖到数秒。
-             频率常数不动。这里只是不把拉长的条数睡回去。 */
-          return Promise.resolve();
-        }
         core.paceIndex += count;
-        const deadline = core.paceOrigin + (core.paceIndex * 1000) / core.Hertz;
-        /* 拍号一直涨会超出安全整数。把起点挪到这一拍，拍号清零，到期时刻不变。 */
+        /* 拍号只留作记账。超过安全整数就拨回起点，避免以后误把一个巨大的拍号再拿去乘。 */
         if (core.paceIndex > 1000000000) {
-          core.paceOrigin = deadline;
-          core.paceIndex = 0;
-        }
-        const delay = deadline - performance.now();
-        /* 这一拍按 Hz 到点了。这颗核心等到下一帧，线程让给还有真实指令的核心。
-           动画的下一帧仍落在原来的 Hz 上，间隙里跑的是命令和监督核，不是空等。
-           欠下超过一秒的旧拍不补。补的话，一次追赶会把正在做的调用按住。
-           终端还没铺上、而且这一拍还不到 1 毫秒时，客程序让出一次宏任务，加载圈才排得进。 */
-        if (delay > 1000) {
           core.paceOrigin = performance.now();
           core.paceIndex = 0;
-          return Promise.resolve();
-        }
-        if (delay >= HostTickMs) {
-          /* 保持位里已经有调用时，监督核这一拍不再睡。
-             睡着的话，客程序交上来的调用要等这一拍结束才取得到。
-             驱动和固件仍按自己的 Hz 等到下一帧，频率常数不动。 */
-          if (gateOrdinal !== null && core === requireOrdinal(gateOrdinal) && nativeGatePending()) {
-            core.paceOrigin = performance.now();
-            core.paceIndex = 0;
-            return Promise.resolve();
-          }
-          return waitSpan(delay);
-        }
-        if (core.guest && !terminalLive) {
-          return new Promise((resolve): void => {
-            setTimeout(resolve, 0);
-          });
         }
         return Promise.resolve();
       }
 
       /**
-       * 这一宿主节拍里最多连续做这么多条。
-       * 30 Hz 时一拍长于 1 毫秒，所以一次只做 1 条再睡。100 MHz 时大约 10 万条凑满 1 毫秒。
+       * 这一次同步突发最多多少条。
+       * 旧公式 floor(Hz × 1 毫秒 / 1000) 在 30 Hz 得到 0，于是返回 1，下一条再睡 1000/Hz。
+       * 现在不论频率都给到 BurstCap。真正停下来的是大约 HostTickMs 毫秒的墙钟，
+       * 或者另一个真实消费者该轮到了。时间片本身仍由 slice 指令限制，不在这里改掉。
        */
       function paceBudget(hertz: number): number {
-        const quantum = Math.floor((hertz * HostTickMs) / 1000);
-        if (quantum < 1) {
-          return 1;
-        }
-        if (quantum > BurstCap) {
+        if (!Number.isFinite(hertz)) {
           return BurstCap;
         }
-        return quantum;
+        return BurstCap;
       }
 
       /**
@@ -1893,8 +2312,10 @@ export namespace ZerOS {
        * 停止原因是 1，寄存器和下一条都留着。已经停着的直接返回。
        * 不等它自己执行 yield。
        */
-      function preempt(target: number): Promise<void> {
+      function preempt(target: number, why: number): Promise<void> {
         const core = requireOrdinal(target);
+        /* 926 只记是谁要求停。1 卸原生 2 划界 3 兼容进入 4 抄走 5 放回 6 装原生 7 装解释序列 8 卸指令 9 借核 10 接库。 */
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, target, 926, why);
         core.blockToken = null;
         if (!sequenceBusy.has(target)) {
           /* 没在取指，多半是系统调用的空转。上一条停机记录还在，这里不再盖掉。 */
@@ -1903,9 +2324,11 @@ export namespace ZerOS {
           }
           return Promise.resolve();
         }
+        /* 空转可能正停在 waitSched 上。先置位再叫醒，微任务里才看得见抢占。 */
+        core.preemptRequested = true;
+        notifySched();
         return new Promise((resolve): void => {
           core.preemptResolve = resolve;
-          core.preemptRequested = true;
         });
       }
 
@@ -2408,6 +2831,7 @@ export namespace ZerOS {
        * 值已经不在 ZAP 寄存器里，所以这条不经寄存器编号。客核心失败时命令不会送出。
        * 监督核前面攒下的矩形和字形跟这一次呈现走同一条消息。
        * 先单独送一队再呈现的话，每个键都要多等一次显卡往返。
+       * 这条在显卡接受该帧时返回。画面副本由主板在返回之后交到页面。
        */
       export async function nativePresent(ordinal: number): Promise<void> {
         refuseGpu(ordinal);
@@ -2465,7 +2889,7 @@ export namespace ZerOS {
          * 监督核的矩形、选字体和画字符串都先攒着，呈现时一次送进显卡。
          * 一行一个往返时，滚一整屏要几十次消息，换行会空等好几秒。
          * 字符串的标量已经抄在 staged 里，队列里带着这些字节，显卡不必再读线性位元。
-         * 打开字体面要马上回编号。没抄到标量的绘制仍当场送，不把这次失败和前面的矩形捆在一起。
+         * 打开字体面要马上回编号。缓冲里缺标量时先读回八位组再入队，不把这一行单独送进显卡。
          */
         if (ordinal === 2 && operation !== 40n && (operation !== 42n || staged !== null)) {
           const item: Record<string, unknown> = {
@@ -2483,38 +2907,44 @@ export namespace ZerOS {
           return 0n;
         }
         /*
-         * 画字符串的标量在核心缓冲里。先让核心抄出来交回，再和矩形排进同一队。
-         * 当场送显卡的话，一行一次往返，按键和长列表都会卡在这条路上。
+         * 这一行有的标量已经不在本核心缓冲里。先按位地址读回八位组，再和矩形排进同一队。
+         * 交给显卡去抄的话，会把前面攒下的矩形先送出去，每个键都要多等一次显卡往返。
          * 打开字体面不走这里，它要马上拿编号。
          */
         if (ordinal === 2 && operation === 42n) {
-          deferredFont = null;
-          const drawn = await gpu(ordinal, {
-            kind: "gpu",
-            gpuOp: "accel",
-            resolved: true,
-            register: 0,
-            operation,
-            a,
-            b,
-            c,
-            d,
-            deferDraw: true,
-          });
-          const bytes = takeDeferredFont();
-          if (bytes !== null) {
-            queuePaint(ordinal, {
-              gpuOp: "accel",
-              operation: Number(operation),
-              a,
-              b,
-              c,
-              d,
-              bytes,
-            });
-            return 0n;
+          const decoded = new DataView(new ArrayBuffer(8));
+          const asInt = (bits: bigint): number | null => {
+            decoded.setBigInt64(0, BigInt.asIntN(64, bits), true);
+            const value = decoded.getFloat64(0, true);
+            if (!Number.isSafeInteger(value)) {
+              return null;
+            }
+            return value;
+          };
+          const address = asInt(a);
+          const glyphs = asInt(b);
+          if (
+            address !== null
+            && glyphs !== null
+            && address >= 0
+            && address % 8 === 0
+            && glyphs > 0
+            && glyphs <= 4096
+          ) {
+            const bytes = await nativeReadSpan(ordinal, BigInt(address / 8), glyphs * 4);
+            if (bytes.length === glyphs * 4) {
+              queuePaint(ordinal, {
+                gpuOp: "accel",
+                operation: Number(operation),
+                a,
+                b,
+                c,
+                d,
+                bytes: bytes.slice(),
+              });
+              return 0n;
+            }
           }
-          return drawn.Value;
         }
         await flushPaintQueue(ordinal);
         const message: Record<string, unknown> = {
@@ -2755,14 +3185,14 @@ export namespace ZerOS {
         }
       }
 
-      /** 按墙上的毫秒等。0 马上继续。等待时核心仍在执行。 */
+      /** 按墙上的毫秒等。0 马上继续。这段等待标成 dwell，不算正在执行，别的真实消费者照常跑。 */
       export async function nativeDwell(ordinal: number, milliseconds: bigint): Promise<void> {
         if (milliseconds < 0n || milliseconds > 1000n) {
           fail("dwell is outside 0 to 1000");
         }
         requireOrdinal(ordinal).Executed += 1;
         if (milliseconds >= 1n) {
-          await waitSpan(Number(milliseconds));
+          await dwellUntil(ordinal, Number(milliseconds));
         }
       }
 
@@ -2849,6 +3279,18 @@ export namespace ZerOS {
 
       export function leaveNativeImage(ordinal: number): void {
         sequenceBusy.delete(ordinal);
+        idleParked.delete(ordinal);
+        dwelling.delete(ordinal);
+        /* 原生客程序停机、让出或进入系统调用时，监督核可能还停在 nativeWaitLatch。
+           不叫醒的话，已经没有指令在跑，监督核却要等下一次碰巧写入的调用。
+           排到当前函数返回之后，避免在 finally 里面重入这颗核心。 */
+        if (ordinal >= 3) {
+          queueMicrotask((): void => {
+            releaseGateWait();
+          });
+          return;
+        }
+        notifySched();
       }
 
       export function finishNativeHalt(ordinal: number): void {
@@ -3307,8 +3749,10 @@ export namespace ZerOS {
        * 原生系统调用。
        * 服务号交给监督核的保持位，回复稍后写入 reply 这个原生寄存器。
        * 核心保持执行中，只做不取下一条的空转。
+       * 保持位里已经有别人的调用时返回 false，不覆盖，也不把这颗核心打成失败。
+       * 调用方停在这条指令上，等监督核取走那一次再试。
        */
-      export function nativeSvc(ordinal: number, service: bigint, reply: number): void {
+      export function nativeSvc(ordinal: number, service: bigint, reply: number): boolean {
         if (gateOrdinal === null || gateOrdinal === ordinal) {
           fail("syscall has no supervisor");
         }
@@ -3317,6 +3761,10 @@ export namespace ZerOS {
         }
         if (!Number.isInteger(reply) || reply < 0 || reply >= NativeRegisterCount) {
           fail("syscall reply register is out of range");
+        }
+        /* 先看保持位。满的时候什么都不记，调用方还能从同一条指令再试。 */
+        if (requireOrdinal(gateOrdinal).latch !== null) {
+          return false;
         }
         beginSvcSpan(ordinal, Number(service));
         openSvc.set(ordinal, Number(service));
@@ -3327,6 +3775,7 @@ export namespace ZerOS {
         core.Executed += 1;
         noteStop(ordinal, StopReasonWaiting, 0, "svc", "");
         beginBlockedPace(ordinal);
+        return true;
       }
 
       /**
@@ -3367,14 +3816,14 @@ export namespace ZerOS {
        * 只是这一拍还没让出。Ctrl+C 卸掉子进程之后，迟到的 schedule 会打到空核上。
        * 这两种都不能把监督核打成整机失败，没有可恢复的程序就什么也不做。
        */
-      export function nativeSchedule(ordinal: number, target: bigint): void {
+      export function nativeSchedule(ordinal: number, target: bigint): boolean {
         const to = coreOrdinal(target);
         if (to === null || !supervisor(ordinal)) {
           fail("schedule requires the supervisor");
         }
         if (sequenceBusy.has(to)) {
           requireOrdinal(ordinal).Executed += 1;
-          return;
+          return false;
         }
         const chosen = requireOrdinal(to);
         const hasZap = chosen.installed !== null;
@@ -3383,7 +3832,7 @@ export namespace ZerOS {
         const hasImage = chosen.nativeArmed && chosen.nativeCode !== null && chosen.native !== null;
         if (!hasZap && !hasYield && !hasSvc && !hasImage) {
           requireOrdinal(ordinal).Executed += 1;
-          return;
+          return false;
         }
         if ((chosen.nativeReply !== null || chosen.svcDest !== null) && chosen.latch === null) {
           fail("schedule found a syscall with no reply");
@@ -3392,6 +3841,7 @@ export namespace ZerOS {
           schedule(to);
         }
         requireOrdinal(ordinal).Executed += 1;
+        return true;
       }
 
       /** 卸下兼容任务时清掉这 16 MiB。按默认上限一次写完，短于绝对上限，不必拆开。 */
@@ -3413,7 +3863,7 @@ export namespace ZerOS {
           fail("release requires the supervisor");
         }
         const chosen = requireOrdinal(to);
-        await preempt(to);
+        await preempt(to, 1);
         if (chosen.state !== CoreStateHalted || sequenceBusy.has(to)) {
           fail("release target is not halted");
         }
@@ -3453,7 +3903,7 @@ export namespace ZerOS {
         }
         const chosen = requireOrdinal(to);
         if (to !== ordinal) {
-          await preempt(to);
+          await preempt(to, 2);
         }
         if (to !== ordinal && (chosen.state !== CoreStateHalted || sequenceBusy.has(to))) {
           fail("bound target is not halted");
@@ -3591,7 +4041,7 @@ export namespace ZerOS {
         if (descriptor === null) {
           admitFail("descriptor");
         }
-        await preempt(to);
+        await preempt(to, 3);
         if (targetCore.state !== CoreStateHalted || sequenceBusy.has(to)) {
           admitFail("target core is not halted");
         }
@@ -3694,7 +4144,7 @@ export namespace ZerOS {
         if (target === null || target === caller || slot === null) {
           contextFail("capture", "target core is not halted");
         }
-        await preempt(target);
+        await preempt(target, 4);
         const targetCore = cores.get(target);
         if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
           contextFail("capture", "target core is not halted");
@@ -3747,7 +4197,7 @@ export namespace ZerOS {
         if (target === null || target === caller || slot === null) {
           contextFail("restore", "target core is not halted");
         }
-        await preempt(target);
+        await preempt(target, 5);
         const targetCore = cores.get(target);
         if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
           contextFail("restore", "target core is not halted");
@@ -3804,7 +4254,7 @@ export namespace ZerOS {
         if (target === null || target === caller) {
           attachFail("target core is not halted");
         }
-        await preempt(target);
+        await preempt(target, 10);
         const targetCore = cores.get(target);
         if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
           attachFail("target core is not halted");
@@ -3918,7 +4368,7 @@ export namespace ZerOS {
         if (code === null) {
           installFail("program image");
         }
-        await preempt(target);
+        await preempt(target, 6);
         if (targetCore.state !== CoreStateHalted || sequenceBusy.has(target)) {
           installFail("target core is not halted");
         }
@@ -4010,7 +4460,7 @@ export namespace ZerOS {
             installFail("relocation");
           }
         }
-        await preempt(target);
+        await preempt(target, 7);
         if (targetCore.state !== CoreStateHalted || sequenceBusy.has(target)) {
           installFail("target core is not halted");
         }
@@ -4161,7 +4611,13 @@ export namespace ZerOS {
         const deliver = started.svcDest;
         started.resumeCursor = null;
         started.stopKind = 0;
+        /* schedule 写页时原因可能还是上一拍的让出。这里改回 0 再写一次，扫表才不会把正在跑的命令当成已经停下。 */
+        publishCpuQuery();
         started.sliceLeft = started.sliceQuota;
+        /* 墙钟切片。满大约 1 毫秒就让出 JS 回合，不按 Hz 睡觉。 */
+        let sliceAt = performance.now();
+        /* 方向 2 带回一次事件之后，下一拍突发里固件才把键写入环。写完再清入站标记。 */
+        let releaseKeyAttention = false;
         try {
         activeProgram.set(ordinal, steps);
         schedule(ordinal);
@@ -4190,54 +4646,32 @@ export namespace ZerOS {
           const budget = paceBudget(started.Hertz);
           let room = started.sliceQuota > 0 && started.sliceLeft < budget ? started.sliceLeft : budget;
           /*
-           * 空转是 while core()。前台停在读键盘时若给它 paceYield，每颗空转核都会连着
-           * 向工作者发突发，宿主队列被占满，一个键要 2 到 3 秒才画出来。
-           * 前台正在算，或正停在系统调用里：后台 8 毫秒最多 1 条。这 8 毫秒用定时器让出，
-           * 不在这条线程上合睡。多个前台同时取指时，各自跑完这一轮再让出。
-           * 频率、paceBudget 和驱动的时间片数都不改。没有前台时，30 Hz 的小睡仍走原来的记账。
-           * 固件是核心 0，按键从它的收件箱写进环。壳等着键盘时若仍一拍 1 条，写完一次按键要几百毫秒。
-           * 终端在画且有前台时，固件 8 毫秒最多 128 条真实指令，用来把键送进环。空转和驱动仍是 8 毫秒 1 条。
+           * Hz 不是执行上限。这一圈刚进来的核心只要还有真实指令，就继续取，
+           * 不再因为「跑在节拍前面」去 waitSpan(1000/Hz)，也不再把固件整段睡 16 毫秒。
+           *
+           * (1) 只有一个真实消费者时，它连续跑。满大约 1 毫秒用消息通道让出一次，
+           *     页面才排得进显示拍。这不是 16 或 33 毫秒的定时器。
+           * (2) 多个真实消费者分同一条 CPU 线程，也是这次让出，不是每人睡一拍。
+           *     固件在客程序计算或壳等键盘时仍进入这一圈，poll 和 keyOffer 不会被跳过。
+           * (3) idle、session 和 30 Hz 驱动的 core() 不是工作。客程序正在执行、
+           *     监督核的保持位里有调用，或固件还欠着一次收键时，pauseIdleSpin 不调度它们。
+           *     程序仍装在核心上。只剩下这些空转时，停在一次可被叫醒的等待上，
+           *     不用 33 毫秒的 Hz 睡眠把后来才就绪的客程序一起冻住。
+           * (4) Bios 在终端旗标 6272 置上之后自己不再 dwell。这里不能把那 16 毫秒补回去。
            */
-          /*
-           * 终端已经铺上，前台正在算，或停在写、分配、派生里。
-           * 固件这一帧让出 16 毫秒。下一帧仍按这个间隔回来，间隙里跑命令和监督核。
-           * 壳等键盘时不走这里，否则键送不进环。
-           * 引导时终端还没铺上，固件还要答应 6336，这一段不能把固件整段拿掉。
-           */
-          if (
-            ordinal === 0
-            && terminalLive
-            && (
-              foregroundBusy(ordinal)
-              || (foregroundWaiting(ordinal) && !firmwareMayPoll())
-            )
-          ) {
-            /* 前台正在算时，固件这一拍让出一帧。动画的下一帧还在，间隙里跑命令。
-               只让出一次宏任务的话，固件会立刻再进来，把访存往返挤在命令前面。 */
-            await waitSpan(16);
-            continue;
-          }
-          /*
-           * 壳等键盘时，固件一次最多跑 128 条，把键送进环。
-           * 这一拍不按 30 Hz 再睡。客程序正在算时不在这里给别的核心 paceYield。
-           * 驱动和动画仍按自己的 Hz 等到下一帧，间隙里跑的是命令。
-           */
-          if (ordinal === 0 && foregroundWaiting(ordinal) && firmwareMayPoll()) {
-            room = 128;
-            started.paceYield = true;
-          }
-          /*
-           * 前台命令按 100 万 Hz 时，paceBudget 一拍只有 1000 条。
-           * 访存把突发截断之后，一条 ls 或 ps 要几百次往返，列出来要十几秒。
-           * 这里让正在算的客程序一次吃满突发上限，并用 paceYield 不把条数睡回去。
-           * 终端还没铺上时，下面仍收成 2048，加载圈不会被这一拍挡住。
-           */
-          if (guestSprint(ordinal, started)) {
-            room = BurstCap;
-            started.paceYield = true;
+          /* 方向 2 已经把键放进寄存器。这一拍先把环写上，再让出。
+             先让出的话，次数要等下一次醒来才增加，字形会晚十几毫秒。 */
+          if (performance.now() - sliceAt >= HostTickMs && !(ordinal === 0 && releaseKeyAttention)) {
+            /* 0 号是固件。键入队后要能单独把它拉起来去 poll，不能和空转驱动排在同一条通道后面。 */
+            if (ordinal === 0) {
+              await yieldFirmwareTurn();
+            } else {
+              await yieldHostTurn();
+            }
+            sliceAt = performance.now();
           }
           /* 续跑时不重复送整段程序。游标回到 0 的循环也沿用工作者里的那一份。
-             后台一拍只有一条，每次都把整段再克隆一遍，会把壳的系统调用拖到几百毫秒。 */
+             后台若每次都把整段再克隆一遍，会把壳的系统调用拖长。 */
           /* 终端还没铺上时，别的核心一次跑满本拍会占住这条线程。
              固件的 Starting 和加载圈就停在上一帧。收成 2048 条，跑完再让出一次宏任务。
              频率、paceBudget 和驱动的时间片数都不改。 */
@@ -4245,6 +4679,12 @@ export namespace ZerOS {
           if (!terminalLive && ordinal !== 0 && room > 2048) {
             room = 2048;
             bootShare = true;
+          }
+          /* 终端铺上之后，固件一次突发若跑满十万条，键要等这一拍结束才进得了环。
+             收成四千条，大约 1 毫秒。入队的键在下一次突发里就能被 poll 看见。
+             客程序仍用原来的上限，计算不会被这条截断。 */
+          if (terminalLive && ordinal === 0 && room > 4096) {
+            room = 4096;
           }
           const coreNow = requireOrdinal(ordinal);
           const sendSteps = coreNow.heldProgram === steps ? null : steps;
@@ -4260,11 +4700,22 @@ export namespace ZerOS {
           }
           requireOrdinal(ordinal).Executed += span.executed;
           cursor = span.cursor;
+          if (releaseKeyAttention && ordinal === 0) {
+            MetricPageRoot.Hardware.Motherboard.clearKeyAttention();
+            releaseKeyAttention = false;
+            /* 环次数增加时由主板发 ring。松开键的 poll 也到这里，不能在这里记账，
+               否则下一次按下会被当成已经取走，监督核不再让开，回显的写出也会被切开。 */
+            const resume = gateWait;
+            gateWait = null;
+            if (resume !== null) {
+              resume();
+            }
+            pokeYield();
+          }
           await chargePace(requireOrdinal(ordinal), span.executed);
+          /* 引导时别的核心让出一回合，固件的 Starting 才排得进。不是按 Hz 睡觉。 */
           if (bootShare) {
-            await new Promise((resolve): void => {
-              setTimeout(resolve, 0);
-            });
+            await yieldHostTurn();
           }
           if (consume(ordinal, cursor, span.executed)) {
             return;
@@ -4298,6 +4749,11 @@ export namespace ZerOS {
               requireOrdinal(ordinal).Executed += done;
               cursor = outcome.cursor;
               await chargePace(requireOrdinal(ordinal), done);
+              /* 访问批里的方向 2 不经过单独的 xchg 指令。结果已经在核心寄存器里。
+                 这里只记下「下一拍突发会把键写入环」，写完再清入站标记。 */
+              if (ordinal === 0 && outcome.key) {
+                releaseKeyAttention = true;
+              }
               if (!outcome.ok) {
                 requireOrdinal(ordinal).faultIndex = cursor;
                 raiseAccessFault(outcome.hostFault, outcome.message);
@@ -4310,7 +4766,7 @@ export namespace ZerOS {
           }
           refuseGuest(ordinal, step.Op);
           if (step.Op !== "core") {
-            idleSpins.set(ordinal, 0);
+            noteIdleShape(ordinal, false);
           }
           if (step.Op === "halt") {
             const stopping = requireOrdinal(ordinal);
@@ -4335,15 +4791,11 @@ export namespace ZerOS {
             gateOrdinal = ordinal;
             requireOrdinal(ordinal).Executed += 1;
           } else if (step.Op === "core") {
-            /* 监督核每圈先 hertz(30)，再 core()，再 hertz(100000000)。core() 自己不记拍。
-               前台需要线程并且当前 Hertz <= 100 时，已经 gate() 的监督核把 paceYield 设上，
-               降频后的这一拍不睡，调用不会被按住。
-               30 Hz 的驱动和动画仍按拍等到下一帧，间隙里跑还有真实指令的核心。 */
-            const spins = (idleSpins.get(ordinal) ?? 0) + 1;
-            idleSpins.set(ordinal, spins);
-            const spinning = requireOrdinal(ordinal);
-            if (ordinal === gateOrdinal && spinning.Hertz <= 100 && nativeGuestHot(ordinal)) {
-              spinning.paceYield = true;
+            /* 监督核每圈的 core() 只取编号，随后就把频率升回去，不能当成空转拆掉。
+               idle、session 和 30 Hz 驱动的循环才是空转。有真实指令或未取走的调用时不调度它们。 */
+            noteIdleShape(ordinal, true);
+            if (await pauseIdleSpin(ordinal) && stopIfPreempted(ordinal, cursor)) {
+              return;
             }
             await place(ordinal, step.Register, BigInt(ordinal));
           } else if (step.Op === "slice") {
@@ -4373,8 +4825,8 @@ export namespace ZerOS {
             });
           } else if (step.Op === "dwell") {
             /* 等的是墙上的毫秒，不按 Hz 折算。0 马上继续。
-               这一拍是动画的帧间隙。核心保持执行中，线程让给还有真实指令的核心。
-               帧到点再回来画下一帧，间隙不空等。 */
+               设置页 dwell(16) 和加载画面 dwell(40) 只挡住这一颗核心。
+               客程序还在算时不能 waitSpan，否则 ls 要等这一拍结束。 */
             const ms = await peekRegister(ordinal, step.Time);
             if (ms < 0n || ms > 1000n) {
               fail("dwell is outside 0 to 1000");
@@ -4382,7 +4834,7 @@ export namespace ZerOS {
             requireOrdinal(ordinal).Executed += 1;
             cursor += 1;
             if (ms >= 1n) {
-              await waitSpan(Number(ms));
+              await dwellUntil(ordinal, Number(ms));
             }
             if (consume(ordinal, cursor, 1)) {
               return;
@@ -4423,7 +4875,7 @@ export namespace ZerOS {
               fail("release requires the supervisor");
             }
             const chosen = requireOrdinal(target);
-            await preempt(target);
+            await preempt(target, 8);
             if (chosen.state !== CoreStateHalted || sequenceBusy.has(target)) {
               fail("release target is not halted");
             }
@@ -4455,7 +4907,7 @@ export namespace ZerOS {
             }
             const chosen = requireOrdinal(target);
             if (target !== ordinal) {
-              await preempt(target);
+              await preempt(target, 2);
             }
             if (target !== ordinal && (chosen.state !== CoreStateHalted || sequenceBusy.has(target))) {
               fail("bound target is not halted");
@@ -4498,23 +4950,37 @@ export namespace ZerOS {
             if (service < 0n || service > 0xffffffffn) {
               fail("syscall service is out of range");
             }
-            /* 监督核的保持位一次只有一条。别的核心刚交过调用时，这里再交会直接失败，
-               客程序就被收成正常停机。让出这一拍，等监督核取走后再交。 */
-            const gate = requireOrdinal(gateOrdinal);
-            let waits = 0;
-            while (gate.latch !== null) {
-              waits += 1;
-              if (waits > 3000) {
-                fail("syscall latch stayed full");
+            /*
+             * 退出码由 obr.proc::exit 写在 home+128，再调用服务 28。
+             * 宿主在调用点直接读这个字，不依赖 guest 的单个诊断字。
+             */
+            if (service === 28n && traceEnabled()) {
+              try {
+                const core = requireOrdinal(ordinal);
+                const bytes = await readSpan(ordinal, core.boundOrigin + 128n, 8);
+                let code = 0n;
+                for (let index = 0; index < 8; index += 1) {
+                  code |= BigInt(bytes[index] ?? 0) << BigInt(index * 8);
+                }
+                traceInstant(TraceOp.ProcessExit, TraceLayer.Sched, ordinal, Number(code & 0xffffn), 0);
+              } catch {
+                /* 读不到就保留原有 TaskExit 路径，不阻塞退出。 */
               }
-              /* 保持位里还有上一条调用。让出一次，等监督核取走，不再按毫秒睡觉。 */
-              await new Promise((resolve): void => {
-                setTimeout(resolve, 0);
-              });
             }
+            /* 监督核的保持位一次只有一条。先把栈和脏页交出去，这两次等待期间别的核心可能先交上调用。
+               等保持位空了再立刻交。中间不能再等待，否则刚看过是空的，交的时候又满了，这次调用会把客程序打停。 */
             if (requireOrdinal(ordinal).guest) {
               await publishSp(ordinal);
               await publishDirty(ordinal);
+            }
+            const gate = requireOrdinal(gateOrdinal);
+            while (gate.latch !== null) {
+              /* 保持位里还有上一条调用。让出这一回合，等监督核取走。
+                 不设次数上限。一次呈现或装入可以比几千次消息通道更久，
+                 次数一满会把还停在这条调用上的壳打成失败，提示符就出不来。
+                 看见保持位满着时把误停在闩上的监督核叫醒，让它去取。 */
+              releaseGateWait();
+              await yieldHostTurn();
             }
             pass(ordinal, gateOrdinal, (BigInt(ordinal) << 32n) | service);
             openSvc.set(ordinal, Number(service));
@@ -4591,12 +5057,19 @@ export namespace ZerOS {
           } else if (step.Op === "inbox") {
             await beginCommand(ordinal, { kind: "inbox", found: step.Found, value: step.Value });
           } else if (step.Op === "xchg") {
-            await beginCommand(ordinal, {
+            const exchanged = await beginCommand(ordinal, {
               kind: "xchg",
               port: step.Port,
               direction: step.Direction,
               data: step.Data,
             });
+            if (ordinal === 0 && exchanged.Value >= 0n) {
+              releaseKeyAttention = true;
+            } else if (ordinal === 0 && terminalLive && exchanged.Value < 0n) {
+              /* 这次交换是空的。下一圈先让出，不要在同一毫秒里把收件箱再问一遍。
+                 写出要走主板时，不再排在一串空轮询后面。 */
+              sliceAt = 0;
+            }
           } else if (step.Op === "fill") {
             const address = await peekRegister(ordinal, step.Address);
             const count = await peekRegister(ordinal, step.Count);
@@ -4912,8 +5385,13 @@ export namespace ZerOS {
           }
           activeProgram.delete(ordinal);
           sequenceBusy.delete(ordinal);
+          idleParked.delete(ordinal);
+          dwelling.delete(ordinal);
+          noteIdleShape(ordinal, false);
           /* 停机不会往保持位交调用。监督核若正停着等下一条调用，这里把它叫醒，
-             否则客程序已经停住，壳却要等别的核心碰巧再交一次调用。 */
+             否则客程序已经停住，壳却要等别的核心碰巧再交一次调用。
+             空转和 dwell 也从这里醒来，不会停在已经结束的客程序上。 */
+          notifySched();
           if (ordinal >= 3) {
             releaseGateWait();
           }
@@ -5018,7 +5496,7 @@ export namespace ZerOS {
         let registers: readonly bigint[] = empty;
         try {
           if (core.state === CoreStateRunning || sequenceBusy.has(ordinal)) {
-            await preempt(ordinal);
+            await preempt(ordinal, 9);
           }
           core.resumeCursor = null;
           core.stopKind = 0;
@@ -5082,6 +5560,7 @@ export namespace ZerOS {
         }
         core.latch = null;
         core.port.postMessage({ kind: "take" });
+        notifySched();
         return value;
       }
     }

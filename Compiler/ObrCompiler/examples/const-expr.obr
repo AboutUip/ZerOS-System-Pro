@@ -1,0 +1,43 @@
+/* Plan 1 M1：二元常量表达式、比较、逻辑、位运算、三元和常量 cast。结果 0。 */
+enum Axis: long { X, Y = 3 }
+
+const int A = 1 + 2 * 3;
+const int B = (1 + 2) * 3;
+const long C = 1L << 10;
+const int D = 0xFF & 0x0F;
+const int E = 7 % 4;
+const boolean F = A == 7 && B != 7;
+const int G = F ? 11 : 22;
+const int H = (int)3.9;
+const int I = (int)-3.9;
+const int J = (int)0x1FFFFFFFFL;
+const short K = (short)0x18000;
+const byte L = (byte)300;
+const char M = (char)65;
+const long N = ~0;
+const int O = -7 / 2;
+const int P = -7 % 2;
+const int Q = 1 < 2 ? 5 : 6;
+const long R = Axis::Y + 4;
+
+deRfun main(): int {
+  if (A != 7) return 1;
+  if (B != 9) return 2;
+  if (C != 1024L) return 3;
+  if (D != 15) return 4;
+  if (E != 3) return 5;
+  if (!F) return 6;
+  if (G != 11) return 7;
+  if (H != 3) return 8;
+  if (I != -3) return 9;
+  if (J != -1) return 10;
+  if (K != (short)-32768) return 11;
+  if (L != (byte)44) return 12;
+  if (M != 'A') return 13;
+  if (N != -1L) return 14;
+  if (O != -3) return 15;
+  if (P != -1) return 16;
+  if (Q != 5) return 17;
+  if (R != 7L) return 18;
+  return 0;
+}

@@ -1,0 +1,605 @@
+/* 把一行拆成命令、参数和重定向。不读键盘，不执行。 */
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+import memory;
+import obr.oct;
+import parse;
+
+
+deRfun copyBytes(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putByte(to, index, lexU8(from + index * 8L));
+    index = index + 1L;
+  }
+}
+
+
+deRfun putByte(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+
+deRfun lexU8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+
+deRfun cmdStride(): long {
+  return 6144L;
+}
+
+
+deRfun listCount(long out): long {
+  return memory::load64(out);
+}
+
+
+deRfun listJoiner(long out, long index): long {
+  return memory::load64(out + (1L + index * 3L) * 64L);
+}
+
+
+deRfun listCmdCount(long out, long index): long {
+  return memory::load64(out + (2L + index * 3L) * 64L);
+}
+
+
+deRfun listCmd(long out, long index): long {
+  return memory::load64(out + (3L + index * 3L) * 64L);
+}
+
+
+deRfun cmdOf(long out, long index): long {
+  return out + 4096L + index * cmdStride();
+}
+
+
+deRfun cmdArgc(long cmd): long {
+  return memory::load64(cmd);
+}
+
+
+deRfun cmdRedir(long cmd): long {
+  return memory::load64(cmd + 64L);
+}
+
+
+deRfun cmdRedirLen(long cmd): long {
+  return memory::load64(cmd + 128L);
+}
+
+
+deRfun cmdRedirAt(long cmd): long {
+  return cmd + 704L;
+}
+
+
+deRfun cmdArgLen(long cmd, long index): long {
+  return memory::load64(cmd + 192L + index * 64L);
+}
+
+
+deRfun cmdArgAt(long cmd, long index): long {
+  return cmd + 1728L + index * 512L;
+}
+
+
+deRfun lexScratchAt(long out): long {
+  return out + 110592L;
+}
+
+
+/* 16 条命令占到 out+102400。暂存从 out+110592 起。中间 8192 位只放结束词。
+   个数在起点。随后最多四格，步长 1280：命令号、是否剥制表符、结束词长度、正文长度、128 个八位组。
+   正文本身不在这里，壳另外放进堆。壳和自检按这些偏移直接读，不经过头文件。 */
+deRfun lexHdBase(long out): long {
+  return out + 102400L;
+}
+
+
+deRfun hdStride(): long {
+  return 1280L;
+}
+
+
+deRfun lexHdCount(long out): long {
+  return memory::load64(lexHdBase(out));
+}
+
+
+deRfun lexHdSlot(long out, long index): long {
+  return lexHdBase(out) + 64L + index * hdStride();
+}
+
+
+deRfun lexHdCmd(long out, long index): long {
+  return memory::load64(lexHdSlot(out, index));
+}
+
+
+deRfun lexHdStrip(long out, long index): long {
+  return memory::load64(lexHdSlot(out, index) + 64L);
+}
+
+
+deRfun lexHdDelimLen(long out, long index): long {
+  return memory::load64(lexHdSlot(out, index) + 128L);
+}
+
+
+deRfun lexHdBodyLen(long out, long index): long {
+  return memory::load64(lexHdSlot(out, index) + 192L);
+}
+
+
+deRfun lexHdSetBody(long out, long index, long length): void {
+  memory::store64(length, lexHdSlot(out, index) + 192L);
+}
+
+
+deRfun lexHdDelimAt(long out, long index): long {
+  return lexHdSlot(out, index) + 256L;
+}
+
+
+deRfun hdFor(long out, long cmd, long total): long {
+  long count = 0L;
+  long index = 0L;
+  while (index < total) {
+    if (lexHdCmd(out, index) == cmd) {
+      count = count + 1L;
+    }
+    index = index + 1L;
+  }
+  return count;
+}
+
+
+/* 文件重定向仍是 < 时，here-document 不再占标准输入。否则这一命令最后一份才生效。 */
+deRfun lexHdLast(long out, long cmd): long {
+  if (cmd < 0L) {
+    return -1L;
+  }
+  if (cmdRedir(cmdOf(out, cmd)) == 3L) {
+    return -1L;
+  }
+  long total = lexHdCount(out);
+  long found = -1L;
+  long index = 0L;
+  while (index < total) {
+    if (lexHdCmd(out, index) == cmd) {
+      found = index;
+    }
+    index = index + 1L;
+  }
+  return found;
+}
+
+
+deRfun parseClear(long out): void {
+  memory::store64(0L, out);
+  memory::store64(0L, lexHdBase(out));
+  long index = 0L;
+  while (index < 16L) {
+    memory::store64(0L, cmdOf(out, index));
+    memory::store64(0L, cmdOf(out, index) + 64L);
+    memory::store64(0L, cmdOf(out, index) + 128L);
+    index = index + 1L;
+  }
+}
+
+
+deRfun putDigits(long addr, long value): long {
+  if (value < 0L) {
+    value = 0L;
+  }
+  if (value > 255L) {
+    value = 255L;
+  }
+  if (value < 10L) {
+    putByte(addr, 0L, 48L + value);
+    return 1L;
+  }
+  if (value < 100L) {
+    putByte(addr, 0L, 48L + value / 10L);
+    putByte(addr, 1L, 48L + value % 10L);
+    return 2L;
+  }
+  putByte(addr, 0L, 48L + value / 100L);
+  putByte(addr, 1L, 48L + (value / 10L) % 10L);
+  putByte(addr, 2L, 48L + value % 10L);
+  return 3L;
+}
+
+
+/* 把暂存里的词放进当前命令。整词且没有单引号字节时，$? 换成状态的十进制。返回 0，放不下返回 1。 */
+deRfun takeWord(long out, long cmdIndex, long wordLen, long status, long redir, long plain): long {
+  if (cmdIndex < 0L || cmdIndex >= 16L) {
+    return 1L;
+  }
+  long cmd = cmdOf(out, cmdIndex);
+  long from = lexScratchAt(out);
+  if (redir != 0L) {
+    if (wordLen < 1L || wordLen > 128L) {
+      return 1L;
+    }
+    memory::store64(redir, cmd + 64L);
+    memory::store64(wordLen, cmd + 128L);
+    copyBytes(from, cmdRedirAt(cmd), wordLen);
+    return 0L;
+  }
+  if (plain == 1L && wordLen == 2L && lexU8(from) == 36L && lexU8(from + 8L) == 63L) {
+    wordLen = putDigits(from, status);
+  }
+  long argc = memory::load64(cmd);
+  if (argc >= 8L || wordLen > 64L) {
+    return 1L;
+  }
+  memory::store64(wordLen, cmd + 192L + argc * 64L);
+  copyBytes(from, cmdArgAt(cmd, argc), wordLen);
+  memory::store64(argc + 1L, cmd);
+  return 0L;
+}
+
+
+/* 结束词按剥引号后的字节原样收下，不把 $? 换成状态。空结束词合法。后写的 << 盖过先前的 <。 */
+deRfun takeHere(long out, long cmdIndex, long wordLen, long strip): long {
+  if (cmdIndex < 0L || cmdIndex >= 16L || wordLen < 0L || wordLen > 128L) {
+    return 1L;
+  }
+  long total = lexHdCount(out);
+  if (total < 0L || total >= 4L || hdFor(out, cmdIndex, total) >= 2L) {
+    return 1L;
+  }
+  long slot = lexHdSlot(out, total);
+  memory::store64(cmdIndex, slot);
+  memory::store64(strip, slot + 64L);
+  memory::store64(wordLen, slot + 128L);
+  memory::store64(0L, slot + 192L);
+  if (wordLen > 0L) {
+    copyBytes(lexScratchAt(out), slot + 256L, wordLen);
+  }
+  memory::store64(total + 1L, lexHdBase(out));
+  long cmd = cmdOf(out, cmdIndex);
+  if (cmdRedir(cmd) == 3L) {
+    memory::store64(0L, cmd + 64L);
+    memory::store64(0L, cmd + 128L);
+  }
+  return 0L;
+}
+
+
+/* hdWait 为 1 是 <<，为 2 是 <<-。其它词仍走原来的参数或文件重定向。 */
+deRfun putWord(long out, long cur, long wordLen, long status, long redir, long plain, long hdWait): long {
+  if (hdWait != 0L) {
+    long strip = 0L;
+    if (hdWait == 2L) {
+      strip = 1L;
+    }
+    return takeHere(out, cur, wordLen, strip);
+  }
+  return takeWord(out, cur, wordLen, status, redir, plain);
+}
+
+
+/* 0 成功，1 语法错误。out 至少要有 131072 位。
+   列表之间是 &&、|| 或 ;。列表里面是管道。文件重定向是 >、>>、<。
+   << 和 <<- 的下一个词是结束词，不进参数。一条简单命令最多两个，一行最多四个。 */
+deRfun parseLine(long src, long count, long out, long status): long {
+  parseClear(out);
+  long index = 0L;
+  long lists = 0L;
+  long cmds = 0L;
+  long cur = -1L;
+  long joiner = 0L;
+  long wordLen = 0L;
+  long held = 0L;
+  long redir = 0L;
+  long quoting = 0L;
+  long plain = 1L;
+  long any = 0L;
+  long hdWait = 0L;
+  while (index < count) {
+    long value = lexU8(src + index * 8L);
+    if (quoting == 0L && (value == 32L || value == 9L)) {
+      if (wordLen > 0L || held == 1L) {
+        if (cur < 0L) {
+          return 1L;
+        }
+        if (putWord(out, cur, wordLen, status, redir, plain, hdWait) != 0L) {
+          return 1L;
+        }
+        wordLen = 0L;
+        held = 0L;
+        redir = 0L;
+        plain = 1L;
+        hdWait = 0L;
+        any = 1L;
+      }
+      index = index + 1L;
+      continue;
+    }
+    if (quoting == 0L && value == 35L && wordLen == 0L && held == 0L) {
+      break;
+    }
+    if (quoting == 0L && value == 39L) {
+      quoting = 1L;
+      index = index + 1L;
+      if (cur < 0L) {
+        if (lists >= 4L || cmds >= 16L) {
+          return 1L;
+        }
+        memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+        memory::store64(1L, out + (2L + lists * 3L) * 64L);
+        memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        lists = lists + 1L;
+        joiner = 0L;
+      }
+      continue;
+    }
+    if (quoting == 1L) {
+      if (value == 39L) {
+        quoting = 0L;
+        held = 1L;
+      } else {
+        long limit = 64L;
+        if (redir != 0L || hdWait != 0L) {
+          limit = 128L;
+        }
+        if (wordLen >= limit) {
+          return 1L;
+        }
+        putByte(lexScratchAt(out), wordLen, value);
+        wordLen = wordLen + 1L;
+        plain = 0L;
+      }
+      index = index + 1L;
+      continue;
+    }
+    if (quoting == 0L && value == 34L) {
+      quoting = 2L;
+      index = index + 1L;
+      if (cur < 0L) {
+        if (lists >= 4L || cmds >= 16L) {
+          return 1L;
+        }
+        memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+        memory::store64(1L, out + (2L + lists * 3L) * 64L);
+        memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        lists = lists + 1L;
+        joiner = 0L;
+      }
+      continue;
+    }
+    if (quoting == 2L) {
+      long escaped = 0L;
+      if (value == 92L && index + 1L < count) {
+        long next = lexU8(src + (index + 1L) * 8L);
+        if (next == 92L || next == 34L || next == 36L) {
+          value = next;
+          index = index + 1L;
+          escaped = 1L;
+        }
+      }
+      if (escaped == 0L && value == 34L) {
+        quoting = 0L;
+        held = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long limit = 64L;
+      if (redir != 0L || hdWait != 0L) {
+        limit = 128L;
+      }
+      if (wordLen >= limit) {
+        return 1L;
+      }
+      putByte(lexScratchAt(out), wordLen, value);
+      wordLen = wordLen + 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (value == 92L && index + 1L < count) {
+      index = index + 1L;
+      value = lexU8(src + index * 8L);
+      if (cur < 0L) {
+        if (lists >= 4L || cmds >= 16L) {
+          return 1L;
+        }
+        memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+        memory::store64(1L, out + (2L + lists * 3L) * 64L);
+        memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        lists = lists + 1L;
+        joiner = 0L;
+      }
+      if (hdWait != 0L && wordLen >= 128L) {
+        return 1L;
+      }
+      putByte(lexScratchAt(out), wordLen, value);
+      wordLen = wordLen + 1L;
+      index = index + 1L;
+      continue;
+    }
+    long op = 0L;
+    long opRedir = 0L;
+    long opJoin = 0L;
+    long opStrip = 0L;
+    if (value == 124L) {
+      if (index + 1L < count && lexU8(src + (index + 1L) * 8L) == 124L) {
+        op = 4L;
+        index = index + 1L;
+      } else {
+        op = 2L;
+      }
+    } else if (value == 38L) {
+      if (index + 1L < count && lexU8(src + (index + 1L) * 8L) == 38L) {
+        op = 3L;
+        index = index + 1L;
+      } else {
+        return 1L;
+      }
+    } else if (value == 59L) {
+      op = 5L;
+    } else if (value == 62L) {
+      op = 6L;
+      opRedir = 1L;
+      if (index + 1L < count && lexU8(src + (index + 1L) * 8L) == 62L) {
+        opRedir = 2L;
+        index = index + 1L;
+      }
+    } else if (value == 60L) {
+      if (index + 1L < count && lexU8(src + (index + 1L) * 8L) == 60L) {
+        op = 7L;
+        index = index + 1L;
+        if (index + 1L < count && lexU8(src + (index + 1L) * 8L) == 45L) {
+          opStrip = 1L;
+          index = index + 1L;
+        }
+      } else {
+        op = 6L;
+        opRedir = 3L;
+      }
+    }
+    if (op != 0L) {
+      if (wordLen > 0L || held == 1L) {
+        if (cur < 0L) {
+          return 1L;
+        }
+        if (putWord(out, cur, wordLen, status, redir, plain, hdWait) != 0L) {
+          return 1L;
+        }
+        wordLen = 0L;
+        held = 0L;
+        redir = 0L;
+        plain = 1L;
+        hdWait = 0L;
+        any = 1L;
+      }
+      if (hdWait != 0L || (op == 7L && redir != 0L)) {
+        return 1L;
+      }
+      if (op == 7L) {
+        if (cur < 0L) {
+          if (lists >= 4L || cmds >= 16L) {
+            return 1L;
+          }
+          memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+          memory::store64(1L, out + (2L + lists * 3L) * 64L);
+          memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+          cur = cmds;
+          cmds = cmds + 1L;
+          lists = lists + 1L;
+          joiner = 0L;
+        }
+        long total = lexHdCount(out);
+        if (total >= 4L || hdFor(out, cur, total) >= 2L) {
+          return 1L;
+        }
+        hdWait = 1L;
+        if (opStrip == 1L) {
+          hdWait = 2L;
+        }
+      } else if (op == 6L) {
+        if (cur < 0L) {
+          if (lists >= 4L || cmds >= 16L) {
+            return 1L;
+          }
+          memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+          memory::store64(1L, out + (2L + lists * 3L) * 64L);
+          memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+          cur = cmds;
+          cmds = cmds + 1L;
+          lists = lists + 1L;
+          joiner = 0L;
+        }
+        if (redir != 0L || cmdRedir(cmdOf(out, cur)) != 0L) {
+          return 1L;
+        }
+        redir = opRedir;
+      } else if (op == 2L) {
+        if (cur < 0L || redir != 0L) {
+          return 1L;
+        }
+        if (lists < 1L || cmds >= 16L) {
+          return 1L;
+        }
+        long slot = lists - 1L;
+        memory::store64(memory::load64(out + (2L + slot * 3L) * 64L) + 1L, out + (2L + slot * 3L) * 64L);
+        cur = cmds;
+        cmds = cmds + 1L;
+        any = 0L;
+      } else {
+        if (cur < 0L || redir != 0L) {
+          return 1L;
+        }
+        cur = -1L;
+        any = 0L;
+        if (op == 3L) {
+          joiner = 1L;
+        } else if (op == 4L) {
+          joiner = 2L;
+        } else {
+          joiner = 3L;
+        }
+      }
+      index = index + 1L;
+      continue;
+    }
+    if (cur < 0L) {
+      if (lists >= 4L || cmds >= 16L) {
+        return 1L;
+      }
+      memory::store64(joiner, out + (1L + lists * 3L) * 64L);
+      memory::store64(1L, out + (2L + lists * 3L) * 64L);
+      memory::store64(cmds, out + (3L + lists * 3L) * 64L);
+      cur = cmds;
+      cmds = cmds + 1L;
+      lists = lists + 1L;
+      joiner = 0L;
+    }
+    long limit = 160L;
+    if (hdWait != 0L) {
+      limit = 128L;
+    }
+    if (wordLen >= limit) {
+      return 1L;
+    }
+    putByte(lexScratchAt(out), wordLen, value);
+    wordLen = wordLen + 1L;
+    held = 1L;
+    index = index + 1L;
+  }
+  if (quoting != 0L || (redir != 0L && wordLen == 0L && held == 0L) || (hdWait != 0L && wordLen == 0L && held == 0L)) {
+    return 1L;
+  }
+  if (wordLen > 0L || held == 1L) {
+    if (cur < 0L) {
+      return 1L;
+    }
+    if (putWord(out, cur, wordLen, status, redir, plain, hdWait) != 0L) {
+      return 1L;
+    }
+    any = 1L;
+    redir = 0L;
+    held = 0L;
+    hdWait = 0L;
+  }
+  if (redir != 0L || hdWait != 0L) {
+    return 1L;
+  }
+  if (joiner != 0L && cur < 0L) {
+    return 1L;
+  }
+  if (any == 0L && lists > 0L && cur >= 0L && cmdArgc(cmdOf(out, cur)) == 0L && cmdRedir(cmdOf(out, cur)) == 0L) {
+    return 1L;
+  }
+  memory::store64(lists, out);
+  return 0L;
+}

@@ -1,0 +1,445 @@
+/* POSIX.1-2017 more（utilities/more.html）的选定子集。
+   没有原始终端模式。按页把文件写到描述符 1，默认 23 行。-n 改页长。
+   页间从描述符 0 读到换行，行首是 q 则退出 0，空格或回车下一页，其它也下一页。
+   -e 在文件读完后不再读命令。页与页之间仍然等待。
+   没有 -e 时，文件在不满一页处结束也会再读一行命令。
+   -s 把连续空行压成一行。
+   -c -i -u -p -t 接受，不改变结果。
+   没有文件读描述符 0。打开失败写 more: 路径: No such file or directory，退出 1。
+   不认识的选项写 more: invalid option，退出 1。-n 非法写 more: invalid number，退出 1。
+   诊断英文 ASCII，描述符 2，以 more: 开头。main 经 finish 调 exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun maxTen(): long {
+  long hi = 65536L * 65536L * 65536L * 16384L;
+  return (hi - 1L + hi) / 10L;
+}
+
+deRfun readCount(long addr, long len, long* out): long {
+  if (len < 1L || len > 19L) {
+    return 0L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < len) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    digit = digit - 48L;
+    if (value > maxTen()) {
+      return 0L;
+    }
+    if (value == maxTen() && digit > 7L) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  if (value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+/* 状态：+0 读偏移，+64 页内行数，+128 上一行是否空（-s），+192 输入结束，
+   +256 行缓冲长度，+320 起 4096 八位组行缓冲。 */
+deRfun prompt(long home): long {
+  long cursor = 0L;
+  long first = 0L;
+  long have = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, 0L, cursor, 4096L) != 0L) {
+      return 0L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      return 0L;
+    }
+    long index = 0L;
+    while (index < n) {
+      long octet = u8(obr::proc::bytes(home) + index * 8L);
+      if (have == 0L) {
+        first = octet;
+        have = 1L;
+      }
+      cursor = cursor + 1L;
+      if (octet == 10L) {
+        reading = 0L;
+        index = n;
+      }
+      index = index + 1L;
+    }
+  }
+  if (have == 1L && first == 113L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun flushPage(long home, long state, long* place, long optE, long moreInput): long {
+  memory::store64(0L, state + 64L);
+  if (moreInput == 0L && optE == 1L) {
+    return 0L;
+  }
+  if (prompt(home) == 1L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+deRfun emitLineBuf(long home, long state, long* place, long optS): long {
+  long len = memory::load64(state + 256L);
+  long blank = 0L;
+  if (len == 0L) {
+    blank = 1L;
+  }
+  if (optS == 1L && blank == 1L && memory::load64(state + 128L) == 1L) {
+    memory::store64(0L, state + 256L);
+    return 0L;
+  }
+  memory::store64(blank, state + 128L);
+  if (len > 0L) {
+    if (emitSpan(home, place, state + 320L, len) != 0L) {
+      return 1L;
+    }
+  }
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  if (writeReady(home, place, 1L) != 0L) {
+    return 1L;
+  }
+  memory::store64(0L, state + 256L);
+  long lines = memory::load64(state + 64L) + 1L;
+  memory::store64(lines, state + 64L);
+  return 0L;
+}
+
+deRfun pushLine(long home, long state, long* place, long pageSize, long optS, long optE, long atEof, long octet): long {
+  if (octet == 10L) {
+    if (emitLineBuf(home, state, place, optS) != 0L) {
+      return 1L;
+    }
+    long lines = memory::load64(state + 64L);
+    if (lines >= pageSize) {
+      long more = 1L;
+      if (atEof == 1L) {
+        more = 0L;
+      }
+      long status = flushPage(home, state, place, optE, more);
+      if (status == 2L) {
+        return 2L;
+      }
+      if (status != 0L) {
+        return 1L;
+      }
+    }
+    return 0L;
+  }
+  long len = memory::load64(state + 256L);
+  if (len >= 4096L) {
+    return 1L;
+  }
+  memory::storeOctet(octet, state + 320L + len * 8L);
+  memory::store64(len + 1L, state + 256L);
+  return 0L;
+}
+
+deRfun finishLine(long home, long state, long* place, long optS, long optE): long {
+  long len = memory::load64(state + 256L);
+  if (len > 0L) {
+    if (emitLineBuf(home, state, place, optS) != 0L) {
+      return 1L;
+    }
+  }
+  if (optE == 1L) {
+    return 0L;
+  }
+  if (memory::load64(state + 64L) == 0L) {
+    return 0L;
+  }
+  if (prompt(home) == 1L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+deRfun scanFd(long home, long fd, long state, long* place, long pageSize, long optS, long optE): long {
+  long hold = obr::proc::alloc(home, 32768L);
+  if (hold == 0L) {
+    writeErr(home, "more: out of memory\n");
+    return 1L;
+  }
+  long offset = memory::load64(state);
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      writeErr(home, "more: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "more: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long copied = 0L;
+      while (copied < n) {
+        memory::storeOctet(u8(obr::proc::bytes(home) + copied * 8L), hold + copied * 8L);
+        copied = copied + 1L;
+      }
+      long index = 0L;
+      while (index < n) {
+        long octet = u8(hold + index * 8L);
+        long status = pushLine(home, state, place, pageSize, optS, optE, 0L, octet);
+        if (status == 2L) {
+          return 0L;
+        }
+        if (status != 0L) {
+          return 1L;
+        }
+        index = index + 1L;
+      }
+      offset = offset + n;
+      memory::store64(offset, state);
+    }
+  }
+  long tail = finishLine(home, state, place, optS, optE);
+  if (tail == 2L) {
+    return 0L;
+  }
+  if (tail != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun showFile(long home, long path, long pathLen, long state, long* place, long pageSize, long optS, long optE): long {
+  if (pathLen < 0L || pathLen > 8192L) {
+    writeErr(home, "more: ");
+    writeErrSpan(home, path, pathLen);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  plant(home, path, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "more: ");
+    writeErrSpan(home, path, pathLen);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  memory::store64(0L, state);
+  memory::store64(0L, state + 64L);
+  memory::store64(0L, state + 128L);
+  memory::store64(0L, state + 192L);
+  memory::store64(0L, state + 256L);
+  long status = scanFd(home, fd, state, place, pageSize, optS, optE);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long pageSize = 23L;
+  long optE = 0L;
+  long optS = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long fileBegin = 0L;
+  long foundFile = 0L;
+  while (index < count && ended == 0L) {
+    long word = argPtr(home, index);
+    long wordLen = argLen(home, index);
+    if (wordLen == 2L && u8(word) == 45L && u8(word + 8L) == 45L) {
+      ended = 1L;
+      index = index + 1L;
+      if (index < count) {
+        fileBegin = index;
+        foundFile = 1L;
+      }
+    } else if (wordLen >= 2L && u8(word) == 45L) {
+      long cursor = 1L;
+      while (cursor < wordLen) {
+        long bit = u8(word + cursor * 8L);
+        if (bit == 110L) {
+          long numAt = 0L;
+          long numLen = 0L;
+          if (cursor + 1L >= wordLen) {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "more: missing operand\n");
+              return finish(home, 1L);
+            }
+            numAt = argPtr(home, index);
+            numLen = argLen(home, index);
+          } else {
+            numAt = word + (cursor + 1L) * 8L;
+            numLen = wordLen - cursor - 1L;
+            cursor = wordLen;
+          }
+          long pages = 0L;
+          if (readCount(numAt, numLen, &pages) == 0L) {
+            writeErr(home, "more: invalid number\n");
+            return finish(home, 1L);
+          }
+          pageSize = pages;
+          if (cursor < wordLen) {
+            cursor = wordLen;
+          }
+        } else if (bit == 101L || bit == 115L || bit == 99L || bit == 105L || bit == 117L || bit == 112L || bit == 116L) {
+          if (bit == 101L) {
+            optE = 1L;
+          }
+          if (bit == 115L) {
+            optS = 1L;
+          }
+          cursor = cursor + 1L;
+        } else {
+          writeErr(home, "more: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+      fileBegin = index;
+      foundFile = 1L;
+    }
+  }
+  long state = obr::proc::alloc(home, 33088L);
+  if (state == 0L) {
+    return finish(home, 1L);
+  }
+  long place = 0L;
+  if (foundFile == 0L) {
+    long status = scanFd(home, 0L, state, &place, pageSize, optS, optE);
+    return finish(home, status);
+  }
+  long fail = 0L;
+  while (fileBegin < count) {
+    long path = argPtr(home, fileBegin);
+    long pathLen = argLen(home, fileBegin);
+    long status = showFile(home, path, pathLen, state, &place, pageSize, optS, optE);
+    if (status != 0L) {
+      fail = 1L;
+    }
+    fileBegin = fileBegin + 1L;
+  }
+  return finish(home, fail);
+}

@@ -1,0 +1,59 @@
+/* Plan 1 M2：密集 switch 用跳转表；空洞和越界走 default。结果 0。 */
+deRfun dense(int value): int {
+  switch (value) {
+    case 0:
+      return 100;
+    case 1:
+      return 101;
+    case 3:
+      return 103;
+    case 4:
+      return 104;
+    case 5:
+      return 105;
+    case 7:
+      return 107;
+    case 8:
+      return 108;
+    case 9:
+      return 109;
+    case 10:
+      return 110;
+    case 11:
+      return 111;
+    default:
+      return -1;
+  }
+}
+
+deRfun noDefault(int value): int {
+  switch (value) {
+    case 0:
+      return 10;
+    case 1:
+      return 11;
+    case 2:
+      return 12;
+    case 3:
+      return 13;
+  }
+  return 99;
+}
+
+deRfun main(): int {
+  if (dense(0) != 100) return 1;
+  if (dense(1) != 101) return 2;
+  if (dense(2) != -1) return 3;
+  if (dense(3) != 103) return 4;
+  if (dense(6) != -1) return 5;
+  if (dense(7) != 107) return 6;
+  if (dense(11) != 111) return 7;
+  if (dense(12) != -1) return 8;
+  if (dense(-1) != -1) return 9;
+
+  if (noDefault(0) != 10) return 10;
+  if (noDefault(3) != 13) return 11;
+  if (noDefault(4) != 99) return 12;
+  if (noDefault(-1) != 99) return 13;
+  return 0;
+}

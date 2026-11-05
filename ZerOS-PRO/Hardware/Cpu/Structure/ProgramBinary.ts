@@ -6,6 +6,8 @@
  * 文件职责
  * ---------------------------------------------------------------------------
  * 文件头标明版本和小端。每条记录是编号加操作数，不再保存助记符。
+ * 版本 2 的导入项是符号名、模块名、指令编号。模块名只用来对齐目录，接入仍按符号名。
+ * 版本 3 在第 12 个八位组写下指令区字节数，指令从第 16 个起，目录格式与版本 2 相同。
  * 读回来的结构和 parseCpuInstruction 得到的是同一种指令，执行路径不变。
  * 这不是 ZCP1 机器码。标号和 call 必须在写入之前已经收成指令编号。
  *
@@ -120,6 +122,7 @@ export namespace ZerOS {
       const ProgramBinaryMunmap = CodeRoot.Hardware.Cpu.ProgramBinaryMunmap;
       const ProgramBinaryAdmit = CodeRoot.Hardware.Cpu.ProgramBinaryAdmit;
       const ProgramBinaryVersionLink = CodeRoot.Hardware.Cpu.ProgramBinaryVersionLink;
+      const ProgramBinaryVersionSpan = CodeRoot.Hardware.Cpu.ProgramBinaryVersionSpan;
       const ProgramBinaryImmediateSigned = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateSigned;
       const ProgramBinaryImmediateWide = CodeRoot.Hardware.Cpu.ProgramBinaryImmediateWide;
 
@@ -1063,7 +1066,8 @@ export namespace ZerOS {
         fail("指令编号无法识别");
       }
 
-      /** 导出或尚未接上的导入。index 在导出上是指令编号，在导入上是要改的那条调用。 */
+      /** 导出或尚未接上的导入。index 在导出上是指令编号，在导入上是要改的那条调用。
+       *  导入在文件里还带模块名。读的时候核对并跳过，不放进这条结构。 */
       export interface ProgramSymbol {
         readonly name: string;
         readonly index: number;
@@ -1152,6 +1156,24 @@ export namespace ZerOS {
         return items;
       }
 
+      /** 导入比导出多一个模块名。操作系统按它找 /lib/模块名.zdll，这里只把它读过去。 */
+      function readImports(reader: Reader, count: number, steps: number): ProgramSymbol[] {
+        if (count > LinkImportMax) {
+          fail("符号太多");
+        }
+        const items: ProgramSymbol[] = [];
+        for (let index = 0; index < count; index += 1) {
+          const name = readSymbolName(reader);
+          readSymbolName(reader);
+          const site = readU32(reader);
+          if (site >= steps) {
+            fail("符号编号越出这段指令");
+          }
+          items.push({ name, index: site });
+        }
+        return items;
+      }
+
       function readLink(reader: Reader, steps: number): Pick<ProgramImage, "kind" | "symbols" | "imports" | "relocs"> {
         const kind = readU16(reader);
         const flags = readU16(reader);
@@ -1162,7 +1184,7 @@ export namespace ZerOS {
         const importCount = readU32(reader);
         const relocCount = readU32(reader);
         const symbols = readSymbols(reader, exportCount, LinkExportMax, steps);
-        const imports = readSymbols(reader, importCount, LinkImportMax, steps);
+        const imports = readImports(reader, importCount, steps);
         if (relocCount > LinkRelocMax) {
           fail("重定位太多");
         }
@@ -1183,6 +1205,7 @@ export namespace ZerOS {
       /**
        * 读回指令和链接目录。版本 1 没有目录，读完必须正好用尽字节。
        * 版本 2 把目录读完，多出来的尾巴同样拒绝。
+       * 版本 3 的文件头带指令区字节数，指令从第 16 个八位组起，目录仍要读完。
        */
       export function decodeProgramImage(bytes: Uint8Array): ProgramImage {
         if (!isProgramBinary(bytes)) {
@@ -1191,17 +1214,36 @@ export namespace ZerOS {
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         const version = view.getUint16(4, true);
         const endian = view.getUint16(6, true);
-        if (version !== ProgramBinaryVersion && version !== ProgramBinaryVersionLink) {
+        if (
+          version !== ProgramBinaryVersion
+          && version !== ProgramBinaryVersionLink
+          && version !== ProgramBinaryVersionSpan
+        ) {
           fail("程序二进制版本无法识别");
         }
         if (endian !== ProgramBinaryLittleEndian) {
           fail("程序二进制不是小端");
         }
         const count = view.getUint32(8, true);
-        const reader: Reader = { view, at: 12, end: bytes.byteLength };
+        let payloadAt = 12;
+        let span = 0;
+        if (version === ProgramBinaryVersionSpan) {
+          if (bytes.byteLength < 16) {
+            fail("程序二进制文件头不完整");
+          }
+          span = view.getUint32(12, true);
+          if (span > bytes.byteLength - 16) {
+            fail("指令区长度越出文件");
+          }
+          payloadAt = 16;
+        }
+        const reader: Reader = { view, at: payloadAt, end: bytes.byteLength };
         const steps: CpuInstruction[] = [];
         for (let index = 0; index < count; index += 1) {
           steps.push(readOne(reader));
+        }
+        if (version === ProgramBinaryVersionSpan && reader.at !== payloadAt + span) {
+          fail("指令区长度和指令对不上");
         }
         if (version === ProgramBinaryVersion) {
           if (reader.at !== reader.end) {

@@ -43,6 +43,7 @@ export namespace ZerOS {
       const resizeAccel = AccelRoot.Hardware.Gpu.resize;
       const blitAccel = AccelRoot.Hardware.Gpu.blit;
       const snapshotAccel = AccelRoot.Hardware.Gpu.snapshot;
+      const handoffAccel = AccelRoot.Hardware.Gpu.handoffSnapshot;
       const runtimePrefix = "[ZerOS.Hardware.Gpu.GpuRuntime]";
 
       let frameWidth = 0;
@@ -243,6 +244,66 @@ export namespace ZerOS {
         } finally {
           end();
         }
+      }
+
+      /**
+       * 提交这一帧后就结束绘图锁。位图在 picture 里稍后交回。
+       * 锁若留到副本完成，下一条字形会因为上一条还没画完而失败。
+       */
+      export function handoffView(): {
+        readonly accepted: Promise<void>;
+        readonly picture: Promise<ImageBitmap | Uint32Array>;
+      } {
+        let settled = false;
+        let acceptHandoff!: () => void;
+        let rejectHandoff!: (error: Error) => void;
+        const accepted = new Promise<void>((resolve, reject): void => {
+          acceptHandoff = (): void => {
+            if (!settled) {
+              settled = true;
+              resolve();
+            }
+          };
+          rejectHandoff = (error: Error): void => {
+            if (!settled) {
+              settled = true;
+              reject(error);
+            }
+          };
+        });
+        const picture = (async (): Promise<ImageBitmap | Uint32Array> => {
+          let open = false;
+          try {
+            begin();
+            open = true;
+            const hand = handoffAccel();
+            await hand.accepted;
+            end();
+            open = false;
+            acceptHandoff();
+            const bitmap = await hand.picture;
+            if (bitmap !== null) {
+              await spend(1);
+              return bitmap;
+            }
+            begin();
+            open = true;
+            await blitAccel(frame, frameWidth, frameHeight);
+            const copy = frame.slice();
+            await spend(frame.length);
+            end();
+            open = false;
+            return copy;
+          } catch (error: unknown) {
+            if (open) {
+              end();
+            }
+            const wrapped = error instanceof Error ? error : new Error("present handoff failed");
+            rejectHandoff(wrapped);
+            throw wrapped;
+          }
+        })();
+        return { accepted, picture };
       }
 
       function inside(x: number, y: number, width: number, height: number): boolean {

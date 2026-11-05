@@ -45,7 +45,7 @@ void Generator::emitStore(TypeKind type) {
     if (type == TypeKind::Float || type == TypeKind::Double) emit("sti.f64 r0, r5");
     else if (type == TypeKind::Short) emit("sti.16 r0, r5");
     else if (type == TypeKind::Int || type == TypeKind::Char) emit("sti.32 r0, r5");
-    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::String) emit("sti.64 r0, r5");
+    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::Interface || type == TypeKind::String) emit("sti.64 r0, r5");
     else emit("sti.64 r0, r5");
   }
 
@@ -53,7 +53,7 @@ void Generator::emitLoad(TypeKind type) {
     if (type == TypeKind::Float || type == TypeKind::Double) emit("ldi.f64 r0, r5");
     else if (type == TypeKind::Short) emit("ldi.16 r0, r5");
     else if (type == TypeKind::Int || type == TypeKind::Char) emit("ldi.32 r0, r5");
-    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::String) emit("ldi.64 r0, r5");
+    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::Interface || type == TypeKind::String) emit("ldi.64 r0, r5");
     else emit("ldi.64 r0, r5");
   }
 

@@ -1,0 +1,998 @@
+/* POSIX.1-2017 ed（utilities/ed.html）。
+   从描述符 0 读命令。可选一个文件操作数：启动时读入该文件到缓冲。
+   没有文件操作数时从空缓冲开始。
+   实现 a c d i p n w q Q s m t r j =。
+   地址：行号、.、$、逗号范围；缺省首地址为 1 或 .，缺省次地址为 $ 或 .，按命令语义。
+   s 用 / 定界，支持一次替换和尾部的 g（整行全部替换）。
+   BRE 支持普通字符、. * ^ $ [ ] [^ ] \\( \\)；替换里 \\1 到 \\9 和 &。
+   w 写文件；q 在已修改且未 w 时第一次只向描述符 2 写 ?，第二次 q 才退出 0；
+   Q 直接退出 0。错误向描述符 2 写 ed: ? 加短说明；仅当命令流以错误结束时退出 1。
+   不做 e E g G H h l P V v z 和 ! 子 shell。碰到它们写 ed: ? unsupported 并置错误结束。
+   行最长 8192 八位组。缓冲最多 65536 行。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+import obr.text;
+
+struct Ed {
+  long home;
+  array[long] lens;
+  array[long] datas;
+  long count;
+  long cur;
+  long dirty;
+  long wrote;
+  long quitAsk;
+  long hadErr;
+  long fnameLen;
+  long fname;
+}
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  int cursor = 0;
+  while (index < count) {
+    memory::storeOctet(text[cursor], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+    cursor = cursor + 1;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun lineMax(): long {
+  return 8192L;
+}
+
+deRfun lineCap(): long {
+  return 65536L;
+}
+
+deRfun edErr(Ed* ed, string msg): void {
+  writeErr(ed.home, "ed: ? ");
+  writeErr(ed.home, msg);
+  writeErr(ed.home, "\n");
+  ed.hadErr = 1L;
+}
+
+deRfun plantPath(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun lineLen(Ed* ed, long index): long {
+  return ed.lens[index];
+}
+
+deRfun lineData(Ed* ed, long index): long {
+  return ed.datas[index];
+}
+
+deRfun setLine(Ed* ed, long index, long len, long data): void {
+  ed.lens[index] = len;
+  ed.datas[index] = data;
+}
+
+deRfun pushLine(Ed* ed, long len, long data): long {
+  if (ed.count >= lineCap()) {
+    return 0L;
+  }
+  setLine(ed, ed.count, len, data);
+  ed.count = ed.count + 1L;
+  return 1L;
+}
+
+deRfun insertAt(Ed* ed, long pos, long len, long data): long {
+  if (ed.count >= lineCap()) {
+    return 0L;
+  }
+  long index = ed.count;
+  while (index > pos) {
+    ed.lens[index] = ed.lens[index - 1L];
+    ed.datas[index] = ed.datas[index - 1L];
+    index = index - 1L;
+  }
+  setLine(ed, pos, len, data);
+  ed.count = ed.count + 1L;
+  ed.dirty = 1L;
+  return 1L;
+}
+
+deRfun deleteRange(Ed* ed, long from, long to): void {
+  if (from < 0L) {
+    from = 0L;
+  }
+  if (to >= ed.count) {
+    to = ed.count - 1L;
+  }
+  if (from > to || ed.count < 1L) {
+    return;
+  }
+  long drop = to - from + 1L;
+  long index = from;
+  while (index + drop < ed.count) {
+    ed.lens[index] = ed.lens[index + drop];
+    ed.datas[index] = ed.datas[index + drop];
+    index = index + 1L;
+  }
+  ed.count = ed.count - drop;
+  if (ed.cur >= ed.count) {
+    ed.cur = ed.count - 1L;
+  }
+  if (ed.cur < 0L) {
+    ed.cur = 0L;
+  }
+  ed.dirty = 1L;
+}
+
+deRfun readFdLine(long home, long fd, long* buf, long* len, long* eof, long* fileOff): long {
+  long cap = lineMax();
+  long filled = 0L;
+  while (filled < cap) {
+    if (obr::proc::read(home, fd, *fileOff, 1L) != 0L) {
+      return 0L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      *eof = 1L;
+      break;
+    }
+    *fileOff = *fileOff + n;
+    long bit = u8(obr::proc::bytes(home));
+    if (bit == 10L) {
+      break;
+    }
+    memory::storeOctet(bit, *buf + filled * 8L);
+    filled = filled + 1L;
+  }
+  *len = filled;
+  return 1L;
+}
+
+deRfun loadFile(Ed* ed, long addr, long count): long {
+  if (count < 0L || count > 8192L) {
+    return 0L;
+  }
+  plantPath(ed.home, addr, count);
+  if (obr::proc::open(ed.home, 0L) != 0L) {
+    return 0L;
+  }
+  long fd = obr::proc::slot(ed.home, 192L);
+  ed.count = 0L;
+  ed.cur = 0L;
+  long buf = obr::proc::alloc(ed.home, lineMax() * 8L);
+  long len = 0L;
+  long eof = 0L;
+  long fileOff = 0L;
+  while (eof == 0L) {
+    if (readFdLine(ed.home, fd, &buf, &len, &eof, &fileOff) != 1L) {
+      if (fd != 0L) {
+        obr::proc::close(ed.home, fd);
+      }
+      return 0L;
+    }
+    if (len < 1L && eof == 1L) {
+      break;
+    }
+    long block = obr::proc::alloc(ed.home, len * 8L);
+    copySpan(buf, block, len);
+    if (pushLine(ed, len, block) != 1L) {
+      if (fd != 0L) {
+        obr::proc::close(ed.home, fd);
+      }
+      return 0L;
+    }
+  }
+  if (fd != 0L) {
+    obr::proc::close(ed.home, fd);
+  }
+  ed.dirty = 0L;
+  ed.wrote = 1L;
+  ed.fnameLen = count;
+  ed.fname = obr::proc::alloc(ed.home, count * 8L);
+  copySpan(addr, ed.fname, count);
+  if (ed.count < 1L) {
+    ed.cur = 0L;
+  }
+  return 1L;
+}
+
+deRfun writeOut(long home, long fd, long addr, long count): long {
+  long off = 0L;
+  while (off < count) {
+    long chunk = count - off;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + off * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, 0L, chunk) != 0L) {
+      return 0L;
+    }
+    off = off + chunk;
+  }
+  return 1L;
+}
+
+deRfun printLine(Ed* ed, long index, long number): void {
+  if (index < 0L || index >= ed.count) {
+    return;
+  }
+  long recLen = lineLen(ed, index);
+  long recData = lineData(ed, index);
+  if (number == 1L) {
+    long buf = obr::proc::bytes(ed.home);
+    long pos = 0L;
+    long val = index + 1L;
+    if (val == 0L) {
+      memory::storeOctet(48L, buf);
+      pos = 1L;
+    } else {
+      long digits = 0L;
+      long tmp = val;
+      while (tmp > 0L) {
+        digits = digits + 1L;
+        tmp = tmp / 10L;
+      }
+      tmp = val;
+      long at = digits;
+      while (at > 0L) {
+        at = at - 1L;
+        long d = tmp % 10L;
+        memory::storeOctet(48L + d, buf + at * 8L);
+        tmp = tmp / 10L;
+      }
+      pos = digits;
+    }
+    memory::storeOctet(9L, buf + pos * 8L);
+    pos = pos + 1L;
+    obr::proc::write(ed.home, 1L, 0L, pos);
+  }
+  writeOut(ed.home, 1L, recData, recLen);
+  long nl = 10L;
+  memory::storeOctet(nl, obr::proc::bytes(ed.home));
+  obr::proc::write(ed.home, 1L, 0L, 1L);
+}
+
+deRfun parseNum(long cmd, long len, long* pos, long* out): long {
+  long start = *pos;
+  if (start >= len) {
+    return 0L;
+  }
+  long bit = u8(cmd + start * 8L);
+  if (bit < 48L || bit > 57L) {
+    return 0L;
+  }
+  long val = 0L;
+  while (*pos < len) {
+    bit = u8(cmd + *pos * 8L);
+    if (bit < 48L || bit > 57L) {
+      break;
+    }
+    val = val * 10L + (bit - 48L);
+    *pos = *pos + 1L;
+    if (val > lineCap()) {
+      return 0L;
+    }
+  }
+  if (val < 1L) {
+    return 0L;
+  }
+  *out = val - 1L;
+  return 1L;
+}
+
+deRfun resolveAddr(Ed* ed, long cmd, long len, long* pos, long which, long cmdKind): long {
+  if (*pos >= len) {
+    if (which == 1L) {
+      if (cmdKind == 115L || cmdKind == 61L) {
+        return ed.cur;
+      }
+      return ed.cur;
+    }
+    if (ed.count < 1L) {
+      return -1L;
+    }
+    return ed.cur;
+  }
+  long bit = u8(cmd + *pos * 8L);
+  if (bit == 46L) {
+    *pos = *pos + 1L;
+    return ed.cur;
+  }
+  if (bit == 36L) {
+    *pos = *pos + 1L;
+    if (ed.count < 1L) {
+      return -1L;
+    }
+    return ed.count - 1L;
+  }
+  if (bit >= 48L && bit <= 57L) {
+    long num = 0L;
+    if (parseNum(cmd, len, pos, &num) != 1L) {
+      return -2L;
+    }
+    if (num >= ed.count) {
+      return -1L;
+    }
+    return num;
+  }
+  if (which == 1L) {
+    return ed.cur;
+  }
+  if (ed.count < 1L) {
+    return -1L;
+  }
+  return ed.count - 1L;
+}
+
+deRfun parseRange(Ed* ed, long cmd, long len, long* pos, long cmdKind, long* a1, long* a2): long {
+  long p = *pos;
+  long first = resolveAddr(ed, cmd, len, &p, 1L, cmdKind);
+  if (first == -2L) {
+    return 0L;
+  }
+  if (p < len && u8(cmd + p * 8L) == 44L) {
+    p = p + 1L;
+    long second = resolveAddr(ed, cmd, len, &p, 2L, cmdKind);
+    if (second == -2L) {
+      return 0L;
+    }
+    if (first < 0L) {
+      first = 0L;
+    }
+    if (second < 0L) {
+      return 0L;
+    }
+    if (first > second) {
+      long tmp = first;
+      first = second;
+      second = tmp;
+    }
+    *a1 = first;
+    *a2 = second;
+    *pos = p;
+    return 1L;
+  }
+  if (first < 0L) {
+    return 0L;
+  }
+  *a1 = first;
+  *a2 = first;
+  *pos = p;
+  return 1L;
+}
+
+deRfun breMatch(long text, long tlen, long from, long pat, long plen, long* mstart, long* mend): long {
+  long pc = 0L;
+  long sp = from;
+  long bestStart = -1L;
+  long bestEnd = -1L;
+  while (sp <= tlen) {
+    long tp = 0L;
+    long ts = sp;
+    long ok = 1L;
+    while (ok == 1L && tp < plen) {
+      long op = u8(pat + tp * 8L);
+      if (op == 92L && tp + 1L < plen) {
+        long esc = u8(pat + (tp + 1L) * 8L);
+        if (esc == 40L) {
+          tp = tp + 2L;
+        } else if (esc == 41L) {
+          tp = tp + 2L;
+        } else if (esc == 46L || esc == 42L || esc == 91L || esc == 94L || esc == 36L) {
+          if (ts >= tlen || u8(text + ts * 8L) != esc) {
+            ok = 0L;
+          } else {
+            ts = ts + 1L;
+            tp = tp + 2L;
+          }
+        } else {
+          if (ts >= tlen || u8(text + ts * 8L) != esc) {
+            ok = 0L;
+          } else {
+            ts = ts + 1L;
+            tp = tp + 2L;
+          }
+        }
+      } else if (op == 46L) {
+        if (ts >= tlen) {
+          ok = 0L;
+        } else {
+          ts = ts + 1L;
+          tp = tp + 1L;
+        }
+      } else if (op == 42L) {
+        ok = 0L;
+      } else if (op == 94L && tp == 0L) {
+        if (sp != from) {
+          ok = 0L;
+        } else {
+          tp = tp + 1L;
+        }
+      } else if (op == 36L && tp + 1L >= plen) {
+        if (ts != tlen) {
+          ok = 0L;
+        } else {
+          tp = tp + 1L;
+        }
+      } else if (op == 91L) {
+        tp = tp + 1L;
+        long inv = 0L;
+        if (tp < plen && u8(pat + tp * 8L) == 94L) {
+          inv = 1L;
+          tp = tp + 1L;
+        }
+        long found = 0L;
+        while (tp < plen && u8(pat + tp * 8L) != 93L) {
+          long c = u8(pat + tp * 8L);
+          if (ts < tlen && u8(text + ts * 8L) == c) {
+            found = 1L;
+          }
+          tp = tp + 1L;
+        }
+        if (tp >= plen) {
+          ok = 0L;
+        } else {
+          tp = tp + 1L;
+          if (inv == 1L) {
+            if (found == 1L || ts >= tlen) {
+              ok = 0L;
+            } else {
+              ts = ts + 1L;
+            }
+          } else {
+            if (found == 0L || ts >= tlen) {
+              ok = 0L;
+            } else {
+              ts = ts + 1L;
+            }
+          }
+        }
+      } else {
+        if (ts >= tlen || u8(text + ts * 8L) != op) {
+          ok = 0L;
+        } else {
+          ts = ts + 1L;
+          tp = tp + 1L;
+        }
+      }
+    }
+    if (ok == 1L && tp >= plen) {
+      bestStart = sp;
+      bestEnd = ts;
+      break;
+    }
+    if (sp >= tlen) {
+      break;
+    }
+    sp = sp + 1L;
+  }
+  if (bestStart < 0L) {
+    return 0L;
+  }
+  *mstart = bestStart;
+  *mend = bestEnd;
+  return 1L;
+}
+
+deRfun applySub(Ed* ed, long index, long pat, long plen, long rep, long rlen, long global): long {
+  if (index < 0L || index >= ed.count) {
+    return 0L;
+  }
+  long recLen = lineLen(ed, index);
+  long recData = lineData(ed, index);
+  long buf = obr::proc::alloc(ed.home, lineMax() * 8L);
+  long out = 0L;
+  long pos = 0L;
+  long replaced = 0L;
+  while (pos <= recLen) {
+    long ms = 0L;
+    long me = 0L;
+    if (breMatch(recData, recLen, pos, pat, plen, &ms, &me) != 1L) {
+      if (pos < recLen) {
+        memory::storeOctet(u8(recData + pos * 8L), buf + out * 8L);
+        out = out + 1L;
+        pos = pos + 1L;
+      } else {
+        break;
+      }
+    } else {
+      long ri = 0L;
+      while (ri < rlen) {
+        long rb = u8(rep + ri * 8L);
+        if (rb == 38L) {
+          long k = ms;
+          while (k < me) {
+            memory::storeOctet(u8(recData + k * 8L), buf + out * 8L);
+            out = out + 1L;
+            k = k + 1L;
+          }
+          ri = ri + 1L;
+        } else if (rb == 92L && ri + 1L < rlen) {
+          long dig = u8(rep + (ri + 1L) * 8L);
+          if (dig >= 49L && dig <= 57L) {
+            long k = ms;
+            while (k < me) {
+              memory::storeOctet(u8(recData + k * 8L), buf + out * 8L);
+              out = out + 1L;
+              k = k + 1L;
+            }
+            ri = ri + 2L;
+          } else {
+            memory::storeOctet(rb, buf + out * 8L);
+            out = out + 1L;
+            ri = ri + 1L;
+          }
+        } else {
+          memory::storeOctet(rb, buf + out * 8L);
+          out = out + 1L;
+          ri = ri + 1L;
+        }
+        if (out >= lineMax()) {
+          return 0L;
+        }
+      }
+      replaced = 1L;
+      pos = me;
+      if (global == 0L) {
+        while (pos < recLen) {
+          memory::storeOctet(u8(recData + pos * 8L), buf + out * 8L);
+          out = out + 1L;
+          pos = pos + 1L;
+        }
+        break;
+      }
+    }
+  }
+  if (replaced == 0L) {
+    return 1L;
+  }
+  long block = obr::proc::alloc(ed.home, out * 8L);
+  copySpan(buf, block, out);
+  setLine(ed, index, out, block);
+  ed.dirty = 1L;
+  return 1L;
+}
+
+deRfun readBody(Ed* ed, long after): long {
+  long buf = obr::proc::alloc(ed.home, lineMax() * 8L);
+  long pos = after + 1L;
+  long len = 0L;
+  long eof = 0L;
+  long fileOff = 0L;
+  while (eof == 0L) {
+    if (readFdLine(ed.home, 0L, &buf, &len, &eof, &fileOff) != 1L) {
+      return 0L;
+    }
+    if (len == 1L && u8(buf) == 46L) {
+      break;
+    }
+    long block = obr::proc::alloc(ed.home, len * 8L);
+    copySpan(buf, block, len);
+    if (insertAt(ed, pos, len, block) != 1L) {
+      return 0L;
+    }
+    pos = pos + 1L;
+    ed.cur = pos - 1L;
+  }
+  return 1L;
+}
+
+deRfun cmdWrite(Ed* ed, long path, long plen): long {
+  if (plen < 0L || plen > 8192L) {
+    return 0L;
+  }
+  plantPath(ed.home, path, plen);
+  if (obr::proc::open(ed.home, 1L) != 0L) {
+    return 0L;
+  }
+  long fd = obr::proc::slot(ed.home, 192L);
+  long index = 0L;
+  while (index < ed.count) {
+    if (writeOut(ed.home, fd, lineData(ed, index), lineLen(ed, index)) != 1L) {
+      obr::proc::close(ed.home, fd);
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  obr::proc::close(ed.home, fd);
+  ed.dirty = 0L;
+  ed.wrote = 1L;
+  return 1L;
+}
+
+deRfun runCmd(Ed* ed, long cmd, long len): long {
+  if (len < 1L) {
+    return 1L;
+  }
+  long pos = 0L;
+  long a1 = 0L;
+  long a2 = 0L;
+  long letter = u8(cmd);
+  if (letter == 113L || letter == 81L) {
+    if (letter == 81L) {
+      return 2L;
+    }
+    if (ed.dirty == 1L && ed.quitAsk == 0L) {
+      writeErr(ed.home, "?\n");
+      ed.quitAsk = 1L;
+      return 1L;
+    }
+    return 2L;
+  }
+  pos = 0L;
+  if (parseRange(ed, cmd, len, &pos, letter, &a1, &a2) != 1L) {
+    edErr(ed, "bad address");
+    return 0L;
+  }
+  if (letter == 61L) {
+    ed.cur = a1;
+    printLine(ed, a1, 0L);
+    long buf = obr::proc::bytes(ed.home);
+    long val = a1 + 1L;
+    long digits = 0L;
+    long tmp = val;
+    while (tmp > 0L) {
+      digits = digits + 1L;
+      tmp = tmp / 10L;
+    }
+    tmp = val;
+    long at = digits;
+    while (at > 0L) {
+      at = at - 1L;
+      memory::storeOctet(48L + (tmp % 10L), buf + at * 8L);
+      tmp = tmp / 10L;
+    }
+    memory::storeOctet(10L, buf + digits * 8L);
+    obr::proc::write(ed.home, 1L, 0L, digits + 1L);
+    return 1L;
+  }
+  if (letter == 112L || letter == 110L) {
+    long index = a1;
+    while (index <= a2) {
+      printLine(ed, index, 0L);
+      ed.cur = index;
+      if (letter == 110L && index < a2) {
+        index = index + 1L;
+        break;
+      }
+      index = index + 1L;
+    }
+    return 1L;
+  }
+  if (letter == 100L) {
+    deleteRange(ed, a1, a2);
+    return 1L;
+  }
+  if (letter == 97L) {
+    ed.cur = a1;
+    if (readBody(ed, a1) != 1L) {
+      edErr(ed, "read fail");
+      return 0L;
+    }
+    return 1L;
+  }
+  if (letter == 105L) {
+    ed.cur = a1;
+    if (a1 > 0L) {
+      if (readBody(ed, a1 - 1L) != 1L) {
+        edErr(ed, "read fail");
+        return 0L;
+      }
+    } else {
+      if (readBody(ed, -1L) != 1L) {
+        edErr(ed, "read fail");
+        return 0L;
+      }
+    }
+    return 1L;
+  }
+  if (letter == 99L) {
+    deleteRange(ed, a1, a2);
+    ed.cur = a1;
+    if (readBody(ed, a1 - 1L) != 1L) {
+      edErr(ed, "read fail");
+      return 0L;
+    }
+    return 1L;
+  }
+  if (letter == 115L) {
+    if (pos >= len || u8(cmd + pos * 8L) != 47L) {
+      edErr(ed, "bad delimiter");
+      return 0L;
+    }
+    long delim = 47L;
+    pos = pos + 1L;
+    long pstart = pos;
+    while (pos < len && u8(cmd + pos * 8L) != delim) {
+      if (u8(cmd + pos * 8L) == 92L) {
+        pos = pos + 2L;
+      } else {
+        pos = pos + 1L;
+      }
+    }
+    if (pos >= len) {
+      edErr(ed, "bad pat");
+      return 0L;
+    }
+    long plen = pos - pstart;
+    pos = pos + 1L;
+    long rstart = pos;
+    while (pos < len && u8(cmd + pos * 8L) != delim) {
+      if (u8(cmd + pos * 8L) == 92L) {
+        pos = pos + 2L;
+      } else {
+        pos = pos + 1L;
+      }
+    }
+    if (pos >= len) {
+      edErr(ed, "bad rep");
+      return 0L;
+    }
+    long rlen = pos - rstart;
+    pos = pos + 1L;
+    long gflag = 0L;
+    if (pos < len && u8(cmd + pos * 8L) == 103L) {
+      gflag = 1L;
+    }
+    long index = a1;
+    while (index <= a2) {
+      if (applySub(ed, index, cmd + pstart * 8L, plen, cmd + rstart * 8L, rlen, gflag) != 1L) {
+        edErr(ed, "subst failed");
+        return 0L;
+      }
+      index = index + 1L;
+    }
+    ed.cur = a2;
+    return 1L;
+  }
+  if (letter == 119L) {
+    long path = cmd + pos * 8L;
+    long plen = len - pos;
+    while (plen > 0L && (u8(path + (plen - 1L) * 8L) == 32L || u8(path + (plen - 1L) * 8L) == 9L)) {
+      plen = plen - 1L;
+    }
+    long start = 0L;
+    while (start < plen && u8(path + start * 8L) == 32L) {
+      start = start + 1L;
+    }
+    if (plen - start < 1L) {
+      if (ed.fnameLen < 1L) {
+        edErr(ed, "no filename");
+        return 0L;
+      }
+      if (cmdWrite(ed, ed.fname, ed.fnameLen) != 1L) {
+        edErr(ed, "write fail");
+        return 0L;
+      }
+    } else {
+      if (cmdWrite(ed, path + start * 8L, plen - start) != 1L) {
+        edErr(ed, "write fail");
+        return 0L;
+      }
+    }
+    return 1L;
+  }
+  if (letter == 114L) {
+    long path = cmd + pos * 8L;
+    long plen = len - pos;
+    while (plen > 0L && u8(path + (plen - 1L) * 8L) == 32L) {
+      plen = plen - 1L;
+    }
+    if (plen < 1L) {
+      edErr(ed, "no file");
+      return 0L;
+    }
+    plantPath(ed.home, path, plen);
+    if (obr::proc::open(ed.home, 0L) != 0L) {
+      edErr(ed, "no file");
+      return 0L;
+    }
+    long fd = obr::proc::slot(ed.home, 192L);
+    long buf = obr::proc::alloc(ed.home, lineMax() * 8L);
+    long llen = 0L;
+    long eof = 0L;
+    long fileOff = 0L;
+    long insert = a2 + 1L;
+    while (eof == 0L) {
+      if (readFdLine(ed.home, fd, &buf, &llen, &eof, &fileOff) != 1L) {
+        obr::proc::close(ed.home, fd);
+        edErr(ed, "read fail");
+        return 0L;
+      }
+      if (llen < 1L && eof == 1L) {
+        break;
+      }
+      long block = obr::proc::alloc(ed.home, llen * 8L);
+      copySpan(buf, block, llen);
+      if (insertAt(ed, insert, llen, block) != 1L) {
+        obr::proc::close(ed.home, fd);
+        edErr(ed, "overflow");
+        return 0L;
+      }
+      insert = insert + 1L;
+    }
+    obr::proc::close(ed.home, fd);
+    ed.dirty = 1L;
+    return 1L;
+  }
+  if (letter == 109L || letter == 116L) {
+    if (pos >= len) {
+      edErr(ed, "bad addr");
+      return 0L;
+    }
+    long p2 = pos;
+    long d1 = 0L;
+    long d2 = 0L;
+    if (parseRange(ed, cmd, len, &p2, letter, &d1, &d2) != 1L) {
+      edErr(ed, "bad addr");
+      return 0L;
+    }
+    long cnt = a2 - a1 + 1L;
+    long blocks = obr::proc::alloc(ed.home, cnt * lineMax());
+    long blens = obr::proc::alloc(ed.home, cnt * 64L);
+    long index = 0L;
+    while (index < cnt) {
+      memory::store64(lineLen(ed, a1 + index), blens + index * 64L);
+      copySpan(lineData(ed, a1 + index), blocks + index * lineMax() * 8L, lineLen(ed, a1 + index));
+      index = index + 1L;
+    }
+    deleteRange(ed, a1, a2);
+    long dest = d2;
+    if (letter == 116L) {
+      dest = d2 + 1L;
+    }
+    index = 0L;
+    while (index < cnt) {
+      long ln = memory::load64(blens + index * 64L);
+      long block = obr::proc::alloc(ed.home, ln * 8L);
+      copySpan(blocks + index * lineMax() * 8L, block, ln);
+      if (letter == 116L) {
+        if (insertAt(ed, dest + index, ln, block) != 1L) {
+          edErr(ed, "overflow");
+          return 0L;
+        }
+      } else {
+        if (insertAt(ed, dest + 1L + index, ln, block) != 1L) {
+          edErr(ed, "overflow");
+          return 0L;
+        }
+      }
+      index = index + 1L;
+    }
+    ed.dirty = 1L;
+    return 1L;
+  }
+  if (letter == 106L) {
+    if (a2 <= a1) {
+      return 1L;
+    }
+    long total = 0L;
+    long index = a1;
+    while (index <= a2) {
+      total = total + lineLen(ed, index);
+      if (index < a2) {
+        total = total + 1L;
+      }
+      index = index + 1L;
+    }
+    if (total > lineMax()) {
+      edErr(ed, "line too long");
+      return 0L;
+    }
+    long buf = obr::proc::alloc(ed.home, total * 8L);
+    long out = 0L;
+    index = a1;
+    while (index <= a2) {
+      copySpan(lineData(ed, index), buf + out * 8L, lineLen(ed, index));
+      out = out + lineLen(ed, index);
+      if (index < a2) {
+        memory::storeOctet(10L, buf + out * 8L);
+        out = out + 1L;
+      }
+      index = index + 1L;
+    }
+    long block = obr::proc::alloc(ed.home, out * 8L);
+    copySpan(buf, block, out);
+    deleteRange(ed, a1 + 1L, a2);
+    setLine(ed, a1, out, block);
+    ed.dirty = 1L;
+    ed.cur = a1;
+    return 1L;
+  }
+  edErr(ed, "unsupported");
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Ed ed;
+  ed.home = home;
+  ed.lens = new array[long](65536);
+  ed.datas = new array[long](65536);
+  ed.count = 0L;
+  ed.cur = 0L;
+  ed.dirty = 0L;
+  ed.wrote = 0L;
+  ed.quitAsk = 0L;
+  ed.hadErr = 0L;
+  ed.fnameLen = 0L;
+  ed.fname = 0L;
+  long index = 1L;
+  long argcVal = argc(home);
+  if (index < argcVal) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len >= 1L && u8(at) != 45L) {
+      if (loadFile(&ed, at, len) != 1L) {
+        edErr(&ed, "cannot open");
+      }
+      index = index + 1L;
+    }
+  }
+  long cmdBuf = obr::proc::alloc(home, 4096L * 8L);
+  long cmdLen = 0L;
+  long eof = 0L;
+  long cmdOff = 0L;
+  while (eof == 0L) {
+    cmdLen = 0L;
+    while (cmdLen < 4096L) {
+      if (obr::proc::read(home, 0L, cmdOff, 1L) != 0L) {
+        eof = 1L;
+        break;
+      }
+      long n = obr::proc::slot(home, 320L);
+      if (n < 1L) {
+        eof = 1L;
+        break;
+      }
+      cmdOff = cmdOff + n;
+      long bit = u8(obr::proc::bytes(home));
+      if (bit == 10L) {
+        break;
+      }
+      memory::storeOctet(bit, cmdBuf + cmdLen * 8L);
+      cmdLen = cmdLen + 1L;
+    }
+    if (cmdLen < 1L && eof == 1L) {
+      break;
+    }
+    long status = runCmd(&ed, cmdBuf, cmdLen);
+    if (status == 2L) {
+      if (ed.hadErr != 0L) {
+        return finish(home, 1L);
+      }
+      return finish(home, 0L);
+    }
+    if (status == 0L) {
+      /* 继续 */
+    }
+  }
+  if (ed.hadErr != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

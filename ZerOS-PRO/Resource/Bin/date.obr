@@ -7,16 +7,14 @@
    不接受标志、宽度、精度，也不接受 %F、%s、%z 这些该页没有的写法。
    设置操作数仍写 date: setting the time is not supported，不改系统时间。
    诊断在标准错误，前缀 date:。结束用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.proc;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun writeErr(long home, string text): void {

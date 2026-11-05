@@ -32,8 +32,14 @@ export namespace ZerOS {
        */
       export const ProgramBinaryVersion = 1;
 
-      /** 带导出、导入和重定位的映像。 */
+      /** 带导出、导入和重定位的映像。目录紧跟指令，文件头里没有指令区字节数。 */
       export const ProgramBinaryVersionLink = 2;
+
+      /**
+       * 和版本 2 同一份目录。
+       * 文件头多 4 个八位组：第 12 个起是指令区字节数，指令从第 16 个起，目录紧跟指令区。
+       */
+      export const ProgramBinaryVersionSpan = 3;
 
       /** 1 表示文件里的多字节整数是小端。 */
       export const ProgramBinaryLittleEndian = 1;

@@ -1,0 +1,335 @@
+/* POSIX.1-2017 cal（utilities/cal.html）。形式是 cal、cal year、cal month year。
+   没有选项。没有操作数时打印 clock 给出的当前月。
+   一个操作数当作年份，两个操作数依次是月份 1 到 12 和年份。
+   年份必须在 1 到 9999。非法月份或年份写 cal: illegal month or year 到描述符 2，退出 1。
+   操作数过多同样退出 1。星期从周日起。   没有区域设置；月份名用固定英文缩写 Jan、Feb、…、Dec。
+   成功退出 0。诊断英文。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun readDecimal(long addr, long count): long {
+  if (count < 1L) {
+    return -1L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < count) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return -1L;
+    }
+    long digit = bit - 48L;
+    if (value > 999L) {
+      return -1L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  if (value < 1L || value > 9999L) {
+    return -1L;
+  }
+  return value;
+}
+
+deRfun floorDiv(long n, long d): long {
+  long q = n / d;
+  if (n % d < 0L) {
+    q = q - 1L;
+  }
+  return q;
+}
+
+deRfun daysFromCivil(long y, long m, long d): long {
+  if (m <= 2L) {
+    y = y - 1L;
+  }
+  long era = y / 400L;
+  if (y < 0L) {
+    era = (y - 399L) / 400L;
+  }
+  long yoe = y - era * 400L;
+  long march = m + 9L;
+  if (m > 2L) {
+    march = m - 3L;
+  }
+  long doy = (153L * march + 2L) / 5L + d - 1L;
+  long doe = yoe * 365L + yoe / 4L - yoe / 100L + doy;
+  return era * 146097L + doe - 719468L;
+}
+
+deRfun leapYear(long year): long {
+  if (year % 400L == 0L) {
+    return 1L;
+  }
+  if (year % 100L == 0L) {
+    return 0L;
+  }
+  if (year % 4L == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun monthLen(long year, long month): long {
+  if (month == 2L) {
+    if (leapYear(year) == 1L) {
+      return 29L;
+    }
+    return 28L;
+  }
+  if (month == 4L || month == 6L || month == 9L || month == 11L) {
+    return 30L;
+  }
+  return 31L;
+}
+
+deRfun monthName(long month): string {
+  if (month == 1L) {
+    return "Jan";
+  }
+  if (month == 2L) {
+    return "Feb";
+  }
+  if (month == 3L) {
+    return "Mar";
+  }
+  if (month == 4L) {
+    return "Apr";
+  }
+  if (month == 5L) {
+    return "May";
+  }
+  if (month == 6L) {
+    return "Jun";
+  }
+  if (month == 7L) {
+    return "Jul";
+  }
+  if (month == 8L) {
+    return "Aug";
+  }
+  if (month == 9L) {
+    return "Sep";
+  }
+  if (month == 10L) {
+    return "Oct";
+  }
+  if (month == 11L) {
+    return "Nov";
+  }
+  return "Dec";
+}
+
+deRfun putByte(long home, long* filled, long value): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    obr::proc::write(home, 1L, 0L, count);
+    count = 0L;
+  }
+  memory::storeOctet(value, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun flushOut(long home, long filled): void {
+  if (filled > 0L) {
+    obr::proc::write(home, 1L, 0L, filled);
+  }
+}
+
+deRfun putText(long home, long* filled, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    putByte(home, filled, text[index]);
+    index = index + 1L;
+  }
+}
+
+deRfun putChar(long home, long* filled, long bit): void {
+  putByte(home, filled, bit);
+}
+
+deRfun putSpaces(long home, long* filled, long count): void {
+  while (count > 0L) {
+    putChar(home, filled, 32L);
+    count = count - 1L;
+  }
+}
+
+deRfun putNum(long home, long* filled, long value): void {
+  if (value < 10L) {
+    putChar(home, filled, 48L + value);
+    return;
+  }
+  putNum(home, filled, value / 10L);
+  putChar(home, filled, 48L + (value % 10L));
+}
+
+deRfun firstWday(long year, long month): long {
+  long days = daysFromCivil(year, month, 1L);
+  long wday = (days + 4L) % 7L;
+  if (wday < 0L) {
+    wday = wday + 7L;
+  }
+  return wday;
+}
+
+/* 单个月历块宽 22 个八位组。compact 为 0 时居中标题并带年。 */
+deRfun emitMonth(long home, long* filled, long year, long month, long compact): void {
+  if (compact == 0L) {
+    string name = monthName(month);
+    putText(home, filled, name);
+    putChar(home, filled, 32L);
+    putNum(home, filled, year);
+    putChar(home, filled, 10L);
+  } else {
+    string name = monthName(month);
+    long nameLen = length(name);
+    long pad = 8L - nameLen;
+    if (pad < 0L) {
+      pad = 0L;
+    }
+    putSpaces(home, filled, pad);
+    putText(home, filled, name);
+    putChar(home, filled, 10L);
+  }
+  putText(home, filled, "Su Mo Tu We Th Fr Sa");
+  putChar(home, filled, 10L);
+  long wday = firstWday(year, month);
+  long days = monthLen(year, month);
+  long col = 0L;
+  while (col < wday) {
+    putText(home, filled, "   ");
+    col = col + 1L;
+  }
+  long day = 1L;
+  while (day <= days) {
+    if (day < 10L) {
+      putChar(home, filled, 32L);
+      putChar(home, filled, 32L);
+    } else {
+      putChar(home, filled, 32L);
+    }
+    putNum(home, filled, day);
+    col = col + 1L;
+    if (col == 7L) {
+      putChar(home, filled, 10L);
+      col = 0L;
+    } else {
+      putChar(home, filled, 32L);
+    }
+    day = day + 1L;
+  }
+  if (col != 0L) {
+    putChar(home, filled, 10L);
+  }
+  if (compact == 0L) {
+    putChar(home, filled, 10L);
+  }
+}
+
+deRfun emitYear(long home, long year): void {
+  long filled = 0L;
+  long month = 1L;
+  while (month <= 12L) {
+    emitMonth(home, &filled, year, month, 0L);
+    month = month + 1L;
+  }
+  flushOut(home, filled);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count > 3L) {
+    writeErr(home, "cal: too many arguments\n");
+    return finish(home, 1L);
+  }
+  long year = 0L;
+  long month = 0L;
+  long showYear = 0L;
+  if (count == 1L) {
+    if (obr::proc::clock(home) != 0L) {
+      writeErr(home, "cal: cannot read clock\n");
+      return finish(home, 1L);
+    }
+    long ms = obr::proc::slot(home, 128L);
+    long days = floorDiv(ms, 86400000L);
+    long z = days + 719468L;
+    long era = z / 146097L;
+    if (z < 0L) {
+      era = (z - 146096L) / 146097L;
+    }
+    long doe = z - era * 146097L;
+    long yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L;
+    year = yoe + era * 400L;
+    long doy = doe - (365L * yoe + yoe / 4L - yoe / 100L);
+    long mp = (5L * doy + 2L) / 153L;
+    long day = doy - (153L * mp + 2L) / 5L + 1L;
+    month = mp + 3L;
+    if (mp >= 10L) {
+      month = mp - 9L;
+    }
+    if (month <= 2L) {
+      year = year + 1L;
+    }
+    showYear = 0L;
+  } else if (count == 2L) {
+    long at = argPtr(home, 1L);
+    long len = argLen(home, 1L);
+    year = readDecimal(at, len);
+    if (year < 1L || year > 9999L) {
+      writeErr(home, "cal: illegal month or year\n");
+      return finish(home, 1L);
+    }
+    showYear = 1L;
+    month = 1L;
+  } else {
+    long monthAt = argPtr(home, 1L);
+    long monthLenArg = argLen(home, 1L);
+    long yearAt = argPtr(home, 2L);
+    long yearLenArg = argLen(home, 2L);
+    month = readDecimal(monthAt, monthLenArg);
+    year = readDecimal(yearAt, yearLenArg);
+    if (month < 1L || month > 12L || year < 1L || year > 9999L) {
+      writeErr(home, "cal: illegal month or year\n");
+      return finish(home, 1L);
+    }
+    showYear = 0L;
+  }
+  if (showYear == 1L) {
+    emitYear(home, year);
+    return finish(home, 0L);
+  }
+  long filled = 0L;
+  emitMonth(home, &filled, year, month, 0L);
+  flushOut(home, filled);
+  return finish(home, 0L);
+}

@@ -80,6 +80,13 @@ export namespace ZerOS {
         readonly Index: number;
         readonly Op: string;
         readonly Site: string;
+        /** 会话微秒时间；0 表示来源没有给出时间。 */
+        readonly At: number;
+        /** 宿主 JS 栈。客程序栈另走 GuestStack。 */
+        readonly HostStack: readonly string[];
+        /** 客程序栈的摘要；没有现场时为空数组。 */
+        readonly GuestStack: readonly string[];
+        /** 旧字段，兼容已写出的 capture；值等同 HostStack。 */
         readonly Stack: readonly string[];
         readonly Window: boolean;
       }
@@ -230,6 +237,13 @@ export namespace ZerOS {
         return index;
       }
 
+      function clampAt(at: number): number {
+        if (!Number.isFinite(at) || at < 0) {
+          return 0;
+        }
+        return Math.min(9007199254740991, Math.floor(at));
+      }
+
       /** 模块前缀优先于句子里偶然出现的硬件单词。没有前缀时返回 -1，交给短语规则。 */
       function sourceFromPrefix(message: string): number {
         const marked = /\[ZerOS\.(?:Hardware|Boot)\.([A-Za-z]+)/.exec(message);
@@ -287,6 +301,8 @@ export namespace ZerOS {
         index: number,
         op: string,
         stack: string,
+        at = 0,
+        guestStack: readonly string[] = [],
       ): FaultRecord {
         const ruled = ruleOf(message);
         const prefixed = sourceFromPrefix(message);
@@ -298,6 +314,7 @@ export namespace ZerOS {
           source = prefixed;
         }
         const safeSource = clampSource(source);
+        const frames = stackFrames(stack);
         return {
           Code: clampCode(code),
           Source: safeSource,
@@ -306,7 +323,10 @@ export namespace ZerOS {
           Index: clampIndex(index),
           Op: ascii(op, 32, ""),
           Site: "-",
-          Stack: stackFrames(stack),
+          At: clampAt(at),
+          HostStack: frames,
+          GuestStack: readStack(guestStack),
+          Stack: frames,
           Window: windowOf(safeSource, message),
         };
       }
@@ -338,17 +358,20 @@ export namespace ZerOS {
         const index = typeof data["index"] === "number" ? data["index"] : 0;
         const op = typeof data["op"] === "string" ? data["op"] : "";
         const stackText = typeof data["stackText"] === "string" ? data["stackText"] : "";
+        const at = typeof data["at"] === "number" ? data["at"] : 0;
+        const guestStack = readStack(data["guestStack"]);
         if (typeof data["code"] !== "number") {
-          const hinted = faultFromText(message, core, index, op, stackText);
+          const hinted = faultFromText(message, core, index, op, stackText, at, guestStack);
           const listed = readStack(data["stack"]);
           if (listed.length < 1) {
             return hinted;
           }
-          return { ...hinted, Stack: listed };
+          return { ...hinted, HostStack: listed, Stack: listed };
         }
         const source = clampSource(typeof data["source"] === "number" ? data["source"] : FaultSourceBoard);
         const site = typeof data["site"] === "string" ? ascii(data["site"], 80, "-") : "-";
         const windowBit = typeof data["window"] === "boolean" ? data["window"] : source !== FaultSourceGpu;
+        const frames = readStack(data["stack"]);
         return {
           Code: clampCode(data["code"]),
           Source: source,
@@ -357,7 +380,10 @@ export namespace ZerOS {
           Index: clampIndex(index),
           Op: ascii(op, 32, ""),
           Site: site,
-          Stack: readStack(data["stack"]),
+          At: clampAt(at),
+          HostStack: frames,
+          GuestStack: guestStack,
+          Stack: frames,
           Window: windowBit && source !== FaultSourceGpu,
         };
       }
@@ -367,7 +393,7 @@ export namespace ZerOS {
        * 七个字段都在这一行里。超长只裁这一行，不改记录本身。
        */
       export function formatSevere(record: FaultRecord): string {
-        const stack = record.Stack.length > 0 ? ` stack=${record.Stack.join(" | ")}` : "";
+        const stack = record.HostStack.length > 0 ? ` stack=${record.HostStack.join(" | ")}` : "";
         const line = `ERROR code=${String(record.Code)} source=${String(record.Source)} core=${String(record.Core)} at=${String(record.Index)} op=${record.Op} site=${record.Site} text=${record.Text}${stack}`;
         if (line.length > 1000) {
           return line.slice(0, 1000);

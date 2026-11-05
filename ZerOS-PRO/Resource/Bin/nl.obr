@@ -1,0 +1,589 @@
+/* POSIX.1-2017 nl（utilities/nl.html）。形式是 nl [-p] [-b type] [-d delim] [-f type]
+   [-h type] [-i incr] [-l num] [-n format] [-s sep] [-v startnum] [-w width] [file]。
+   最多一个文件。没有文件读标准输入。单独 - 读标准输入，不关闭 0。
+   逻辑页分隔行默认只有 :::、::、: 三种，整行只有分隔符字节时切换页眉/正文/页脚段。
+   -d 改两个分隔字节；只写一个时第二个仍是 :。
+   -p 时分页分隔不重置行号。缺省 -b t、-h n、-f n、-n rn、-s 制表 9、-v 1、-w 6、-i 1、-l 1。
+   type 的 a/t/n 同规范；p 前缀只按字面子串匹配，不做 BRE。
+   -n 只认 ln、rn、rz。非法写 nl: invalid argument，立刻退出 1。
+   读失败 nl: read error，写失败 nl: write error，行太长 nl: line too long，退出 1。
+   未规定：没有输入逻辑页分隔时整份输入当作一个正文段。
+   成功 0，失败 1。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun lineMax(): long { return 8192L; }
+deRfun chunkMax(): long { return 4096L; }
+
+deRfun u8(long addr): long { return obr::oct::get(addr); }
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) { chunk = chunkMax(); }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+struct Nl {
+  long sect;
+  long bodyType;
+  long headType;
+  long footType;
+  long incr;
+  long width;
+  long start;
+  long number;
+  long blankRun;
+  long blankStep;
+  long keepPage;
+  long sep;
+  long d1;
+  long d2;
+  long fmt;
+  long pAt;
+  long pLen;
+  long outAt;
+}
+
+deRfun writeReady(long home, Nl* run, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > chunkMax()) { chunk = chunkMax(); }
+    if (obr::proc::write(home, 1L, run.outAt, chunk) != 0L) {
+      writeErr(home, "nl: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "nl: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) { wrote = chunk; }
+    pending = pending - wrote;
+    run.outAt = run.outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, Nl* run, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) { chunk = chunkMax(); }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, run, chunk) != 0L) { return 1L; }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitByte(long home, Nl* run, long value): long {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  return writeReady(home, run, 1L);
+}
+
+deRfun isEmpty(long line, long len): long {
+  if (len < 1L) { return 1L; }
+  return 0L;
+}
+
+deRfun hasSub(long line, long len, long pat, long patLen): long {
+  if (patLen < 1L || len < patLen) { return 0L; }
+  long index = 0L;
+  while (index <= len - patLen) {
+    long same = 1L;
+    long k = 0L;
+    while (k < patLen) {
+      if (u8(line + (index + k) * 8L) != u8(pat + k * 8L)) { same = 0L; }
+      k = k + 1L;
+    }
+    if (same == 1L) { return 1L; }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun shouldNumber(Nl* run, long line, long len): long {
+  long ty = run.bodyType;
+  if (run.sect == 1L) { ty = run.headType; }
+  if (run.sect == 2L) { ty = run.footType; }
+  if (ty == 110L) { return 0L; }
+  if (ty == 97L) { return 1L; }
+  if (ty == 116L) {
+    if (isEmpty(line, len) == 1L) { return 0L; }
+    return 1L;
+  }
+  if (ty == 112L) {
+    if (run.pLen < 1L) { return 0L; }
+    if (hasSub(line, len, run.pAt, run.pLen) == 1L) { return 1L; }
+    return 0L;
+  }
+  return 0L;
+}
+
+deRfun blankTick(Nl* run, long line, long len): long {
+  if (isEmpty(line, len) == 1L) {
+    run.blankRun = run.blankRun + 1L;
+    if (run.blankRun < run.blankStep) { return 0L; }
+    run.blankRun = 0L;
+    return 1L;
+  }
+  run.blankRun = 0L;
+  return 1L;
+}
+
+deRfun putDigit(long home, Nl* run, long value, long width, long rz): long {
+  long digits = 0L;
+  long tmp = value;
+  if (tmp == 0L) { digits = 1L; } else {
+    while (tmp > 0L) {
+      digits = digits + 1L;
+      tmp = tmp / 10L;
+    }
+  }
+  long pad = width - digits;
+  if (pad < 0L) { pad = 0L; }
+  long index = 0L;
+  while (index < pad) {
+    long ch = 32L;
+    if (rz == 1L) { ch = 48L; }
+    if (emitByte(home, run, ch) != 0L) { return 1L; }
+    index = index + 1L;
+  }
+  long stack = value;
+  long pos = digits - 1L;
+  while (pos >= 0L) {
+    long pow = 1L;
+    long k = 0L;
+    while (k < pos) { pow = pow * 10L; k = k + 1L; }
+    long digit = stack / pow;
+    if (pos > 0L) { digit = digit % 10L; }
+    if (emitByte(home, run, 48L + digit) != 0L) { return 1L; }
+    pos = pos - 1L;
+  }
+  return 0L;
+}
+
+deRfun emitNumber(long home, Nl* run, long value): long {
+  if (run.fmt == 108L) {
+    return putDigit(home, run, value, run.width, 0L);
+  }
+  if (run.fmt == 114L && run.width > 0L) {
+    long digits = 0L;
+    long tmp = value;
+    if (tmp == 0L) { digits = 1L; } else {
+      while (tmp > 0L) {
+        digits = digits + 1L;
+        tmp = tmp / 10L;
+      }
+    }
+    long pad = run.width - digits;
+    long index = 0L;
+    while (index < pad) {
+      if (emitByte(home, run, 32L) != 0L) { return 1L; }
+      index = index + 1L;
+    }
+  }
+  if (run.fmt == 122L) {
+    if (putDigit(home, run, value, run.width, 1L) != 0L) { return 1L; }
+    return 0L;
+  }
+  long tmp = value;
+  if (tmp == 0L) {
+    return emitByte(home, run, 48L);
+  }
+  long stack = tmp;
+  long digits = 0L;
+  while (stack > 0L) {
+    digits = digits + 1L;
+    stack = stack / 10L;
+  }
+  long pos = digits - 1L;
+  while (pos >= 0L) {
+    long pow = 1L;
+    long k = 0L;
+    while (k < pos) { pow = pow * 10L; k = k + 1L; }
+    long digit = tmp / pow;
+    if (pos > 0L) { digit = digit % 10L; }
+    if (emitByte(home, run, 48L + digit) != 0L) { return 1L; }
+    pos = pos - 1L;
+  }
+  return 0L;
+}
+
+deRfun isDelim(long line, long len, Nl* run): long {
+  if (len == 3L && u8(line) == run.d1 && u8(line + 8L) == run.d1 && u8(line + 16L) == run.d1) { return 3L; }
+  if (len == 2L && u8(line) == run.d1 && u8(line + 8L) == run.d2) { return 2L; }
+  if (len == 1L && u8(line) == run.d2) { return 1L; }
+  return 0L;
+}
+
+deRfun emitLine(long home, Nl* run, long line, long len): long {
+  long delim = isDelim(line, len, run);
+  if (delim == 3L) {
+    run.sect = 1L;
+    if (run.keepPage == 0L) { run.number = run.start; }
+    run.blankRun = 0L;
+    return 0L;
+  }
+  if (delim == 2L) {
+    run.sect = 0L;
+    if (run.keepPage == 0L) { run.number = run.start; }
+    run.blankRun = 0L;
+    return 0L;
+  }
+  if (delim == 1L) {
+    run.sect = 2L;
+    if (run.keepPage == 0L) { run.number = run.start; }
+    run.blankRun = 0L;
+    return 0L;
+  }
+  if (blankTick(run, line, len) == 0L) {
+    if (emitSpan(home, run, line, len) != 0L) { return 1L; }
+    if (emitByte(home, run, 10L) != 0L) { return 1L; }
+    return 0L;
+  }
+  if (shouldNumber(run, line, len) == 1L) {
+    if (emitNumber(home, run, run.number) != 0L) { return 1L; }
+    if (emitByte(home, run, run.sep) != 0L) { return 1L; }
+    run.number = run.number + run.incr;
+  }
+  if (emitSpan(home, run, line, len) != 0L) { return 1L; }
+  if (emitByte(home, run, 10L) != 0L) { return 1L; }
+  return 0L;
+}
+
+deRfun pour(long home, Nl* run, long buf, long fd): long {
+  long off = 0L;
+  long hold = 0L;
+  long cur = 0L;
+  long stage = buf + lineMax() * 8L;
+  long len = 0L;
+  while (1L == 1L) {
+    if (cur >= hold) {
+      if (obr::proc::read(home, fd, off, chunkMax()) != 0L) {
+        writeErr(home, "nl: read error\n");
+        return 1L;
+      }
+      long n = obr::proc::slot(home, 320L);
+      if (n < 0L) {
+        writeErr(home, "nl: read error\n");
+        return 1L;
+      }
+      if (n == 0L) {
+        if (len > 0L) {
+          if (emitLine(home, run, buf, len) != 0L) { return 1L; }
+        }
+        return 0L;
+      }
+      if (n > chunkMax()) { n = chunkMax(); }
+      copySpan(obr::proc::bytes(home), stage, n);
+      off = off + n;
+      hold = n;
+      cur = 0L;
+    }
+    long bit = u8(stage + cur * 8L);
+    cur = cur + 1L;
+    if (bit == 10L) {
+      if (emitLine(home, run, buf, len) != 0L) { return 1L; }
+      len = 0L;
+    } else {
+      if (len >= lineMax()) {
+        writeErr(home, "nl: line too long\n");
+        return 1L;
+      }
+      memory::storeOctet(bit, buf + len * 8L);
+      len = len + 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun parseType(long home, long at, long len, long* ty, long* pAt, long* pLen): long {
+  if (len < 1L) { writeErr(home, "nl: invalid argument\n"); return 1L; }
+  long bit = u8(at);
+  if (bit == 97L || bit == 116L || bit == 110L) {
+    *ty = bit;
+    return 0L;
+  }
+  if (bit == 112L) {
+    *ty = 112L;
+    *pAt = at + 8L;
+    *pLen = len - 1L;
+    return 0L;
+  }
+  writeErr(home, "nl: invalid argument\n");
+  return 1L;
+}
+
+deRfun parseDigits(long at, long len, long* out): long {
+  if (len < 1L) { return 0L; }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) { return 0L; }
+    value = value * 10L + bit - 48L;
+    cursor = cursor + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Nl run;
+  run.sect = 0L;
+  run.bodyType = 116L;
+  run.headType = 110L;
+  run.footType = 110L;
+  run.incr = 1L;
+  run.width = 6L;
+  run.start = 1L;
+  run.number = 1L;
+  run.blankRun = 0L;
+  run.blankStep = 1L;
+  run.keepPage = 0L;
+  run.sep = 9L;
+  run.d1 = 58L;
+  run.d2 = 58L;
+  run.fmt = 114L;
+  run.pAt = 0L;
+  run.pLen = 0L;
+  run.outAt = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long hasFile = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 112L) {
+          run.keepPage = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 98L || bit == 104L || bit == 102L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "nl: invalid argument\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          long ty = 0L;
+          long patAt = 0L;
+          long patLen = 0L;
+          if (parseType(home, valAt, valLen, &ty, &patAt, &patLen) != 0L) {
+            return finish(home, 1L);
+          }
+          if (bit == 98L) { run.bodyType = ty; }
+          if (bit == 104L) { run.headType = ty; }
+          if (bit == 102L) { run.footType = ty; }
+          if (ty == 112L) {
+            run.pAt = patAt;
+            run.pLen = patLen;
+          }
+        } else if (bit == 100L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "nl: invalid argument\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          if (valLen < 1L) {
+            writeErr(home, "nl: invalid argument\n");
+            return finish(home, 1L);
+          }
+          run.d1 = u8(valAt);
+          run.d2 = 58L;
+          if (valLen >= 2L) { run.d2 = u8(valAt + 8L); }
+        } else if (bit == 105L || bit == 108L || bit == 118L || bit == 119L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "nl: invalid argument\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parseDigits(valAt, valLen, &value) == 0L) {
+            writeErr(home, "nl: invalid argument\n");
+            return finish(home, 1L);
+          }
+          if (bit == 105L) { run.incr = value; }
+          if (bit == 108L) { run.blankStep = value; }
+          if (bit == 118L) { run.start = value; run.number = value; }
+          if (bit == 119L) { run.width = value; }
+        } else if (bit == 110L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "nl: invalid argument\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          if (valLen == 2L && u8(valAt) == 108L && u8(valAt + 8L) == 110L) { run.fmt = 108L; }
+          else if (valLen == 2L && u8(valAt) == 114L && u8(valAt + 8L) == 110L) { run.fmt = 114L; }
+          else if (valLen == 2L && u8(valAt) == 114L && u8(valAt + 8L) == 122L) { run.fmt = 122L; }
+          else {
+            writeErr(home, "nl: invalid argument\n");
+            return finish(home, 1L);
+          }
+        } else if (bit == 115L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "nl: invalid argument\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          if (valLen < 1L) {
+            writeErr(home, "nl: invalid argument\n");
+            return finish(home, 1L);
+          }
+          run.sep = u8(valAt);
+        } else {
+          writeErr(home, "nl: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  if (index < count) {
+    if (count - index > 1L) {
+      writeErr(home, "nl: too many arguments\n");
+      return finish(home, 1L);
+    }
+    hasFile = 1L;
+    fileAt = argPtr(home, index);
+    fileLen = argLen(home, index);
+  }
+  long buf = obr::proc::alloc(home, (lineMax() + chunkMax()) * 8L);
+  if (buf == 0L) {
+    writeErr(home, "nl: out of memory\n");
+    return finish(home, 1L);
+  }
+  long fd = 0L;
+  if (hasFile == 1L) {
+    if (fileLen == 1L && u8(fileAt) == 45L) {
+      fd = 0L;
+    } else {
+      plant(home, fileAt, fileLen);
+      if (obr::proc::open(home, 0L) != 0L) {
+        writeErr(home, "nl: ");
+        writeErrSpan(home, fileAt, fileLen);
+        writeErr(home, ": No such file or directory\n");
+        return finish(home, 1L);
+      }
+      fd = obr::proc::slot(home, 192L);
+    }
+  }
+  long status = pour(home, &run, buf, fd);
+  if (fd != 0L) { obr::proc::close(home, fd); }
+  if (status != 0L) { return finish(home, 1L); }
+  return finish(home, 0L);
+}

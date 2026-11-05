@@ -38,7 +38,9 @@
    全部成功退出 0。状态经 obr::proc::exit 交出，main 仍返回 0。
    描述符 1 的偏移按已写字节累加。诊断写描述符 2，偏移写 0。
    不用移位。long 的比较和初值用 0L。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -76,13 +78,8 @@ deRfun fileCap(): long {
   return 5L;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

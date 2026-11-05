@@ -48,6 +48,7 @@ deRfun taskScanEnd(): long;
 deRfun kSpan(): long;
 deRfun kSlot(): long;
 deRfun kArena(long core): long;
+deRfun kSupervisor(): long;
 deRfun taskStride(): long;
 deRfun tableBase(): long;
 deRfun taskAt(long index): Task*;
@@ -60,6 +61,8 @@ deRfun taskBestRank(long core, long except): long;
 deRfun taskPrefer(long core, long except): long;
 deRfun rankGet(long index): long;
 deRfun rankSet(long index, long rank): void;
+/* 改状态之前调用。只在可运行和不可运行之间进出时，调整空转用的计数。 */
+deRfun taskAccount(long index, long next): void;
 deRfun rankPublish(long core): void;
 /* 按当前有没有前台任务，把消息上限写成 16MB 或 256MB。相同的值不重写。 */
 deRfun spanPublish(): void;
@@ -82,6 +85,10 @@ deRfun procBreak(): long;
 deRfun procCollect(): void;
 /* 没有正在跑、也没有在槽里等着上的任务时返回 1。调度可以先不向宿主询问。 */
 deRfun schedIdle(): long;
+/* 有就绪任务时返回 1。没有时监督核不必每圈扫表。 */
+deRfun schedWork(): long;
+/* 任务计数。1/5/2/7 调整正在跑、就绪、前台、僵尸；3/6/0/8 读取；4 清零。 */
+deRfun runLedger(long mode, long delta): long;
 /* 服务 32。把调用者的 uid、gid、euid、egid 写到 +128、+192、+256、+320。 */
 deRfun doIdent(long caller, long home): long;
 /* 服务 33。从 +128 的下标起找下一个仍占着的任务。没有则回复 2。

@@ -1,0 +1,15 @@
+/* span 给壳里其它文件用的函数。 */
+deRfun destAt(long work): long;
+deRfun scratchAt(long work): long;
+deRfun paintAt(long work): long;
+deRfun pidAt(long work, long index): long;
+deRfun pipeReadAt(long work, long index): long;
+deRfun pipeWriteAt(long work, long index): long;
+deRfun hereFdAt(long work, long index): long;
+deRfun compNameAt(long work): long;
+deRfun compCommonAt(long work): long;
+deRfun putText(long addr, long at, string text): long;
+deRfun copySpan(long from, long to, long count): void;
+deRfun plantRaw(long home, long addr, long count): void;
+deRfun hasSlash(long addr, long count): long;
+deRfun fileKind(long home): long;

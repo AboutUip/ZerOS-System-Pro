@@ -1,7 +1,7 @@
 /* 映像。把程序放进监督核槽尾，认出 ELF，装上一颗核。
    不管引导先装谁，不管参数和创建子任务。
    程序正文在编译器映像之后，末尾 90176 个八位组留给目录窗。 */
-#LINK /start.obr, /boot.obr, /spawn.obr
+#LINK /start.obr, /boot.obr, /spawn.obr, /loader.obr
 import proc;
 import memory;
 import obr.nas;
@@ -13,15 +13,15 @@ deRfun imageCap(): long {
 }
 
 deRfun imageAt(): long {
-  return kArena(2L) + kSpan();
+  return kSupervisor() + kSpan();
 }
 
 deRfun drvPath(): long {
-  return kArena(2L) + 32768L;
+  return kSupervisor() + 32768L;
 }
 
 deRfun drvName(): long {
-  return kArena(2L) + 34816L;
+  return kSupervisor() + 34816L;
 }
 
 deRfun pullAt(long path, long* size): long {
@@ -59,7 +59,16 @@ deRfun pullAt(long path, long* size): long {
   }
   obr::nas::close(handle);
   *size = bytes;
+  lastPull(1L, bytes);
   return 0L;
+}
+
+deRfun lastPull(long writing, long value): long {
+  static long kept = 0L;
+  if (writing == 1L) {
+    kept = value;
+  }
+  return kept;
 }
 
 deRfun pull(string path, long* size): long {
@@ -97,6 +106,7 @@ deRfun pull(string path, long* size): long {
   }
   obr::nas::close(handle);
   *size = bytes;
+  lastPull(1L, bytes);
   return 0L;
 }
 
@@ -152,7 +162,7 @@ deRfun elfImage(long base): long {
 
 /* 描述符放在监督核窗口，驱动名字之后。四个字：入口、栈、空间长度、标志。 */
 deRfun compatDesc(): long {
-  return kArena(2L) + 36864L;
+  return kSupervisor() + 36864L;
 }
 
 /*

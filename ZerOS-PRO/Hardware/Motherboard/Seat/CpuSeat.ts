@@ -37,6 +37,7 @@ import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 import { ZerOS as QueryRoot } from "../Host/HardwareQuery";
 import { ZerOS as SandboxRuntimeRoot } from "../../Sandbox/Bootstrap/SandboxRuntime";
 import { ZerOS as QueuedRoot } from "../Host/QueuedWorker";
+import { ZerOS as MetricPageRoot } from "../Host/MetricPage";
 import { ZerOS as BootTraceRoot } from "../../Debug/Host/BootTrace";
 import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
 import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
@@ -49,7 +50,7 @@ export namespace ZerOS {
       const ExecuteLoad = ExecuteRoot.Hardware.Motherboard.ExecuteLoad;
       const ExecuteStore = ExecuteRoot.Hardware.Motherboard.ExecuteStore;
       const presentFrame = GpuSeatRoot.Hardware.Motherboard.presentFrame;
-      const presentSurface = GpuSeatRoot.Hardware.Motherboard.presentSurface;
+      const beginHandoff = GpuSeatRoot.Hardware.Motherboard.beginHandoff;
       /**
        * 第一份客程序画面按像素读回。
        * 那一帧是启动 logo，页面靠像素认出六个点并换色。之后的 BIOS 和加载画面改交位图。
@@ -58,6 +59,7 @@ export namespace ZerOS {
       const applyGpuCommand = GpuSeatRoot.Hardware.Motherboard.applyGpuCommand;
       const applyGpuBatch = GpuSeatRoot.Hardware.Motherboard.applyGpuBatch;
       const pullInbox = InboxRoot.Hardware.Motherboard.pullInbox;
+      const drainInboxThrough = InboxRoot.Hardware.Motherboard.drainInboxThrough;
       const Exchange = PortRoot.Hardware.Motherboard.Slot.Exchange;
       const Drain = PortRoot.Hardware.Motherboard.Slot.Drain;
       const Carry = PortRoot.Hardware.Motherboard.Slot.Carry;
@@ -67,6 +69,54 @@ export namespace ZerOS {
       const State = PortRoot.Hardware.Motherboard.Slot.State;
       const queryHardware = QueryRoot.Hardware.Motherboard.queryHardware;
       const sharedMemoryLink = MemoryLinkRoot.Hardware.Motherboard.sharedMemoryLink;
+
+      /**
+       * 方向 2：空队列返回 -1。有事件时交出 40 个八位组，调用方先回复核心再写入共享内存。
+       * 快照先留在核心的读缓存里，固件不必为这五个字再走一趟内存。
+       */
+      export function finishDirectionTwo(
+        portIndex: number,
+        destination: bigint,
+        exchange: (direction: number, word: bigint) => Uint8Array,
+      ): { readonly value: bigint; readonly snapshot: Uint8Array | null } {
+        const value = drainInboxThrough(exchange);
+        if (value < 0n || destination < 0n || destination % 8n !== 0n) {
+          return { value, snapshot: null };
+        }
+        const drained = Drain(portIndex, 40);
+        if (drained === null || drained.status !== 0 || drained.bytes.length < 40) {
+          return { value, snapshot: null };
+        }
+        const snapshot = new Uint8Array(40);
+        snapshot.set(drained.bytes.subarray(0, 40));
+        return { value, snapshot };
+      }
+
+      /** 快照已经交给核心之后再写入共享内存，避免这次搬运挡住固件读缓存。 */
+      export function commitDirectionSnapshot(destination: bigint, snapshot: Uint8Array): void {
+        sharedMemoryLink().writeSpan(destination, snapshot);
+      }
+
+      /**
+       * 这一次方向 2 的快照还没进共享内存。
+       * 键环先落地，监督核才能读到按下。快照留到键环写完再补，不挡在前面。
+       */
+      let pendingSnapshots: { at: bigint; bytes: Uint8Array }[] = [];
+
+      function rememberSnapshot(at: bigint, bytes: Uint8Array): void {
+        pendingSnapshots.push({ at, bytes });
+      }
+
+      function flushSnapshots(): void {
+        const waiting = pendingSnapshots;
+        if (waiting.length === 0) {
+          return;
+        }
+        pendingSnapshots = [];
+        for (const item of waiting) {
+          commitDirectionSnapshot(item.at, item.bytes);
+        }
+      }
       const MailMessage = MailboxRoot.Hardware.Motherboard.MailMessage;
       const SpanCeilBytes = MailboxRoot.Hardware.Motherboard.SpanCeilBytes;
       const spanApply = SpanBudgetRoot.Hardware.Motherboard.spanApply;
@@ -195,6 +245,8 @@ export namespace ZerOS {
               Number(correlation & 0xffffn),
               Number(packed % 65536n),
             );
+            /* 松开键的 poll 也会成功，但环次数不增加。只在这里通知 CPU，避免把下一次按下提前记成已取。 */
+            notifyCpuRing();
           }
         } catch {
           /* 环不可读时不影响键盘。 */
@@ -418,6 +470,7 @@ export namespace ZerOS {
           index,
           op,
           detail,
+          at: record["at"] ?? 0,
           snapshot: record["snapshot"] ?? null,
         });
       }
@@ -524,8 +577,8 @@ export namespace ZerOS {
           try {
             if (gpuOp === "present") {
               const commands = record["commands"];
+              const batch: Record<string, unknown>[] = [];
               if (Array.isArray(commands) && commands.length > 0) {
-                const batch: Record<string, unknown>[] = [];
                 for (const item of commands) {
                   if (typeof item !== "object" || item === null || Array.isArray(item)) {
                     replyCore(port, false, true, 0n, `${seatPrefix} one GPU batch command is incomplete`);
@@ -533,8 +586,10 @@ export namespace ZerOS {
                   }
                   batch.push(item as Record<string, unknown>);
                 }
-                /* 启动那一次也要先把字画上，再按像素交回。先交像素会把这一队丢掉。 */
-                await applyGpuBatch(batch);
+                /* 启动那一次仍先画完再按像素交回。之后的帧把命令和提交放在同一条消息里。 */
+                if (splashReadback) {
+                  await applyGpuBatch(batch);
+                }
               }
               if (splashReadback) {
                 splashReadback = false;
@@ -546,11 +601,14 @@ export namespace ZerOS {
                 replyCore(port, true, true, 0n, "");
                 return;
               }
-              const frame = await presentSurface();
-              if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, frame.bitmap, frame.originX, frame.originY, frame.scroll)) {
-                replyCore(port, false, true, 0n, `${seatPrefix} the frame copy could not be transferred`);
-                return;
-              }
+              /* 提交即完成。副本稍后送到页面，监督核不必等这一帧扫完。 */
+              const hand = beginHandoff(batch);
+              void hand.frame.then((frame): void => {
+                if (!publishFrame(frame.frameWidth, frame.frameHeight, frame.pixels, frame.bitmap, frame.originX, frame.originY, frame.scroll)) {
+                  frame.bitmap?.close();
+                }
+              }, (): void => undefined);
+              await hand.accepted;
               replyCore(port, true, true, 0n, "");
               return;
             }
@@ -846,6 +904,32 @@ export namespace ZerOS {
           if (data < 0n || data > 0xffffffffffffffffn) {
             throw new Error(`${seatPrefix} exchange integer does not fit in 64 bits`);
           }
+          if (direction === 2) {
+            const done = finishDirectionTwo(index, data, (way, word): Uint8Array => {
+              const packed = new Uint8Array(8);
+              let rest = word;
+              for (let octet = 0; octet < 8; octet += 1) {
+                packed[octet] = Number(rest & 0xffn);
+                rest >>= 8n;
+              }
+              const exchanged = Exchange(index, way, packed);
+              if (exchanged instanceof Promise) {
+                throw new Error(`${seatPrefix} the expansion exchange is not ready`);
+              }
+              return exchanged;
+            });
+            port.postMessage({
+              kind: "port-result",
+              ok: true,
+              value: done.value,
+              bytes: done.snapshot ?? undefined,
+              message: "",
+            });
+            if (done.snapshot !== null) {
+              commitDirectionSnapshot(data, done.snapshot);
+            }
+            return;
+          }
           const payload = new Uint8Array(8);
           let rest = data;
           for (let octet = 0; octet < 8; octet += 1) {
@@ -988,6 +1072,36 @@ export namespace ZerOS {
         if (tag === 4) {
           if (data < 0n || data > 0xffffffffffffffffn) {
             throw new Error(`${seatPrefix} exchange integer does not fit in 64 bits`);
+          }
+          /* 方向 2 把入站队列按方向 0 送进这个口，并把快照写到载荷给出的位地址。设备不看见方向 2。 */
+          if (b === 2) {
+            const done = finishDirectionTwo(a, data, (direction, word): Uint8Array => {
+              const payload = new Uint8Array(8);
+              let rest = word;
+              for (let octet = 0; octet < 8; octet += 1) {
+                payload[octet] = Number(rest & 0xffn);
+                rest >>= 8n;
+              }
+              const exchanged = Exchange(a, direction, payload);
+              if (exchanged instanceof Promise) {
+                throw new Error(`${seatPrefix} the expansion exchange is not ready`);
+              }
+              return exchanged;
+            });
+            /* 快照随结果带回。共享内存的补写等键环落地后再做，不挡这一次回复。 */
+            if (done.snapshot !== null && done.snapshot.length >= 40 && done.value >= 0n) {
+              rememberSnapshot(data, done.snapshot);
+              const words: bigint[] = [];
+              for (let step = 0; step < 5; step += 1) {
+                let packed = 0n;
+                for (let octet = 0; octet < 8; octet += 1) {
+                  packed |= BigInt(done.snapshot[step * 8 + octet] ?? 0) << BigInt(octet * 8);
+                }
+                words.push(packed);
+              }
+              return { value: done.value, found: 0, span: words };
+            }
+            return { value: done.value, found: 0, span: null };
           }
           const payload = new Uint8Array(8);
           let rest = data;
@@ -1179,6 +1293,7 @@ export namespace ZerOS {
               sharedMemoryLink().writeSpan(address, bytes);
               noteDebugSpan(address, bytes);
               noteFirmwareSpan(address, bytes);
+              flushSnapshots();
               port.postMessage({ kind: "store-span-result", ok: true, message: "" });
             } catch (error: unknown) {
               const message = error instanceof Error ? error.message : `${seatPrefix} native store failed`;
@@ -1212,6 +1327,7 @@ export namespace ZerOS {
                 noteDebugSpan(run.address, run.bytes);
                 noteFirmwareSpan(run.address, run.bytes);
               }
+              flushSnapshots();
               port.postMessage({ kind: "store-spans-result", ok: true, message: "" });
             } catch (error: unknown) {
               const message = error instanceof Error ? error.message : `${seatPrefix} native store failed`;
@@ -1324,6 +1440,9 @@ export namespace ZerOS {
         const supported = BoardSupportRoot.Hardware.Motherboard.SupportedCpuProtocols;
         const worker = QueuedRoot.Hardware.Motherboard.openCpuWorker();
         cpuWorker = worker;
+        MetricPageRoot.Hardware.Motherboard.onDisplayBeat((): void => {
+          worker.postMessage({ kind: "beat" });
+        });
         worker.addEventListener("message", (event: MessageEvent): void => {
           acceptSpanCap(event.data as unknown);
           forwardCoreStop(event.data as unknown);
@@ -1592,6 +1711,24 @@ export namespace ZerOS {
         if (cpu !== null) {
           cpu.postMessage({ kind: "unload", ordinal });
         }
+      }
+
+      /** 键盘环次数增加。松开键不走这里。 */
+      export function notifyCpuRing(): void {
+        const cpu = cpuWorker;
+        if (cpu === null) {
+          return;
+        }
+        cpu.postMessage({ kind: "ring" });
+      }
+
+      /** 收件箱刚放进一次按键。叫醒 CPU 上停着的固件，不必等它自己再问。 */
+      export function notifyCpuAttention(): void {
+        const cpu = cpuWorker;
+        if (cpu === null) {
+          return;
+        }
+        cpu.postMessage({ kind: "attention" });
       }
     }
   }

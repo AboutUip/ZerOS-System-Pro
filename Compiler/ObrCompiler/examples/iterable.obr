@@ -1,0 +1,50 @@
+/* Plan 1 M4：自定义 Iterable（hasNext/next）驱动 for-in。结果 0。 */
+#VERSION 2
+
+interface Iterable {
+  deRfun hasNext(): boolean;
+  deRfun next(): long;
+}
+
+class Range implements Iterable {
+  long current;
+  long limit;
+  deRfun Range(long limit): void {
+    current = 0L;
+    this.limit = limit;
+  }
+  deRfun hasNext(): boolean {
+    return current < limit;
+  }
+  deRfun next(): long {
+    long value = current;
+    current = current + 1L;
+    return value;
+  }
+}
+
+deRfun main(): int {
+  Range range = new Range(4L);
+  var[long] sum = 0L;
+  for (var[long] value in range) {
+    sum = sum + value;
+  }
+  if (sum != 6L) return 1;
+
+  Iterable iterator = new Range(3L);
+  var[long] total = 0L;
+  for (var[long] value in iterator) {
+    total = total + value;
+  }
+  if (total != 3L) return 2;
+
+  Range pickedRange = new Range(5L);
+  var[long] picked = 0L;
+  for (var[long] value in pickedRange) {
+    if (value == 1L) continue;
+    if (value == 4L) break;
+    picked = picked + value;
+  }
+  if (picked != 5L) return 3;
+  return 0;
+}

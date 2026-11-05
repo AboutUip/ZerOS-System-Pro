@@ -1,0 +1,27 @@
+/* Plan 1 M3：一个类实现两个接口，带参数派发。结果 0。 */
+#VERSION 2
+
+interface IAdd {
+  deRfun add(int a, int b): int;
+}
+
+interface IMul {
+  deRfun mul(int a, int b): int;
+}
+
+class Calc implements IAdd, IMul {
+  deRfun add(int a, int b): int {
+    return a + b;
+  }
+  deRfun mul(int a, int b): int {
+    return a * b;
+  }
+}
+
+deRfun main(): int {
+  var[IAdd] add = new Calc();
+  var[IMul] mul = new Calc();
+  if (add.add(2, 3) != 5) return 1;
+  if (mul.mul(2, 3) != 6) return 2;
+  return 0;
+}

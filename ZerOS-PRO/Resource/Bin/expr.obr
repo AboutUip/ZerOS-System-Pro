@@ -16,18 +16,15 @@
    整数结果不会是空串。写失败写 expr: write error，退出 2。
    诊断写描述符 2，偏移从 0。一次写出最多 4096 个八位组。
    描述符 0 不关闭。main 经 finish 调 exit。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

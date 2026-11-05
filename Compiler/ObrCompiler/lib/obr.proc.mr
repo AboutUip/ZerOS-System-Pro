@@ -20,6 +20,8 @@ deRfun home(): long;
 deRfun path(long home): long;
 /* 读写字节的起点，home + 131072。一次最多 262144 个八位组。 */
 deRfun bytes(long home): long;
+/* 参数块的起点，界限起点之后 512 KiB。客程序用这个地址，不必自己拆立即数。 */
+deRfun args(long home): long;
 /* 读窗口里的一个字。offset 是上面列出的位偏移。 */
 deRfun slot(long home, long offset): long;
 /* 服务 5。路径已在 +16384。标志 0 只读，1 只写并截断，2 读写，3 追加。成功时描述符在 +192。 */
@@ -78,10 +80,18 @@ deRfun ident(long home): long;
    字节区 12 个字：pid、ppid、状态、核心、uid、gid、euid、egid、地址空间起点、长度、档、名字长度。
    名字从第 12 个字之后起，最多 32 个八位组。状态 1 正在跑，2 就绪，3 在等，4 停住，5 僵尸。 */
 deRfun task(long home, long start): long;
-/* 服务 35。壳画完提示符后调用；只回复 0。宿主在 svc 边界记 prompt 事件，用于诊断。 */
+/* 服务 35。客程序画完一行后调用；只回复 0。宿主在 svc 边界记下这一次，用于诊断。 */
 deRfun prompt(long home): long;
-/* 服务 36。壳开始解析一行命令时调用；只回复 0。宿主在 svc 边界开命令 span。 */
+/* 服务 36。客程序开始处理一行输入时调用；只回复 0。宿主在 svc 边界开一段 span。 */
 deRfun command(long home): long;
+/* 服务 37。返回宿主显示器已经走完的拍。还没发布时是 0。 */
+deRfun frame(long home): long;
+/* 服务 38。睡到下一拍，返回那一拍。已经有一份在等则返回 -1。 */
+deRfun frameWait(long home): long;
+/* 服务 39。呈现已经画进命令的那一帧。没有脏行时成功且不交画面。 */
+deRfun present(long home): long;
+/* 服务 40。把已经写进控制台设备环的字节收成格子。不呈现。 */
+deRfun feed(long home): long;
 /* 服务 2。返回块地址。 */
 deRfun alloc(long home, long size): long;
 /* 服务 3。 */

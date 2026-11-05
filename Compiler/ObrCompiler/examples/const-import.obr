@@ -1,0 +1,16 @@
+/* Plan 1：从 .mr 导入常量。结果 0。 */
+import const_header;
+
+const long LOCAL_FROM_HEADER = HEADER_VALUE + 1L;
+
+deRfun main(): int {
+  if (HEADER_VALUE != 21) return 1;
+  if (HEADER_DOUBLE != 42L) return 2;
+  if (HEADER_ENUM != 5L) return 3;
+  if (LOCAL_FROM_HEADER != 22L) return 4;
+  if (length(HEADER_TEXT) != 2) return 5;
+  if (HEADER_TEXT[1] != 'i') return 6;
+  if (HEADER_PAIR.a != 3L) return 7;
+  if (HEADER_PAIR.b != 4L) return 8;
+  return 0;
+}

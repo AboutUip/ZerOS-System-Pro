@@ -130,6 +130,11 @@ bool libraryFunction(const Function& function) {
   if (function.name == "obr::font::face") return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Long);
   if (function.name == "obr::font::select") return sameShape(function, {TypeKind::Long, TypeKind::Long, TypeKind::Long}, TypeKind::Void);
   if (function.name == "obr::font::draw") return sameShape(function, {TypeKind::Long, TypeKind::Long}, TypeKind::Void);
+  if (function.name == "obr::text::from") {
+    return function.ret == TypeKind::String && function.params.size() == 2
+      && function.params[0].type == TypeKind::Array && function.params[0].typeName == "long"
+      && function.params[1].type == TypeKind::Long;
+  }
   std::size_t count = 0;
   if (function.name == "obr::math::abs") count = 1;
   else if (function.name == "obr::math::min" || function.name == "obr::math::max") count = 2;

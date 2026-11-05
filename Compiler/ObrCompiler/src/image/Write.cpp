@@ -368,6 +368,7 @@ struct Expanded {
 struct LinkSite {
   std::string name;
   uint32_t index = 0;
+  std::string module;
 };
 
 struct LinkReloc {
@@ -457,6 +458,37 @@ Expanded expand(const std::string& zapText, const std::vector<DebugSite>* sites)
     if (parts.empty()) fail("空指令");
     const std::string& head = parts[0];
     const std::string& target = parts.back();
+    if (head == "switch.table" || head == "itable.call") {
+      if (parts.size() < 4) fail(head + " 缺少目标");
+      std::string resolved = head + " " + parts[1] + ", " + parts[2];
+      const std::size_t first = head == "itable.call" ? 3 : 3;
+      if (head == "itable.call") {
+        if (parts.size() < 5) fail("itable.call 缺少方法项");
+        resolved += ", " + parts[3];
+        for (std::size_t item = 4; item < parts.size(); item += 1) {
+          if (parts[item] == "-1" || isNumberToken(parts[item])) {
+            resolved += ", " + parts[item];
+            continue;
+          }
+          const auto found = image.labels.find(parts[item]);
+          if (found == image.labels.end()) fail("没有标号 " + parts[item]);
+          resolved += ", " + std::to_string(found->second);
+        }
+      } else {
+        for (std::size_t item = first; item < parts.size(); item += 1) {
+          if (isNumberToken(parts[item])) {
+            resolved += ", " + parts[item];
+            continue;
+          }
+          const auto found = image.labels.find(parts[item]);
+          if (found == image.labels.end()) fail("没有标号 " + parts[item]);
+          resolved += ", " + std::to_string(found->second);
+        }
+      }
+      image.lines.push_back(resolved);
+      if (noted) image.sites.push_back(bodySites[index]);
+      continue;
+    }
     const bool jump = head == "jz" || head == "jnz" || head == "link" || head == "call";
     if (!jump || parts.size() < 2 || isRegisterToken(target) || isNumberToken(target)) {
       image.lines.push_back(line);
@@ -538,7 +570,7 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
       const auto found = image.labels.find(target);
       if (found == image.labels.end()) fail("没有标号 " + target);
       const LinkName* imported = importNamed(unit, target);
-      if (imported != nullptr) imports.push_back(LinkSite{imported->name, cursor});
+      if (imported != nullptr) imports.push_back(LinkSite{imported->name, cursor, imported->module});
       else if (unit.shared) relocs.push_back(LinkReloc{cursor, 1, static_cast<int64_t>(found->second)});
     } else if ((unit.shared || unit.pie) && dataImmediate(head) && isNumberToken(target)) {
       uint64_t value = 0;
@@ -591,9 +623,10 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
   bytes.push_back(kMagic1);
   bytes.push_back(kMagic2);
   bytes.push_back(kMagic3);
-  append16(bytes, linked ? 2 : 1);
+  append16(bytes, linked ? 3 : 1);
   append16(bytes, 1);
   append32(bytes, static_cast<uint32_t>(lines.size()));
+  if (linked) append32(bytes, static_cast<uint32_t>(payload.size()));
   bytes.insert(bytes.end(), payload.begin(), payload.end());
   if (linked) {
     append16(bytes, unit.shared ? 2 : 1);
@@ -606,7 +639,9 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
       append32(bytes, item.index);
     }
     for (const LinkSite& item : imports) {
+      if (item.module.empty()) fail("导入没有模块 " + item.name);
       writeName(bytes, item.name);
+      writeName(bytes, item.module);
       append32(bytes, item.index);
     }
     for (const LinkReloc& item : relocs) {

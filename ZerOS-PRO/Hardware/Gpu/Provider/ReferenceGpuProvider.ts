@@ -34,6 +34,7 @@ export namespace ZerOS {
       const resizeFrame = RuntimeRoot.Hardware.Gpu.resizeFrame;
       const flushScreen = AccelRoot.Hardware.Gpu.flushScreen;
       const presentView = RuntimeRoot.Hardware.Gpu.presentView;
+      const handoffView = RuntimeRoot.Hardware.Gpu.handoffView;
       const frameSize = RuntimeRoot.Hardware.Gpu.frameSize;
       const ResizeOp = 39;
 
@@ -129,6 +130,12 @@ export namespace ZerOS {
         },
         PresentView(): Promise<ImageBitmap | Uint32Array> {
           return presentView();
+        },
+        HandoffView(): {
+          readonly accepted: Promise<void>;
+          readonly picture: Promise<ImageBitmap | Uint32Array>;
+        } {
+          return handoffView();
         },
         async Accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number> {
           if (op === ResizeOp) {

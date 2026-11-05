@@ -1,0 +1,108 @@
+/* 壳工作区里整理用的位址。目录和上一行列数在 work。这里是暂存、子任务、管道和补全前缀。
+   不读键盘，不解析命令，也不派生。 */
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+import memory;
+import obr.oct;
+import obr.proc;
+import span;
+
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+
+/* 工作区：目录和上一行列数在 work.obr。这里是整理用的两段、路径暂存、子任务和管道两端。
+   画面缓冲在 draw，不占用 paintAt。补全前缀在 +60800，公共前缀在 +62848，各 256 个八位组。分配是 65536 位。 */
+deRfun destAt(long work): long {
+  return work + 4160L;
+}
+
+
+deRfun scratchAt(long work): long {
+  return work + 8256L;
+}
+
+
+deRfun paintAt(long work): long {
+  return work + 12352L;
+}
+
+
+deRfun pidAt(long work, long index): long {
+  return work + 28800L + index * 64L;
+}
+
+
+deRfun pipeReadAt(long work, long index): long {
+  return work + 29824L + index * 64L;
+}
+
+
+deRfun pipeWriteAt(long work, long index): long {
+  return work + 30848L + index * 64L;
+}
+
+
+/* 这一行最多四份 here-document。读端记在这里，-1 表示还没有或已经关掉。 */
+deRfun hereFdAt(long work, long index): long {
+  return work + 60000L + index * 64L;
+}
+
+
+deRfun compNameAt(long work): long {
+  return work + 60800L;
+}
+
+
+deRfun compCommonAt(long work): long {
+  return work + 62848L;
+}
+
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+
+deRfun plantRaw(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+
+deRfun hasSlash(long addr, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) == 47L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+deRfun fileKind(long home): long {
+  if (obr::proc::stat(home) != 0L) {
+    return -1L;
+  }
+  return obr::proc::slot(home, 128L);
+}

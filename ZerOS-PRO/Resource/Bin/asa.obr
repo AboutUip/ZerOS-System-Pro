@@ -1,0 +1,313 @@
+/* POSIX.1-2017 asa（utilities/asa.html）。形式是 asa [file...]。
+   行首若是空白、0、1、+、- 之一，去掉后再排版；否则整行原样写出（含行首八位组）。
+   空白：除非已在页顶，否则先写一个换行再写正文。
+   0：除非已在页顶，否则先写两个换行再写正文。
+   1：先写换页（12）再写正文，页顶标记清零。
+   +：不换页，直接写正文。
+   -：先写两个换行再写正文，除非已在页顶则只写一个换行（选定）。
+   正文后补一个换行。页顶指自上次换页后还没写过正文行。
+   没有文件，或单独一个 -，读标准输入，不关闭描述符 0。
+   -- 结束选项。第一个不是选项的参数也结束选项。
+   打开失败 asa: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败 asa: read error，写失败 asa: write error，都立刻退出 1。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home, string text): void {
+  writeErr(home, text);
+  obr::proc::exit(home, 1L);
+}
+
+deRfun emitReady(long home, long* outAt, long count): void {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      die(home, "asa: write error\n");
+      return;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      die(home, "asa: write error\n");
+      return;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+}
+
+deRfun putOut(long home, long* outAt, long* filled, long bit): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    emitReady(home, outAt, count);
+    count = 0L;
+  }
+  memory::storeOctet(bit, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun flushOut(long home, long* outAt, long* filled): void {
+  emitReady(home, outAt, *filled);
+  *filled = 0L;
+}
+
+deRfun emitBody(long home, long* outAt, long* filled, long line, long start, long len): void {
+  long index = 0L;
+  while (index < len) {
+    putOut(home, outAt, filled, u8(line + (start + index) * 8L));
+    index = index + 1L;
+  }
+  putOut(home, outAt, filled, 10L);
+  flushOut(home, outAt, filled);
+}
+
+deRfun isControl(long bit): long {
+  if (bit == 32L) {
+    return 1L;
+  }
+  if (bit == 48L) {
+    return 1L;
+  }
+  if (bit == 49L) {
+    return 1L;
+  }
+  if (bit == 43L) {
+    return 1L;
+  }
+  if (bit == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun handleLine(long home, long* outAt, long* filled, long* pageTop, long line, long lineLen): void {
+  if (lineLen < 1L) {
+    putOut(home, outAt, filled, 10L);
+    flushOut(home, outAt, filled);
+    return;
+  }
+  long bit = u8(line);
+  if (isControl(bit) == 0L) {
+    emitBody(home, outAt, filled, line, 0L, lineLen);
+    *pageTop = 0L;
+    return;
+  }
+  long start = 1L;
+  long bodyLen = lineLen - 1L;
+  if (bit == 49L) {
+    putOut(home, outAt, filled, 12L);
+    flushOut(home, outAt, filled);
+    *pageTop = 1L;
+  } else if (bit == 43L) {
+  } else if (bit == 45L) {
+    if (*pageTop == 1L) {
+      putOut(home, outAt, filled, 10L);
+    } else {
+      putOut(home, outAt, filled, 10L);
+      putOut(home, outAt, filled, 10L);
+    }
+    flushOut(home, outAt, filled);
+  } else if (bit == 48L) {
+    if (*pageTop == 0L) {
+      putOut(home, outAt, filled, 10L);
+      putOut(home, outAt, filled, 10L);
+      flushOut(home, outAt, filled);
+    }
+  } else if (bit == 32L) {
+    if (*pageTop == 0L) {
+      putOut(home, outAt, filled, 10L);
+      flushOut(home, outAt, filled);
+    }
+  }
+  if (bodyLen > 0L) {
+    emitBody(home, outAt, filled, line, start, bodyLen);
+  } else {
+    putOut(home, outAt, filled, 10L);
+    flushOut(home, outAt, filled);
+  }
+  *pageTop = 0L;
+}
+
+deRfun pour(long home, long fd, long* outAt, long* pageTop): long {
+  long hold = obr::proc::alloc(home, 8192L * 8L);
+  long holdLen = 0L;
+  long offset = 0L;
+  long filled = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      writeErr(home, "asa: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "asa: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long index = 0L;
+      while (index < n) {
+        long bit = u8(obr::proc::bytes(home) + index * 8L);
+        if (bit == 10L) {
+          handleLine(home, outAt, &filled, pageTop, hold, holdLen);
+          holdLen = 0L;
+        } else {
+          if (holdLen >= 8192L) {
+            writeErr(home, "asa: line too long\n");
+            return 1L;
+          }
+          memory::storeOctet(bit, hold + holdLen * 8L);
+          holdLen = holdLen + 1L;
+        }
+        index = index + 1L;
+      }
+      offset = offset + n;
+    }
+  }
+  if (holdLen > 0L) {
+    handleLine(home, outAt, &filled, pageTop, hold, holdLen);
+  }
+  return 0L;
+}
+
+deRfun pourFile(long home, long addr, long count, long* outAt, long* pageTop): long {
+  if (count < 0L || count > 8192L) {
+    writeErr(home, "asa: ");
+    writeErrSpan(home, addr, count);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "asa: ");
+    writeErrSpan(home, addr, count);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = pour(home, fd, outAt, pageTop);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long total = argc(home);
+  long ended = 0L;
+  while (index < total && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      writeErr(home, "asa: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      ended = 1L;
+    }
+  }
+  long outAt = 0L;
+  long pageTop = 1L;
+  long failed = 0L;
+  if (index >= total) {
+    if (pour(home, 0L, &outAt, &pageTop) != 0L) {
+      return finish(home, 1L);
+    }
+  }
+  while (index < total) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = pour(home, 0L, &outAt, &pageTop);
+    } else {
+      status = pourFile(home, at, len, &outAt, &pageTop);
+    }
+    if (status != 0L) {
+      if (status == 1L && len != 1L) {
+        failed = 1L;
+      } else {
+        return finish(home, 1L);
+      }
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

@@ -2,15 +2,22 @@
 deRfun imageAt(): long;
 deRfun compatTail(): long;
 deRfun pull(string path, long* size): long;
+deRfun pullAt(long path, long* size): long;
 deRfun placeAt(long path, long core): long;
 deRfun drvLoad(): void;
 deRfun bootInit(): void;
 deRfun bootIdle(): void;
 deRfun bootArm(): void;
-deRfun termShell(): long;
+deRfun termChild(): long;
 deRfun bootPump(): void;
 deRfun execSpawn(long caller, long home): long;
 deRfun loadLib(long caller, long home): long;
+/* 最近一次 pull 或 pullAt 读入的八位组数。writing 为 1 时记下 value。 */
+deRfun lastPull(long writing, long value): long;
+/* 操作系统的库搜索。映像已经装上、核心仍停着时调用。没有导入则返回 0。 */
+deRfun bindLibs(long core, long home, long bytes): long;
+/* 清掉窗口里的 static 段。origin 是这颗核心的窗口起点。只在独占核心、映像已装上且还没进 main 时调用。 */
+deRfun wipeStatics(long origin): void;
 deRfun drvPath(): long;
 deRfun drvName(): long;
 deRfun elfImage(long base): long;
@@ -20,5 +27,3 @@ deRfun userCore(long core): long;
 deRfun freeCore(long core): long;
 deRfun taskRoom(): long;
 deRfun stoppedForSlice(long core): long;
-deRfun isShell(long path): long;
-deRfun isSession(long path): long;

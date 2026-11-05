@@ -1,0 +1,419 @@
+/* POSIX.1-2017 gencat（utilities/gencat.html）。形式是 gencat catfile msgfile...
+   读消息源，写本系统目录下的 catfile。
+   识别 $set n、$delset n、$quote c、$ 开头的注释、空行，
+   以及 number 后接引号文本或直到行尾的文本。
+   输出以四个八位组 ZCAT 开头，接一个八位组版本 1，
+   然后每条是四个八位组 set、四个八位组 id、四个八位组长度、正文。
+   每条数值按无符号 32 位、高字节在前写入文件。
+   缺 catfile 或缺源文件写 gencat: missing operand，退出 1。
+   大于等于 1048576 的立即数会被 -pie 当成数据地址重定位，位数用 65536 乘出来。
+   打不开写 gencat: 路径: No such file or directory，退出 1。
+   诊断英文 ASCII，以 gencat: 开头。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "gencat: ");
+  writeSpan(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun msgMax(): long {
+  return 256L;
+}
+
+deRfun bodyMax(): long {
+  return 131072L;
+}
+
+deRfun isDel(long delBase, long delCount, long set): long {
+  long index = 0L;
+  while (index < delCount) {
+    if (memory::load64(delBase + index * 64L) == set) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun put32(long buf, long at, long value): void {
+  memory::storeOctet((value / 16777216L) % 256L, buf + at * 8L);
+  memory::storeOctet((value / 65536L) % 256L, buf + (at + 1L) * 8L);
+  memory::storeOctet((value / 256L) % 256L, buf + (at + 2L) * 8L);
+  memory::storeOctet(value % 256L, buf + (at + 3L) * 8L);
+}
+
+deRfun writeFile(long home, long fd, long buf, long total): long {
+  long done = 0L;
+  while (done < total) {
+    long chunk = total - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(buf + done * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, 0L, chunk) != 0L) {
+      return 1L;
+    }
+    done = done + chunk;
+  }
+  return 0L;
+}
+
+deRfun readAll(long home, long fd, long buf, long limit, long* got): long {
+  long total = 0L;
+  long offset = 0L;
+  while (total < limit) {
+    long room = limit - total;
+    if (room > 4096L) {
+      room = 4096L;
+    }
+    if (obr::proc::read(home, fd, offset, room) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      break;
+    }
+    if (n > room) {
+      n = room;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, n);
+    total = total + n;
+    offset = offset + n;
+  }
+  *got = total;
+  return 0L;
+}
+
+deRfun skipSpace(long data, long len, long pos): long {
+  while (pos < len) {
+    long bit = u8(data + pos * 8L);
+    if (bit != 32L && bit != 9L) {
+      return pos;
+    }
+    pos = pos + 1L;
+  }
+  return pos;
+}
+
+deRfun parseNum(long data, long len, long pos, long* out): long {
+  if (pos >= len) {
+    return -1L;
+  }
+  long bit = u8(data + pos * 8L);
+  if (bit < 48L || bit > 57L) {
+    return -1L;
+  }
+  long num = 0L;
+  while (pos < len) {
+    bit = u8(data + pos * 8L);
+    if (bit < 48L || bit > 57L) {
+      break;
+    }
+    num = num * 10L + bit - 48L;
+    pos = pos + 1L;
+  }
+  *out = num;
+  return pos;
+}
+
+deRfun sameWord(long data, long pos, long len, string word): long {
+  int raw = length(word);
+  long wlen = raw;
+  if (pos + wlen > len) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < wlen) {
+    if (u8(data + (pos + index) * 8L) != (long)word[index]) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun addDel(long delBase, long* delCount, long set): void {
+  if (isDel(delBase, *delCount, set) == 1L) {
+    return;
+  }
+  if (*delCount >= 32L) {
+    return;
+  }
+  memory::store64(set, delBase + *delCount * 64L);
+  *delCount = *delCount + 1L;
+}
+
+deRfun addMsg(long* msgCount, long table, long pool, long* poolUsed, long set, long id, long textAt, long textLen): long {
+  if (*msgCount >= msgMax()) {
+    return 1L;
+  }
+  if (textLen < 0L) {
+    textLen = 0L;
+  }
+  if (*poolUsed + textLen > bodyMax()) {
+    return 1L;
+  }
+  long row = table + *msgCount * 512L;
+  memory::store64(set, row);
+  memory::store64(id, row + 64L);
+  memory::store64(*poolUsed, row + 128L);
+  memory::store64(textLen, row + 192L);
+  long step = 0L;
+  while (step < textLen) {
+    memory::storeOctet(u8(textAt + step * 8L), pool + (*poolUsed + step) * 8L);
+    step = step + 1L;
+  }
+  *poolUsed = *poolUsed + textLen;
+  *msgCount = *msgCount + 1L;
+  return 0L;
+}
+
+deRfun parseSource(long home, long data, long len, long table, long pool, long delBase, long* msgCount, long* poolUsed): long {
+  long curSet = 1L;
+  long quote = 34L;
+  long delCount = 0L;
+  long pos = 0L;
+  while (pos < len) {
+    long lineStart = pos;
+    while (pos < len && u8(data + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    long lineEnd = pos;
+    if (pos < len) {
+      pos = pos + 1L;
+    }
+    long lineLen = lineEnd - lineStart;
+    if (lineLen == 0L) {
+      continue;
+    }
+    long bit0 = u8(data + lineStart * 8L);
+    if (bit0 == 36L) {
+      if (sameWord(data, lineStart + 1L, lineEnd, "set") == 1L) {
+        long p = skipSpace(data, lineEnd, lineStart + 4L);
+        long num = 0L;
+        if (parseNum(data, lineEnd, p, &num) >= 0L) {
+          curSet = num;
+        }
+      } else if (sameWord(data, lineStart + 1L, lineEnd, "delset") == 1L) {
+        long p = skipSpace(data, lineEnd, lineStart + 7L);
+        long num = 0L;
+        if (parseNum(data, lineEnd, p, &num) >= 0L) {
+          addDel(delBase, &delCount, num);
+        }
+      } else if (sameWord(data, lineStart + 1L, lineEnd, "quote") == 1L) {
+        long p = skipSpace(data, lineEnd, lineStart + 6L);
+        if (p < lineEnd) {
+          quote = u8(data + p * 8L);
+        }
+      }
+      continue;
+    }
+    if (isDel(delBase, delCount, curSet) == 1L) {
+      continue;
+    }
+    long msgId = 0L;
+    long after = parseNum(data, lineEnd, lineStart, &msgId);
+    if (after < 0L) {
+      continue;
+    }
+    long p = skipSpace(data, lineEnd, after);
+    if (p >= lineEnd) {
+      if (addMsg(msgCount, table, pool, poolUsed, curSet, msgId, data + lineStart * 8L, 0L) != 0L) {
+        return 1L;
+      }
+      continue;
+    }
+    long textAt = p;
+    long textLen = lineEnd - p;
+    if (u8(data + p * 8L) == quote) {
+      textAt = p + 1L;
+      textLen = 0L;
+      long scan = p + 1L;
+      while (scan < lineEnd) {
+        if (u8(data + scan * 8L) == quote) {
+          textLen = scan - textAt;
+          break;
+        }
+        scan = scan + 1L;
+      }
+    }
+    if (addMsg(msgCount, table, pool, poolUsed, curSet, msgId, data + textAt * 8L, textLen) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun emitCat(long home, long fd, long table, long pool, long msgCount): long {
+  long buf = obr::proc::alloc(home, 524288L);
+  if (buf == 0L) {
+    return 1L;
+  }
+  long at = 0L;
+  memory::storeOctet(90L, buf + at * 8L);
+  at = at + 1L;
+  memory::storeOctet(67L, buf + at * 8L);
+  at = at + 1L;
+  memory::storeOctet(65L, buf + at * 8L);
+  at = at + 1L;
+  memory::storeOctet(84L, buf + at * 8L);
+  at = at + 1L;
+  memory::storeOctet(1L, buf + at * 8L);
+  at = at + 1L;
+  long index = 0L;
+  while (index < msgCount) {
+    long row = table + index * 512L;
+    long set = memory::load64(row);
+    long id = memory::load64(row + 64L);
+    long off = memory::load64(row + 128L);
+    long tlen = memory::load64(row + 192L);
+    put32(buf, at, set);
+    at = at + 4L;
+    put32(buf, at, id);
+    at = at + 4L;
+    put32(buf, at, tlen);
+    at = at + 4L;
+    long step = 0L;
+    while (step < tlen) {
+      memory::storeOctet(u8(pool + (off + step) * 8L), buf + at * 8L);
+      at = at + 1L;
+      step = step + 1L;
+    }
+    index = index + 1L;
+  }
+  long err = writeFile(home, fd, buf, at);
+  obr::proc::free(home, buf, 524288L);
+  return err;
+}
+
+deRfun ingest(long home, long srcAt, long srcLen, long table, long pool, long delBase, long* msgCount, long* poolUsed): long {
+  if (srcLen < 1L || srcLen > 8192L) {
+    miss(home, srcAt, srcLen);
+    return 1L;
+  }
+  plant(home, srcAt, srcLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, srcAt, srcLen);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long data = obr::proc::alloc(home, 65536L * 16L);
+  if (data == 0L) {
+    return 1L;
+  }
+  long got = 0L;
+  if (readAll(home, fd, data, bodyMax(), &got) != 0L) {
+    obr::proc::free(home, data, 65536L * 16L);
+    return 1L;
+  }
+  obr::proc::close(home, fd);
+  long err = parseSource(home, data, got, table, pool, delBase, msgCount, poolUsed);
+  obr::proc::free(home, data, 65536L * 16L);
+  return err;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count < 3L) {
+    writeErr(home, "gencat: missing operand\n");
+    return finish(home, 1L);
+  }
+  long catAt = argPtr(home, 1L);
+  long catLen = argLen(home, 1L);
+  long hold = obr::proc::alloc(home, 65536L * 16L);
+  if (hold == 0L) {
+    return finish(home, 1L);
+  }
+  long table = hold;
+  long pool = hold + 131072L;
+  long delBase = hold + 262144L;
+  long msgCount = 0L;
+  long poolUsed = 0L;
+  long index = 2L;
+  while (index < count) {
+    long srcAt = argPtr(home, index);
+    long srcLen = argLen(home, index);
+    if (ingest(home, srcAt, srcLen, table, pool, delBase, &msgCount, &poolUsed) != 0L) {
+      obr::proc::free(home, hold, 65536L * 16L);
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  if (catLen < 1L || catLen > 8192L) {
+    miss(home, catAt, catLen);
+    obr::proc::free(home, hold, 65536L * 16L);
+    return finish(home, 1L);
+  }
+  plant(home, catAt, catLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    miss(home, catAt, catLen);
+    obr::proc::free(home, hold, 65536L * 16L);
+    return finish(home, 1L);
+  }
+  long outFd = obr::proc::slot(home, 192L);
+  if (emitCat(home, outFd, table, pool, msgCount) != 0L) {
+    obr::proc::free(home, hold, 65536L * 16L);
+    return finish(home, 1L);
+  }
+  obr::proc::free(home, hold, 65536L * 16L);
+  return finish(home, 0L);
+}

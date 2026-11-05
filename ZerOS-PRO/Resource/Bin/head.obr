@@ -11,18 +11,15 @@
    只有一个文件或只有标准输入时不写标题。
    打开失败写 head: 路径: No such file or directory，继续后面的文件，最终退出 1。
    读失败写 head: read error，继续后面的文件。写失败写 head: write error，立刻退出 1。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

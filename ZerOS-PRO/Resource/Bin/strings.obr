@@ -1,0 +1,407 @@
+/* POSIX.1-2017 strings（utilities/strings.html）。形式是 strings [-a] [-t format] [-n number] [file...]
+   可打印八位组是 32 到 126 以及 9。缺省最短长度 4。
+   -n 指定最短长度，必须是正十进制整数，否则 strings: invalid number，退出 1。
+   -t format 在每个串前写 format，其中 %d %o %x 换成文件内偏移（十进制、八进制、十六进制）。
+   没有 % 时原样写出 format 再写串。% 后面不是 d o x 时 strings: invalid format，退出 1。
+   -a 收下；没有 -a 时仍扫描整个普通文件（本系统选定）。
+   没有文件，或单独一个 -，读标准输入，不关闭描述符 0。
+   -- 结束选项。第一个不是选项的参数也结束选项。
+   不认识的选项 strings: invalid option，退出 1。
+   打开失败 strings: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败 strings: read error，立刻退出 1。写失败 strings: write error，立刻退出 1。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "strings: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home, string text): void {
+  writeErr(home, text);
+  obr::proc::exit(home, 1L);
+}
+
+deRfun printable(long bit): long {
+  if (bit == 9L) {
+    return 1L;
+  }
+  if (bit >= 32L && bit <= 126L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun parsePos(long addr, long count, long* value): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long num = 0L;
+  while (index < count) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    num = num * 10L + digit - 48L;
+    if (num < 1L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  *value = num;
+  return 1L;
+}
+
+deRfun emitReady(long home, long* outAt, long count): void {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      die(home, "strings: write error\n");
+      return;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      die(home, "strings: write error\n");
+      return;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+}
+
+deRfun putByte(long home, long* outAt, long* filled, long bit): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    emitReady(home, outAt, count);
+    count = 0L;
+  }
+  memory::storeOctet(bit, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun flushBuf(long home, long* outAt, long* filled): void {
+  emitReady(home, outAt, *filled);
+  *filled = 0L;
+}
+
+deRfun digitDec(long value, long pos, long width): long {
+  long index = width - pos - 1L;
+  long power = 1L;
+  long step = 0L;
+  while (step < index) {
+    power = power * 10L;
+    step = step + 1L;
+  }
+  return (value / power) % 10L + 48L;
+}
+
+deRfun digitRad(long value, long pos, long width, long radix): long {
+  long index = width - pos - 1L;
+  long power = 1L;
+  long step = 0L;
+  while (step < index) {
+    power = power * radix;
+    step = step + 1L;
+  }
+  long digit = (value / power) % radix;
+  if (digit < 10L) {
+    return digit + 48L;
+  }
+  return digit - 10L + 97L;
+}
+
+deRfun widthOf(long value, long radix): long {
+  if (value < 1L) {
+    return 1L;
+  }
+  long width = 0L;
+  long rest = value;
+  while (rest > 0L) {
+    width = width + 1L;
+    rest = rest / radix;
+  }
+  return width;
+}
+
+deRfun emitPrefix(long home, long* outAt, long* filled, long fmtAt, long fmtLen, long offset): void {
+  long cursor = 0L;
+  while (cursor < fmtLen) {
+    long bit = u8(fmtAt + cursor * 8L);
+    if (bit == 37L && cursor + 1L < fmtLen) {
+      long next = u8(fmtAt + (cursor + 1L) * 8L);
+      if (next == 100L) {
+        long width = widthOf(offset, 10L);
+        long pos = 0L;
+        while (pos < width) {
+          putByte(home, outAt, filled, digitDec(offset, pos, width));
+          pos = pos + 1L;
+        }
+        cursor = cursor + 2L;
+      } else if (next == 111L) {
+        long width = widthOf(offset, 8L);
+        long pos = 0L;
+        while (pos < width) {
+          putByte(home, outAt, filled, digitRad(offset, pos, width, 8L));
+          pos = pos + 1L;
+        }
+        cursor = cursor + 2L;
+      } else if (next == 120L) {
+        long width = widthOf(offset, 16L);
+        long pos = 0L;
+        while (pos < width) {
+          putByte(home, outAt, filled, digitRad(offset, pos, width, 16L));
+          pos = pos + 1L;
+        }
+        cursor = cursor + 2L;
+      } else {
+        die(home, "strings: invalid format\n");
+        return;
+      }
+    } else {
+      putByte(home, outAt, filled, bit);
+      cursor = cursor + 1L;
+    }
+  }
+}
+
+deRfun emitString(long home, long* outAt, long* filled, long buf, long len, long offset, long hasFmt, long fmtAt, long fmtLen): void {
+  if (hasFmt == 1L) {
+    emitPrefix(home, outAt, filled, fmtAt, fmtLen, offset);
+  }
+  long index = 0L;
+  while (index < len) {
+    putByte(home, outAt, filled, u8(buf + index * 8L));
+    index = index + 1L;
+  }
+  putByte(home, outAt, filled, 10L);
+  flushBuf(home, outAt, filled);
+}
+
+deRfun scanBuf(long home, long* outAt, long minLen, long hasFmt, long fmtAt, long fmtLen, long baseOff, long buf, long n): void {
+  long filled = 0L;
+  long runStart = 0L;
+  long runLen = 0L;
+  long index = 0L;
+  while (index <= n) {
+    long bit = 0L;
+    if (index < n) {
+      bit = u8(buf + index * 8L);
+    }
+    if (index < n && printable(bit) == 1L) {
+      if (runLen == 0L) {
+        runStart = index;
+      }
+      runLen = runLen + 1L;
+      index = index + 1L;
+    } else {
+      if (runLen >= minLen) {
+        emitString(home, outAt, &filled, buf + runStart * 8L, runLen, baseOff + runStart, hasFmt, fmtAt, fmtLen);
+      }
+      runLen = 0L;
+      index = index + 1L;
+    }
+  }
+}
+
+deRfun scanFd(long home, long fd, long* outAt, long minLen, long hasFmt, long fmtAt, long fmtLen, long* failed): void {
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      die(home, "strings: read error\n");
+      return;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      die(home, "strings: read error\n");
+      return;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      scanBuf(home, outAt, minLen, hasFmt, fmtAt, fmtLen, offset, obr::proc::bytes(home), n);
+      offset = offset + n;
+    }
+  }
+}
+
+deRfun scanFile(long home, long addr, long count, long* outAt, long minLen, long hasFmt, long fmtAt, long fmtLen, long* failed): void {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    *failed = 1L;
+    return;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    *failed = 1L;
+    return;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  scanFd(home, fd, outAt, minLen, hasFmt, fmtAt, fmtLen, failed);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long minLen = 4L;
+  long hasFmt = 0L;
+  long fmtAt = 0L;
+  long fmtLen = 0L;
+  long index = 1L;
+  long total = argc(home);
+  long ended = 0L;
+  while (index < total && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 97L) {
+          cursor = cursor + 1L;
+        } else if (bit == 110L) {
+          long numAt = 0L;
+          long numLen = 0L;
+          if (cursor + 1L < len) {
+            numAt = at + (cursor + 1L) * 8L;
+            numLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= total) {
+              die(home, "strings: invalid number\n");
+              return 0;
+            }
+            numAt = argPtr(home, index);
+            numLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parsePos(numAt, numLen, &value) == 0L) {
+            die(home, "strings: invalid number\n");
+            return 0;
+          }
+          minLen = value;
+        } else if (bit == 116L) {
+          if (cursor + 1L < len) {
+            fmtAt = at + (cursor + 1L) * 8L;
+            fmtLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= total) {
+              die(home, "strings: missing operand\n");
+              return 0;
+            }
+            fmtAt = argPtr(home, index);
+            fmtLen = argLen(home, index);
+            cursor = len;
+          }
+          hasFmt = 1L;
+        } else {
+          die(home, "strings: invalid option\n");
+          return 0;
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long outAt = 0L;
+  long failed = 0L;
+  if (index >= total) {
+    scanFd(home, 0L, &outAt, minLen, hasFmt, fmtAt, fmtLen, &failed);
+  }
+  while (index < total) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 1L && u8(at) == 45L) {
+      scanFd(home, 0L, &outAt, minLen, hasFmt, fmtAt, fmtLen, &failed);
+    } else {
+      scanFile(home, at, len, &outAt, minLen, hasFmt, fmtAt, fmtLen, &failed);
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

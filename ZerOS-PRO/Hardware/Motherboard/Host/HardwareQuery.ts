@@ -132,6 +132,10 @@ export namespace ZerOS {
         writeMetric(4, 0, 0, BigInt(panelWidth));
         writeMetric(4, 1, 0, BigInt(panelHeight));
         writeMetric(4, 2, 0, BigInt(panelHertz));
+        /* 拍号由显示器往后加。这里只在还没人写过时发布 0，避免后一次打开把已经走完的拍清掉。 */
+        if (MetricPageRoot.Hardware.Motherboard.readMetric(4, 3, 0).kind !== "value") {
+          writeMetric(4, 3, 0, 0n);
+        }
         for (let index = 0; index < PortCount; index += 1) {
           writeMetric(5, 0, index, BigInt(State(index)));
         }
@@ -222,6 +226,14 @@ export namespace ZerOS {
           }
           if (field === 2) {
             return BigInt(panelHertz);
+          }
+          /* 已经走完的拍。页上有数就用页上的，还没发布时是 0，不能把查询判成没有这个字段。 */
+          if (field === 3) {
+            const beat = MetricPageRoot.Hardware.Motherboard.readMetric(4, 3, 0);
+            if (beat.kind === "value") {
+              return beat.value;
+            }
+            return 0n;
           }
         }
         if (seat === 5) {

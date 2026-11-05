@@ -1,0 +1,352 @@
+/* POSIX.1-2017 chgrp（utilities/chgrp.html）。形式是 chgrp [-hR] group file...
+   以及 chgrp [-hR] [-H | -L | -P] group file... -- 结束选项。
+   没有组名数据库；group 只接受十进制非负整数，允许前导 0。
+   -h 接受且不改变结果，本系统没有符号链接。
+   -R 可以写多次。-H、-L、-P 互斥，同一行里后写的生效；
+   没有符号链接时三者都不改变目录怎么走，仍按 -R 列目录。
+   先 stat 读出属主 uid（slot 320），再 obr::proc::chown(home, uid, gid) 只改组。
+   -R 时种类 2、4、6 是目录，再 readdir；层数、去环与 chown 相同。
+   没有 group 或没有文件：chgrp: missing operand，退出 1。
+   group 非法：chgrp: invalid group，退出 1，后面的文件不处理。
+   某项失败继续后面的文件，最终退出 1。诊断写描述符 2。结束用服务 28。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeNote(long home, string prefix, long addr, long count, string suffix): void {
+  writeErr(home, prefix);
+  if (count > 0L) {
+    writeSpan(home, 2L, addr, count);
+  }
+  writeErr(home, suffix);
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun spanStep(long count): long {
+  long step = 64L + count * 8L;
+  long rem = step % 64L;
+  if (rem != 0L) {
+    step = step + (64L - rem);
+  }
+  return step;
+}
+
+deRfun seen(long base, long addr, long count): long {
+  long total = memory::load64(base);
+  long cursor = 128L;
+  long index = 0L;
+  while (index < total) {
+    long len = memory::load64(base + cursor);
+    if (sameSpan(base + cursor + 64L, len, addr, count) == 1L) {
+      return 1L;
+    }
+    cursor = cursor + spanStep(len);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun remember(long base, long cap, long addr, long count): long {
+  long next = memory::load64(base + 64L);
+  long step = spanStep(count);
+  if (next < 128L || next + step > cap) {
+    return 1L;
+  }
+  memory::store64(count, base + next);
+  copySpan(addr, base + next + 64L, count);
+  memory::store64(next + step, base + 64L);
+  memory::store64(memory::load64(base) + 1L, base);
+  return 0L;
+}
+
+deRfun joinPath(long parent, long parentLen, long name, long nameLen, long dest): long {
+  long slash = 1L;
+  if (parentLen > 0L && u8(parent + (parentLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = parentLen + slash + nameLen;
+  if (nameLen < 1L || total > 8192L) {
+    return -1L;
+  }
+  copySpan(parent, dest, parentLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + parentLen * 8L);
+  }
+  copySpan(name, dest + (parentLen + slash) * 8L, nameLen);
+  return total;
+}
+
+deRfun readDecimal(long addr, long count): long {
+  if (count < 1L) {
+    return -1L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < count) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return -1L;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L || (value == 922337203685477580L && digit > 7L)) {
+      return -1L;
+    }
+    value = value * 10L + digit;
+    index = index + 1L;
+  }
+  return value;
+}
+
+deRfun walk(long home, long work, long addr, long len, long depth): long {
+  if (depth > 32L) {
+    writeNote(home, "chgrp: too deep: ", addr, len, "\n");
+    return 1L;
+  }
+  plant(home, addr, len);
+  if (obr::proc::stat(home) != 0L) {
+    writeNote(home, "chgrp: ", addr, len, ": cannot access\n");
+    return 1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  long uid = obr::proc::slot(home, 320L);
+  long gid = memory::load64(work + 128L);
+  plant(home, addr, len);
+  long failed = 0L;
+  if (obr::proc::chown(home, uid, gid) != 0L) {
+    writeNote(home, "chgrp: ", addr, len, ": cannot change group\n");
+    failed = 1L;
+  }
+  if (memory::load64(work) != 1L || isDir(kind) != 1L) {
+    return failed;
+  }
+  long visited = memory::load64(work + 448L);
+  if (seen(visited, addr, len) == 1L) {
+    return failed;
+  }
+  if (remember(visited, memory::load64(work + 512L), addr, len) != 0L) {
+    writeErr(home, "chgrp: out of memory\n");
+    return 1L;
+  }
+  long names = memory::load64(work + 384L);
+  long slots = memory::load64(work + 320L);
+  long index = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    plant(home, addr, len);
+    long listed = obr::proc::readdir(home, index, 512L);
+    if (listed == 2L) {
+      more = 0L;
+    } else if (listed != 0L) {
+      writeNote(home, "chgrp: ", addr, len, ": cannot read\n");
+      failed = 1L;
+      more = 0L;
+    } else {
+      long nameLen = obr::proc::slot(home, 256L);
+      if (nameLen == 0L) {
+        more = 0L;
+      } else if (nameLen < 0L || nameLen > 512L) {
+        writeNote(home, "chgrp: ", addr, len, ": cannot read\n");
+        failed = 1L;
+        more = 0L;
+      } else {
+        copySpan(obr::proc::bytes(home), names, nameLen);
+        index = index + 1L;
+        if (isDot(names, nameLen) == 0L) {
+          if (depth >= 32L) {
+            writeNote(home, "chgrp: too deep: ", addr, len, "\n");
+            failed = 1L;
+            more = 0L;
+          } else {
+            long child = slots + depth * 65536L;
+            long childLen = joinPath(addr, len, names, nameLen, child);
+            if (childLen < 0L) {
+              writeNote(home, "chgrp: ", addr, len, ": path too long\n");
+              failed = 1L;
+            } else if (walk(home, work, child, childLen, depth + 1L) != 0L) {
+              failed = 1L;
+            }
+          }
+        }
+      }
+    }
+  }
+  return failed;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long recursive = 0L;
+  long symOpt = 80L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      long accept = 1L;
+      long sawR = 0L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 82L) {
+          sawR = 1L;
+        } else if (bit == 104L) {
+        } else if (bit == 72L || bit == 76L || bit == 80L) {
+          symOpt = bit;
+        } else {
+          accept = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (accept == 1L) {
+        if (sawR == 1L) {
+          recursive = 1L;
+        }
+        index = index + 1L;
+      } else {
+        writeErr(home, "chgrp: invalid option\n");
+        return finish(home, 1L);
+      }
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "chgrp: missing operand\n");
+    return finish(home, 1L);
+  }
+  long groupAt = argPtr(home, index);
+  long groupLen = argLen(home, index);
+  index = index + 1L;
+  if (index >= count) {
+    writeErr(home, "chgrp: missing operand\n");
+    return finish(home, 1L);
+  }
+  long gid = readDecimal(groupAt, groupLen);
+  if (gid < 0L) {
+    writeErr(home, "chgrp: invalid group\n");
+    return finish(home, 1L);
+  }
+  long visitBits = 128L * 65536L;
+  long slots = obr::proc::alloc(home, 32L * 65536L);
+  long names = obr::proc::alloc(home, 512L * 8L);
+  long visited = obr::proc::alloc(home, visitBits);
+  long work = obr::proc::alloc(home, 1024L);
+  if (slots == 0L || names == 0L || visited == 0L || work == 0L) {
+    writeErr(home, "chgrp: out of memory\n");
+    return finish(home, 1L);
+  }
+  memory::store64(0L, visited);
+  memory::store64(128L, visited + 64L);
+  memory::store64(recursive, work);
+  memory::store64(gid, work + 128L);
+  memory::store64(slots, work + 320L);
+  memory::store64(names, work + 384L);
+  memory::store64(visited, work + 448L);
+  memory::store64(visitBits, work + 512L);
+  memory::store64(symOpt, work + 576L);
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (walk(home, work, at, len, 1L) != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

@@ -9,8 +9,8 @@ enum class Tok {
   Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor,
   Shl, Shr, UShr, Assign, PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
   PlusPlus, MinusMinus,
-  If, Else, While, For, Break, Continue, Return, Goto, DeRfun, Import, Namespace, Static, Public, Private, Var, Export, Zap, Version, Link, Dyn, Scope,
-  Class, Struct, Enum, New, Async, Await, At, Dot
+  If, Else, Switch, Case, Default, Fallthrough, While, For, Break, Continue, Return, Goto, DeRfun, Import, Namespace, Static, Public, Private, Var, Const, Export, Zap, Version, Link, Dyn, Scope,
+  Class, Interface, Implements, Struct, Enum, New, Async, Await, At, Dot
 };
 
 }  // namespace obr

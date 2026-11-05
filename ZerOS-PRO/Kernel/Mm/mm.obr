@@ -61,7 +61,7 @@ deRfun grainOf(long address): long {
 }
 
 deRfun grainMark(): long {
-  return kArena(2L) + 49280L;
+  return kSupervisor() + 49280L;
 }
 
 deRfun mmReset(): void {

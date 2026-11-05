@@ -1,0 +1,447 @@
+/* 内建 cd。按 POSIX 的步骤改工作目录和 PWD。不解析整行，不派生别的命令。 */
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+import memory;
+import obr.proc;
+import obr.path;
+import obr.oct;
+import span;
+import env;
+import parse;
+import draw;
+import work;
+import cd;
+
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+
+/* 把相对路径收成绝对路径，写进 dest。成功返回长度，失败返回 -1。 */
+deRfun normalize(long work, long rel, long relLen): long {
+  long got = 0L;
+  long cwdLen = memory::load64(cwdLenAt(work));
+  if (obr::path::norm(cwdAt(work), cwdLen, rel, relLen, destAt(work), scratchAt(work), &got) != 0L) {
+    return -1L;
+  }
+  return got;
+}
+
+
+deRfun setCwd(long work, long addr, long count): void {
+  if (count < 1L || count > 512L) {
+    return;
+  }
+  copySpan(addr, cwdAt(work), count);
+  memory::store64(count, cwdLenAt(work));
+}
+
+
+/* 当前目录先抄出来。normalize 会占用 scratch，不能把旧路径放在那里。 */
+deRfun oldCwdAt(long work): long {
+  return work + 36000L;
+}
+
+
+/* 诊断走标准错误。成功时打印的新路径仍走标准输出。 */
+deRfun cdText(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+
+deRfun cdSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+
+deRfun cdPiece(long home, long addr, long count, string tail): void {
+  cdText(home, "sh: cd: ");
+  if (count > 0L) {
+    cdSpan(home, addr, count);
+  }
+  cdText(home, tail);
+}
+
+
+deRfun cdFail(long home, long addr, long count, long code): long {
+  if (code == -2L) {
+    cdPiece(home, addr, count, ": Not a directory\n");
+  } else if (code == -3L) {
+    cdPiece(home, addr, count, ": File name too long\n");
+  } else if (code == -4L) {
+    cdPiece(home, addr, count, ": Permission denied\n");
+  } else {
+    cdPiece(home, addr, count, ": No such file or directory\n");
+  }
+  return 1L;
+}
+
+
+/* 1 是目录，0 是别的种类，-1 找不到，-3 名字太长，-4 没有权限。 */
+deRfun probeDir(long home, long addr, long count): long {
+  plantRaw(home, addr, count);
+  long status = obr::proc::stat(home);
+  if (status == 0L) {
+    long kind = obr::proc::slot(home, 128L);
+    if (kind == 2L || kind == 4L || kind == 6L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (status == -1L) {
+    return -4L;
+  }
+  if (status == 6L) {
+    return -3L;
+  }
+  return -1L;
+}
+
+
+/* 规范第 7 步把相对路径接到 base 后面，第 8 步再收成绝对路径，写到 dest。
+   base 在 -L 时是壳上的 PWD，在 -P 且路径相对时是 getcwd。绝对路径不用 base。
+   . 丢掉。.. 先确认前一段是目录再删；删不掉就返回，目录还没换。
+   根上的 .. 留在根：目录项里没有 ..，交给内核会找不到。
+   连续的 / 收成一个，和原来的 pathNorm 一样。超过 512 返回 -3。 */
+deRfun foldCd(long home, long work, long base, long baseLen, long rel, long relLen): long {
+  long dest = destAt(work);
+  long out = 0L;
+  long pass = 0L;
+  if (relLen > 0L && u8(rel) == 47L) {
+    pass = 1L;
+  }
+  while (pass < 2L) {
+    long addr = base;
+    long count = baseLen;
+    if (pass == 1L) {
+      addr = rel;
+      count = relLen;
+    }
+    long index = 0L;
+    while (index < count) {
+      while (index < count && u8(addr + index * 8L) == 47L) {
+        index = index + 1L;
+      }
+      if (index < count) {
+        long start = index;
+        while (index < count && u8(addr + index * 8L) != 47L) {
+          index = index + 1L;
+        }
+        long size = index - start;
+        long dot = 0L;
+        if (size == 1L && u8(addr + start * 8L) == 46L) {
+          dot = 1L;
+        }
+        if (dot == 0L && size == 2L && u8(addr + start * 8L) == 46L && u8(addr + (start + 1L) * 8L) == 46L) {
+          if (out > 1L) {
+            long probed = probeDir(home, dest, out);
+            if (probed != 1L) {
+              if (probed == 0L) {
+                return -2L;
+              }
+              return probed;
+            }
+            while (out > 1L && u8(dest + (out - 1L) * 8L) != 47L) {
+              out = out - 1L;
+            }
+            if (out > 1L) {
+              out = out - 1L;
+            }
+          }
+        } else if (dot == 0L) {
+          if (out == 1L && u8(dest) == 47L) {
+            out = 0L;
+          }
+          if (size > 512L || out + 1L + size > 512L) {
+            return -3L;
+          }
+          memory::storeOctet(47L, dest + out * 8L);
+          out = out + 1L;
+          copySpan(addr + start * 8L, dest + out * 8L, size);
+          out = out + size;
+        }
+      }
+    }
+    pass = pass + 1L;
+  }
+  if (out < 1L) {
+    memory::storeOctet(47L, dest);
+    out = 1L;
+  }
+  return out;
+}
+
+
+/* 绝对路径，或以 . 或 .. 开头，不查 CDPATH。 */
+deRfun skipsCdpath(long addr, long count): long {
+  if (count < 1L) {
+    return 1L;
+  }
+  if (u8(addr) == 47L) {
+    return 1L;
+  }
+  long end = 0L;
+  while (end < count && u8(addr + end * 8L) != 47L) {
+    end = end + 1L;
+  }
+  if (end == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (end == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+/* 先按第 8 步收成绝对路径，再看结果是不是目录。长度留在 dest。
+   -1 找不到，-2 不是目录，-3 太长，-4 没有权限。 */
+deRfun lookDir(long home, long work, long base, long baseLen, long rel, long relLen): long {
+  long got = foldCd(home, work, base, baseLen, rel, relLen);
+  if (got < 1L) {
+    return got;
+  }
+  long probed = probeDir(home, destAt(work), got);
+  if (probed == 1L) {
+    return got;
+  }
+  if (probed == 0L) {
+    return -2L;
+  }
+  return probed;
+}
+
+
+deRfun pullCwd(long home, long dest): long {
+  if (obr::proc::getcwd(home) != 0L) {
+    return -1L;
+  }
+  long count = obr::proc::slot(home, 256L);
+  if (count < 1L || count > 512L) {
+    return -1L;
+  }
+  copySpan(obr::proc::bytes(home), dest, count);
+  return count;
+}
+
+
+/* 第 10 步。chdir 失败时内核目录还在原地，壳上的 PWD 不动。
+   -P 成功后再取 getcwd，作为 pwd -P 会打印的那条；读不到就走回旧目录。
+   成功才写 PWD 和 OLDPWD。要打印时写的是这条新绝对路径，走标准输出。 */
+deRfun applyCd(long home, long work, long env, long pathLen, long logical, long printPath): long {
+  long oldLen = memory::load64(cwdLenAt(work));
+  copySpan(cwdAt(work), oldCwdAt(work), oldLen);
+  plantRaw(home, destAt(work), pathLen);
+  long status = obr::proc::chdir(home);
+  if (status != 0L) {
+    if (status == -1L) {
+      cdPiece(home, destAt(work), pathLen, ": Permission denied\n");
+    } else if (status == 3L) {
+      cdPiece(home, destAt(work), pathLen, ": Not a directory\n");
+    } else if (status == 6L) {
+      cdPiece(home, destAt(work), pathLen, ": File name too long\n");
+    } else {
+      cdPiece(home, destAt(work), pathLen, ": No such file or directory\n");
+    }
+    return 1L;
+  }
+  long got = pathLen;
+  if (logical == 0L) {
+    got = pullCwd(home, destAt(work));
+    if (got < 1L) {
+      plantRaw(home, oldCwdAt(work), oldLen);
+      obr::proc::chdir(home);
+      cdText(home, "sh: cd: cannot get current directory\n");
+      return 1L;
+    }
+  }
+  setCwd(work, destAt(work), got);
+  long name = paintAt(work);
+  long nameLen = putText(name, 0L, "OLDPWD");
+  envSet(env, name, nameLen, oldCwdAt(work), oldLen);
+  nameLen = putText(name, 0L, "PWD");
+  envSet(env, name, nameLen, destAt(work), got);
+  if (printPath == 1L) {
+    saySpan(home, destAt(work), got);
+    sayByte(home, 10L);
+  }
+  return 0L;
+}
+
+
+/* 把 CDPATH 的一段和目录名拼到 join。空段或单独一个点就是目录名本身。 */
+deRfun joinCd(long work, long comp, long compLen, long rel, long relLen): long {
+  long at = work + 42000L;
+  long filled = 0L;
+  long bare = 0L;
+  if (compLen == 0L) {
+    bare = 1L;
+  }
+  if (compLen == 1L && u8(comp) == 46L) {
+    bare = 1L;
+  }
+  if (bare == 0L) {
+    if (compLen + 1L + relLen > 1024L) {
+      return -1L;
+    }
+    copySpan(comp, at, compLen);
+    filled = compLen;
+    if (u8(at + (filled - 1L) * 8L) != 47L) {
+      memory::storeOctet(47L, at + filled * 8L);
+      filled = filled + 1L;
+    }
+    copySpan(rel, at + filled * 8L, relLen);
+    return filled + relLen;
+  }
+  if (relLen > 1024L) {
+    return -1L;
+  }
+  copySpan(rel, at, relLen);
+  return relLen;
+}
+
+
+deRfun doCd(long home, long work, long cmd, long env, long begin): long {
+  long logical = 1L;
+  long index = begin + 1L;
+  long argc = cmdArgc(cmd);
+  while (index < argc) {
+    long word = cmdArgAt(cmd, index);
+    long len = cmdArgLen(cmd, index);
+    if (len == 2L && u8(word) == 45L && u8(word + 8L) == 45L) {
+      index = index + 1L;
+      break;
+    }
+    if (len > 1L && u8(word) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long flag = u8(word + cursor * 8L);
+        if (flag == 76L) {
+          logical = 1L;
+        } else {
+          if (flag == 80L) {
+            logical = 0L;
+          } else {
+            cdText(home, "sh: cd: invalid option\n");
+            return 1L;
+          }
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (argc - index > 1L) {
+    cdText(home, "sh: cd: too many arguments\n");
+    return 1L;
+  }
+  long rel = paintAt(work);
+  long relLen = 0L;
+  long printPath = 0L;
+  if (argc == index) {
+    long homeVal = 0L;
+    long homeLen = 0L;
+    if (envByName(env, work, "HOME", &homeVal, &homeLen) == 0L || homeLen < 1L) {
+      cdText(home, "sh: cd: HOME not set\n");
+      return 1L;
+    }
+    rel = homeVal;
+    relLen = homeLen;
+  } else {
+    rel = cmdArgAt(cmd, index);
+    relLen = cmdArgLen(cmd, index);
+    if (relLen == 1L && u8(rel) == 45L) {
+      long oldVal = 0L;
+      long oldLen = 0L;
+      if (envByName(env, work, "OLDPWD", &oldVal, &oldLen) == 0L || oldLen < 1L) {
+        cdText(home, "sh: cd: OLDPWD not set\n");
+        return 1L;
+      }
+      rel = oldVal;
+      relLen = oldLen;
+      printPath = 1L;
+    }
+  }
+  if (relLen < 1L) {
+    cdText(home, "sh: cd: No such file or directory\n");
+    return 1L;
+  }
+  /* -L 用壳上的 PWD。-P 且操作数相对时用内核的当前目录，.. 才是物理上的上一层。 */
+  long base = cwdAt(work);
+  long baseLen = memory::load64(cwdLenAt(work));
+  if (logical == 0L && u8(rel) != 47L) {
+    baseLen = pullCwd(home, paintAt(work));
+    if (baseLen < 1L) {
+      cdText(home, "sh: cd: cannot get current directory\n");
+      return 1L;
+    }
+    base = paintAt(work);
+  }
+  long got = 0L;
+  if (skipsCdpath(rel, relLen) == 1L) {
+    got = lookDir(home, work, base, baseLen, rel, relLen);
+  } else {
+    long cdVal = 0L;
+    long cdLen = 0L;
+    long found = 0L;
+    if (envByName(env, work, "CDPATH", &cdVal, &cdLen) == 1L) {
+      long cursor = 0L;
+      while (found == 0L) {
+        long start = cursor;
+        while (cursor < cdLen && u8(cdVal + cursor * 8L) != 58L) {
+          cursor = cursor + 1L;
+        }
+        long compLen = cursor - start;
+        long joined = joinCd(work, cdVal + start * 8L, compLen, rel, relLen);
+        if (joined > 0L) {
+          got = lookDir(home, work, base, baseLen, work + 42000L, joined);
+          if (got > 0L) {
+            found = 1L;
+            if (compLen > 0L && (compLen != 1L || u8(cdVal + start * 8L) != 46L)) {
+              printPath = 1L;
+            }
+          }
+        }
+        if (found == 0L) {
+          if (cursor >= cdLen) {
+            break;
+          }
+          cursor = cursor + 1L;
+        }
+      }
+    }
+    /* 第 5 步没有命中目录时落到第 6 步，直接用操作数。中间那种“不是目录”不算命中。 */
+    if (found == 0L) {
+      got = lookDir(home, work, base, baseLen, rel, relLen);
+    }
+  }
+  if (got < 1L) {
+    return cdFail(home, rel, relLen, got);
+  }
+  return applyCd(home, work, env, got, logical, printPath);
+}

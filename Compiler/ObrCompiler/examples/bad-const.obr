@@ -1,0 +1,7 @@
+/* const 不能赋值，编译应当失败。 */
+const int NUMBER = 1;
+
+deRfun main(): int {
+  NUMBER = 2;
+  return 0;
+}

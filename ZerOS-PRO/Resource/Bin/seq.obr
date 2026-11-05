@@ -13,18 +13,15 @@
    每个数占一行，不补前导 0。一次最多写 4096 个八位组。
    各位先倒放在读写区偏移 8192 处，离 4096 的写出窗口远远的，不必 alloc。
    写出失败写 seq: write error，退出 1。不关闭描述符 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

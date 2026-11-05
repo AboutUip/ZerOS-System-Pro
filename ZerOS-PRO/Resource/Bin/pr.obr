@@ -1,0 +1,1084 @@
+/* POSIX.1-2017 pr（utilities/pr.html）。形式是 pr [+page] [-column] [-a] [-dFfmrt] [-e [char]] [-h header]
+   [-i [char]] [-l lines] [-n [char]] [-o offset] [-s [char]] [-w width] [file...]
+   没有区域设置时日期用固定英文月份 Jan..Dec，从 clock 毫秒换算。
+   缺省页长 66、页宽 72、起始页 1、页边空白 5+5 行；+page 改起始页号。
+   -t 不要页眉页脚边距，整页都是正文。-f 页末写换页 12；-F 页末写换行 10（缺省）。
+   -d 正文行后多留一行空白。-o 每行前补 offset 个空格。-w 页宽。-l 页长。
+   -h 页眉字串占第 2 至 5 行；空串 -h"" 只要日期和页码行。
+   -e 把制表 9 展成空格到下一 8 列边界。-i[char][gap] 把行首连续空白按制表位收成 char（缺省 9），
+   位点在 gap+1、2*gap+1…，gap 缺省 8；整段是数字则只设 gap。
+   -n 行号，分隔符缺省是制表 9。-column 多列；无 -a 时按列优先拆行，有 -a 时按行优先。
+   -m 每个输入文件占一列并行，不再首尾相接；-a 只改非 -m 时的分列顺序。
+   -r 打不开文件时不写诊断。-- 结束选项。
+   没有文件读标准输入。打开失败 pr: 路径: No such file or directory（-r 时不写），退出 1。
+   读失败 pr: read error，写失败 pr: write error，立刻退出 1。
+   正文先整段收下再分页：单行不超过 1024，总行数不超过 512，超出写 pr: line too long 或 pr: input too large。
+   这两项按客核堆的大小选定，再大就申请不到内存。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+struct Opt {
+  long pageStart;
+  long columns;
+  long merge;
+  long modLast;
+  long doubleSpace;
+  long formFeed;
+  long useFf;
+  long noHead;
+  long quiet;
+  long expandTab;
+  long lineNum;
+  long numSep;
+  long hasNumSep;
+  long offset;
+  long pageLen;
+  long pageWidth;
+  long hasHeader;
+  long headerAt;
+  long headerLen;
+  long sepChar;
+  long hasSep;
+  long indentChar;
+  long indentGap;
+  long hasIndent;
+}
+
+/* 一列的正文与行表。merge 时每个文件一列；否则只用下标 0。 */
+struct Column {
+  long body;
+  long lines;
+  long rowCount;
+  long bodyUsed;
+}
+
+deRfun colMax(): long {
+  return 64L;
+}
+
+deRfun colStride(): long {
+  return 256L;
+}
+
+deRfun colBody(long set, long index): long {
+  return memory::load64(set + index * colStride());
+}
+
+deRfun colLines(long set, long index): long {
+  return memory::load64(set + index * colStride() + 64L);
+}
+
+deRfun colRows(long set, long index): long {
+  return memory::load64(set + index * colStride() + 64L * 2L);
+}
+
+deRfun colUsed(long set, long index): long {
+  return memory::load64(set + index * colStride() + 64L * 3L);
+}
+
+deRfun setColBody(long set, long index, long value): void {
+  memory::store64(value, set + index * colStride());
+}
+
+deRfun setColLines(long set, long index, long value): void {
+  memory::store64(value, set + index * colStride() + 64L);
+}
+
+deRfun setColRows(long set, long index, long value): void {
+  memory::store64(value, set + index * colStride() + 64L * 2L);
+}
+
+deRfun setColUsed(long set, long index, long value): void {
+  memory::store64(value, set + index * colStride() + 64L * 3L);
+}
+
+deRfun initColumn(long home, long set, long index): long {
+  long body = obr::proc::alloc(home, lineMax() * rowMax() * 8L);
+  long lines = obr::proc::alloc(home, rowMax() * rowStride());
+  if (body == 0L || lines == 0L) {
+    return 0L;
+  }
+  setColBody(set, index, body);
+  setColLines(set, index, lines);
+  setColRows(set, index, 0L);
+  setColUsed(set, index, 0L);
+  return 1L;
+}
+
+deRfun lineMax(): long {
+  return 1024L;
+}
+
+deRfun rowMax(): long {
+  return 512L;
+}
+
+deRfun rowStride(): long {
+  return 128L;
+}
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home, string text): void {
+  writeErr(home, text);
+  obr::proc::exit(home, 1L);
+}
+
+deRfun parsePage(long addr, long len, long* page): long {
+  if (len < 2L || u8(addr) != 43L) {
+    return 0L;
+  }
+  long index = 1L;
+  long value = 0L;
+  while (index < len) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    value = value * 10L + digit - 48L;
+    index = index + 1L;
+  }
+  if (value < 1L) {
+    value = 1L;
+  }
+  *page = value;
+  return 1L;
+}
+
+deRfun parsePos(long addr, long count, long* value): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long num = 0L;
+  while (index < count) {
+    long digit = u8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 0L;
+    }
+    num = num * 10L + digit - 48L;
+    index = index + 1L;
+  }
+  *value = num;
+  return 1L;
+}
+
+deRfun emitReady(long home, long* outAt, long count): void {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      die(home, "pr: write error\n");
+      return;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      die(home, "pr: write error\n");
+      return;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+}
+
+deRfun putBuf(long home, long* outAt, long* filled, long bit): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    emitReady(home, outAt, count);
+    count = 0L;
+  }
+  memory::storeOctet(bit, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun flushBuf(long home, long* outAt, long* filled): void {
+  emitReady(home, outAt, *filled);
+  *filled = 0L;
+}
+
+deRfun putSpaces(long home, long* outAt, long* filled, long n): void {
+  long index = 0L;
+  while (index < n) {
+    putBuf(home, outAt, filled, 32L);
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long home, long* outAt, long* filled, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    putBuf(home, outAt, filled, text[index]);
+    index = index + 1L;
+  }
+}
+
+deRfun putSpan(long home, long* outAt, long* filled, long addr, long len): void {
+  long index = 0L;
+  while (index < len) {
+    putBuf(home, outAt, filled, u8(addr + index * 8L));
+    index = index + 1L;
+  }
+}
+
+deRfun putDec(long home, long* outAt, long* filled, long value): void {
+  if (value == 0L) {
+    putBuf(home, outAt, filled, 48L);
+    return;
+  }
+  long digits = obr::proc::alloc(home, 64L * 8L);
+  long count = 0L;
+  long rest = value;
+  while (rest > 0L) {
+    memory::storeOctet(rest % 10L + 48L, digits + count * 8L);
+    count = count + 1L;
+    rest = rest / 10L;
+  }
+  long index = count - 1L;
+  while (index >= 0L) {
+    putBuf(home, outAt, filled, u8(digits + index * 8L));
+    index = index - 1L;
+  }
+}
+
+deRfun monthName(long index): string {
+  if (index == 0L) {
+    return "Jan";
+  }
+  if (index == 1L) {
+    return "Feb";
+  }
+  if (index == 2L) {
+    return "Mar";
+  }
+  if (index == 3L) {
+    return "Apr";
+  }
+  if (index == 4L) {
+    return "May";
+  }
+  if (index == 5L) {
+    return "Jun";
+  }
+  if (index == 6L) {
+    return "Jul";
+  }
+  if (index == 7L) {
+    return "Aug";
+  }
+  if (index == 8L) {
+    return "Sep";
+  }
+  if (index == 9L) {
+    return "Oct";
+  }
+  if (index == 10L) {
+    return "Nov";
+  }
+  return "Dec";
+}
+
+deRfun writeDate(long home, long* outAt, long* filled): void {
+  obr::proc::clock(home);
+  long ms = obr::proc::slot(home, 128L);
+  long sec = ms / 1000L;
+  long minute = sec / 60L;
+  long hour = minute / 60L;
+  long day = hour / 24L;
+  long sod = sec - day * 86400L;
+  hour = sod / 3600L;
+  minute = (sod - hour * 3600L) / 60L;
+  sec = sod - hour * 3600L - minute * 60L;
+  long y = 1970L;
+  long m = 0L;
+  long d = 1L;
+  long remain = day;
+  while (remain > 0L) {
+    long leap = 0L;
+    if (y % 400L == 0L) {
+      leap = 1L;
+    } else if (y % 100L == 0L) {
+      leap = 0L;
+    } else if (y % 4L == 0L) {
+      leap = 1L;
+    }
+    long yearLen = 365L;
+    if (leap == 1L) {
+      yearLen = 366L;
+    }
+    if (remain >= yearLen) {
+      remain = remain - yearLen;
+      y = y + 1L;
+    } else {
+      long mdays = 31L;
+      if (m == 1L) {
+        mdays = 28L;
+        if (leap == 1L) {
+          mdays = 29L;
+        }
+      } else if (m == 3L || m == 5L || m == 8L || m == 10L) {
+        mdays = 30L;
+      }
+      if (remain >= mdays) {
+        remain = remain - mdays;
+        m = m + 1L;
+        if (m > 11L) {
+          m = 0L;
+          y = y + 1L;
+        }
+      } else {
+        d = d + remain;
+        remain = 0L;
+      }
+    }
+  }
+  putText(home, outAt, filled, monthName(m));
+  putBuf(home, outAt, filled, 32L);
+  putDec(home, outAt, filled, d);
+  putSpaces(home, outAt, filled, 2L);
+  putDec(home, outAt, filled, hour);
+  putBuf(home, outAt, filled, 58L);
+  if (minute < 10L) {
+    putBuf(home, outAt, filled, 48L);
+  }
+  putDec(home, outAt, filled, minute);
+  putBuf(home, outAt, filled, 58L);
+  if (sec < 10L) {
+    putBuf(home, outAt, filled, 48L);
+  }
+  putDec(home, outAt, filled, sec);
+  putSpaces(home, outAt, filled, 2L);
+  putDec(home, outAt, filled, y);
+}
+
+deRfun lineOff(long lines, long row): long {
+  return memory::load64(lines + row * rowStride());
+}
+
+deRfun lineLen(long lines, long row): long {
+  return memory::load64(lines + row * rowStride() + 64L);
+}
+
+deRfun expandLineAt(long home, long body, long bodyOff, long addr, long len, long width, long expand): long {
+  long outLen = 0L;
+  long col = 0L;
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (expand == 1L && bit == 9L) {
+      long step = 8L - col % 8L;
+      if (step == 0L) {
+        step = 8L;
+      }
+      long skip = 0L;
+      while (skip < step && outLen < width) {
+        memory::storeOctet(32L, body + (bodyOff + outLen) * 8L);
+        outLen = outLen + 1L;
+        col = col + 1L;
+        skip = skip + 1L;
+      }
+    } else {
+      if (outLen < width) {
+        memory::storeOctet(bit, body + (bodyOff + outLen) * 8L);
+        outLen = outLen + 1L;
+        col = col + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return outLen;
+}
+
+deRfun mapIndex(long col, long row, long ncol, long nrows, long rowMajor): long {
+  if (rowMajor == 1L) {
+    return row * ncol + col;
+  }
+  return col * nrows + row;
+}
+
+deRfun parseIndentArg(long argAt, long argLen, Opt* opt): void {
+  opt.hasIndent = 1L;
+  opt.indentChar = 9L;
+  opt.indentGap = 8L;
+  if (argLen < 1L) {
+    return;
+  }
+  long first = u8(argAt);
+  if (first >= 48L && first <= 57L) {
+    long value = 0L;
+    if (parsePos(argAt, argLen, &value) == 1L && value > 0L) {
+      opt.indentGap = value;
+    }
+    return;
+  }
+  opt.indentChar = first;
+  if (argLen == 1L) {
+    return;
+  }
+  long value = 0L;
+  if (parsePos(argAt + 8L, argLen - 1L, &value) == 1L && value > 0L) {
+    opt.indentGap = value;
+  }
+}
+
+deRfun prepCell(long home, long work, long addr, long len, Opt* opt, long colWidth): long {
+  if (opt.hasIndent == 0L) {
+    long room = colWidth;
+    if (room < 1L) {
+      room = 1L;
+    }
+    return expandLineAt(home, work, 0L, addr, len, room, opt.expandTab);
+  }
+  long gap = opt.indentGap;
+  if (gap < 1L) {
+    gap = 8L;
+  }
+  long outLen = 0L;
+  long col = 0L;
+  long index = 0L;
+  while (index < len && outLen < colWidth) {
+    long bit = u8(addr + index * 8L);
+    if (bit == 32L) {
+      col = col + 1L;
+      if (col % gap == 0L) {
+        memory::storeOctet(opt.indentChar, work + outLen * 8L);
+        outLen = outLen + 1L;
+      }
+      index = index + 1L;
+    } else if (opt.expandTab == 1L && bit == 9L) {
+      long step = 8L - col % 8L;
+      if (step == 0L) {
+        step = 8L;
+      }
+      long skip = 0L;
+      while (skip < step && outLen < colWidth) {
+        memory::storeOctet(32L, work + outLen * 8L);
+        outLen = outLen + 1L;
+        col = col + 1L;
+        skip = skip + 1L;
+      }
+      index = index + 1L;
+    } else {
+      memory::storeOctet(bit, work + outLen * 8L);
+      outLen = outLen + 1L;
+      col = col + 1L;
+      index = index + 1L;
+    }
+  }
+  return outLen;
+}
+
+deRfun ingestFdCol(long home, long fd, long set, long colIndex): void {
+  long body = colBody(set, colIndex);
+  long lines = colLines(set, colIndex);
+  long rowCount = colRows(set, colIndex);
+  long bodyUsed = colUsed(set, colIndex);
+  long holdLen = 0L;
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      die(home, "pr: read error\n");
+      return;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      die(home, "pr: read error\n");
+      return;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long index = 0L;
+      while (index < n) {
+        long bit = u8(obr::proc::bytes(home) + index * 8L);
+        if (bit == 10L) {
+          if (rowCount >= rowMax()) {
+            die(home, "pr: input too large\n");
+            return;
+          }
+          memory::store64(bodyUsed, lines + rowCount * rowStride());
+          memory::store64(holdLen, lines + rowCount * rowStride() + 64L);
+          rowCount = rowCount + 1L;
+          bodyUsed = bodyUsed + holdLen;
+          holdLen = 0L;
+        } else {
+          if (holdLen >= lineMax()) {
+            die(home, "pr: line too long\n");
+            return;
+          }
+          memory::storeOctet(bit, body + (bodyUsed + holdLen) * 8L);
+          holdLen = holdLen + 1L;
+        }
+        index = index + 1L;
+      }
+      offset = offset + n;
+    }
+  }
+  if (holdLen > 0L) {
+    if (rowCount >= rowMax()) {
+      die(home, "pr: input too large\n");
+      return;
+    }
+    memory::store64(bodyUsed, lines + rowCount * rowStride());
+    memory::store64(holdLen, lines + rowCount * rowStride() + 64L);
+    rowCount = rowCount + 1L;
+    bodyUsed = bodyUsed + holdLen;
+  }
+  setColRows(set, colIndex, rowCount);
+  setColUsed(set, colIndex, bodyUsed);
+}
+
+deRfun ingestFileCol(long home, long addr, long count, long set, long colIndex, long quiet, long* failed): void {
+  if (count < 0L || count > 8192L) {
+    if (quiet == 0L) {
+      writeErr(home, "pr: ");
+      writeErrSpan(home, addr, count);
+      writeErr(home, ": No such file or directory\n");
+    }
+    *failed = 1L;
+    return;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    if (quiet == 0L) {
+      writeErr(home, "pr: ");
+      writeErrSpan(home, addr, count);
+      writeErr(home, ": No such file or directory\n");
+    }
+    *failed = 1L;
+    return;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  ingestFdCol(home, fd, set, colIndex);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+deRfun emitPageHead(long home, Opt* opt, long* outAt, long* filled, long* page): void {
+  if (opt.noHead == 1L) {
+    return;
+  }
+  long margin = 5L;
+  long hline = 0L;
+  while (hline < margin) {
+    if (hline == 0L) {
+      writeDate(home, outAt, filled);
+      long used = opt.pageWidth / 2L;
+      if (opt.hasHeader == 1L && opt.headerLen > 0L) {
+        putSpaces(home, outAt, filled, 8L);
+        putSpan(home, outAt, filled, opt.headerAt, opt.headerLen);
+      }
+      long pad = 0L;
+      while (pad < used) {
+        putBuf(home, outAt, filled, 32L);
+        pad = pad + 1L;
+      }
+      putText(home, outAt, filled, "Page ");
+      putDec(home, outAt, filled, *page);
+      putBuf(home, outAt, filled, 10L);
+      flushBuf(home, outAt, filled);
+    } else if (opt.hasHeader == 1L && hline >= 1L && hline <= 4L && opt.headerLen > 0L) {
+      putSpan(home, outAt, filled, opt.headerAt, opt.headerLen);
+      putBuf(home, outAt, filled, 10L);
+      flushBuf(home, outAt, filled);
+    } else {
+      putBuf(home, outAt, filled, 10L);
+      flushBuf(home, outAt, filled);
+    }
+    hline = hline + 1L;
+  }
+}
+
+deRfun emitPageFoot(long home, Opt* opt, long* outAt, long* filled, long* page): void {
+  if (opt.noHead == 0L) {
+    long margin = 5L;
+    long fline = 0L;
+    while (fline < margin) {
+      putBuf(home, outAt, filled, 10L);
+      flushBuf(home, outAt, filled);
+      fline = fline + 1L;
+    }
+  }
+  if (opt.useFf == 1L) {
+    putBuf(home, outAt, filled, 12L);
+  } else if (opt.formFeed == 1L) {
+    putBuf(home, outAt, filled, 12L);
+  } else {
+    putBuf(home, outAt, filled, 10L);
+  }
+  flushBuf(home, outAt, filled);
+  *page = *page + 1L;
+}
+
+deRfun printAll(long home, Opt* opt, long set, long fileCols): void {
+  long outAt = 0L;
+  long filled = 0L;
+  long page = opt.pageStart;
+  long margin = 5L;
+  long bodyLines = opt.pageLen - margin * 2L;
+  if (opt.noHead == 1L) {
+    margin = 0L;
+    bodyLines = opt.pageLen;
+  }
+  if (bodyLines < 1L) {
+    bodyLines = 1L;
+  }
+  long ncol = opt.columns;
+  if (opt.merge == 1L) {
+    ncol = fileCols;
+  }
+  if (ncol < 1L) {
+    ncol = 1L;
+  }
+  long colWidth = (opt.pageWidth - opt.offset) / ncol;
+  if (colWidth < 1L) {
+    colWidth = 1L;
+  }
+  long sep = opt.sepChar;
+  long streamRows = colRows(set, 0L);
+  long nrows = 0L;
+  if (opt.merge == 1L) {
+    long c = 0L;
+    while (c < fileCols) {
+      long rows = colRows(set, c);
+      if (rows > nrows) {
+        nrows = rows;
+      }
+      c = c + 1L;
+    }
+  } else {
+    long extra = streamRows % ncol;
+    nrows = streamRows / ncol;
+    if (extra != 0L) {
+      nrows = nrows + 1L;
+    }
+  }
+  if (nrows < 1L && streamRows == 0L && opt.merge == 1L) {
+    long c = 0L;
+    while (c < fileCols) {
+      if (colRows(set, c) > 0L) {
+        nrows = 1L;
+      }
+      c = c + 1L;
+    }
+  }
+  long work = obr::proc::alloc(home, colWidth * 8L);
+  long lineNo = 1L;
+  long outRow = 0L;
+  long lineOnPage = 0L;
+  while (outRow < nrows) {
+    if (lineOnPage == 0L) {
+      emitPageHead(home, opt, &outAt, &filled, &page);
+    }
+    putSpaces(home, &outAt, &filled, opt.offset);
+    if (opt.lineNum == 1L) {
+      putDec(home, &outAt, &filled, lineNo);
+      if (opt.hasNumSep == 1L) {
+        putBuf(home, &outAt, &filled, opt.numSep);
+      } else {
+        putBuf(home, &outAt, &filled, 9L);
+      }
+    }
+    long c = 0L;
+    while (c < ncol) {
+      if (c > 0L) {
+        putBuf(home, &outAt, &filled, sep);
+      }
+      long wlen = 0L;
+      if (opt.merge == 1L) {
+        if (c < fileCols && outRow < colRows(set, c)) {
+          long body = colBody(set, c);
+          long lines = colLines(set, c);
+          long off = lineOff(lines, outRow);
+          long len = lineLen(lines, outRow);
+          wlen = prepCell(home, work, body + off * 8L, len, opt, colWidth);
+        }
+      } else {
+        long idx = mapIndex(c, outRow, ncol, nrows, opt.modLast);
+        if (idx < streamRows) {
+          long body = colBody(set, 0L);
+          long lines = colLines(set, 0L);
+          long off = lineOff(lines, idx);
+          long len = lineLen(lines, idx);
+          wlen = prepCell(home, work, body + off * 8L, len, opt, colWidth);
+        }
+      }
+      long index = 0L;
+      while (index < wlen) {
+        putBuf(home, &outAt, &filled, u8(work + index * 8L));
+        index = index + 1L;
+      }
+      long pad = colWidth - wlen;
+      if (pad > 0L) {
+        putSpaces(home, &outAt, &filled, pad);
+      }
+      c = c + 1L;
+    }
+    putBuf(home, &outAt, &filled, 10L);
+    flushBuf(home, &outAt, &filled);
+    lineNo = lineNo + 1L;
+    outRow = outRow + 1L;
+    lineOnPage = lineOnPage + 1L;
+    if (opt.doubleSpace == 1L) {
+      putBuf(home, &outAt, &filled, 10L);
+      flushBuf(home, &outAt, &filled);
+      lineOnPage = lineOnPage + 1L;
+    }
+    if (lineOnPage >= bodyLines) {
+      emitPageFoot(home, opt, &outAt, &filled, &page);
+      lineOnPage = 0L;
+    }
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Opt opt;
+  opt.pageStart = 1L;
+  opt.columns = 1L;
+  opt.merge = 0L;
+  opt.modLast = 0L;
+  opt.doubleSpace = 0L;
+  opt.formFeed = 0L;
+  opt.useFf = 0L;
+  opt.noHead = 0L;
+  opt.quiet = 0L;
+  opt.expandTab = 0L;
+  opt.lineNum = 0L;
+  opt.numSep = 9L;
+  opt.hasNumSep = 0L;
+  opt.offset = 0L;
+  opt.pageLen = 66L;
+  opt.pageWidth = 72L;
+  opt.hasHeader = 0L;
+  opt.headerAt = 0L;
+  opt.headerLen = 0L;
+  opt.sepChar = 9L;
+  opt.hasSep = 0L;
+  opt.indentChar = 9L;
+  opt.indentGap = 8L;
+  opt.hasIndent = 0L;
+  long index = 1L;
+  long total = argc(home);
+  long ended = 0L;
+  long pageArg = opt.pageStart;
+  while (index < total && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (parsePage(at, len, &pageArg) == 1L) {
+      opt.pageStart = pageArg;
+      index = index + 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit >= 48L && bit <= 57L) {
+          long value = 0L;
+          long start = cursor;
+          while (cursor < len) {
+            long digit = u8(at + cursor * 8L);
+            if (digit < 48L || digit > 57L) {
+              break;
+            }
+            value = value * 10L + digit - 48L;
+            cursor = cursor + 1L;
+          }
+          if (value < 1L) {
+            value = 1L;
+          }
+          opt.columns = value;
+        } else if (bit == 97L) {
+          opt.modLast = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 100L) {
+          opt.doubleSpace = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 70L) {
+          opt.formFeed = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 102L) {
+          opt.useFf = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 109L) {
+          opt.merge = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 114L) {
+          opt.quiet = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 116L) {
+          opt.noHead = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 101L) {
+          opt.expandTab = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 104L) {
+          if (cursor + 1L < len) {
+            opt.headerAt = at + (cursor + 1L) * 8L;
+            opt.headerLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= total) {
+              die(home, "pr: missing operand\n");
+              return 0;
+            }
+            opt.headerAt = argPtr(home, index);
+            opt.headerLen = argLen(home, index);
+            cursor = len;
+          }
+          opt.hasHeader = 1L;
+        } else if (bit == 105L) {
+          if (cursor + 1L < len) {
+            parseIndentArg(at + (cursor + 1L) * 8L, len - (cursor + 1L), &opt);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= total) {
+              parseIndentArg(0L, 0L, &opt);
+              cursor = len;
+            } else {
+              parseIndentArg(argPtr(home, index), argLen(home, index), &opt);
+              cursor = len;
+            }
+          }
+        } else if (bit == 108L) {
+          long numAt = 0L;
+          long numLen = 0L;
+          if (cursor + 1L < len) {
+            numAt = at + (cursor + 1L) * 8L;
+            numLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= total) {
+              die(home, "pr: missing operand\n");
+              return 0;
+            }
+            numAt = argPtr(home, index);
+            numLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parsePos(numAt, numLen, &value) == 0L || value < 1L) {
+            die(home, "pr: invalid page length\n");
+            return 0;
+          }
+          opt.pageLen = value;
+        } else if (bit == 110L) {
+          opt.lineNum = 1L;
+          if (cursor + 1L < len) {
+            opt.numSep = u8(at + (cursor + 1L) * 8L);
+            opt.hasNumSep = 1L;
+            cursor = len;
+          } else {
+            cursor = cursor + 1L;
+          }
+        } else if (bit == 111L) {
+          long numAt = 0L;
+          long numLen = 0L;
+          if (cursor + 1L < len) {
+            numAt = at + (cursor + 1L) * 8L;
+            numLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= total) {
+              die(home, "pr: missing operand\n");
+              return 0;
+            }
+            numAt = argPtr(home, index);
+            numLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parsePos(numAt, numLen, &value) == 0L) {
+            die(home, "pr: invalid offset\n");
+            return 0;
+          }
+          opt.offset = value;
+        } else if (bit == 115L) {
+          if (cursor + 1L < len) {
+            opt.sepChar = u8(at + (cursor + 1L) * 8L);
+            opt.hasSep = 1L;
+            cursor = len;
+          } else {
+            opt.hasSep = 1L;
+            cursor = cursor + 1L;
+          }
+        } else if (bit == 119L) {
+          long numAt = 0L;
+          long numLen = 0L;
+          if (cursor + 1L < len) {
+            numAt = at + (cursor + 1L) * 8L;
+            numLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= total) {
+              die(home, "pr: missing operand\n");
+              return 0;
+            }
+            numAt = argPtr(home, index);
+            numLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parsePos(numAt, numLen, &value) == 0L || value < 1L) {
+            die(home, "pr: invalid width\n");
+            return 0;
+          }
+          opt.pageWidth = value;
+        } else {
+          die(home, "pr: invalid option\n");
+          return 0;
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long set = obr::proc::alloc(home, colMax() * colStride());
+  if (set == 0L) {
+    die(home, "pr: out of memory\n");
+    return 0;
+  }
+  long fileCols = 0L;
+  long failed = 0L;
+  if (opt.merge == 0L) {
+    if (initColumn(home, set, 0L) == 0L) {
+      die(home, "pr: out of memory\n");
+      return 0;
+    }
+    fileCols = 1L;
+    if (index >= total) {
+      ingestFdCol(home, 0L, set, 0L);
+    }
+    while (index < total) {
+      long at = argPtr(home, index);
+      long len = argLen(home, index);
+      if (len == 1L && u8(at) == 45L) {
+        ingestFdCol(home, 0L, set, 0L);
+      } else {
+        ingestFileCol(home, at, len, set, 0L, opt.quiet, &failed);
+      }
+      index = index + 1L;
+    }
+  } else {
+    if (index >= total) {
+      if (fileCols >= colMax()) {
+        die(home, "pr: too many files\n");
+        return 0;
+      }
+      if (initColumn(home, set, fileCols) == 0L) {
+        die(home, "pr: out of memory\n");
+        return 0;
+      }
+      ingestFdCol(home, 0L, set, fileCols);
+      fileCols = fileCols + 1L;
+    }
+    while (index < total) {
+      long at = argPtr(home, index);
+      long len = argLen(home, index);
+      if (fileCols >= colMax()) {
+        die(home, "pr: too many files\n");
+        return 0;
+      }
+      if (initColumn(home, set, fileCols) == 0L) {
+        die(home, "pr: out of memory\n");
+        return 0;
+      }
+      if (len == 1L && u8(at) == 45L) {
+        ingestFdCol(home, 0L, set, fileCols);
+      } else {
+        ingestFileCol(home, at, len, set, fileCols, opt.quiet, &failed);
+      }
+      fileCols = fileCols + 1L;
+      index = index + 1L;
+    }
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  if (fileCols < 1L) {
+    fileCols = 1L;
+    if (initColumn(home, set, 0L) == 0L) {
+      die(home, "pr: out of memory\n");
+      return 0;
+    }
+  }
+  printAll(home, &opt, set, fileCols);
+  return finish(home, 0L);
+}

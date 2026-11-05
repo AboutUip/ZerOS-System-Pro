@@ -1,0 +1,26 @@
+/* 壳认的内建名字。只辨认 cd、exit、history、clear。不执行它们。 */
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+import obr.oct;
+import builtin;
+
+deRfun bytesEq(long addr, long count, string text): long {
+  return obr::oct::eq(addr, count, text);
+}
+
+
+deRfun builtinId(long addr, long count): long {
+  if (bytesEq(addr, count, "cd") == 1L) {
+    return 2L;
+  }
+  if (bytesEq(addr, count, "exit") == 1L) {
+    return 4L;
+  }
+  if (bytesEq(addr, count, "history") == 1L) {
+    return 5L;
+  }
+  if (bytesEq(addr, count, "clear") == 1L) {
+    return 6L;
+  }
+  return 0L;
+}

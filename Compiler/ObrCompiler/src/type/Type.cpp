@@ -63,6 +63,7 @@ const char* nameOf(TypeKind type) {
   if (type == TypeKind::Char) return "char";
   if (type == TypeKind::String) return "string";
   if (type == TypeKind::Ptr) return "指针";
+  if (type == TypeKind::Interface) return "接口";
   if (type == TypeKind::Struct) return "结构体";
   if (type == TypeKind::Array) return "array";
   if (type == TypeKind::List) return "list";
@@ -83,7 +84,7 @@ std::string typeText(TypeKind kind, const std::string& typeName, TypeKind alt, c
   if (kind == TypeKind::List) return "list[" + typeName + "]";
   if (kind == TypeKind::Set) return "set[" + typeName + "]";
   if (kind == TypeKind::Map) return "map[" + typeName + "," + altName + "]";
-  if (kind == TypeKind::Struct || kind == TypeKind::Ptr) return typeName.empty() ? nameOf(kind) : typeName;
+  if (kind == TypeKind::Struct || kind == TypeKind::Ptr || kind == TypeKind::Interface) return typeName.empty() ? nameOf(kind) : typeName;
   return nameOf(kind);
 }
 

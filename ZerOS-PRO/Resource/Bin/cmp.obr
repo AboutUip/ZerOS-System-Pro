@@ -33,18 +33,15 @@
    文件偏移按实际读到的个数累加。实际个数在 slot 320，0 个是这一边结束。一次最多 4096。
    两边各用一块 alloc 出来的缓冲。读写窗口只有一块，不能同时留着两边的字节。
    写到描述符 1 时，偏移按已经写下的字节累加，不要每次从 0 写。诊断写描述符 2。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

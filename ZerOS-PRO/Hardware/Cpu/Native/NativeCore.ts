@@ -31,6 +31,7 @@ import { ZerOS as OpcodeRoot } from "../../Motherboard/Enum/MemoryOpcode";
 import { ZerOS as RuntimeRoot } from "../Bootstrap/CpuRuntime";
 import { ZerOS as TracePageRoot } from "../../Diagnostics/Host/TracePage";
 import { ZerOS as TraceOpRoot } from "../../Diagnostics/Enum/TraceOp";
+import { ZerOS as MetricRoot } from "../../Motherboard/Host/MetricPage";
 import type { ZerOS as StateRoot } from "../Structure/NativeState";
 
 export namespace ZerOS {
@@ -47,6 +48,7 @@ export namespace ZerOS {
       const isNativeMiss = NativeRoot.Hardware.Cpu.isNativeMiss;
       const nativeMiss = NativeRoot.Hardware.Cpu.nativeMiss;
       const traceEnabled = TracePageRoot.Hardware.Diagnostics.traceEnabled;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
       const traceSpanEvent = TracePageRoot.Hardware.Diagnostics.traceSpanEvent;
       const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
       const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
@@ -122,8 +124,10 @@ export namespace ZerOS {
       const nativeWriteSpans = RuntimeRoot.Hardware.Cpu.nativeWriteSpans;
       const nativePaceBudget = RuntimeRoot.Hardware.Cpu.nativePaceBudget;
       const nativeChargePace = RuntimeRoot.Hardware.Cpu.nativeChargePace;
-      const nativeCoast = RuntimeRoot.Hardware.Cpu.nativeCoast;
-      const nativeYieldPace = RuntimeRoot.Hardware.Cpu.nativeYieldPace;
+      const noteIdleShape = RuntimeRoot.Hardware.Cpu.noteIdleShape;
+      const pauseIdleSpin = RuntimeRoot.Hardware.Cpu.pauseIdleSpin;
+      const idleSpinning = RuntimeRoot.Hardware.Cpu.idleSpinning;
+      const supervisorPoke = RuntimeRoot.Hardware.Cpu.supervisorPoke;
       const nativeGuestBusy = RuntimeRoot.Hardware.Cpu.nativeGuestBusy;
       const nativeGatePending = RuntimeRoot.Hardware.Cpu.nativeGatePending;
       const nativeWaitLatch = RuntimeRoot.Hardware.Cpu.nativeWaitLatch;
@@ -238,9 +242,6 @@ export namespace ZerOS {
         }
       }
 
-      /** 刚把自己降到一拍一条。1 表示下一条普通指令要睡一个节拍，随后把起点拨回。下标是核心号。 */
-      const coastArm = [0, 0, 0, 0, 0, 0, 0, 0];
-
       /** 取出转义操作数。编号越界或寄存器帧里没有这一格时是空。 */
       function readReg(state: NativeState, regs: readonly number[], index: number): bigint | null {
         const slot = regs[index];
@@ -254,9 +255,9 @@ export namespace ZerOS {
        * 兼容任务的 0F 05。
        * 帧写到尾区页 0，再以服务号 27 通知监督核。回复寄存器只是把保持位交回去，续跑时改读这帧。
        */
-      async function trapCompat(ordinal: number, state: NativeState): Promise<void> {
+      async function trapCompat(ordinal: number, state: NativeState): Promise<boolean> {
         await nativeWriteSpan(ordinal, BigInt(MapEndBits), encodeCompatFrame(state));
-        nativeSvc(ordinal, 27n, NativeRax);
+        return nativeSvc(ordinal, 27n, NativeRax);
       }
 
       /**
@@ -314,7 +315,27 @@ export namespace ZerOS {
           if (reply === undefined || service === null) {
             return "fault";
           }
-          nativeSvc(ordinal, service, reply);
+          /* 服务 28 的退出码在 native home+128；调试打开时一次读回 8 个八位组。 */
+          if (service === 28n && traceEnabled()) {
+            const home = readNativeWindow(ordinal);
+            if (home !== null) {
+              try {
+                const bytes = await nativeReadSpan(ordinal, home + 128n, 8);
+                let code = 0n;
+                for (let index = 0; index < 8; index += 1) {
+                  code |= BigInt(bytes[index] ?? 0) << BigInt(index * 8);
+                }
+                traceInstant(TraceOp.ProcessExit, TraceLayer.Sched, ordinal, Number(code & 0xffffn), 0);
+              } catch {
+                /* 读不到就保留原有退出路径。 */
+              }
+            }
+          }
+          if (!nativeSvc(ordinal, service, reply)) {
+            /* 指针留在这条调用上。让出之后监督核先把保持位取走，再调度回来重试。 */
+            nativeYield(ordinal);
+            return "yield";
+          }
           state.rip = escape.next;
           return "wait";
         }
@@ -681,9 +702,16 @@ export namespace ZerOS {
               break;
             }
             if (outcome === "syscall") {
+              const posted = await trapCompat(ordinal, state);
+              if (!posted) {
+                /* 0F 05 已经走过。退回这两字节，让出后从同一条再试。 */
+                state.rip -= 2n;
+                nativeYield(ordinal);
+                stopped = { kind: "yield", state };
+                break;
+              }
               waiting = true;
               stopped = { kind: "wait", state };
-              await trapCompat(ordinal, state);
               break;
             }
             const applied = await applyEscape(ordinal, state, outcome);
@@ -777,14 +805,31 @@ export namespace ZerOS {
         const pageMask = pageOctets - 1n;
         const pageOctetsN = 65536;
         const pageMaskN = 65535;
+        /* 键盘环在位址 6528 的次数和 6656 起五个槽，到 7296 为止。
+           缓存下标是八位组。7296 是引导阶段字，不能算进环里。 */
+        const keyRingCount = 6528 / 8;
+        const keyRingSlots = 6656 / 8;
+        const keyRingSlotsEnd = 7296 / 8;
+        const keyRingOctet = (index: number): boolean => {
+          if (index >= keyRingCount && index < keyRingCount + 8) {
+            return true;
+          }
+          return index >= keyRingSlots && index < keyRingSlotsEnd;
+        };
         /* 页键用安全整数。大整数做键时，每次取数都要散列一个堆对象，监督核的循环会被这截拖住。 */
         const pages = new Map<number, Uint8Array>();
         const sparse = new Map<number, number>();
         const dirty = new Set<number>();
+        /** 本核窗口里改过的字节。送邮箱和调度时不走这张表，避免每次按键都扫一遍控制台。 */
+        const ownDirty = new Set<number>();
         let waiting = false;
         let hot: Uint8Array | null = null;
         let hotBase = -1;
         const recallNum = (index: number): number | undefined => {
+          /* 键盘环由固件写、监督核读。页缓存会把刚发布的次数留成旧值，这一段只认刚读回来的稀疏字节。 */
+          if (keyRingOctet(index)) {
+            return sparse.get(index);
+          }
           const lone = sparse.get(index);
           if (lone !== undefined) {
             return lone;
@@ -832,6 +877,9 @@ export namespace ZerOS {
         const recall = (octet: bigint): number | undefined => {
           return recallNum(Number(octet));
         };
+        /* 自己的窗口不进脏表。每次 store 都算一遍大整数会把写出拖慢，这里只算一次。 */
+        const ownKeepStart = Number((BigInt(RelocateDataFloor) + BigInt(ordinal) * BigInt(RelocateSlotBits)) / 8n);
+        const ownKeepStop = ownKeepStart + Number(BigInt(RelocateSlotBits) / 8n);
         /* 核心 2 的数据起点是 1048576 + 2×268435456。档发布在这之后 49152 位，八个八位组。
            49344 位是内核发布的这一轮消息上限，小端 8 个八位组。颗粒游标占到 49343，再往后才是这个字。 */
         const rankPublishN = 67246080;
@@ -855,7 +903,11 @@ export namespace ZerOS {
           } else {
             sparse.set(index, stored);
           }
-          dirty.add(index);
+          if (index >= ownKeepStart && index < ownKeepStop) {
+            ownDirty.add(index);
+          } else {
+            dirty.add(index);
+          }
           /* 上限字的八个八位组都到了，才把小端的低 32 位交给主板。高位不是 0 就当成还没发布。 */
           if (index >= spanWordN && index < spanWordN + 8) {
             let word = 0;
@@ -904,8 +956,13 @@ export namespace ZerOS {
           }
         };
         const sharedOctet = BigInt(RelocateDataFloor) / 8n;
-        const flush = async (mailboxOnly = false, onlyPage: bigint | null = null): Promise<void> => {
-          if (dirty.size === 0) {
+        const ownOctet = (BigInt(RelocateDataFloor) + BigInt(ordinal) * BigInt(RelocateSlotBits)) / 8n;
+        const ownEnd = ownOctet + BigInt(RelocateSlotBits) / 8n;
+        const ownN = Number(ownOctet);
+        const ownEndN = Number(ownEnd);
+        const flush = async (mailboxOnly = false, onlyPage: bigint | null = null, skipOwn = false): Promise<void> => {
+          const includeOwn = !mailboxOnly && !skipOwn;
+          if (dirty.size === 0 && (!includeOwn || ownDirty.size === 0)) {
             return;
           }
           /* 连续脏字节收成一段。段与段不相邻时一次消息写回，不再每段等一次主板。
@@ -915,14 +972,23 @@ export namespace ZerOS {
           const sharedN = Number(sharedOctet);
           const onlyN = onlyPage === null ? null : Number(onlyPage);
           const pending: number[] = [];
-          for (const octet of dirty) {
-            if (mailboxOnly && octet >= sharedN) {
-              continue;
+          const collect = (source: Set<number>): void => {
+            for (const octet of source) {
+              if (mailboxOnly && octet >= sharedN) {
+                continue;
+              }
+              if (skipOwn && octet >= ownN && octet < ownEndN) {
+                continue;
+              }
+              if (onlyN !== null && octet >= sharedN && (octet & ~pageMaskN) !== onlyN) {
+                continue;
+              }
+              pending.push(octet);
             }
-            if (onlyN !== null && octet >= sharedN && (octet & ~pageMaskN) !== onlyN) {
-              continue;
-            }
-            pending.push(octet);
+          };
+          collect(dirty);
+          if (includeOwn) {
+            collect(ownDirty);
           }
           if (pending.length === 0) {
             return;
@@ -980,7 +1046,9 @@ export namespace ZerOS {
             addresses.push(BigInt(origin) * 8n);
             parts.push(bytes);
             for (let step = 0; step < count; step += 1) {
-              dirty.delete(origin + step);
+              const key = origin + step;
+              dirty.delete(key);
+              ownDirty.delete(key);
             }
             index = scan;
           }
@@ -992,6 +1060,29 @@ export namespace ZerOS {
           }
         };
         const fill = async (bit: bigint): Promise<void> => {
+          const octet = Number(bit / 8n);
+          if (keyRingOctet(octet)) {
+            /* 次数、栅栏和五个槽一起读。一次只读一个字的话，conPump 要来回三四趟，一字节就要二十多毫秒。 */
+            const ringBytes = 104;
+            const bytes = await nativeReadSpan(ordinal, 6528n, ringBytes);
+            const base = 6528 / 8;
+            const width = bytes.length < ringBytes ? bytes.length : ringBytes;
+            for (let step = 0; step < width; step += 1) {
+              sparse.set(base + step, bytes[step] ?? 0);
+            }
+            /* 6528 是写入次数。通知已经到了而次数没变，就不能睡。 */
+            if (bytes.length >= 4) {
+              let count = 0;
+              for (let step = 0; step < 4; step += 1) {
+                count += (bytes[step] ?? 0) * (2 ** (step * 8));
+              }
+              if (count > lastRingCount) {
+                lastRingCount = count;
+                ringAdvanced = true;
+              }
+            }
+            return;
+          }
           /* 只把这一页已经改过的字节送出去。整份脏缓冲一起送的话，每次缺页都会把还没写完的记录切成几十字节。 */
           const dirtyPage = (bit / 8n) & ~pageMask;
           await flush(false, dirtyPage);
@@ -1005,8 +1096,6 @@ export namespace ZerOS {
           }
           install(page, await nativeReadSpan(ordinal, page * 8n, count));
         };
-        /* 数据区以下是和固件共用的邮箱。这一拍写回之后丢掉，下一拍才能看见固件刚写的字。
-           数据区起点按页对齐，整页要么全在邮箱里，要么全在数据区。 */
         const dropShared = (): void => {
           const sharedN = Number(sharedOctet);
           hot = null;
@@ -1021,6 +1110,18 @@ export namespace ZerOS {
             }
           }
         };
+        /** 固件刚发布的键盘环不能沿用这一拍早先读到的字节。 */
+        const forgetKeyRing = (): void => {
+          const stale: number[] = [];
+          for (const key of sparse.keys()) {
+            if (keyRingOctet(key)) {
+              stale.push(key);
+            }
+          }
+          for (const key of stale) {
+            sparse.delete(key);
+          }
+        };
         /*
          * 监督核的数据缓冲只可信自己窗口里的字。
          * 客程序的参数写在别的核心的窗口里。上一次系统调用读过的那一页会留在缓冲中，
@@ -1028,10 +1129,6 @@ export namespace ZerOS {
          * 取出到一条调用后先丢掉窗外的页，分发再读到的就是客程序刚写上的字。
          * 自己窗口里的任务表不丢，那些字已经在取出前写回。
          */
-        const ownOctet = (BigInt(RelocateDataFloor) + BigInt(ordinal) * BigInt(RelocateSlotBits)) / 8n;
-        const ownEnd = ownOctet + BigInt(RelocateSlotBits) / 8n;
-        const ownN = Number(ownOctet);
-        const ownEndN = Number(ownEnd);
         const dropForeign = (): void => {
           hot = null;
           for (const key of sparse.keys()) {
@@ -1045,17 +1142,39 @@ export namespace ZerOS {
             }
           }
         };
+        /* 客程序的参数只在它自己的窗口里。丢掉整份窗外缓存的话，终端格子每次按键都要重新读回。 */
+        const dropCaller = (caller: number): void => {
+          if (!Number.isInteger(caller) || caller < 0 || caller > 31) {
+            dropForeign();
+            return;
+          }
+          const start = Number((BigInt(RelocateDataFloor) + BigInt(caller) * BigInt(RelocateSlotBits)) / 8n);
+          const end = start + Number(BigInt(RelocateSlotBits) / 8n);
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) {
+            dropForeign();
+            return;
+          }
+          hot = null;
+          for (const key of sparse.keys()) {
+            if (key >= start && key < end) {
+              sparse.delete(key);
+            }
+          }
+          for (const key of pages.keys()) {
+            if (key >= start && key < end && (key < ownN || key >= ownEndN)) {
+              pages.delete(key);
+            }
+          }
+        };
         /*
-         * 节拍不足 1 毫秒时不会挂起，所以每拍结束仍要让出一次宏任务。
-         * 频率高时一拍的预算能到 10 万条。stepNative 在 CPU 线程上同步做完，墙钟往往是一两百毫秒。
-         * 固件的 dwell 和别的核心的定时都排在这条线程上。
-         * 这里不改频率。没有系统调用时，墙钟走过 1 毫秒就先记账再让出，100 MHz 仍是 100 MHz。
-         * 取出一条调用之后，分发要一次做完。再按 1 毫秒切开，每次让出都要等别的核心排完，
-         * 一次分配就会被拉到一百多毫秒。这一段把上限放到 32 毫秒，到了仍让出，客程序才能把回复接走。
-         * 主循环回到 hertz 或 core，说明这次调用已经返回，上限收回 1 毫秒，空转不再占住线程。
+         * 同步切片大约 1 毫秒，然后用消息通道让出。
+         * Hz 不再把这一拍睡成 16 或 33 毫秒。以前取出调用后把切片放到 32 毫秒，
+         * 是因为每次让出都要等别的核心把 Hz 睡眠跑完。那种睡眠已经去掉，
+         * 1 毫秒的让出足够把显示拍和固件的 poll 排进来。
+         * serving 只决定脏字节能不能并进同一段搬运，不再把同步切片放到 32 毫秒。
          */
+        const sliceMs = 1;
         let serving = false;
-        let sliceMs = 1;
         const sliceCheck = 8;
         /*
          * 平时用消息通道让出，监督核的空转不会每拍都吃掉 4 毫秒。
@@ -1065,7 +1184,20 @@ export namespace ZerOS {
          * 这一段大约每 32 毫秒才走一次定时器，其余仍走通道。频率和每拍条数都不改。
          */
         let yieldResume: (() => void) | null = null;
+        let yieldForced = false;
         let timerYieldAt = 0;
+        /* 只记住已经写进环的按下次数。松开不加这个序号，回显的写出不会被切开。
+           还有按下没进环时，这一拍满 1 毫秒就交给固件。 */
+        let attentionSeen = 0;
+        /* 环的通知已经到了，但这一圈读到的次数还没比上次更大。
+           主循环走到升频也不许睡：次数没变，说明这一圈看见的仍是旧环，键还在环里。 */
+        let ringUnseen = false;
+        let ringAdvanced = false;
+        let lastRingCount = -1;
+        const keyArrived = (): boolean => {
+          return MetricRoot.Hardware.Motherboard.keySerialNow() !== attentionSeen
+            || RuntimeRoot.Hardware.Cpu.keyUnwritten();
+        };
         const yieldChannel = new MessageChannel();
         yieldChannel.port1.onmessage = (): void => {
           const resume = yieldResume;
@@ -1074,20 +1206,136 @@ export namespace ZerOS {
             resume();
           }
         };
-        const yieldTurn = (): Promise<void> => {
+        /* 键进来之后这几毫秒继续跑。环里的次数往往比通知晚一点才读得到。
+           过了这几毫秒就停在入站通知和显示拍上，不再自己发消息。 */
+        let hotUntil = 0;
+        const noteHot = (): void => {
+          const until = performance.now() + 8;
+          if (until > hotUntil) {
+            hotUntil = until;
+          }
+        };
+        RuntimeRoot.Hardware.Cpu.bindYieldPoke((): void => {
+          /* 落在同步切片里时，这一拍还没进等待。记下，拍尾不要再排一帧。 */
+          yieldForced = true;
+          const resume = yieldResume;
+          yieldResume = null;
+          if (resume !== null) {
+            resume();
+          }
+        });
+        /* firmware 为真时必须真的让出，固件才能来收键。这时不能因为入站标记已经是 1 就立刻返回。 */
+        const yieldTurn = (firmware: boolean): Promise<void> => {
+          /* 调用已经在保持位里，或上一拍的叫醒落在同步切片中。这一拍直接继续，去取调用。
+             入站标记不算：环还没写上，立刻返回会把固件的 poll 饿死。 */
+          /* 固件还等着交换结果时，不能用已经解决的承诺立刻再跑。
+             那会占住微任务，方向 2 的结果进不了队，键写进环要等十几毫秒。 */
+          if (
+            !firmware
+            && (yieldForced || nativeGatePending() || RuntimeRoot.Hardware.Cpu.keyRingPending())
+          ) {
+            yieldForced = false;
+            /* 固件还等着交换结果时，不能用已经解决的承诺立刻再跑。
+               那会占住微任务，方向 2 的结果进不了队。
+               只让出一个宏任务，结果落地后马上读环。睡到下一拍显示，字形会晚二十多毫秒。 */
+            if (RuntimeRoot.Hardware.Cpu.nativeFirmwareAwaiting()) {
+              return new Promise((resolve): void => {
+                let settled = false;
+                const finish = (): void => {
+                  if (settled) {
+                    return;
+                  }
+                  settled = true;
+                  if (yieldResume === finish) {
+                    yieldResume = null;
+                  }
+                  resolve();
+                };
+                yieldResume = finish;
+                yieldChannel.port2.postMessage(null);
+              });
+            }
+            return Promise.resolve();
+          }
           /* 终端还没铺上时，大约每 32 毫秒才把队列让给定时器一次。
              固件的 30 Hz 圆圈和字体的网络读仍排得进。
              其余节拍走消息通道。每拍都用定时器的话，宿主会把 0 毫秒抬到大约 4 毫秒，引导就被这截间隙拖住。
              终端铺上之后仍只用通道，避免按键路径上堆定时器。 */
-          if (!nativeTerminalLive() && performance.now() - timerYieldAt >= 32) {
+          if (!firmware && !nativeTerminalLive() && performance.now() - timerYieldAt >= 32) {
             timerYieldAt = performance.now();
             return new Promise((resolve): void => {
               setTimeout(resolve, 0);
             });
           }
           return new Promise((resolve): void => {
-            yieldResume = resolve;
-            yieldChannel.port2.postMessage(null);
+            let settled = false;
+            const finish = (): void => {
+              if (settled) {
+                return;
+              }
+              settled = true;
+              if (yieldResume === finish) {
+                yieldResume = null;
+              }
+              resolve();
+            };
+            yieldResume = finish;
+            /* 决定让出之后，调用可能已经放进保持位。poke 若早于这一行，只把 yieldForced 留下。
+               这里再看一次。已经在分发的延后回复不算：那一拍仍要睡到子任务真正把下一次调用放进来。 */
+            if (yieldForced || nativeGatePending()) {
+              finish();
+              return;
+            }
+            /* 这一拍的指令预算用完了，调用还在分发。不能睡到下一次按键，
+               否则 spawn 停在清表上。让出一个宏任务再接着分发。 */
+            if (serving && !firmware) {
+              yieldChannel.port2.postMessage(null);
+              return;
+            }
+            /* 键已经进环，这一圈的 conPump 还没跑完。
+               睡在入站字上会一直等到下一次按下，这一字节就卡在环里。 */
+            if (!firmware && ringUnseen) {
+              yieldChannel.port2.postMessage(null);
+              return;
+            }
+            if (firmware) {
+              /* 等当前这次让出挂上之后再拉固件，避免在监督核的栈上重入 poll。 */
+              yieldChannel.port2.postMessage(null);
+              queueMicrotask((): void => {
+                RuntimeRoot.Hardware.Cpu.pokeFirmwareYield();
+              });
+              return;
+            }
+            const mark = MetricRoot.Hardware.Motherboard.keyAttentionWords();
+            const canWait = mark !== null && typeof Atomics.waitAsync === "function";
+            /* 引导和按键后的短窗仍自己发消息，读环才跟得上。
+               窗过了就只等入站通知和显示拍。定时器会被浏览器拉长，这里不用。 */
+            /* 引导和按键后的短窗自己发消息。延后的回复（壳在 wait、同核 spawn 还没交回）
+               不在这里转圈：子任务放进保持位时会 poke，这一拍从等待里回来。 */
+            if (!canWait || !nativeTerminalLive() || performance.now() < hotUntil) {
+              yieldChannel.port2.postMessage(null);
+            }
+            if (!canWait || mark === null) {
+              return;
+            }
+            /* 等这一格发生变化。键入队会加一，不论当前是 0 还是上次没减干净的数。
+               已经变了就只叫醒固件。计数不归零时立刻结束会转成空转。 */
+            const current = Atomics.load(mark, 0);
+            const waited = Atomics.waitAsync(mark, 0, current);
+            if (waited.async) {
+              void waited.value.then((): void => {
+                queueMicrotask((): void => {
+                  noteHot();
+                  RuntimeRoot.Hardware.Cpu.pokeFirmwareYield();
+                  finish();
+                });
+              });
+            } else {
+              noteHot();
+              queueMicrotask((): void => {
+                RuntimeRoot.Hardware.Cpu.pokeFirmwareYield();
+              });
+            }
           });
         };
         const baseNum = Number(base);
@@ -1135,16 +1383,16 @@ export namespace ZerOS {
           },
         };
         try {
-          if (ordinal >= 0 && ordinal < coastArm.length) {
-            coastArm[ordinal] = 0;
-          }
-          /* 数据窗里已经改过、还没送出的字节。邮箱标志不算，固件要马上看见。 */
+          /* 数据窗里已经改过、还没送出的字节。邮箱和监督核自己的窗口不算。
+             自己窗口里的格子留在缓冲里，不能因为它们超过 64KB 就把一次按键的回复整段写回去。 */
           const dataOctets = (): number => {
             let count = 0;
+            const sharedN = Number(sharedOctet);
             for (const octet of dirty) {
-              if (octet >= sharedOctet) {
-                count += 1;
+              if (octet < sharedN || (octet >= ownN && octet < ownEndN)) {
+                continue;
               }
+              count += 1;
             }
             return count;
           };
@@ -1159,10 +1407,9 @@ export namespace ZerOS {
             return value;
           };
           /* 这些出口会让别的核心或设备读刚才写下的字节，必须先整段送出。
-             降频、空转和查询只碰邮箱，数据留到回复或下一次这种出口。 */
+             pass 只改本核心的保持位，紧接着的调度仍会送出。降频、空转和查询只碰邮箱。 */
           const mustExpose = (opcode: number): boolean => {
-            return opcode === NativeEscapePass
-              || opcode === NativeEscapeSchedule
+            return opcode === NativeEscapeSchedule
               || opcode === NativeEscapePresent
               || opcode === NativeEscapeCharacter
               || opcode === NativeEscapeExchange
@@ -1175,9 +1422,16 @@ export namespace ZerOS {
               || opcode === NativeEscapeCapture
               || opcode === NativeEscapeRestore;
           };
-          /* 客程序已经在取指、保持位里又没有新调用：监督核停在这里。
-             停在这一拍的末尾再让，前面那 128 条仍会把命令挤成几十毫秒一跳。 */
+          /* 客程序正在执行指令、保持位里又没有新调用：监督核停在这里。
+             读键盘、dwell 和已经去掉的 Hz 定时器都不算执行。
+             提示符处不能停：键写进环之后还要 conPump 把这一字节交回壳。
+             客程序只是可运行、还没取指时也不能睡，否则没人 schedule。
+             停机和系统调用都会放开这把闩。 */
           const parkForGuest = async (): Promise<boolean> => {
+            /* 已经取走的调用还在分发。键和客程序都不能把这一次回复截掉。 */
+            if (serving) {
+              return false;
+            }
             if (!nativeTerminalLive() || !nativeGuestBusy(ordinal) || nativeGatePending()) {
               return false;
             }
@@ -1185,15 +1439,20 @@ export namespace ZerOS {
               await flush(false);
             }
             serving = false;
-            sliceMs = 1;
             await nativeWaitLatch();
-            return true;
+            /* 回来先走一圈。拍号可能已经变了，再睡会把显示程序留到下一次系统调用。 */
+            return false;
           };
           for (;;) {
+            /* 30 Hz 的 core() 空转。有真实指令或未取走的调用时不进入下面的取指。 */
+            if (await pauseIdleSpin(ordinal)) {
+              if (nativeAccount(ordinal, 0)) {
+                return;
+              }
+            }
             if (await parkForGuest()) {
               continue;
             }
-            sliceMs = serving ? 32 : 1;
             const budget = nativePaceBudget(ordinal);
             if (budget < 1) {
               await flush();
@@ -1201,13 +1460,51 @@ export namespace ZerOS {
               if (nativeAccount(ordinal, 0)) {
                 return;
               }
-              await yieldTurn();
+              await yieldTurn(false);
               continue;
             }
             let ran = 0;
-            /* 本拍里已经按旧频率记过的条数。降频指令会先把它们记掉，不能再按新频率记一次。 */
-            let billed = 0;
-            const sliceAt = performance.now();
+            let sliceAt = performance.now();
+            /* 这一拍已经把下一条调用放进保持位时，先取走再让出。
+               写出的回复会顺手叫醒显示。若在降频处把线程交出去，呈现要等下一拍，字形就晚十几毫秒。
+               每拍只多取一次，后面的调用仍把线程还给固件。 */
+            let pendingTake = 0;
+            /* 环的通知先到，这一圈的读可能还在飞，读到的是旧次数。
+               这一圈先跑完，下一圈再读一次，不要睡到下一拍显示。 */
+            let pumpAgain = false;
+            /* 这一圈已经走到给自己升频。中途按 1 毫秒停掉的不算，conPump 可能还停在缺页上。 */
+            let sawEpilogue = false;
+            /* 没人在取指时，主循环尾上把频率升回去就结束这一拍。
+               同一毫秒里再转圈会把线程占满，固件和回收都排在后面。 */
+            let restHigh = false;
+            /* 入站有字时先把线程交给固件，键盘环才写得上。
+               保持位里已经有调用时不再让。那次让出会把已经提交的写出拖过这一拍，字形跟着晚十几毫秒。
+               固件写完环就会清掉入站标记。只看入站的话，这一拍读到的旧计数会留到下一次按键。
+               写环留下的标记单独丢掉本地副本，这一圈读到的是刚写上的计数。 */
+            const pressed = MetricRoot.Hardware.Motherboard.keySerialNow();
+            const published = RuntimeRoot.Hardware.Cpu.takeKeyRing();
+            /* 只在这一拍真有新键时丢掉环的副本。每拍都丢的话，conPump 每次都要再读一整圈。 */
+            if (published > 0) {
+              forgetKeyRing();
+            }
+            if (published > 0) {
+              attentionSeen += published;
+              pumpAgain = true;
+              ringUnseen = true;
+              /* 这一圈之前读到的次数不算数。要等通知之后再读到更大的次数。 */
+              ringAdvanced = false;
+              noteHot();
+            }
+            if (keyArrived()) {
+              noteHot();
+            }
+            if (!nativeGatePending() && (pressed !== attentionSeen || RuntimeRoot.Hardware.Cpu.keyUnwritten())) {
+              /* 叫醒没落到等待上就不记次数。下一拍再试，键不用干等那 8 毫秒。
+                 这里不记住计数。环没写上之前，调用仍按 1 毫秒让出。 */
+              await yieldTurn(true);
+              RuntimeRoot.Hardware.Cpu.takeFirmwareCatch();
+              forgetKeyRing();
+            }
             const tracing = traceEnabled();
             while (ran < budget) {
               if (tracing) {
@@ -1224,41 +1521,40 @@ export namespace ZerOS {
                 if (recall(error.bit / 8n) === undefined) {
                   throw new Error("native instruction failed");
                 }
-                continue;
-              }
-              if (outcome === "cont") {
-                ran += 1;
-                /* 每 8 条才看一次钟。每条都看，会比快指令还贵；隔得再远，慢指令会把这一拍拖过 1 毫秒。 */
-                if (ran % sliceCheck === 0 && performance.now() - sliceAt >= sliceMs) {
+                /* 键盘环刚读回来。下一拍开头会丢掉这份副本。
+                   这一条 load 还没把次数写进寄存器就停的话，conPump 看不见已经进环的键，
+                   监督核接着睡到下一次按下。这一条必须马上再执行。
+                   别的缺页仍按 1 毫秒把线程还给固件，避免一长串缺页占住写环。 */
+                if (keyRingOctet(Number(error.bit / 8n))) {
+                  /* 读环的往返不占这一拍的 1 毫秒。占了的话，次数刚进寄存器，后面的 conWake 又被截掉。 */
+                  sliceAt = performance.now();
+                  continue;
+                }
+                if (performance.now() - sliceAt >= sliceMs && !serving) {
                   break;
                 }
                 continue;
               }
-              /* 连续的存储先留在本核心。每一拍结束都整段送出的话，一次调用会被切成几十次二十字节的往返。
-                 回复、调度、绘制、搬运和装入之前整段送出。打开字体面和画字符串也在这里送，
-                 从本核心缓冲抄字体再附在命令上会抄到空页。攒过 64KB 仍马上送，避免脏页无界增长。 */
-              let mailboxOnly = false;
-              if (typeof outcome === "object") {
-                const opcode = outcome.opcode;
-                let expose = mustExpose(opcode) || dataOctets() >= 65536;
-                if (opcode === NativeEscapeAccel) {
-                  const operation = readReg(state, outcome.regs, 1);
-                  if (operation === 40n || operation === 42n) {
-                    expose = true;
-                  }
+              if (outcome === "cont") {
+                ran += 1;
+                /* 每 8 条才看一次钟。每条都看，会比快指令还贵；隔得再远，慢指令会把这一拍拖过 1 毫秒。
+                   跳转也走这里，不把 core() 空转计数清掉。while (core()) 中间的 jmp 仍算空转。
+                   正在分发时不切开。刚敲下的命令还算「有键」，切开就会把 spawn 停在清表上，
+                   监督核接着睡到下一次按键，这条命令永远等不到回复。 */
+                if (ran % sliceCheck === 0 && performance.now() - sliceAt >= sliceMs && !serving) {
+                  break;
                 }
-                const quiet = opcode === NativeEscapeHertz
-                  || opcode === NativeEscapeCore
-                  || opcode === NativeEscapeQuery
-                  || opcode === NativeEscapeDwell
-                  || opcode === NativeEscapeInbox
-                  || opcode === NativeEscapePortState
-                  || opcode === NativeEscapePortChar
-                  || opcode === NativeEscapePortByte;
-                mailboxOnly = dataOctets() < 65536 && (quiet || !expose);
+                continue;
               }
+              noteIdleShape(ordinal, typeof outcome === "object" && outcome.opcode === NativeEscapeCore);
+              /* 连续的存储先留在本核心。每一拍结束都整段送出的话，一次调用会被切成几十次二十字节的往返。
+                 回复、调度、绘制、搬运和装入之前整段送出。打开字体面仍先送出。
+                 画字符串时标量已经抄齐就留在本核心，缺字才送出，避免抄到空页。攒过 64KB 仍马上送。 */
+              let mailboxOnly = false;
+              let stagedFont = false;
+              let fillFont: { readonly start: number; readonly glyphs: number } | null = null;
               /* 这一行的标量还在本核心缓冲里。抄齐了就交给绘制队列，避免每行再向主板读一次。
-                 缺任何一个八位组就不抄，仍走原来的读取。 */
+                 缺任何一个八位组就先把脏页写回，再读回这一行并留在缓冲里。下一行就能抄齐。 */
               if (typeof outcome === "object" && outcome.opcode === NativeEscapeAccel && ordinal === 2) {
                 const operation = readReg(state, outcome.regs, 1);
                 if (operation === 42n) {
@@ -1289,12 +1585,49 @@ export namespace ZerOS {
                       }
                       if (complete) {
                         RuntimeRoot.Hardware.Cpu.stageNativeFont(bytes);
+                        stagedFont = true;
+                      } else {
+                        fillFont = { start, glyphs };
                       }
                     }
                   }
                 }
               }
-              await flush(mailboxOnly);
+              if (typeof outcome === "object") {
+                const opcode = outcome.opcode;
+                let expose = mustExpose(opcode) || dataOctets() >= 65536;
+                if (opcode === NativeEscapeAccel) {
+                  const operation = readReg(state, outcome.regs, 1);
+                  if (operation === 40n || (operation === 42n && !stagedFont)) {
+                    expose = true;
+                  }
+                }
+                const quiet = opcode === NativeEscapeHertz
+                  || opcode === NativeEscapeCore
+                  || opcode === NativeEscapeQuery
+                  || opcode === NativeEscapeDwell
+                  || opcode === NativeEscapeInbox
+                  || opcode === NativeEscapePortState
+                  || opcode === NativeEscapePortChar
+                  || opcode === NativeEscapePortByte;
+                mailboxOnly = dataOctets() < 65536 && (quiet || !expose);
+              }
+              /* 调度、矩形和呈现读不到监督核窗口里的格子。那些字留到这一拍结束再送。
+                 客程序窗口里的返回值仍在这一次送出。 */
+              const skipOwn = typeof outcome === "object"
+                && (outcome.opcode === NativeEscapeSchedule
+                  || outcome.opcode === NativeEscapePresent
+                  || outcome.opcode === NativeEscapeCharacter)
+                && dataOctets() < 65536;
+              await flush(mailboxOnly, null, skipOwn);
+              /* 缓冲里缺的那一行已经写回主板。读回来留在本核心，绘制队列直接带上这些字节。 */
+              if (fillFont !== null) {
+                const filled = await nativeReadSpan(ordinal, BigInt(fillFont.start), fillFont.glyphs * 4);
+                if (filled.length === fillFont.glyphs * 4) {
+                  install(BigInt(fillFont.start), filled);
+                  RuntimeRoot.Hardware.Cpu.stageNativeFont(filled);
+                }
+              }
               if (outcome === "halt") {
                 finishNativeHalt(ordinal);
                 return;
@@ -1304,28 +1637,18 @@ export namespace ZerOS {
               }
               if (outcome === "syscall") {
                 await flush();
-                await trapCompat(ordinal, state);
+                const posted = await trapCompat(ordinal, state);
+                if (!posted) {
+                  state.rip -= 2n;
+                  nativeYield(ordinal);
+                  finishNativeYield(ordinal);
+                  return;
+                }
                 waiting = true;
                 return;
               }
-              /*
-               * hertz 改的是下一条起的频率。这一拍里已经跑完的指令仍按改之前的 Hz 记账。
-               * 若先改成 30 再把整拍条数乘上 1000/30，监督核空转尾上那几十条会一次睡满大约一秒。
-               * 只在目标就是自己时提前记账：改别人的频率不会换掉自己的节拍。
-               */
-              const lowersSelf = outcome.opcode === NativeEscapeHertz && readReg(state, outcome.regs, 0) === BigInt(ordinal);
-              let previousBudget = 0;
-              if (lowersSelf) {
-                previousBudget = nativePaceBudget(ordinal);
-                await nativeChargePace(ordinal, ran);
-                billed += ran;
-                ran = 0;
-              }
+              /* hertz(30) 再 hertz(100000000) 不再按低频率补睡。chargePace 只记账。 */
               const applied = await applyEscape(ordinal, state, outcome);
-              if (lowersSelf && ordinal >= 0 && ordinal < coastArm.length) {
-                const nextBudget = nativePaceBudget(ordinal);
-                coastArm[ordinal] = previousBudget > 1 && nextBudget === 1 ? 1 : 0;
-              }
               if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill || outcome.opcode === NativeEscapeOffer) {
                 const addressSlot = outcome.opcode === NativeEscapeFill ? 2 : 4;
                 const countSlot = outcome.opcode === NativeEscapeFill ? 3 : 5;
@@ -1344,15 +1667,25 @@ export namespace ZerOS {
                 const foundSlot = outcome.regs[0];
                 const found = foundSlot === undefined ? 0n : state.reg[foundSlot] ?? 0n;
                 if (found === 1n) {
-                  dropForeign();
-                  /* 调用号已经在寄存器里。分发紧挨着这条 take，不要先让出再做。 */
+                  const packedSlot = outcome.regs[1];
+                  const packed = packedSlot === undefined ? 0n : state.reg[packedSlot] ?? 0n;
+                  dropCaller(Number(packed >> 32n));
+                  /* 调用号已经在寄存器里。分发紧挨着这条 take，不要先让出再做。
+                     切片仍是 1 毫秒。不再放到 32 毫秒，否则固件的 poll 要等分发跑完。 */
                   serving = true;
-                  sliceMs = 32;
                   tookCall = true;
                 }
               }
-              /* 主循环尾上的降频和 core 表示这次调用已经走完。下一拍恢复 1 毫秒，把线程还给固件和客程序。 */
-              if (outcome.opcode === NativeEscapeHertz || outcome.opcode === NativeEscapeCore) {
+              /* 只有给自己降频或升频，才表示主循环这一圈已经走完。
+                 spawn 里给子核设 1000000 也是 hertz。把它当成收尾的话，
+                 schedWake 还没执行，监督核就睡到下一次按键，壳停在 spawn。 */
+              const hertzTarget = outcome.opcode === NativeEscapeHertz
+                ? readReg(state, outcome.regs, 0)
+                : null;
+              const selfHertz = hertzTarget === BigInt(ordinal);
+              /* 给自己升频是主循环这一圈的收尾，分发函数已经返回。
+                 同核 spawn 可以不回复就返回，那一拍仍要结束，子任务才跑得起来。 */
+              if (selfHertz) {
                 serving = false;
               }
               if (applied === "fault") {
@@ -1382,40 +1715,73 @@ export namespace ZerOS {
                 }
               }
               /* 主循环尾上的降频和 core 仍要让出，但同一毫秒里先把这一圈跑完。
-                 每条都让出时，定时器会把引导切成几毫秒一截。满一毫秒后下面的 break 仍把线程还给固件。 */
+                 每条都让出时，定时器会把引导切成几毫秒一截。满一毫秒后下面的 break 仍把线程还给固件。
+                 已经形成的 core() 空转不再吃完这一毫秒。 */
               if (
-                (outcome.opcode === NativeEscapeHertz || outcome.opcode === NativeEscapeCore)
-                && performance.now() - sliceAt < sliceMs
+                outcome.opcode === NativeEscapeCore
+                && nativeTerminalLive()
+                && !nativeGuestBusy(ordinal)
+                && !RuntimeRoot.Hardware.Cpu.nativeGatePending()
+                && !RuntimeRoot.Hardware.Cpu.keyRingPending()
               ) {
+                restHigh = true;
+              }
+              if (
+                (selfHertz || outcome.opcode === NativeEscapeCore)
+                && performance.now() - sliceAt < sliceMs
+                && !(outcome.opcode === NativeEscapeCore && idleSpinning(ordinal))
+              ) {
+                /* 自己的 core() 后面那次升频已经跑完。这一拍到此为止，去等键或显示拍。
+                   给别的核设频率不是这一拍的收尾。 */
+                if (!(restHigh && selfHertz)) {
+                  continue;
+                }
+                restHigh = false;
+                sawEpilogue = true;
+              }
+              /* 这次调用还没走到降频或 core。中间让出会把写出和呈现切成十几毫秒。
+                 收尾那次给自己升频已经把 serving 清掉。同核 spawn 没回复也一样，
+                 否则子任务的下一次调用进不了这一条线程。
+                 按下还没进环才切开。松开键的交换还在飞时不要切，呈现会被切成十几毫秒。 */
+              if (!serving && performance.now() - sliceAt >= sliceMs && keyArrived()) {
+                break;
+              }
+              if (serving) {
+                continue;
+              }
+              if (nativeGatePending() && pendingTake < 1) {
+                pendingTake += 1;
                 continue;
               }
               break;
             }
             /* 这一拍被系统调用或查询打断时，数据窗继续留着。
                以前只要这一拍不是被钟截断就会整段送出，相邻的几个字被拆成二十字节一次。
-               超过 64KB 仍送，引导清表不会堆在缓冲里。 */
+               超过 64KB 仍送，引导清表不会堆在缓冲里。
+               调用中间没送出的格子留在缓冲里，绘制队列已经抄过。不在这一拍结束时再搬一次。 */
             await flush(dataOctets() < 65536);
             dropShared();
-            if (ordinal >= 0 && ordinal < coastArm.length && (coastArm[ordinal] ?? 0) === 1 && ran > 0) {
-              /* 降到 30 Hz 之后不再合睡。合睡会把刚做完的调用按住大约 8 毫秒。
-                 频率账仍记下，paceYield 把这一拍的条数从睡眠里拿掉，线程接着跑下一条。 */
-              nativeYieldPace(ordinal);
-              await nativeChargePace(ordinal, ran);
-              nativeCoast(ordinal);
-              coastArm[ordinal] = 0;
-            } else {
-              await nativeChargePace(ordinal, ran);
-            }
-            if (nativeAccount(ordinal, ran + billed)) {
+            await nativeChargePace(ordinal, ran);
+            if (nativeAccount(ordinal, ran)) {
               return;
             }
-            /* 客程序正在算时，监督核停在保持位上。空转扫表会把线程从命令手里抢走。
-               正在分发时也停：回复已经调度了客程序，再跑完这一圈会把命令挤到下一次降频。
-               调用写入保持位后立刻继续。客程序还没跑起来、或正停在调用里时不在这里等，否则没人把调用做完。 */
+            /* 客程序正在执行指令时，监督核停在保持位上。空转扫表会把线程从命令手里抢走。
+               调用写入保持位后立刻继续。客程序还没跑起来、或正停在读键盘里时不在这里等。 */
             if (await parkForGuest()) {
               continue;
             }
-            await yieldTurn();
+            /* 通知之后至少要读到一次更大的次数，并且那一圈已经走完主循环。
+               只走到升频还不够：升频前的 conPump 可能仍拿着旧次数。 */
+            if (ringUnseen && ringAdvanced && sawEpilogue && published === 0) {
+              ringUnseen = false;
+              ringAdvanced = false;
+            }
+            supervisorPoke(ordinal);
+            if (pumpAgain) {
+              pumpAgain = false;
+              continue;
+            }
+            await yieldTurn(false);
           }
         } catch (error: unknown) {
           if (!waiting) {
@@ -1445,6 +1811,10 @@ export namespace ZerOS {
           frame.reg[reply.reg] = reply.value;
         }
         const stopped = await runPrepared(ordinal, frame, baseBit, null);
+        if (stopped.kind === "yield") {
+          finishNativeYield(ordinal);
+          return;
+        }
         if (stopped.kind === "fault") {
           throw new Error("native resume faulted");
         }

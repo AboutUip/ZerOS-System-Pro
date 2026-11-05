@@ -15,16 +15,14 @@
    -l 0 写 0。-l 15 写 TERM。大于 128 且小于 256 时减去 128，再对名字
    （壳里信号退出是 128 加信号号，2 号中断就是 130）。
    诊断在标准错误，前缀 kill:。成功时标准输出只给 -l。退出用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.proc;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun writeFd(long home, long fd, long addr, long count): void {

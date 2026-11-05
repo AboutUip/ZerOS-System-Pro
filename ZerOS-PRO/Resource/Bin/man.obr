@@ -1,0 +1,333 @@
+/* POSIX.1-2017 man（utilities/man.html）的选定子集。
+   形式是 man [-k] 名字...
+   没有 mandoc。对每个 name，依次尝试打开 /share/man/<name> 和 /os/man/<name>，
+   打开则把正文写到描述符 1。都没有则写 man: no manual entry 到描述符 2，该名字失败。
+   -k 把 name 当关键字：若 /share/man 或 /os/man 能 readdir，就写出文件名里含有
+   这串八位组的项，每行一个路径；目录不存在则 man: no manual entry。
+   有任一名字失败则最终 1。缺名字写 man: missing operand，退出 1。
+   不认识的选项写 man: invalid option，退出 1。
+   诊断英文 ASCII，描述符 2，以 man: 开头。main 经 finish 调 exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitLine(long home, long* place, long addr, long count): long {
+  if (emitSpan(home, place, addr, count) != 0L) {
+    return 1L;
+  }
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  return writeReady(home, place, 1L);
+}
+
+deRfun pour(long home, long fd, long* place): long {
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      if (emitSpan(home, place, obr::proc::bytes(home), n) != 0L) {
+        return 1L;
+      }
+      offset = offset + n;
+    }
+  }
+  return 0L;
+}
+
+deRfun contains(long hay, long hayLen, long needle, long needleLen): long {
+  if (needleLen < 1L || hayLen < needleLen) {
+    return 0L;
+  }
+  long start = 0L;
+  while (start <= hayLen - needleLen) {
+    long match = 1L;
+    long index = 0L;
+    while (index < needleLen) {
+      if (u8(hay + (start + index) * 8L) != u8(needle + index * 8L)) {
+        match = 0L;
+      }
+      index = index + 1L;
+    }
+    if (match == 1L) {
+      return 1L;
+    }
+    start = start + 1L;
+  }
+  return 0L;
+}
+
+deRfun joinMan(long scratch, long prefixAt, long prefixLen, long name, long nameLen): long {
+  if (nameLen < 1L || prefixLen + nameLen > 8192L) {
+    return -1L;
+  }
+  copySpan(scratch + prefixAt * 8L, scratch, prefixLen);
+  copySpan(name, scratch + prefixLen * 8L, nameLen);
+  return prefixLen + nameLen;
+}
+
+deRfun tryOpen(long home, long path, long pathLen): long {
+  if (pathLen < 1L || pathLen > 8192L) {
+    return -1L;
+  }
+  plant(home, path, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    return -1L;
+  }
+  return obr::proc::slot(home, 192L);
+}
+
+deRfun showPage(long home, long name, long nameLen, long* place): long {
+  long scratch = obr::proc::alloc(home, 16384L);
+  if (scratch == 0L) {
+    return 1L;
+  }
+  long p1 = putText(scratch, 0L, "/share/man/");
+  long total = joinMan(scratch, 0L, p1, name, nameLen);
+  long fd = -1L;
+  if (total > 0L) {
+    fd = tryOpen(home, scratch, total);
+  }
+  if (fd < 0L) {
+    long p2 = putText(scratch, 0L, "/os/man/");
+    total = joinMan(scratch, 0L, p2, name, nameLen);
+    if (total > 0L) {
+      fd = tryOpen(home, scratch, total);
+    }
+  }
+  if (fd < 0L) {
+    writeErr(home, "man: no manual entry\n");
+    return 1L;
+  }
+  long status = pour(home, fd, place);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+deRfun scanDir(long home, long dirPath, long dirLen, long key, long keyLen, long* place, long* any): long {
+  plant(home, dirPath, dirLen);
+  if (obr::proc::stat(home) != 0L) {
+    return 1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  if (kind != 2L && kind != 4L && kind != 6L) {
+    return 1L;
+  }
+  long scratch = obr::proc::alloc(home, 16384L);
+  long nameBuf = obr::proc::alloc(home, 4096L);
+  if (scratch == 0L || nameBuf == 0L) {
+    return 1L;
+  }
+  long dent = 0L;
+  long hit = 0L;
+  while (dent >= 0L) {
+    long listed = obr::proc::readdir(home, dent, 512L);
+    if (listed == 2L) {
+      dent = -1L;
+    } else if (listed != 0L) {
+      return 1L;
+    } else {
+      long nlen = obr::proc::slot(home, 256L);
+      if (nlen == 0L) {
+        dent = -1L;
+      } else {
+        if (nlen > 512L) {
+          nlen = 512L;
+        }
+        copySpan(obr::proc::bytes(home), nameBuf, nlen);
+        if (contains(nameBuf, nlen, key, keyLen) == 1L) {
+          copySpan(dirPath, scratch, dirLen);
+          long base = dirLen;
+          if (dirLen < 1L) {
+            return 1L;
+          }
+          if (u8(scratch + (dirLen - 1L) * 8L) != 47L) {
+            memory::storeOctet(47L, scratch + dirLen * 8L);
+            base = dirLen + 1L;
+          }
+          copySpan(nameBuf, scratch + base * 8L, nlen);
+          long full = base + nlen;
+          if (full <= 8192L) {
+            if (emitLine(home, place, scratch, full) != 0L) {
+              return 1L;
+            }
+            hit = 1L;
+            *any = 1L;
+          }
+        }
+        dent = dent + 1L;
+      }
+    }
+  }
+  if (hit == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun keyword(long home, long key, long keyLen, long* place): long {
+  long scratch = obr::proc::alloc(home, 512L);
+  if (scratch == 0L) {
+    return 1L;
+  }
+  long any = 0L;
+  long fail = 0L;
+  long d1 = putText(scratch, 0L, "/share/man");
+  if (scanDir(home, scratch, d1, key, keyLen, place, &any) != 0L) {
+    fail = 1L;
+  }
+  long d2 = putText(scratch, 0L, "/os/man");
+  if (scanDir(home, scratch, d2, key, keyLen, place, &any) != 0L) {
+    fail = 1L;
+  }
+  if (any == 0L) {
+    writeErr(home, "man: no manual entry\n");
+    return 1L;
+  }
+  if (fail == 1L && any == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long keywordMode = 0L;
+  if (index < count) {
+    long word = argPtr(home, index);
+    long wordLen = argLen(home, index);
+    if (wordLen == 2L && u8(word) == 45L && u8(word + 8L) == 107L) {
+      keywordMode = 1L;
+      index = index + 1L;
+    } else if (wordLen >= 2L && u8(word) == 45L) {
+      writeErr(home, "man: invalid option\n");
+      return finish(home, 1L);
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "man: missing operand\n");
+    return finish(home, 1L);
+  }
+  long place = 0L;
+  long fail = 0L;
+  while (index < count) {
+    long name = argPtr(home, index);
+    long nameLen = argLen(home, index);
+    long status = 0L;
+    if (keywordMode == 1L) {
+      status = keyword(home, name, nameLen, &place);
+    } else {
+      status = showPage(home, name, nameLen, &place);
+    }
+    if (status != 0L) {
+      fail = 1L;
+    }
+    index = index + 1L;
+  }
+  return finish(home, fail);
+}

@@ -1,6 +1,6 @@
 /* 设备环。登记、摘掉、沿环搬字节，以及 /dev 下按目录项列名字。
    不管路径怎么走，也不管终端格子。 */
-#LINK /vfs.obr, /exec.obr, /task.obr, /boot.obr
+#LINK /vfs.obr, /exec.obr, /task.obr, /boot.obr, /console.obr
 import fs;
 import proc;
 import sched;
@@ -113,6 +113,29 @@ deRfun devWake(long index): void {
   }
 }
 
+/* 从用户写来的那条环取出一个八位组。空的时候是 -1。不叫醒等待者，调用方取完再 devWake。 */
+deRfun devPullDown(long index): long {
+  if (index < 0L || index >= devCount()) {
+    return -1L;
+  }
+  Dev* dev = devAt(index);
+  if (dev.used == 0L || dev.downCount < 1L) {
+    return -1L;
+  }
+  long at = dev.downHead;
+  long value = memory::loadOctet(devDown(index) + at * 8L);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  at = at + 1L;
+  if (at >= ringRoom()) {
+    at = 0L;
+  }
+  dev.downHead = at;
+  dev.downCount = dev.downCount - 1L;
+  return value;
+}
+
 /* waitKind：1 用户读，2 用户写，3 驱动取，4 驱动送。into 与 ringMove 相同。 */
 deRfun devMove(long index, long home, long which, long into, long caller, long waitKind): long {
   if (index < 0L || index >= devCount()) {
@@ -201,25 +224,28 @@ deRfun devList(long dent, long home): long {
     return 13L;
   }
   long seen = 0L;
-  long index = 1L;
-  while (index < dentryCount()) {
+  long index = dentryAt(dent).child;
+  long guard = 0L;
+  long limit = dentryCount();
+  while (index > 0L && guard < limit) {
+    guard = guard + 1L;
     Dentry* entry = dentryAt(index);
-    if (entry.used == 1L && entry.parent == dent) {
-      if (seen == nth) {
-        if (cap < entry.nameLen) {
-          return 6L;
-        }
-        long step = 0L;
-        while (step < entry.nameLen) {
-          memory::storeOctet(memory::loadOctet(nameAt(index) + step * 8L), byteAt(home) + step * 8L);
-          step = step + 1L;
-        }
-        memory::store64(entry.nameLen, home + 256L);
-        return 0L;
+    if (entry.used == 1L && seen == nth) {
+      if (cap < entry.nameLen) {
+        return 6L;
       }
+      long step = 0L;
+      while (step < entry.nameLen) {
+        memory::storeOctet(memory::loadOctet(nameAt(index) + step * 8L), byteAt(home) + step * 8L);
+        step = step + 1L;
+      }
+      memory::store64(entry.nameLen, home + 256L);
+      return 0L;
+    }
+    if (entry.used == 1L) {
       seen = seen + 1L;
     }
-    index = index + 1L;
+    index = entry.next;
   }
   memory::store64(0L, home + 256L);
   return 0L;

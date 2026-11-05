@@ -1,0 +1,7 @@
+/* 把当前目录和相对路径收成绝对路径。成功返回 0，超过 512 个八位组返回 7。
+   不访问文件系统。点目录和上一级按字面删掉。 */
+namespace obr {
+namespace path {
+deRfun norm(long cwd, long cwdLen, long rel, long relLen, long dest, long scratch, long* outLen): long;
+}
+}

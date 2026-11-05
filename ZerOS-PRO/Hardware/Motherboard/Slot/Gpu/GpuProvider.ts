@@ -51,6 +51,14 @@ export namespace ZerOS {
           Compose(): Promise<void>;
           Present(): Promise<Uint32Array>;
           PresentView(): Promise<ImageBitmap | Uint32Array>;
+          /**
+           * 提交这一帧即 accepted。picture 在副本准备好时交回。
+           * 没有这份方法的插头仍走 PresentView，指令要等副本一起完成。
+           */
+          HandoffView?(): {
+            readonly accepted: Promise<void>;
+            readonly picture: Promise<ImageBitmap | Uint32Array>;
+          };
           Accel(op: number, a: bigint, b: bigint, c: bigint, d: bigint): Promise<number>;
           /**
            * 屏幕图元当场记下，返回和 Accel 相同的编号。

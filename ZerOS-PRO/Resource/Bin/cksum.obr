@@ -28,18 +28,15 @@
    对非负数，这就是逻辑右移 8 位，高位不会被切掉。
    然后 crc = (4294967295 异或 crc) 再和 4294967295 相与。
    按位取反用这个异或，不用取反运算符。long 的比较和初值用 0L。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

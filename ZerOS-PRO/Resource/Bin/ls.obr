@@ -49,18 +49,17 @@
    名字按无符号八位组排。-S 先按字节数从大到小，一样再比名字。
    -r 把比较结果整个倒过来。stat 失败写 ls: 路径: 原因，继续别的。
    目录读失败写 cannot read 或对应原因。写失败写 ls: write error，马上停。
-   诊断在描述符 2。标准输出的偏移从 0 累加。结束用服务 28。 */
+   诊断在描述符 2，不经过缓冲。标准输出只追加到 obr.print。结束用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
+import obr.print;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {
@@ -150,6 +149,10 @@ deRfun plant(long home, long addr, long count): void {
 }
 
 deRfun finish(long home, long code): int {
+  if (obr::print::flush(home) != 0L) {
+    writeErr(home, "ls: write error\n");
+    code = 1L;
+  }
   obr::proc::exit(home, code);
   return 0;
 }
@@ -541,132 +544,54 @@ deRfun markOf(long kind, long mode, long style): long {
   return 0L;
 }
 
-deRfun writeChunk(long home, long opt, long count): long {
-  long pending = count;
-  while (pending > 0L) {
-    long chunk = pending;
-    if (chunk > 4096L) {
-      chunk = 4096L;
-    }
-    long place = memory::load64(opt + 896L);
-    if (obr::proc::write(home, 1L, place, chunk) != 0L) {
-      writeErr(home, "ls: write error\n");
-      return 1L;
-    }
-    long wrote = obr::proc::slot(home, 320L);
-    if (wrote < 1L) {
-      writeErr(home, "ls: write error\n");
-      return 1L;
-    }
-    if (wrote > chunk) {
-      wrote = chunk;
-    }
-    pending = pending - wrote;
-    memory::store64(place + wrote, opt + 896L);
-    memory::store64(1L, opt + 1024L);
-    if (pending > 0L) {
-      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
-    }
-  }
-  return 0L;
-}
-
-/* 标准输出先攒在 opt+2624，最多 64 个八位组。个数在 opt+2560。
-   满 64 或遇到换行再写。长格式原先每个字符一次 write，每次都要整帧呈现。 */
-deRfun flushHeld(long home, long opt): long {
-  long count = memory::load64(opt + 2560L);
-  if (count < 1L) {
-    return 0L;
-  }
-  memory::store64(0L, opt + 2560L);
-  copySpan(opt + 2624L, obr::proc::bytes(home), count);
-  return writeChunk(home, opt, count);
-}
-
-deRfun writeReady(long home, long opt, long count): long {
-  return writeChunk(home, opt, count);
+/* 已经往标准输出放过字节。目录标题前据此决定要不要先空一行。 */
+deRfun noteOut(long opt): void {
+  memory::store64(1L, opt + 1024L);
 }
 
 deRfun emitSpan(long home, long opt, long addr, long count): long {
-  if (flushHeld(home, opt) != 0L) {
+  if (count < 1L) {
+    return 0L;
+  }
+  if (obr::print::out(home, addr, count) != 0L) {
+    writeErr(home, "ls: write error\n");
     return -1L;
   }
-  long done = 0L;
-  while (done < count) {
-    long chunk = count - done;
-    if (chunk > 4096L) {
-      chunk = 4096L;
-    }
-    copySpan(addr + done * 8L, obr::proc::bytes(home), chunk);
-    if (writeReady(home, opt, chunk) != 0L) {
-      return -1L;
-    }
-    done = done + chunk;
-  }
+  noteOut(opt);
   return 0L;
 }
 
 deRfun emitText(long home, long opt, string text): long {
-  if (flushHeld(home, opt) != 0L) {
+  int raw = length(text);
+  if (raw < 1) {
+    return 0L;
+  }
+  if (obr::print::text(home, text) != 0L) {
+    writeErr(home, "ls: write error\n");
     return -1L;
   }
-  int raw = length(text);
-  long count = raw;
-  long done = 0L;
-  while (done < count) {
-    long chunk = count - done;
-    if (chunk > 4096L) {
-      chunk = 4096L;
-    }
-    long index = 0L;
-    while (index < chunk) {
-      memory::storeOctet(text[done + index], obr::proc::bytes(home) + index * 8L);
-      index = index + 1L;
-    }
-    if (writeReady(home, opt, chunk) != 0L) {
-      return -1L;
-    }
-    done = done + chunk;
-  }
+  noteOut(opt);
   return 0L;
 }
 
 deRfun emitOctet(long home, long opt, long octet): long {
-  long count = memory::load64(opt + 2560L);
-  if (count < 0L || count >= 64L) {
-    count = 0L;
+  if (obr::print::byte(home, octet) != 0L) {
+    writeErr(home, "ls: write error\n");
+    return -1L;
   }
-  memory::storeOctet(octet, opt + 2624L + count * 8L);
-  count = count + 1L;
-  memory::store64(count, opt + 2560L);
-  if (count >= 64L || octet == 10L) {
-    if (flushHeld(home, opt) != 0L) {
-      return -1L;
-    }
-  }
+  noteOut(opt);
   return 0L;
 }
 
 deRfun emitSpaces(long home, long opt, long count): long {
-  if (flushHeld(home, opt) != 0L) {
+  if (count < 1L) {
+    return 0L;
+  }
+  if (obr::print::fill(home, 32L, count) != 0L) {
+    writeErr(home, "ls: write error\n");
     return -1L;
   }
-  long left = count;
-  while (left > 0L) {
-    long chunk = left;
-    if (chunk > 4096L) {
-      chunk = 4096L;
-    }
-    long index = 0L;
-    while (index < chunk) {
-      memory::storeOctet(32L, obr::proc::bytes(home) + index * 8L);
-      index = index + 1L;
-    }
-    if (writeReady(home, opt, chunk) != 0L) {
-      return -1L;
-    }
-    left = left - chunk;
-  }
+  noteOut(opt);
   return 0L;
 }
 
@@ -1792,7 +1717,6 @@ deRfun main(): int {
     now = obr::proc::slot(home, 128L);
   }
   memory::store64(now, opt + 2496L);
-  memory::store64(0L, opt + 2560L);
   long fileN = 0L;
   long dirN = 0L;
   long cursor = index;
@@ -1842,7 +1766,6 @@ deRfun main(): int {
   if (fileN > 0L) {
     orderEntries(opt, entries, indices, fileN);
     if (showEntries(home, opt, entries, indices, fileN, 0L) != 0L) {
-      flushHeld(home, opt);
       return finish(home, 1L);
     }
   }
@@ -1854,13 +1777,9 @@ deRfun main(): int {
   while (dirIndex < dirN) {
     long outcome = walkOne(home, opt, memory::load64(dirAt + dirIndex * 64L), memory::load64(dirLn + dirIndex * 64L), heads);
     if (outcome < 0L) {
-      flushHeld(home, opt);
       return finish(home, 1L);
     }
     dirIndex = dirIndex + 1L;
-  }
-  if (flushHeld(home, opt) != 0L) {
-    return finish(home, 1L);
   }
   if (memory::load64(opt + 960L) != 0L) {
     return finish(home, 1L);

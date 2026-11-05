@@ -34,18 +34,15 @@
    诊断都是 install: 路径: cannot install，退出 1。没有改时间或属主的调用，
    不保留时间戳，也不 chown。成功时标准输出什么都不写。
    诊断写描述符 2。描述符 0 不关。alloc 的单位是位。结束用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。负值加上 256 才是 0 到 255 的八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

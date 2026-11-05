@@ -1,0 +1,11 @@
+/* 壳的屏幕和标准输出。正文八位组在行编辑状态里，画面八位组在本库自己的缓冲里。
+   标准输出只追加进 obr.print，每次画完都交出，键入和提示符不必等换行。 */
+deRfun say(long home, string text): void;
+deRfun saySpan(long home, long addr, long count): void;
+deRfun sayByte(long home, long value): void;
+deRfun sayBack(long home): void;
+deRfun sayMissing(long home, string lead, long addr, long count, string tail): void;
+deRfun paintEdit(long home, long state, long work): void;
+deRfun paintStep(long home, long state, long work, long beforeLen, long beforeCur): void;
+deRfun paintMark(long home, long work): void;
+deRfun paintPrompt(long home, long work): void;

@@ -39,17 +39,15 @@
    从描述符 0 读到换行或 512 个八位组，只认第一个是 y 或 Y。
    别的回答跳过这一项，不算失败。读失败写 mv: read error，立刻退出。
    诊断在描述符 2。成功退出 0，失败退出 1。结束用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

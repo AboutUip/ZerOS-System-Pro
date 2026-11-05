@@ -1,0 +1,58 @@
+/* POSIX.1-2017 hostid（utilities/hostid.html）。形式是 hostid。
+   本系统没有主机标识系统调用。
+   选定：无操作数时向描述符 1 写 00000000 和换行，退出 0。
+   这是固定标识，不是硬件序列号。
+   有操作数写 hostid: too many operands 到描述符 2，退出 1。
+   诊断英文 ASCII，以 hostid: 开头。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count > 1L) {
+    writeErr(home, "hostid: too many operands\n");
+    return finish(home, 1L);
+  }
+  writeOut(home, "00000000\n");
+  return finish(home, 0L);
+}

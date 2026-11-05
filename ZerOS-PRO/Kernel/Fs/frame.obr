@@ -1,0 +1,76 @@
+/* 显示器已经走完的拍。宿主写在座位 4 的字段 3，这里只转发。
+   不保存格子，不决定哪一行要画，也不在这里 present。
+   调用方是 start.obr。这里不反向链接入口。 */
+#LINK /start.obr
+import proc;
+import sched;
+import board;
+
+deRfun frameEpoch(): long {
+  return query(4L, 3L, 0L);
+}
+
+deRfun frameSeen(long writing, long value): long {
+  static long seen = -1L;
+  if (writing == 1L) {
+    seen = value;
+  }
+  return seen;
+}
+
+deRfun frameWaiter(long writing, long core): long {
+  static long waiter = -1L;
+  if (writing == 1L) {
+    waiter = core;
+  }
+  return waiter;
+}
+
+/* 已经有一份在等就返回 -1。否则记下当前拍号并睡下，返回 -2，调用方先不要应答。
+   呈现一次往往跨过好几拍。这里若看见旧拍号就立刻返回，显示程序会不再入睡，
+   下一次调用和写入抢同一个保持位。下一拍由 frameWake 交回去。 */
+deRfun frameWait(long caller): long {
+  long held = frameWaiter(0L, 0L);
+  if (held >= 0L) {
+    long index = taskFind(held);
+    if (index >= 0L && taskAt(index).state == TaskState::Sleeping) {
+      return -1L;
+    }
+  }
+  frameSeen(1L, frameEpoch());
+  frameWaiter(1L, caller);
+  schedSleep(caller);
+  return -2L;
+}
+
+/* 没有人等，返回 -1。拍号变了，或调用方要求马上交，就把等的人交出去。 */
+deRfun frameRelease(long force): long {
+  long held = frameWaiter(0L, 0L);
+  if (held < 0L) {
+    return -1L;
+  }
+  long now = frameEpoch();
+  if (force == 0L && now == frameSeen(0L, 0L)) {
+    return -1L;
+  }
+  frameWaiter(1L, -1L);
+  frameSeen(1L, now);
+  return held;
+}
+
+/* 没有人等，或拍号没变，返回 -1。否则交出那颗核心，调用方再用 frameEpoch 回复。 */
+deRfun frameWake(): long {
+  return frameRelease(0L);
+}
+
+/* 这一拍没有要画的行。记下拍号，避免下一圈把同一次节拍当成新的。不叫醒显示。 */
+deRfun frameHold(): void {
+  frameSeen(1L, frameEpoch());
+}
+
+deRfun frameWaiting(): long {
+  if (frameWaiter(0L, 0L) < 0L) {
+    return 0L;
+  }
+  return 1L;
+}

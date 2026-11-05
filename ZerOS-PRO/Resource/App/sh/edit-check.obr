@@ -1,7 +1,11 @@
 /* 行编辑、拆词和路径的自检。编成原生映像后由宿主核对三格：用例数、失败数、第一处失败。
-   不进引导，也不打开终端。 */
+   不进引导，也不打开终端。这份自检自己的函数只给自己调用。 */
+#LINK /edit-check.obr
 import memory;
-import edit;
+import obr.line;
+import obr.path;
+import parse;
+import builtin;
 
 deRfun stateAt(): long {
   return 4194304L;
@@ -43,7 +47,7 @@ deRfun plant(long addr, string text): long {
 }
 
 deRfun lineIs(long state, string text): long {
-  return bytesEq(state + 4096L, editLen(state), text);
+  return bytesEq(state + 4096L, obr::line::editLen(state), text);
 }
 
 deRfun feedText(long state, string text): long {
@@ -52,7 +56,7 @@ deRfun feedText(long state, string text): long {
   long action = 0L;
   while (index < raw) {
     long value = text[index];
-    action = editFeed(state, value);
+    action = obr::line::editFeed(state, value);
     index = index + 1;
   }
   return action;
@@ -60,135 +64,135 @@ deRfun feedText(long state, string text): long {
 
 deRfun editCases(): void {
   long state = stateAt();
-  editInit(state);
-  expect(editFeed(state, 97L) == 0L && lineIs(state, "a") == 1L && editCursor(state) == 1L, 1L);
-  expect(editFeed(state, 98L) == 0L && lineIs(state, "ab") == 1L && editCursor(state) == 2L, 2L);
-  expect(editFeed(state, 1L) == 0L && editCursor(state) == 0L, 3L);
-  expect(editFeed(state, 88L) == 0L && lineIs(state, "Xab") == 1L && editCursor(state) == 1L, 4L);
-  expect(editFeed(state, 127L) == 0L && lineIs(state, "ab") == 1L && editCursor(state) == 0L, 5L);
-  expect(editFeed(state, 5L) == 0L && editCursor(state) == 2L, 6L);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 68L) == 0L && editCursor(state) == 1L, 7L);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 67L) == 0L && editCursor(state) == 2L, 8L);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 67L) == 0L && editCursor(state) == 2L, 9L);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 68L) == 0L, 10L);
-  expect(editFeed(state, 1L) == 0L && editCursor(state) == 0L, 11L);
-  expect(editFeed(state, 127L) == 0L && lineIs(state, "ab") == 1L, 12L);
-  editClear(state);
-  expect(feedText(state, "hello") == 0L && editFeed(state, 23L) == 0L && editLen(state) == 0L, 13L);
-  editClear(state);
-  expect(feedText(state, "ab cd") == 0L && editFeed(state, 23L) == 0L && lineIs(state, "ab ") == 1L, 14L);
-  editClear(state);
+  obr::line::editInit(state);
+  expect(obr::line::editFeed(state, 97L) == 0L && lineIs(state, "a") == 1L && obr::line::editCursor(state) == 1L, 1L);
+  expect(obr::line::editFeed(state, 98L) == 0L && lineIs(state, "ab") == 1L && obr::line::editCursor(state) == 2L, 2L);
+  expect(obr::line::editFeed(state, 1L) == 0L && obr::line::editCursor(state) == 0L, 3L);
+  expect(obr::line::editFeed(state, 88L) == 0L && lineIs(state, "Xab") == 1L && obr::line::editCursor(state) == 1L, 4L);
+  expect(obr::line::editFeed(state, 127L) == 0L && lineIs(state, "ab") == 1L && obr::line::editCursor(state) == 0L, 5L);
+  expect(obr::line::editFeed(state, 5L) == 0L && obr::line::editCursor(state) == 2L, 6L);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 68L) == 0L && obr::line::editCursor(state) == 1L, 7L);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 67L) == 0L && obr::line::editCursor(state) == 2L, 8L);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 67L) == 0L && obr::line::editCursor(state) == 2L, 9L);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 68L) == 0L, 10L);
+  expect(obr::line::editFeed(state, 1L) == 0L && obr::line::editCursor(state) == 0L, 11L);
+  expect(obr::line::editFeed(state, 127L) == 0L && lineIs(state, "ab") == 1L, 12L);
+  obr::line::editClear(state);
+  expect(feedText(state, "hello") == 0L && obr::line::editFeed(state, 23L) == 0L && obr::line::editLen(state) == 0L, 13L);
+  obr::line::editClear(state);
+  expect(feedText(state, "ab cd") == 0L && obr::line::editFeed(state, 23L) == 0L && lineIs(state, "ab ") == 1L, 14L);
+  obr::line::editClear(state);
   expect(feedText(state, "abcd") == 0L, 15L);
-  editFeed(state, 1L);
-  editFeed(state, 27L);
-  editFeed(state, 91L);
-  editFeed(state, 67L);
-  editFeed(state, 27L);
-  editFeed(state, 91L);
-  editFeed(state, 67L);
-  expect(editCursor(state) == 2L && editFeed(state, 11L) == 0L && lineIs(state, "ab") == 1L, 16L);
-  editClear(state);
-  expect(feedText(state, "abcd") == 0L && editFeed(state, 21L) == 0L && editLen(state) == 0L, 17L);
-  editClear(state);
-  expect(feedText(state, "ab") == 0L && editFeed(state, 1L) == 0L && editFeed(state, 4L) == 0L && lineIs(state, "b") == 1L && editCursor(state) == 0L, 18L);
-  editClear(state);
-  expect(editFeed(state, 4L) == 2L, 19L);
-  editClear(state);
-  expect(feedText(state, "z") == 0L && editFeed(state, 3L) == 3L && editLen(state) == 0L, 20L);
-  editClear(state);
-  expect(feedText(state, "keep") == 0L && editFeed(state, 12L) == 4L && lineIs(state, "keep") == 1L, 21L);
-  editClear(state);
-  expect(editFeed(state, 9L) == 5L && editLen(state) == 0L, 22L);
-  expect(feedText(state, "ab") == 0L && editFeed(state, 9L) == 5L && lineIs(state, "ab") == 1L, 139L);
-  editSplice(state, 1L, 0L, blobAt(), plant(blobAt(), "XY"));
-  expect(lineIs(state, "aXYb") == 1L && editCursor(state) == 3L, 140L);
-  editClear(state);
-  expect(editFeed(state, 10L) == 1L && editHistCount(state) == 0L, 23L);
-  editClear(state);
-  expect(feedText(state, "ls") == 0L && editFeed(state, 10L) == 1L && editHistCount(state) == 1L, 24L);
-  expect(editFeed(state, 10L) == 1L && editHistCount(state) == 1L, 25L);
-  editClear(state);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 65L) == 0L && lineIs(state, "ls") == 1L, 26L);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 66L) == 0L && editLen(state) == 0L, 27L);
-  editClear(state);
+  obr::line::editFeed(state, 1L);
+  obr::line::editFeed(state, 27L);
+  obr::line::editFeed(state, 91L);
+  obr::line::editFeed(state, 67L);
+  obr::line::editFeed(state, 27L);
+  obr::line::editFeed(state, 91L);
+  obr::line::editFeed(state, 67L);
+  expect(obr::line::editCursor(state) == 2L && obr::line::editFeed(state, 11L) == 0L && lineIs(state, "ab") == 1L, 16L);
+  obr::line::editClear(state);
+  expect(feedText(state, "abcd") == 0L && obr::line::editFeed(state, 21L) == 0L && obr::line::editLen(state) == 0L, 17L);
+  obr::line::editClear(state);
+  expect(feedText(state, "ab") == 0L && obr::line::editFeed(state, 1L) == 0L && obr::line::editFeed(state, 4L) == 0L && lineIs(state, "b") == 1L && obr::line::editCursor(state) == 0L, 18L);
+  obr::line::editClear(state);
+  expect(obr::line::editFeed(state, 4L) == 2L, 19L);
+  obr::line::editClear(state);
+  expect(feedText(state, "z") == 0L && obr::line::editFeed(state, 3L) == 3L && obr::line::editLen(state) == 0L, 20L);
+  obr::line::editClear(state);
+  expect(feedText(state, "keep") == 0L && obr::line::editFeed(state, 12L) == 4L && lineIs(state, "keep") == 1L, 21L);
+  obr::line::editClear(state);
+  expect(obr::line::editFeed(state, 9L) == 5L && obr::line::editLen(state) == 0L, 22L);
+  expect(feedText(state, "ab") == 0L && obr::line::editFeed(state, 9L) == 5L && lineIs(state, "ab") == 1L, 139L);
+  obr::line::editSplice(state, 1L, 0L, blobAt(), plant(blobAt(), "XY"));
+  expect(lineIs(state, "aXYb") == 1L && obr::line::editCursor(state) == 3L, 140L);
+  obr::line::editClear(state);
+  expect(obr::line::editFeed(state, 10L) == 1L && obr::line::editHistCount(state) == 0L, 23L);
+  obr::line::editClear(state);
+  expect(feedText(state, "ls") == 0L && obr::line::editFeed(state, 10L) == 1L && obr::line::editHistCount(state) == 1L, 24L);
+  expect(obr::line::editFeed(state, 10L) == 1L && obr::line::editHistCount(state) == 1L, 25L);
+  obr::line::editClear(state);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 65L) == 0L && lineIs(state, "ls") == 1L, 26L);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 66L) == 0L && obr::line::editLen(state) == 0L, 27L);
+  obr::line::editClear(state);
   feedText(state, "one");
-  editFeed(state, 10L);
-  editClear(state);
+  obr::line::editFeed(state, 10L);
+  obr::line::editClear(state);
   feedText(state, "two");
-  editFeed(state, 10L);
-  editClear(state);
-  editFeed(state, 27L);
-  editFeed(state, 91L);
-  editFeed(state, 65L);
+  obr::line::editFeed(state, 10L);
+  obr::line::editClear(state);
+  obr::line::editFeed(state, 27L);
+  obr::line::editFeed(state, 91L);
+  obr::line::editFeed(state, 65L);
   expect(lineIs(state, "two") == 1L, 28L);
-  editFeed(state, 27L);
-  editFeed(state, 91L);
-  editFeed(state, 65L);
+  obr::line::editFeed(state, 27L);
+  obr::line::editFeed(state, 91L);
+  obr::line::editFeed(state, 65L);
   expect(lineIs(state, "one") == 1L, 29L);
-  editFeed(state, 120L);
+  obr::line::editFeed(state, 120L);
   expect(lineIs(state, "onex") == 1L, 30L);
-  editClear(state);
-  editFeed(state, 97L);
-  editFeed(state, 1L);
-  editFeed(state, 27L);
-  editFeed(state, 91L);
-  editFeed(state, 51L);
-  editFeed(state, 126L);
-  expect(editLen(state) == 0L, 31L);
-  editClear(state);
-  editFeed(state, 228L);
-  editFeed(state, 184L);
-  editFeed(state, 173L);
-  expect(editLen(state) == 3L && editCursor(state) == 3L, 32L);
-  expect(editFeed(state, 127L) == 0L && editLen(state) == 0L, 33L);
-  editFeed(state, 228L);
-  editFeed(state, 184L);
-  editFeed(state, 173L);
-  editFeed(state, 1L);
-  expect(editCursor(state) == 0L, 34L);
-  editFeed(state, 27L);
-  editFeed(state, 91L);
-  editFeed(state, 67L);
-  expect(editCursor(state) == 3L, 35L);
-  editClear(state);
+  obr::line::editClear(state);
+  obr::line::editFeed(state, 97L);
+  obr::line::editFeed(state, 1L);
+  obr::line::editFeed(state, 27L);
+  obr::line::editFeed(state, 91L);
+  obr::line::editFeed(state, 51L);
+  obr::line::editFeed(state, 126L);
+  expect(obr::line::editLen(state) == 0L, 31L);
+  obr::line::editClear(state);
+  obr::line::editFeed(state, 228L);
+  obr::line::editFeed(state, 184L);
+  obr::line::editFeed(state, 173L);
+  expect(obr::line::editLen(state) == 3L && obr::line::editCursor(state) == 3L, 32L);
+  expect(obr::line::editFeed(state, 127L) == 0L && obr::line::editLen(state) == 0L, 33L);
+  obr::line::editFeed(state, 228L);
+  obr::line::editFeed(state, 184L);
+  obr::line::editFeed(state, 173L);
+  obr::line::editFeed(state, 1L);
+  expect(obr::line::editCursor(state) == 0L, 34L);
+  obr::line::editFeed(state, 27L);
+  obr::line::editFeed(state, 91L);
+  obr::line::editFeed(state, 67L);
+  expect(obr::line::editCursor(state) == 3L, 35L);
+  obr::line::editClear(state);
   long fill = 0L;
   while (fill < 240L) {
-    editFeed(state, 97L);
+    obr::line::editFeed(state, 97L);
     fill = fill + 1L;
   }
-  expect(editLen(state) == 240L && editFeed(state, 98L) == 0L && editLen(state) == 240L, 36L);
-  editInit(state);
+  expect(obr::line::editLen(state) == 240L && obr::line::editFeed(state, 98L) == 0L && obr::line::editLen(state) == 240L, 36L);
+  obr::line::editInit(state);
   long round = 0L;
   while (round < 33L) {
-    editFeed(state, 65L + round % 26L);
-    editFeed(state, 10L);
-    editClear(state);
+    obr::line::editFeed(state, 65L + round % 26L);
+    obr::line::editFeed(state, 10L);
+    obr::line::editClear(state);
     round = round + 1L;
   }
-  expect(editHistCount(state) == 32L, 37L);
+  expect(obr::line::editHistCount(state) == 32L, 37L);
   long got = 0L;
   long dest = blobAt();
-  expect(editHist(state, 0L, dest, &got) == 0L && got == 1L && memory::loadOctet(dest) == 66L, 38L);
-  expect(editHist(state, 31L, dest, &got) == 0L && memory::loadOctet(dest) == 71L, 39L);
-  expect(editHist(state, 32L, dest, &got) == 1L, 40L);
-  editInit(state);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 65L) == 0L && editLen(state) == 0L, 41L);
+  expect(obr::line::editHist(state, 0L, dest, &got) == 0L && got == 1L && memory::loadOctet(dest) == 66L, 38L);
+  expect(obr::line::editHist(state, 31L, dest, &got) == 0L && memory::loadOctet(dest) == 71L, 39L);
+  expect(obr::line::editHist(state, 32L, dest, &got) == 1L, 40L);
+  obr::line::editInit(state);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 65L) == 0L && obr::line::editLen(state) == 0L, 41L);
   long echoLen = plant(dest, "echo");
   expect(builtinId(dest, echoLen) == 0L, 42L);
-  editInit(state);
+  obr::line::editInit(state);
   expect(feedText(state, "mid") == 0L, 43L);
-  editFeed(state, 1L);
-  editFeed(state, 27L);
-  editFeed(state, 91L);
-  editFeed(state, 67L);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 70L) == 0L && editCursor(state) == 3L, 44L);
-  expect(editFeed(state, 27L) == 0L && editFeed(state, 91L) == 0L && editFeed(state, 72L) == 0L && editCursor(state) == 0L, 45L);
-  editInit(state);
-  expect(feedText(state, "cr") == 0L && editFeed(state, 13L) == 1L && editHistCount(state) == 1L, 46L);
-  editInit(state);
-  expect(feedText(state, "ab") == 0L && editFeed(state, 8L) == 0L && lineIs(state, "a") == 1L && editCursor(state) == 1L, 47L);
-  editInit(state);
-  expect(feedText(state, "ab") == 0L && editFeed(state, 1L) == 0L && editFeed(state, 4L) == 0L && lineIs(state, "b") == 1L, 48L);
+  obr::line::editFeed(state, 1L);
+  obr::line::editFeed(state, 27L);
+  obr::line::editFeed(state, 91L);
+  obr::line::editFeed(state, 67L);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 70L) == 0L && obr::line::editCursor(state) == 3L, 44L);
+  expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 91L) == 0L && obr::line::editFeed(state, 72L) == 0L && obr::line::editCursor(state) == 0L, 45L);
+  obr::line::editInit(state);
+  expect(feedText(state, "cr") == 0L && obr::line::editFeed(state, 13L) == 1L && obr::line::editHistCount(state) == 1L, 46L);
+  obr::line::editInit(state);
+  expect(feedText(state, "ab") == 0L && obr::line::editFeed(state, 8L) == 0L && lineIs(state, "a") == 1L && obr::line::editCursor(state) == 1L, 47L);
+  obr::line::editInit(state);
+  expect(feedText(state, "ab") == 0L && obr::line::editFeed(state, 1L) == 0L && obr::line::editFeed(state, 4L) == 0L && lineIs(state, "b") == 1L, 48L);
 }
 
 deRfun feedCmd(string text, long status): long {
@@ -323,7 +327,7 @@ deRfun pathIs(string cwd, string rel, string want): long {
   long cwdLen = plant(base, cwd);
   long relLen = plant(base + 4096L, rel);
   long got = 0L;
-  long status = pathNorm(base, cwdLen, base + 4096L, relLen, base + 8192L, base + 16384L, &got);
+  long status = obr::path::norm(base, cwdLen, base + 4096L, relLen, base + 8192L, base + 16384L, &got);
   if (status != 0L) {
     return 0L;
   }

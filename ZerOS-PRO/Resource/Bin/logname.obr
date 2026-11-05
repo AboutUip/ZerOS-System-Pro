@@ -1,0 +1,79 @@
+/* POSIX.1-2017 logname（utilities/logname.html）。形式是 logname。
+   没有操作数。本系统没有 utmp。
+   选定：打印环境变量 LOGNAME 的值加一个换行；未设置或为空时写
+   logname: no login name 到描述符 2，退出 1。
+   有多余操作数写 logname: too many operands，退出 1。
+   成功退出 0。诊断英文。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count > 1L) {
+    writeErr(home, "logname: too many operands\n");
+    return finish(home, 1L);
+  }
+  string tag = "LOGNAME";
+  long nameAt = obr::proc::bytes(home);
+  int raw = length(tag);
+  long nameLen = raw;
+  long index = 0L;
+  while (index < nameLen) {
+    memory::storeOctet(tag[index], nameAt + index * 8L);
+    index = index + 1L;
+  }
+  long value = 0L;
+  long valueLen = 0L;
+  if (envLookup(home, nameAt, nameLen, &value, &valueLen) != 1L || valueLen < 1L) {
+    writeErr(home, "logname: no login name\n");
+    return finish(home, 1L);
+  }
+  writeSpan(home, 1L, value, valueLen);
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  obr::proc::write(home, 1L, 0L, 1L);
+  return finish(home, 0L);
+}

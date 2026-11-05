@@ -70,6 +70,7 @@ export namespace ZerOS {
         PointerConsumed: 31,
         GpuStage: 32,
         GpuPhase: 33,
+        ProcessExit: 34,
       } as const;
 
       /** GPU 阶段的编号，写在 GpuPhase 事件的 A0。 */
@@ -130,6 +131,7 @@ export namespace ZerOS {
         [TraceOp.PointerConsumed]: "pointer-consumed",
         [TraceOp.GpuStage]: "gpu-stage",
         [TraceOp.GpuPhase]: "gpu-phase",
+        [TraceOp.ProcessExit]: "process-exit",
       };
 
       /** 拒绝路径的来源与原因；都是诊断编号，不是协议。 */
@@ -250,6 +252,9 @@ export namespace ZerOS {
         34: "list",
         35: "prompt",
         36: "command",
+        37: "frame",
+        38: "frameWait",
+        39: "present",
       };
 
       /** 报告里使用的事件名。 */

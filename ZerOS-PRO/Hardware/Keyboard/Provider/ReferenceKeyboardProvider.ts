@@ -29,6 +29,7 @@ export namespace ZerOS {
       const Protocol = ConfigRoot.Hardware.Keyboard.KeyboardConfig.Protocol;
       const ExchangeProtocol = ConfigRoot.Hardware.Keyboard.KeyboardConfig.ExchangeProtocol;
       const exchangeWord = RuntimeRoot.Hardware.Keyboard.exchangeWord;
+      const snapshotWords = RuntimeRoot.Hardware.Keyboard.snapshotWords;
 
       /**
        * 官方参考键盘。
@@ -47,6 +48,13 @@ export namespace ZerOS {
         },
         Exchange(direction: number, payload: Uint8Array): Uint8Array {
           return exchangeWord(direction, payload);
+        },
+        /* 一次取走上一次事件的 40 个八位组。短于 40 不给出半截。 */
+        Drain(max: number): { readonly status: number; readonly bytes: Uint8Array } {
+          if (max < 40) {
+            return { status: 7, bytes: new Uint8Array(0) };
+          }
+          return { status: 0, bytes: snapshotWords() };
         },
       };
     }

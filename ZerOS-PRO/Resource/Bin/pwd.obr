@@ -1,17 +1,15 @@
 /* POSIX pwd。-L 是缺省，-P 打印 getcwd。两个都写了，以后写的为准。
    -L 只在 PWD 是当前目录的绝对路径、且分量里没有 . 和 .. 时打印 PWD。
    否则改走 -P。诊断写到标准错误。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

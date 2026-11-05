@@ -14,6 +14,14 @@ const CALL_SKIP = new Set([
   "enum",
   "struct",
   "class",
+  "interface",
+  "implements",
+  "const",
+  "switch",
+  "case",
+  "default",
+  "fallthrough",
+  "in",
   "new",
   "import",
   "export",
@@ -331,6 +339,95 @@ function parseDocumentSymbols(text) {
       continue;
     }
 
+    const interfaceHead = line.match(/^interface\s+([A-Za-z_]\w*)\s*\{/);
+    if (interfaceHead) {
+      /* #VERSION 2 的接口：只声明方法。方法声明以 ; 结束，不是实现体。 */
+      const { body, endLine } = readBalanced(structural, i);
+      const interfaceName = interfaceHead[1];
+      const fullName = qualify(scope.namespaces, interfaceName);
+      symbols.push({
+        fullName,
+        shortName: interfaceName,
+        kind: "interface",
+        signature: `interface ${fullName}`,
+        doc: precedingDoc(rawLines, i),
+        params: [],
+        annotations: [],
+        ending: ";",
+        line: i,
+        endLine
+      });
+      const bodyLines = body.split(/\r?\n/);
+      for (let offset = 0; offset < bodyLines.length; offset += 1) {
+        const text = stripLineComment(bodyLines[offset] || "").trim();
+        if (!/^(?:(?:export|public|private|static|async)\s+)*deRfun\b/.test(text)) continue;
+        const { merged, endLine: headerEnd } = readFunctionHeader(bodyLines, offset);
+        const parsed = parseFunctionFromHeader(merged, [...scope.namespaces, interfaceName]);
+        if (!parsed) continue;
+        symbols.push({
+          ...parsed,
+          kind: "declaration",
+          owner: interfaceName,
+          inInterface: true,
+          doc: precedingDoc(rawLines, i + offset),
+          annotations: precedingAnnotations(rawLines, i + offset),
+          line: i + offset,
+          endLine: i + headerEnd
+        });
+      }
+      while (i < endLine) {
+        i += 1;
+        scope.feed(structural[i] || "");
+      }
+      continue;
+    }
+
+    const classHead = line.match(/^class\s+([A-Za-z_]\w*)\s*(?::\s*([A-Za-z_]\w*))?(?:\s+implements\s+([^{\n]+))?\s*\{/);
+    if (classHead) {
+      /* 方法按编译器的 Class::method 限定收进符号表：不同类的同名同签名方法
+         不是重复声明，签名带上类名才对得上编译器报错（没有函数 Unit::value）。 */
+      const { body, endLine } = readBalanced(structural, i);
+      const className = classHead[1];
+      const fullName = qualify(scope.namespaces, className);
+      const implementsList = (classHead[3] || "").split(",").map((item) => item.trim()).filter(Boolean);
+      const clause = `${classHead[2] ? ` : ${classHead[2]}` : ""}${implementsList.length > 0 ? ` implements ${implementsList.join(", ")}` : ""}`;
+      symbols.push({
+        fullName,
+        shortName: className,
+        kind: "class",
+        signature: `class ${fullName}${clause}`,
+        doc: precedingDoc(rawLines, i),
+        params: [],
+        annotations: [],
+        ending: ";",
+        line: i,
+        endLine
+      });
+      const bodyLines = body.split(/\r?\n/);
+      for (let offset = 0; offset < bodyLines.length; offset += 1) {
+        const text = stripLineComment(bodyLines[offset] || "").trim();
+        if (!/^(?:(?:export|public|private|static|async)\s+)*deRfun\b/.test(text)) continue;
+        const { merged, endLine: headerEnd } = readFunctionHeader(bodyLines, offset);
+        const parsed = parseFunctionFromHeader(merged, [...scope.namespaces, className]);
+        if (!parsed) continue;
+        const endLine = parsed.ending === "{" ? findBraceEnd(bodyLines, offset) : headerEnd;
+        symbols.push({
+          ...parsed,
+          kind: parsed.ending === "{" ? "implementation" : "declaration",
+          owner: className,
+          doc: precedingDoc(rawLines, i + offset),
+          annotations: precedingAnnotations(rawLines, i + offset),
+          line: i + offset,
+          endLine: i + endLine
+        });
+      }
+      while (i < endLine) {
+        i += 1;
+        scope.feed(structural[i] || "");
+      }
+      continue;
+    }
+
     if (/^(?:(?:export|public|private|static|async)\s+)*deRfun\b/.test(line)) {
       const { merged, endLine: headerEnd } = readFunctionHeader(structural, i);
       const parsed = parseFunctionFromHeader(merged, scope.namespaces);
@@ -450,6 +547,9 @@ function callMatchesSymbol(call, symbol) {
   if (!symbol.params || call.argCount !== symbol.params.length) return false;
   if (call.name === symbol.fullName) return true;
   if (call.name.includes("::")) return false;
+  /* 类/接口方法（owner 已限定成 Class::method）按短名配裸调用（obj.method(...)` 里的 `method`）。
+     同名方法在多个类里各有一份，这里算“可能的调用方”，不是唯一归属。 */
+  if (symbol.owner) return call.name === symbol.shortName;
   return call.name === symbol.shortName && !symbol.fullName.includes("::");
 }
 

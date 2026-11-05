@@ -311,6 +311,88 @@ export namespace ZerOS {
         throw new Error(`${seatPrefix} the frame is incomplete`);
       }
 
+      function readSurface(frame: Record<string, unknown>): {
+        readonly frameWidth: number;
+        readonly frameHeight: number;
+        readonly originX: number;
+        readonly originY: number;
+        readonly scroll: readonly number[];
+        readonly pixels: Uint32Array | null;
+        readonly bitmap: ImageBitmap | null;
+      } {
+        const frameWidth = frame["frameWidth"];
+        const frameHeight = frame["frameHeight"];
+        const bitmap = frame["bitmap"];
+        const pixels = frame["pixels"];
+        const originX = frame["originX"];
+        const originY = frame["originY"];
+        const scroll = frame["scroll"];
+        if (typeof frameWidth !== "number" || typeof frameHeight !== "number") {
+          throw new Error(`${seatPrefix} the picture size is incomplete`);
+        }
+        notePace(frame);
+        const patchX = typeof originX === "number" ? originX : 0;
+        const patchY = typeof originY === "number" ? originY : 0;
+        const bands = Array.isArray(scroll) ? scroll.filter((item): item is number => typeof item === "number") : [];
+        if (bitmap instanceof ImageBitmap) {
+          return { frameWidth, frameHeight, originX: patchX, originY: patchY, scroll: bands, pixels: null, bitmap };
+        }
+        if (pixels instanceof Uint32Array) {
+          return { frameWidth, frameHeight, originX: 0, originY: 0, scroll: [], pixels, bitmap: null };
+        }
+        throw new Error(`${seatPrefix} the frame is incomplete`);
+      }
+
+      /**
+       * 把这一帧交给显卡。accepted 在提交完成时结束，frame 在副本交回时结束。
+       * 下一次呈现可以在副本交回之前发出。画布只有一张时，显卡自己等上一张位图被拿走。
+       */
+      export function beginHandoff(commands?: readonly Record<string, unknown>[]): {
+        readonly accepted: Promise<void>;
+        readonly frame: Promise<{
+          readonly frameWidth: number;
+          readonly frameHeight: number;
+          readonly originX: number;
+          readonly originY: number;
+          readonly scroll: readonly number[];
+          readonly pixels: Uint32Array | null;
+          readonly bitmap: ImageBitmap | null;
+        }>;
+      } {
+        const worker = gpuWorker;
+        if (worker === null) {
+          const missing = Promise.reject(new Error(`${seatPrefix} the GPU is not seated yet`));
+          return { accepted: missing, frame: missing };
+        }
+        const accepted = waitMessage(
+          worker,
+          (record): boolean => record["kind"] === "accepted",
+          `${seatPrefix} the GPU did not accept the picture`,
+        ).then((): void => undefined);
+        const frame = accepted.then((): Promise<{
+          readonly frameWidth: number;
+          readonly frameHeight: number;
+          readonly originX: number;
+          readonly originY: number;
+          readonly scroll: readonly number[];
+          readonly pixels: Uint32Array | null;
+          readonly bitmap: ImageBitmap | null;
+        }> => {
+          return waitMessage(
+            worker,
+            (record): boolean => record["kind"] === "frame",
+            `${seatPrefix} the GPU did not present a picture`,
+          ).then((pict) => readSurface(pict));
+        });
+        worker.postMessage({
+          kind: "present",
+          view: true,
+          handoff: true,
+          commands: commands ?? [],
+        });
+        return { accepted, frame };
+      }
+
       /**
        * 把一条显卡命令原样送进显卡线程。
        * clear / plot / character 成功时只等 ok，不读像素。

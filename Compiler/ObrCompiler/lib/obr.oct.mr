@@ -1,0 +1,10 @@
+/* 隔 8 位放着的八位组。只搬字节，不写描述符，也不画画面。
+   不导入这份库的程序仍可以直接调用内核服务搬字节。 */
+namespace obr {
+namespace oct {
+deRfun get(long addr): long;
+deRfun put(long addr, long index, long value): void;
+deRfun copy(long from, long to, long count): void;
+deRfun eq(long addr, long count, string text): long;
+}
+}

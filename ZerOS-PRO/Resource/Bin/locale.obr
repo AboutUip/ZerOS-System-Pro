@@ -1,0 +1,257 @@
+/* POSIX.1-2017 locale 的本系统选定。
+   本系统只有 C 与 POSIX 两种 locale，二者等价。
+   形式是 locale [-a | -m] [名字...]。
+   -a 写出 C 与 POSIX，每行一个，退出 0。
+   -m 列出 charmap：本系统没有 charm map，标准输出不写任何字节，退出 0。
+   无操作数时写出 LANG、LC_ALL、LC_CTYPE、LC_NUMERIC、LC_TIME、LC_COLLATE、
+   LC_MONETARY、LC_MESSAGES；环境里没有的项取值 C。
+   操作数是类别名（同上）时只写该值一行；是 C 或 POSIX 时按 C 写出全部类别行。
+   其它 locale 名字写 locale: unknown name 到描述符 2，退出 1。
+   成功退出 0。诊断英文，描述符 2。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun nameEq(long addr, long count, string name): long {
+  int raw = length(name);
+  long need = raw;
+  if (count != need) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < need) {
+    long bit = (long)name[index];
+    if (u8(addr + index * 8L) != bit) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun envVal(long home, string key, long* at, long* len): long {
+  int raw = length(key);
+  long need = raw;
+  long nameAt = obr::proc::bytes(home);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(key[index], nameAt + index * 8L);
+    index = index + 1;
+  }
+  return envLookup(home, nameAt, need, at, len);
+}
+
+deRfun pickC(long home, string key, long* at, long* len): void {
+  if (envVal(home, key, at, len) == 0L) {
+    *at = 0L;
+    *len = 0L;
+  }
+}
+
+deRfun writeVal(long home, long at, long len): void {
+  long cursor = 0L;
+  while (cursor < len) {
+    long chunk = len - cursor;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(at + (cursor + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 1L, 0L, chunk);
+    cursor = cursor + chunk;
+  }
+}
+
+deRfun writePair(long home, string key): void {
+  long at = 0L;
+  long len = 0L;
+  pickC(home, key, &at, &len);
+  writeOut(home, key);
+  writeOut(home, "=");
+  if (len < 1L) {
+    writeOut(home, "C\n");
+    return;
+  }
+  writeVal(home, at, len);
+  writeOut(home, "\n");
+}
+
+deRfun isCategory(long addr, long count): long {
+  if (nameEq(addr, count, "LANG") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "LC_ALL") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "LC_CTYPE") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "LC_NUMERIC") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "LC_TIME") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "LC_COLLATE") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "LC_MONETARY") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "LC_MESSAGES") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun printAll(long home): void {
+  writePair(home, "LANG");
+  writePair(home, "LC_CTYPE");
+  writePair(home, "LC_NUMERIC");
+  writePair(home, "LC_TIME");
+  writePair(home, "LC_COLLATE");
+  writePair(home, "LC_MONETARY");
+  writePair(home, "LC_MESSAGES");
+  writePair(home, "LC_ALL");
+}
+
+deRfun printCValue(long home, string key): void {
+  long at = 0L;
+  long len = 0L;
+  pickC(home, key, &at, &len);
+  if (len < 1L) {
+    writeOut(home, "C\n");
+    return;
+  }
+  writeVal(home, at, len);
+  writeOut(home, "\n");
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long listAll = 0L;
+  long listMap = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 97L) {
+      listAll = 1L;
+      index = index + 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 109L) {
+      listMap = 1L;
+      index = index + 1L;
+    } else if (len == 3L && u8(at) == 45L && u8(at + 8L) == 45L && u8(at + 16L) == 97L) {
+      listAll = 1L;
+      index = index + 1L;
+    } else if (len == 3L && u8(at) == 45L && u8(at + 8L) == 45L && u8(at + 16L) == 109L) {
+      listMap = 1L;
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (listMap == 1L) {
+    return finish(home, 0L);
+  }
+  if (listAll == 1L) {
+    writeOut(home, "C\nPOSIX\n");
+    if (index < count) {
+      writeErr(home, "locale: too many operands\n");
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  if (index >= count) {
+    printAll(home);
+    return finish(home, 0L);
+  }
+  if (index + 1L < count) {
+    writeErr(home, "locale: too many operands\n");
+    return finish(home, 1L);
+  }
+  long at = argPtr(home, index);
+  long len = argLen(home, index);
+  if (nameEq(at, len, "C") == 1L || nameEq(at, len, "POSIX") == 1L) {
+    printAll(home);
+    return finish(home, 0L);
+  }
+  if (isCategory(at, len) == 1L) {
+    if (nameEq(at, len, "LANG") == 1L) {
+      printCValue(home, "LANG");
+      return finish(home, 0L);
+    }
+    if (nameEq(at, len, "LC_ALL") == 1L) {
+      printCValue(home, "LC_ALL");
+      return finish(home, 0L);
+    }
+    if (nameEq(at, len, "LC_CTYPE") == 1L) {
+      printCValue(home, "LC_CTYPE");
+      return finish(home, 0L);
+    }
+    if (nameEq(at, len, "LC_NUMERIC") == 1L) {
+      printCValue(home, "LC_NUMERIC");
+      return finish(home, 0L);
+    }
+    if (nameEq(at, len, "LC_TIME") == 1L) {
+      printCValue(home, "LC_TIME");
+      return finish(home, 0L);
+    }
+    if (nameEq(at, len, "LC_COLLATE") == 1L) {
+      printCValue(home, "LC_COLLATE");
+      return finish(home, 0L);
+    }
+    if (nameEq(at, len, "LC_MONETARY") == 1L) {
+      printCValue(home, "LC_MONETARY");
+      return finish(home, 0L);
+    }
+    if (nameEq(at, len, "LC_MESSAGES") == 1L) {
+      printCValue(home, "LC_MESSAGES");
+      return finish(home, 0L);
+    }
+  }
+  writeErr(home, "locale: unknown name\n");
+  return finish(home, 1L);
+}

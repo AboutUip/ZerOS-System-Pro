@@ -157,6 +157,45 @@ export namespace ZerOS {
         postOk();
       }
 
+      /** 像素副本或位图，连同调用方已经抄下的原点交回主板。位图和像素缓冲都只转交一次。 */
+      function postHeldFrame(
+        view: ImageBitmap | Uint32Array,
+        originX: number,
+        originY: number,
+        scroll: readonly number[],
+      ): void {
+        const frameWidth = provider.FrameWidth;
+        const frameHeight = provider.FrameHeight;
+        const hertz = provider.Hertz();
+        const executed = provider.Executed();
+        if (view instanceof ImageBitmap) {
+          globalThis.postMessage(
+            {
+              kind: "frame",
+              frameWidth,
+              frameHeight,
+              originX,
+              originY,
+              scroll,
+              hertz,
+              executed,
+              bitmap: view,
+            },
+            { transfer: [view] },
+          );
+          return;
+        }
+        const buffer = view.buffer;
+        if (!(buffer instanceof ArrayBuffer)) {
+          postFault(`${seatPrefix} the present copy could not be transferred`);
+          return;
+        }
+        globalThis.postMessage(
+          { kind: "frame", frameWidth, frameHeight, hertz, executed, pixels: view },
+          { transfer: [buffer] },
+        );
+      }
+
       /** 像素副本或位图，连同节拍一起交回主板。位图和像素缓冲都只转交一次。 */
       function postFrame(view: ImageBitmap | Uint32Array): void {
         const frameWidth = provider.FrameWidth;
@@ -198,16 +237,39 @@ export namespace ZerOS {
        * 客程序带 view 时优先要位图。启动画面那一次由主板不带 view，好让页面认出六个点。
        */
       async function onPresent(record: Record<string, unknown>): Promise<void> {
-        /* 一次 present 交回上一段场景和 accel 的命令数，随后清零。 */
-        traceInstant(TraceOp.GpuStage, TraceLayer.Host, -1, sceneCommands, accelCommands);
-        emitGpuPhase(GpuPhase.Compose, sceneMicros);
-        emitGpuPhase(GpuPhase.Accel, accelMicros);
-        sceneCommands = 0;
-        accelCommands = 0;
-        sceneMicros = 0;
-        accelMicros = 0;
         const started = performance.now();
         try {
+          /* 同一条消息里先画再提交。分开等批处理完成，会多一次显卡往返。 */
+          const commands = record["commands"];
+          if (Array.isArray(commands) && commands.length > 0) {
+            const painted = await onBatch({ commands, quiet: true });
+            if (painted !== true) {
+              return;
+            }
+          }
+          /* 一次 present 交回这一段场景和 accel 的命令数，随后清零。 */
+          traceInstant(TraceOp.GpuStage, TraceLayer.Host, -1, sceneCommands, accelCommands);
+          emitGpuPhase(GpuPhase.Compose, sceneMicros);
+          emitGpuPhase(GpuPhase.Accel, accelMicros);
+          sceneCommands = 0;
+          accelCommands = 0;
+          sceneMicros = 0;
+          accelMicros = 0;
+          if (record["view"] === true && record["handoff"] === true && provider.HandoffView !== undefined) {
+            const hand = provider.HandoffView();
+            await hand.accepted;
+            const origin = viewOrigin();
+            const scroll = takeViewBands();
+            globalThis.postMessage({
+              kind: "accepted",
+              frameWidth: provider.FrameWidth,
+              frameHeight: provider.FrameHeight,
+              hertz: provider.Hertz(),
+              executed: provider.Executed(),
+            });
+            postHeldFrame(await hand.picture, origin.x, origin.y, scroll);
+            return;
+          }
           if (record["view"] === true) {
             postFrame(await provider.PresentView());
             return;
@@ -458,11 +520,12 @@ export namespace ZerOS {
        * 一队不返回编号的命令在这条线程里按顺序做完，只回答一次。
        * 中途失败就停，后面的命令不再画，和一条一条送时停在失败那条一样。
        */
-      async function onBatch(record: Record<string, unknown>): Promise<void> {
+      async function onBatch(record: Record<string, unknown>): Promise<boolean | undefined> {
         const commands = record["commands"];
+        const quiet = record["quiet"] === true;
         if (!Array.isArray(commands)) {
           postFault(`${seatPrefix} the GPU batch is incomplete`);
-          return;
+          return false;
         }
         let resized = false;
         try {
@@ -600,14 +663,18 @@ export namespace ZerOS {
               return;
             }
           }
-          if (resized) {
-            postOk({ frameWidth: provider.FrameWidth, frameHeight: provider.FrameHeight });
-          } else {
-            postOk();
+          if (!quiet) {
+            if (resized) {
+              postOk({ frameWidth: provider.FrameWidth, frameHeight: provider.FrameHeight });
+            } else {
+              postOk();
+            }
           }
+          return true;
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : `${seatPrefix} the GPU batch failed`;
           postFault(message);
+          return false;
         }
       }
 

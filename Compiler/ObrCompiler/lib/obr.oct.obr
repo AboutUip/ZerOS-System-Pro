@@ -1,0 +1,44 @@
+/* 八位组缓冲的实现。编成 /lib/obr.oct.zdll。 */
+import memory;
+import obr.oct;
+
+deRfun raw(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+export deRfun obr::oct::get(long addr): long {
+  return raw(addr);
+}
+
+export deRfun obr::oct::put(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+export deRfun obr::oct::copy(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(raw(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+export deRfun obr::oct::eq(long addr, long count, string text): long {
+  int rawLen = length(text);
+  long need = rawLen;
+  if (need != count) {
+    return 0L;
+  }
+  int index = 0;
+  while (index < rawLen) {
+    long value = text[index];
+    if (raw(addr + index * 8L) != value) {
+      return 0L;
+    }
+    index = index + 1;
+  }
+  return 1L;
+}

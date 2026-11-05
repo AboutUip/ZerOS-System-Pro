@@ -24,15 +24,27 @@ ZerOS-System-Pro/
 ├── Driver/                   # Display、Gpu、Pointer。默认宽高在 Display/panel
 ├── Compiler/ObrCompiler/     # 宿主编译器，.obr → ZAP
 ├── Compiler/ObrExtension/    # 编辑器扩展，.obr / .mr / .zap
+├── Compiler/Debugger/        # ZTrace 工具侧；v1.1 已交付，v2 P4 进行中
 ├── Toolchain/                # Vite、TypeScript、ESLint；不放产品源码
 └── Documents/
-    ├── Debug/                # 标准调试、观测设施与记录
+    ├── Debug/                # ZTrace 调试标准、v1.1 交付与记录
     ├── Protocol/             # 对外协议，兼容性权威
     ├── Rules/                # 预览、内核语言、引导失败说明
     └── Skills/               # 协议写作、编码规范与 Obr 语法
 ```
 
 各硬件目录里的 `Docs/` 只描述这一份官方实现。`ActiveProvider/` 是当前插头，换实现只换这个目录。
+
+## ZTrace v1.1
+
+当前交付版本是 **ZTrace v1.1**（2026-11-02），数据 schema 为 `zeros.ztrace.capture/2`，v1.0 的 `/1` 仍可读。
+
+- 交付合同：[Documents/Debug/Implementation/V1.1.md](./Documents/Debug/Implementation/V1.1.md)
+- 内部交付计划：`dev/Plan/ZTrace-v1.1.md`（本地，不进版本库）
+- 工具入口：[Compiler/Debugger/Tools](./Compiler/Debugger/Tools/)
+- 运行手册：[Documents/Debug/Implementation/Runbook.md](./Documents/Debug/Implementation/Runbook.md)
+
+v1.1 覆盖全量 54 条 `/bin` 命令、命令退出码、基础 fault/stop 现场和 64 位时间；stdout/stderr 文本、外部命令符号和逐帧 `GuestStack` 仍不在本版本内。v2 的 P4 正在继续。
 
 ## 预览
 
@@ -90,10 +102,10 @@ cmake --build Compiler/ObrCompiler/build
 | CPU / GPU / 内存 | 同名目录 | 官方插头在各自的 `ActiveProvider/` |
 | 显示器 / 键盘 / 鼠标 / 沙盒 / NAS | 同名目录 | 显示器不经插座；键盘、鼠标、沙盒和 NAS 坐在扩展口上。NAS 进程要单独启动 |
 | 驱动 | `Driver/` | 显示器默认宽高在 `Display/panel`。`Gpu/` 是固件调用的 OpenGL 切片 |
-| 语言 | `Compiler/ObrCompiler/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。语法见 [编译器说明](./Compiler/ObrCompiler/README.md) |
+| 语言 | `Compiler/ObrCompiler/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。`-version` 缺省是 2，也是当前最高语言版本；源文件没写 `#VERSION` 就按它编译，写出的版本不能更高，同一个编译单元不能混用 1 和 2。不小于 1048576 的立即数会按数据地址重定位，长度和上界要拆开再乘。语法见 [编译器说明](./Compiler/ObrCompiler/README.md) |
 | 编辑器 | `Compiler/ObrExtension/` | `.obr`、`.mr`、`.zap` 的着色和诊断。诊断调用旁边的 `obrc` |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
-| 系统 | `System/`、`Resource/App/`、`Resource/Bin/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`App/sh` 编成 `/os/sh`。`Bin/` 编成 `/bin`，第一条是 `pwd` |
+| 系统 | `System/`、`Resource/App/`、`Resource/Bin/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`App/sh` 编成 `/os/sh`。`Bin/` 编成 `/bin`。每份命令的文件头写明规范页、接受的选项、退出状态和这一份实现的取舍 |
 
 设置画面可以改显示器宽高和调试开关，分别写进 `/boot/display` 和 `/boot/debug`。其余行只展示查询得到的状态。内核由固件在倒计时结束时装入，不从设置画面进入。
 
@@ -113,7 +125,7 @@ NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO
 | 编码规范 | 同上 | 写 `ZerOS-PRO/` |
 | Obr 语法 | [Documents/Skills/ObrLanguage](./Documents/Skills/ObrLanguage/SKILL.md) | 改编译器表面，或写 `.obr` / `.mr` |
 | 项目规则 | [Documents/Rules](./Documents/Rules/) | 预览端口、内核语言、引导失败说明 |
-| 标准调试 | [Documents/Debug](./Documents/Debug/README.md) | 性能复现、观测、回归与记录 |
+| ZTrace 调试 | [Documents/Debug](./Documents/Debug/README.md) | 性能复现、观测、回归与记录；v1.1 交付 |
 
 Cursor 从 `.cursor/skills/` 和 `.cursor/rules/` 加载。这两处是本地链接，正文只在 `Documents/Skills/` 和 `Documents/Rules/`。克隆后在 `Toolchain` 执行 `npm run skills:sync` 接上链接。`npm test` 确认链接指向这两处。
 

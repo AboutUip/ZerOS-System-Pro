@@ -1,0 +1,45 @@
+/* Plan 1 M3：接口声明、类实现、对象头 class ID 动态派发。结果 0。 */
+#VERSION 2
+
+interface IShape {
+  deRfun area(): int;
+  deRfun id(): int;
+}
+
+class Box implements IShape {
+  int w;
+  int h;
+  deRfun Box(int w, int h): void {
+    this.w = w;
+    this.h = h;
+  }
+  deRfun area(): int {
+    return w * h;
+  }
+  deRfun id(): int {
+    return 1;
+  }
+}
+
+class Square implements IShape {
+  int side;
+  deRfun Square(int side): void {
+    this.side = side;
+  }
+  deRfun area(): int {
+    return side * side;
+  }
+  deRfun id(): int {
+    return 2;
+  }
+}
+
+deRfun main(): int {
+  var[IShape] a = new Box(3, 4);
+  var[IShape] b = new Square(5);
+  if (a.area() != 12) return 1;
+  if (a.id() != 1) return 2;
+  if (b.area() != 25) return 3;
+  if (b.id() != 2) return 4;
+  return 0;
+}

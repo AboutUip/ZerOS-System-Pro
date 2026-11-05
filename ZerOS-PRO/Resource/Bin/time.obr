@@ -1,0 +1,419 @@
+/* POSIX.1-2017 time（utilities/time.html）的选定子集。
+   形式是 time [-p] 实用程序 [参数...]。-p 接受，有无 -p 都向描述符 2 写三行：
+   real 秒数（至少一位小数）、user 0.00、sys 0.00。
+   user 和 sys 不是测量值，固定为 0.00。
+   只报墙上时间：派生前后各调一次 obr::proc::clock，毫秒在 slot(home, 128)。
+   缺实用程序写 time: missing operand，退出 1。
+   实用程序解析与 xargs 相同：有斜杠就 stat 该路径，否则搜 PATH；
+   PATH 缺省 /bin:/os:/kernel。找不到 time: 名字: No such file or directory，127。
+   spawn 失败 time: 名字: cannot execute，126。
+   派生前 copyWindow 恢复环境，只改参数；实用程序路径 plant 到 path。
+   退出码是子进程退出码（收成 0 到 255）。
+   诊断英文 ASCII，描述符 2，以 time: 开头。main 经 finish 调 exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun copyWindow(long from, long to): void {
+  long index = 0L;
+  while (index < 139520L) {
+    memory::store64(memory::load64(from + index), to + index);
+    index = index + 64L;
+  }
+}
+
+deRfun sumLens(long table, long index): long {
+  long filled = 0L;
+  long cursor = 0L;
+  while (cursor < index) {
+    filled = filled + memory::load64(table + cursor * 64L);
+    cursor = cursor + 1L;
+  }
+  return filled;
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun sayMiss(long home, long addr, long count): void {
+  writeErr(home, "time: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun sayExec(long home, long addr, long count): void {
+  writeErr(home, "time: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": cannot execute\n");
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun fileKind(long home): long {
+  if (obr::proc::stat(home) != 0L) {
+    return -1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  return kind;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun hasSlash(long addr, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (u8(addr + index * 8L) == 47L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun savedArgLen(long saved, long index): long {
+  return memory::load64(saved + 256L + index * 64L);
+}
+
+deRfun savedArgPtr(long saved, long index): long {
+  return saved + 8448L + sumLens(saved + 256L, index) * 8L;
+}
+
+deRfun saveWindow(long home, long dest): long {
+  long narg = argc(home);
+  long nenv = envc(home);
+  if (narg < 0L || narg > 64L || nenv < 0L || nenv > 64L) {
+    return 1L;
+  }
+  memory::store64(narg, dest);
+  memory::store64(nenv, dest + 64L);
+  long argBytes = 0L;
+  long index = 0L;
+  while (index < narg) {
+    long len = argLen(home, index);
+    if (len < 0L || len > 8192L || argBytes + len > 8192L) {
+      return 1L;
+    }
+    memory::store64(len, dest + 256L + index * 64L);
+    if (len > 0L) {
+      copySpan(argPtr(home, index), dest + 8448L + argBytes * 8L, len);
+    }
+    argBytes = argBytes + len;
+    index = index + 1L;
+  }
+  memory::store64(argBytes, dest + 128L);
+  while (index < 64L) {
+    memory::store64(0L, dest + 256L + index * 64L);
+    index = index + 1L;
+  }
+  long envBytes = 0L;
+  index = 0L;
+  while (index < nenv) {
+    long len = envLen(home, index);
+    if (len < 0L || len > 8192L || envBytes + len > 8192L) {
+      return 1L;
+    }
+    memory::store64(len, dest + 4352L + index * 64L);
+    if (len > 0L) {
+      copySpan(envPtr(home, index), dest + 73984L + envBytes * 8L, len);
+    }
+    envBytes = envBytes + len;
+    index = index + 1L;
+  }
+  memory::store64(envBytes, dest + 192L);
+  while (index < 64L) {
+    memory::store64(0L, dest + 4352L + index * 64L);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun resolve(long home, long scratch, long name, long nameLen, long* outLen): long {
+  if (hasSlash(name, nameLen) == 1L) {
+    if (nameLen < 1L || nameLen > 8192L) {
+      return 0L;
+    }
+    copySpan(name, scratch, nameLen);
+    plant(home, scratch, nameLen);
+    long kind = fileKind(home);
+    if (kind == 1L || kind == 5L) {
+      *outLen = nameLen;
+      return 1L;
+    }
+    return 0L;
+  }
+  long path = 0L;
+  long pathLen = 0L;
+  long value = 0L;
+  long valueLen = 0L;
+  if (envLookup(home, scratch + 65664L, 4L, &value, &valueLen) == 1L) {
+    path = value;
+    pathLen = valueLen;
+  } else {
+    path = scratch + 65536L;
+    pathLen = putText(path, 0L, "/bin:/os:/kernel");
+  }
+  long cursor = 0L;
+  while (cursor <= pathLen) {
+    long start = cursor;
+    while (cursor < pathLen && u8(path + cursor * 8L) != 58L) {
+      cursor = cursor + 1L;
+    }
+    long compLen = cursor - start;
+    long joined = 0L;
+    long ok = 1L;
+    if (compLen == 0L) {
+      if (nameLen < 0L || nameLen > 8192L) {
+        ok = 0L;
+      } else {
+        if (nameLen > 0L) {
+          copySpan(name, scratch, nameLen);
+        }
+        joined = nameLen;
+      }
+    } else {
+      long extra = 0L;
+      if (u8(path + (start + compLen - 1L) * 8L) != 47L) {
+        extra = 1L;
+      }
+      joined = compLen + extra + nameLen;
+      if (nameLen < 0L || joined > 8192L) {
+        ok = 0L;
+      } else {
+        copySpan(path + start * 8L, scratch, compLen);
+        if (extra == 1L) {
+          memory::storeOctet(47L, scratch + compLen * 8L);
+        }
+        if (nameLen > 0L) {
+          copySpan(name, scratch + (compLen + extra) * 8L, nameLen);
+        }
+      }
+    }
+    if (ok == 1L && joined > 0L) {
+      plant(home, scratch, joined);
+      long kind = fileKind(home);
+      if (kind == 1L || kind == 5L) {
+        *outLen = joined;
+        return 1L;
+      }
+    }
+    if (cursor >= pathLen) {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  return 0L;
+}
+
+deRfun publish(long home, long saved, long begin): long {
+  long base = obr::proc::args(home);
+  copyWindow(saved, base);
+  long all = memory::load64(saved);
+  if (begin < 1L || begin >= all) {
+    return 1L;
+  }
+  long argcOut = all - begin;
+  if (argcOut < 1L || argcOut > 64L) {
+    return 1L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < argcOut) {
+    long len = savedArgLen(saved, begin + index);
+    if (len < 0L || len > 8192L || total + len > 8192L) {
+      return 1L;
+    }
+    total = total + len;
+    index = index + 1L;
+  }
+  long skip = sumLens(saved + 256L, begin);
+  memory::store64(argcOut, base);
+  memory::store64(total, base + 128L);
+  index = 0L;
+  while (index < 64L) {
+    long len = 0L;
+    if (index < argcOut) {
+      len = savedArgLen(saved, begin + index);
+    }
+    memory::store64(len, base + 256L + index * 64L);
+    index = index + 1L;
+  }
+  if (total > 0L) {
+    copySpan(saved + 8448L + skip * 8L, base + 8448L, total);
+  }
+  return 0L;
+}
+
+deRfun emitDigit(long home, long* at, long digit): void {
+  memory::storeOctet(48L + digit, obr::proc::bytes(home) + *at * 8L);
+  *at = *at + 1L;
+}
+
+deRfun emitUlong(long home, long* at, long value): void {
+  if (value == 0L) {
+    emitDigit(home, at, 0L);
+    return;
+  }
+  long div = 1L;
+  long temp = value;
+  while (temp >= 10L) {
+    temp = temp / 10L;
+    div = div * 10L;
+  }
+  long rest = value;
+  while (div > 0L) {
+    emitDigit(home, at, rest / div);
+    rest = rest % div;
+    div = div / 10L;
+  }
+}
+
+deRfun report(long home, long diffMs): void {
+  long whole = diffMs / 1000L;
+  long milli = diffMs % 1000L;
+  long at = putText(obr::proc::bytes(home), 0L, "real ");
+  emitUlong(home, &at, whole);
+  memory::storeOctet(46L, obr::proc::bytes(home) + at * 8L);
+  at = at + 1L;
+  long d1 = milli / 100L;
+  long d2 = (milli / 10L) % 10L;
+  long d3 = milli % 10L;
+  emitDigit(home, &at, d1);
+  if (d2 != 0L || d3 != 0L) {
+    emitDigit(home, &at, d2);
+    if (d3 != 0L) {
+      emitDigit(home, &at, d3);
+    }
+  } else if (d1 == 0L) {
+    emitDigit(home, &at, 0L);
+  }
+  at = putText(obr::proc::bytes(home), at, "\nuser 0.00\nsys 0.00\n");
+  obr::proc::write(home, 2L, 0L, at);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long saved = obr::proc::alloc(home, 139520L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  if (saved == 0L || scratch == 0L) {
+    return finish(home, 1L);
+  }
+  if (saveWindow(home, saved) != 0L) {
+    return finish(home, 1L);
+  }
+  putText(scratch + 65664L, 0L, "PATH");
+  long index = 1L;
+  long count = memory::load64(saved);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = savedArgPtr(saved, index);
+    long len = savedArgLen(saved, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L && u8(at + 8L) == 112L && len == 2L) {
+      index = index + 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      writeErr(home, "time: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      ended = 1L;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "time: missing operand\n");
+    return finish(home, 1L);
+  }
+  long name = savedArgPtr(saved, index);
+  long nameLen = savedArgLen(saved, index);
+  long pathLen = 0L;
+  if (resolve(home, scratch, name, nameLen, &pathLen) == 0L) {
+    sayMiss(home, name, nameLen);
+    return finish(home, 127L);
+  }
+  if (publish(home, saved, index) != 0L) {
+    return finish(home, 1L);
+  }
+  if (obr::proc::clock(home) != 0L) {
+    return finish(home, 1L);
+  }
+  long t0 = obr::proc::slot(home, 128L);
+  plant(home, scratch, pathLen);
+  if (obr::proc::spawn(home, 0L) != 0L) {
+    sayExec(home, name, nameLen);
+    return finish(home, 126L);
+  }
+  long pid = obr::proc::slot(home, 192L);
+  obr::proc::wait(home, pid);
+  long code = obr::proc::slot(home, 192L);
+  if (obr::proc::clock(home) != 0L) {
+    return finish(home, 1L);
+  }
+  long t1 = obr::proc::slot(home, 128L);
+  long diff = t1 - t0;
+  if (diff < 0L) {
+    diff = 0L;
+  }
+  report(home, diff);
+  if (code < 0L) {
+    code = 0L;
+  }
+  if (code > 255L) {
+    code = code % 256L;
+  }
+  return finish(home, code);
+}

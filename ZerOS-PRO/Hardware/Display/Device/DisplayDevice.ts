@@ -26,6 +26,7 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
+import { ZerOS as MetricPageRoot } from "../../Motherboard/Host/MetricPage";
 import { ZerOS as ConfigRoot } from "../Config/DisplayConfig";
 import { ZerOS as SplashRoot } from "./SplashDots";
 import { ZerOS as RingRoot } from "./SplashRing";
@@ -50,6 +51,7 @@ export namespace ZerOS {
       type SplashDots = SplashRoot.Hardware.Display.SplashDots;
 
       const displayPrefix = "[ZerOS.Hardware.Display.Display]";
+      const writeMetric = MetricPageRoot.Hardware.Motherboard.writeMetric;
 
       /**
        * 一块已接上画布的显示器。
@@ -631,6 +633,12 @@ export namespace ZerOS {
             } catch {
               /* 这一拍的帧不合法时不呈现，面板保持上一幅。 */
             }
+          }
+          /* 这一拍已经走完。序号写进页面挂上的指标页，监督核只转发这个数。 */
+          const beat = this.nextIndex - 1;
+          if (beat >= 0) {
+            writeMetric(4, 3, 0, BigInt(beat));
+            MetricPageRoot.Hardware.Motherboard.raiseDisplayBeat();
           }
           this.arm();
         }

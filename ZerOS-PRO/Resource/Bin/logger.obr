@@ -1,0 +1,332 @@
+/* POSIX.1-2017 logger（utilities/logger.html）。形式是 logger [-i] [-p priority] [-t tag] [-f file] [message...]。
+   没有 syslog 守护进程。
+   本系统选定：-f file 把一行追加到该文件；没有 -f 则追加到 /home/syslog。
+   行内含优先级（-p，缺省 user.notice）、可选 tag（-t）和消息正文。
+   格式是 priority、空格、tag 或 logger、可选 [pid]、冒号、空格、消息、换行。
+   -i 在 tag 后写 [pid]；pid 用服务 33 找地址空间起点等于本任务界限的任务。
+   服务 33 失败或找不到匹配任务时仍接受 -i，只是不写 pid 段。
+   -- 结束选项。不认识的字母 logger: invalid option，退出 1。-f -p -t 缺参数写 logger: option requires an argument。
+   打开或写入失败写英文诊断，退出 1。结束用服务 28。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import obr.text;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun plantPath(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun putByte(long home, long buf, long* filled, long bit): void {
+  long count = *filled;
+  memory::storeOctet(bit, buf + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun putSpan(long home, long buf, long* filled, long addr, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putByte(home, buf, filled, u8(addr + index * 8L));
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long home, long buf, long* filled, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    putByte(home, buf, filled, text[index]);
+    index = index + 1L;
+  }
+}
+
+deRfun putDec(long home, long buf, long* filled, long value): void {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long rev = home + 9664L;
+  long count = 0L;
+  if (value == 0L) {
+    memory::storeOctet(48L, rev);
+    count = 1L;
+  } else {
+    while (value > 0L && count < 20L) {
+      memory::storeOctet(48L + (value % 10L), rev + count * 8L);
+      value = value / 10L;
+      count = count + 1L;
+    }
+  }
+  while (count > 0L) {
+    count = count - 1L;
+    putByte(home, buf, filled, u8(rev + count * 8L));
+  }
+}
+
+deRfun myPid(long home, long* pid): long {
+  long index = 0L;
+  while (index >= 0L) {
+    long status = obr::proc::task(home, index);
+    if (status == 2L) {
+      return 0L;
+    }
+    if (status != 0L) {
+      return 0L;
+    }
+    long start = memory::load64(obr::proc::bytes(home) + 8L * 64L);
+    if (start == home) {
+      *pid = memory::load64(obr::proc::bytes(home));
+      return 1L;
+    }
+    long next = obr::proc::slot(home, 320L);
+    if (next <= index) {
+      return 0L;
+    }
+    index = next;
+  }
+  return 0L;
+}
+
+deRfun writeLine(long home, long fd, long offset, long buf, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(buf + done * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, offset, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    offset = offset + wrote;
+    done = done + wrote;
+  }
+  return 0L;
+}
+
+deRfun setPath(long home, long pathBlock, long fileAt, long fileLen, long hasFile): void {
+  if (hasFile == 1L) {
+    plantPath(home, fileAt, fileLen);
+  } else {
+    memory::store64(obr::text::len(pathBlock), obr::proc::path(home));
+    copySpan(pathBlock + 64L, obr::proc::path(home) + 64L, obr::text::len(pathBlock));
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long usePid = 0L;
+  long tagAt = 0L;
+  long tagLen = 0L;
+  long hasTag = 0L;
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long hasFile = 0L;
+  long prioAt = 0L;
+  long prioLen = 0L;
+  long hasPrio = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 105L) {
+          usePid = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 112L) {
+          if (cursor + 1L < len) {
+            prioAt = at + (cursor + 1L) * 8L;
+            prioLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "logger: option requires an argument\n");
+              return finish(home, 1L);
+            }
+            prioAt = argPtr(home, index);
+            prioLen = argLen(home, index);
+            cursor = len;
+          }
+          hasPrio = 1L;
+        } else if (bit == 116L) {
+          if (cursor + 1L < len) {
+            tagAt = at + (cursor + 1L) * 8L;
+            tagLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "logger: option requires an argument\n");
+              return finish(home, 1L);
+            }
+            tagAt = argPtr(home, index);
+            tagLen = argLen(home, index);
+            cursor = len;
+          }
+          hasTag = 1L;
+        } else if (bit == 102L) {
+          if (cursor + 1L < len) {
+            fileAt = at + (cursor + 1L) * 8L;
+            fileLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "logger: option requires an argument\n");
+              return finish(home, 1L);
+            }
+            fileAt = argPtr(home, index);
+            fileLen = argLen(home, index);
+            cursor = len;
+          }
+          hasFile = 1L;
+        } else {
+          writeErr(home, "logger: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  long hold = obr::proc::alloc(home, 65536L);
+  if (hold == 0L) {
+    writeErr(home, "logger: out of memory\n");
+    return finish(home, 1L);
+  }
+  long lineBuf = hold;
+  long pathBlock = hold + 4096L;
+  long filled = 0L;
+  if (hasPrio == 1L) {
+    putSpan(home, lineBuf, &filled, prioAt, prioLen);
+  } else {
+    putText(home, lineBuf, &filled, "user.notice");
+  }
+  putByte(home, lineBuf, &filled, 32L);
+  if (hasTag == 1L) {
+    putSpan(home, lineBuf, &filled, tagAt, tagLen);
+  } else {
+    putText(home, lineBuf, &filled, "logger");
+  }
+  if (usePid == 1L) {
+    long pid = 0L;
+    if (myPid(home, &pid) == 1L) {
+      putByte(home, lineBuf, &filled, 91L);
+      putDec(home, lineBuf, &filled, pid);
+      putByte(home, lineBuf, &filled, 93L);
+    }
+  }
+  putText(home, lineBuf, &filled, ": ");
+  long msg = index;
+  while (msg < count) {
+    if (msg > index) {
+      putByte(home, lineBuf, &filled, 32L);
+    }
+    putSpan(home, lineBuf, &filled, argPtr(home, msg), argLen(home, msg));
+    msg = msg + 1L;
+  }
+  putByte(home, lineBuf, &filled, 10L);
+  if (hasFile == 0L) {
+    if (obr::text::put(pathBlock, "/home/syslog") != 0L) {
+      writeErr(home, "logger: cannot open log file\n");
+      obr::proc::free(home, hold, 65536L);
+      return finish(home, 1L);
+    }
+  }
+  if (hasFile == 1L && (fileLen < 1L || fileLen > 8192L)) {
+    writeErr(home, "logger: cannot open log file\n");
+    obr::proc::free(home, hold, 65536L);
+    return finish(home, 1L);
+  }
+  setPath(home, pathBlock, fileAt, fileLen, hasFile);
+  long start = 0L;
+  long status = obr::proc::stat(home);
+  if (status == 0L) {
+    if (isDir(obr::proc::slot(home, 128L)) == 1L) {
+      writeErr(home, "logger: cannot open log file\n");
+      obr::proc::free(home, hold, 65536L);
+      return finish(home, 1L);
+    }
+    start = obr::proc::slot(home, 192L);
+    if (start < 0L) {
+      start = 0L;
+    }
+  } else if (status != 2L) {
+    writeErr(home, "logger: cannot open log file\n");
+    obr::proc::free(home, hold, 65536L);
+    return finish(home, 1L);
+  }
+  setPath(home, pathBlock, fileAt, fileLen, hasFile);
+  if (obr::proc::open(home, 3L) != 0L) {
+    writeErr(home, "logger: cannot open log file\n");
+    obr::proc::free(home, hold, 65536L);
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  if (writeLine(home, fd, start, lineBuf, filled) != 0L) {
+    writeErr(home, "logger: write error\n");
+    obr::proc::free(home, hold, 65536L);
+    return finish(home, 1L);
+  }
+  obr::proc::free(home, hold, 65536L);
+  return finish(home, 0L);
+}

@@ -196,6 +196,8 @@ export namespace ZerOS {
        * 交上主板之后从这里拿掉，下一次调用只交新写的字节。
        */
       const dirtyOctets = new Set<bigint>();
+      /** 键盘环的写入先留在本核心，一次突发结束时合成一段交出去。 */
+      const keyRingDirty = new Set<bigint>();
       /**
        * 这一次执行里从内存读回来的八位组。
        * 程序正文和字符串只在装入时写过，本核心没有 store，原先每个字节都要再问一次内存。
@@ -438,6 +440,13 @@ export namespace ZerOS {
       let primeBlock = -1;
       /** 原生写入正在等主板落下这一段。和上面的读取不能叠在一起。 */
       let depositActive = false;
+      /** 键盘环已经写在本核心，突发结束前要一次送到主板。 */
+      let ringPublish = false;
+      /* 次数已经写上，不必等这一段突发结束再送环。等突发结束的话，键会在环里多停几十毫秒。 */
+      let ringEager = false;
+      /** 这一批访问里，方向 2 已经带回一次事件。随 access 结果交给 CPU 线程。 */
+      let accessSawKey = false;
+      let ringFinish: { readonly ok: boolean; readonly message: string; readonly hostFault: string } | null = null;
       /**
        * 下一次落盘不要丢掉私有字节。
        * 系统调用前要把栈指针那个字交上主板，客程序返回后还要用核心里的同一份。
@@ -676,8 +685,11 @@ export namespace ZerOS {
         if (address < 0n || address % 8n !== 0n || address === FrameAddress) {
           return { kind: "leave" };
         }
-        /* 结束标志、模式字和调试开关要让主板看见，不能留在本核心的缓存里。 */
-        if (touchesSharedFirmware(address, BigInt(width * 8))) {
+        const bitWidth = BigInt(width * 8);
+        /* 键盘环由这一核心写、监督核读。突发里先留在本核心，结束时一次送出。
+           其它共享标志仍当时就走内存，模式字和停笔不能等。 */
+        const ringOnly = address >= SharedKeyRing && address + bitWidth <= SharedKeyRingEnd;
+        if (!ringOnly && touchesSharedFirmware(address, bitWidth)) {
           return { kind: "leave" };
         }
         if (outsideBound(address, BigInt(width * 8))) {
@@ -795,16 +807,25 @@ export namespace ZerOS {
         if (plan.kind === "store") {
           let rest = plan.value < 0n ? plan.value + modulus : plan.value;
           const outside = regionEnd(plan.base * 8n) === null;
+          const ringBit = plan.base * 8n;
+          const ringStore = ringBit >= SharedKeyRing && ringBit + BigInt(plan.width * 8) <= SharedKeyRingEnd;
           for (let index = 0; index < plan.width; index += 1) {
             const key = plan.base + BigInt(index);
             keptOctets.set(key, Number(rest & 0xffn));
-            if (outside) {
+            if (ringStore) {
+              keyRingDirty.add(key);
+            } else if (outside) {
               dirtyOctets.add(key);
             } else {
               dirtyOctets.delete(key);
             }
             readCache.delete(key);
             rest >>= 8n;
+          }
+          /* 6528 的次数是发布点。槽里的两个字已经先写进脏表，这里一次送出。 */
+          const countKey = SharedKeyRing / 8n;
+          if (ringStore && plan.base >= countKey && plan.base < countKey + 8n) {
+            publishKeyRingEager();
           }
           return true;
         }
@@ -2173,7 +2194,10 @@ export namespace ZerOS {
         while (spanAt < bytes.length) {
           const bit = spanBit + BigInt(spanAt) * 8n;
           const key = bit / 8n;
-          if (keptOctets.has(key)) {
+          /* 键盘环由固件写、监督核经这一次按段读走。
+             本核心里若留着上一拍的次数，会盖住主板上已经发布的新次数，键就一直停在环里。 */
+          const inKeyRing = bit >= SharedKeyRing && bit < SharedKeyRingEnd;
+          if (!inKeyRing && keptOctets.has(key)) {
             bytes[spanAt] = keptOctets.get(key) ?? 0;
             spanAt += 1;
             continue;
@@ -2231,6 +2255,8 @@ export namespace ZerOS {
         readonly queryField: number;
         readonly queryIndex: number;
         readonly queryLive: boolean;
+        readonly dropStart: bigint | null;
+        readonly dropCount: number;
       }
 
       interface AccessBuilt {
@@ -2260,6 +2286,16 @@ export namespace ZerOS {
       }
 
       let accessJob: AccessJob | null = null;
+      /* 空的方向 2 在本核心返回 -1。先让出一次，监督核才能在两次 poll 之间跑。 */
+      let emptyPollResume: (() => void) | null = null;
+      const emptyPollChannel = new MessageChannel();
+      emptyPollChannel.port1.onmessage = (): void => {
+        const resume = emptyPollResume;
+        emptyPollResume = null;
+        if (resume !== null) {
+          resume();
+        }
+      };
 
       function accessBits(opcode: number): number {
         if (opcode === 1 || opcode === 2) {
@@ -2302,6 +2338,8 @@ export namespace ZerOS {
           queryField: 0,
           queryIndex: 0,
           queryLive: false,
+          dropStart: null,
+          dropCount: 0,
         };
       }
 
@@ -2547,11 +2585,21 @@ export namespace ZerOS {
         if (portNumber === null || directionNumber === null || word === null) {
           return { kind: "fault", message: `${corePrefix} exchange command integer is out of range`, hostFault: "" };
         }
+        const meta = blankMeta("port", data);
+        if (directionNumber === 2 && word % 8n === 0n) {
+          return {
+            kind: "item",
+            built: {
+              wire: wireOf(AccessExchange, 0, 0n, word, portNumber, directionNumber, 0, 0),
+              meta: { ...meta, dropStart: word / 8n, dropCount: 40 },
+            },
+          };
+        }
         return {
           kind: "item",
           built: {
             wire: wireOf(AccessExchange, 0, 0n, word, portNumber, directionNumber, 0, 0),
-            meta: blankMeta("port", data),
+            meta,
           },
         };
       }
@@ -2637,7 +2685,117 @@ export namespace ZerOS {
         return { kind: "stop" };
       }
 
+      /** 键盘环里这一拍改过的字节。相邻的空洞用本核心已经有的值补上，一次送给主板。 */
+      function collectKeyRingSpans(): { address: bigint; bytes: Uint8Array }[] {
+        const keys: bigint[] = [];
+        for (const key of keyRingDirty) {
+          if (keptOctets.has(key)) {
+            keys.push(key);
+          }
+        }
+        if (keys.length === 0) {
+          keyRingDirty.clear();
+          return [];
+        }
+        keys.sort((left, right): number => (left < right ? -1 : left > right ? 1 : 0));
+        const spans: { address: bigint; bytes: Uint8Array }[] = [];
+        let index = 0;
+        while (index < keys.length) {
+          const origin = keys[index];
+          if (origin === undefined) {
+            break;
+          }
+          let end = origin;
+          let scan = index;
+          while (scan < keys.length) {
+            const key = keys[scan];
+            if (key === undefined || key - end > 64n || end - origin >= 4096n) {
+              break;
+            }
+            let filled = true;
+            for (let step = end; step < key; step += 1n) {
+              if (!keptOctets.has(step)) {
+                filled = false;
+                break;
+              }
+            }
+            if (!filled && key !== end) {
+              break;
+            }
+            end = key + 1n;
+            while (scan < keys.length && keys[scan] !== undefined && (keys[scan] ?? 0n) < end) {
+              scan += 1;
+            }
+          }
+          const count = Number(end - origin);
+          if (!Number.isSafeInteger(count) || count < 1) {
+            break;
+          }
+          const bytes = new Uint8Array(count);
+          for (let step = 0; step < count; step += 1) {
+            bytes[step] = keptOctets.get(origin + BigInt(step)) ?? 0;
+          }
+          spans.push({ address: origin * 8n, bytes });
+          index = scan;
+        }
+        return spans;
+      }
+
+      /** 次数已经可见。立刻把环送给主板，不等这一段突发结束。结果回来时突发还在跑，不要把它当成突发的收尾。 */
+      function publishKeyRingEager(): void {
+        if (ringPublish || ringEager || depositActive || keyRingDirty.size === 0) {
+          return;
+        }
+        const boardPort = board;
+        if (boardPort === null) {
+          return;
+        }
+        const spans = collectKeyRingSpans();
+        if (spans.length === 0) {
+          return;
+        }
+        keyRingDirty.clear();
+        ringEager = true;
+        if (spans.length === 1) {
+          const one = spans[0];
+          if (one !== undefined) {
+            boardPort.postMessage({ kind: "store-span", address: one.address, bytes: one.bytes });
+          }
+          return;
+        }
+        const addresses: bigint[] = [];
+        const parts: Uint8Array[] = [];
+        for (const item of spans) {
+          addresses.push(item.address);
+          parts.push(item.bytes);
+        }
+        boardPort.postMessage({ kind: "store-spans", addresses, parts });
+      }
+
       function finishAccess(ok: boolean, message: string, hostFault: string): void {
+        if (ok && keyRingDirty.size > 0 && !ringPublish && !depositActive) {
+          const boardPort = board;
+          const spans = collectKeyRingSpans();
+          if (boardPort !== null && spans.length > 0) {
+            ringFinish = { ok, message, hostFault };
+            ringPublish = true;
+            if (spans.length === 1) {
+              const one = spans[0];
+              if (one !== undefined) {
+                boardPort.postMessage({ kind: "store-span", address: one.address, bytes: one.bytes });
+              }
+            } else {
+              const addresses: bigint[] = [];
+              const parts: Uint8Array[] = [];
+              for (const item of spans) {
+                addresses.push(item.address);
+                parts.push(item.bytes);
+              }
+              boardPort.postMessage({ kind: "store-spans", addresses, parts });
+            }
+            return;
+          }
+        }
         const job = accessJob;
         if (job !== null) {
           emitAccessTrace();
@@ -2647,6 +2805,8 @@ export namespace ZerOS {
         if (job === null || port === null) {
           return;
         }
+        const sawKey = accessSawKey;
+        accessSawKey = false;
         port.postMessage({
           kind: "access",
           ok,
@@ -2654,6 +2814,7 @@ export namespace ZerOS {
           executed: job.cursor - job.origin,
           message,
           hostFault,
+          key: sawKey,
         });
       }
 
@@ -2914,6 +3075,37 @@ export namespace ZerOS {
           job.nextCursor = scan;
           job.faultAfter = faultAfter;
           job.hostAfter = hostAfter;
+          /* 队列空时方向 2 不进主板。让出一次，固件的空 poll 才不会占住宿主线程。 */
+          const only = wires[0];
+          const onlyMeta = metas[0];
+          if (
+            wires.length === 1
+            && only !== undefined
+            && onlyMeta !== undefined
+            && only.tag === AccessExchange
+            && only.b === 2
+            && MetricPageRoot.Hardware.Motherboard.keyAttentionAttached()
+            && !MetricPageRoot.Hardware.Motherboard.keyAttention()
+          ) {
+            if (job.faultAfter !== "" || job.hostAfter !== "") {
+              applyAccessMeta(onlyMeta, -1n, 0, null);
+              job.cursor = job.nextCursor;
+              finishAccess(false, job.faultAfter, job.hostAfter);
+              return;
+            }
+            /* 推迟的这一拍里键可能已经进队。先写上 -1 再让出，这次按键就会留在队列里没人取。 */
+            emptyPollResume = (): void => {
+              if (MetricPageRoot.Hardware.Motherboard.keyAttention()) {
+                postAccessBatch(boardPort, wires);
+                return;
+              }
+              applyAccessMeta(onlyMeta, -1n, 0, null);
+              job.cursor = job.nextCursor;
+              pumpAccess();
+            };
+            emptyPollChannel.port2.postMessage(null);
+            return;
+          }
           postAccessBatch(boardPort, wires);
           return;
         }
@@ -2973,6 +3165,27 @@ export namespace ZerOS {
           return;
         }
         registers[meta.register] = value;
+        if (meta.dropCount > 0 && value >= 0n && meta.dropStart !== null) {
+          forgetReadRange(meta.dropStart, meta.dropStart + BigInt(meta.dropCount));
+          /* 方向 2 带回事件时 dropCount 是 40。空队列的 -1 不会进这里。
+             结果里的快照直接装进读缓存，紧跟着的那几次加载不必再问主板。 */
+          if (span !== null && span.length > 0) {
+            const bytes = new Uint8Array(span.length * 8);
+            for (let step = 0; step < span.length; step += 1) {
+              let rest = span[step] ?? 0n;
+              if (rest < 0n) {
+                rest += 1n << 64n;
+              }
+              for (let octet = 0; octet < 8; octet += 1) {
+                bytes[step * 8 + octet] = Number(rest & 0xffn);
+                rest >>= 8n;
+              }
+            }
+            const count = bytes.length < meta.dropCount ? bytes.length : meta.dropCount;
+            installRead(meta.dropStart, count === bytes.length ? bytes : bytes.subarray(0, count));
+          }
+          accessSawKey = true;
+        }
       }
 
       /** 主板按顺序做完一批。成功的写回寄存器，失败的那一条不写结果，后面的丢掉。 */
@@ -3019,6 +3232,30 @@ export namespace ZerOS {
         if (job.faultAfter !== "" || job.hostAfter !== "") {
           finishAccess(false, job.faultAfter, job.hostAfter);
           return;
+        }
+        /* 这一批已经把键带回来。先在核心里把随后的本地指令跑掉，环的次数才能在回 CPU 之前写上。
+           下一条出核心的交换留在游标上，由 CPU 下一拍再发。 */
+        if (accessSawKey && job.cursor >= job.end) {
+          const steps = program;
+          if (steps !== null) {
+            quietFault = "";
+            let guard = 0;
+            while (guard < 128 && job.cursor < steps.length) {
+              const step = steps[job.cursor];
+              if (step === undefined) {
+                break;
+              }
+              if (!(absorbFrameLoad(step) || absorbScratch(step) || absorbLinear(step))) {
+                break;
+              }
+              if (quietFault !== "") {
+                finishAccess(false, quietFault, "");
+                return;
+              }
+              job.cursor += 1;
+              guard += 1;
+            }
+          }
         }
         pumpAccess();
       }
@@ -3245,6 +3482,44 @@ export namespace ZerOS {
           cpuPort.postMessage({ kind: "burst", ok: true, cursor: pending.cursor, executed: pending.executed });
           return;
         }
+        if (ringEager && (kind === "store-span-result" || kind === "store-spans-result")) {
+          ringEager = false;
+          return;
+        }
+        if (ringPublish && (kind === "store-span-result" || kind === "store-spans-result")) {
+          ringPublish = false;
+          keyRingDirty.clear();
+          const storedOk = record?.["ok"] !== false;
+          const storedMessage = record?.["message"];
+          const burst = pendingBurst;
+          if (burst !== null) {
+            pendingBurst = null;
+            const cpuPort = cpu;
+            if (cpuPort === null) {
+              return;
+            }
+            if (!storedOk) {
+              cpuPort.postMessage({
+                kind: "burst",
+                ok: false,
+                message: typeof storedMessage === "string" ? storedMessage : `${corePrefix} native store failed`,
+                cursor: burst.cursor,
+                executed: burst.executed,
+              });
+              return;
+            }
+            cpuPort.postMessage({ kind: "burst", ok: true, cursor: burst.cursor, executed: burst.executed });
+            return;
+          }
+          const finish = ringFinish;
+          ringFinish = null;
+          if (finish === null || !storedOk) {
+            finishAccess(false, typeof storedMessage === "string" ? storedMessage : `${corePrefix} native store failed`, "");
+            return;
+          }
+          finishAccess(finish.ok, finish.message, finish.hostFault);
+          return;
+        }
         if (kind === "store-span-result" && depositActive) {
           depositActive = false;
           const payload = depositBytes;
@@ -3361,6 +3636,10 @@ export namespace ZerOS {
               }
             }
             forgetReadRange(span.start, end);
+            const shot = record?.["bytes"];
+            if (shot instanceof Uint8Array && shot.length > 0) {
+              installRead(span.start, shot.subarray(0, span.count));
+            }
           }
         }
         waiting = false;
@@ -3713,9 +3992,37 @@ export namespace ZerOS {
           fail("exchange command integer is out of range");
           return;
         }
+        /* 队列空时不进主板。回复延后一次，这段时间宿主线程可以跑监督核。 */
+        if (
+          directionNumber === 2
+          && MetricPageRoot.Hardware.Motherboard.keyAttentionAttached()
+          && !MetricPageRoot.Hardware.Motherboard.keyAttention()
+        ) {
+          const register = data;
+          emptyPollResume = (): void => {
+            /* 推迟的这一拍里键已经进队。不能再回 -1，否则这次按键留在队列里没人取。 */
+            if (MetricPageRoot.Hardware.Motherboard.keyAttention()) {
+              beginPortTrace(record, PortXchg, portNumber, directionNumber);
+              pendingRegister = data;
+              waiting = true;
+              if (word % 8n === 0n) {
+                carriedSpan = { start: word / 8n, count: 40 };
+              }
+              port.postMessage({ kind: "xchg", port: portNumber, direction: directionNumber, data: word });
+              return;
+            }
+            registers[register] = -1n;
+            reply(true, false, -1n, "");
+          };
+          emptyPollChannel.port2.postMessage(null);
+          return;
+        }
         beginPortTrace(record, PortXchg, portNumber, directionNumber);
         pendingRegister = data;
         waiting = true;
+        if (directionNumber === 2 && word % 8n === 0n) {
+          carriedSpan = { start: word / 8n, count: 40 };
+        }
         port.postMessage({ kind: "xchg", port: portNumber, direction: directionNumber, data: word });
       }
 
@@ -4271,11 +4578,34 @@ export namespace ZerOS {
             outcome = runBurst(start);
           } catch (error: unknown) {
             const message = error instanceof Error ? error.message : `${corePrefix} local execution failed`;
-            port.postMessage({ kind: "burst", ok: false, message, cursor: start, executed: 0 });
+            port.postMessage({ kind: "burst", ok: false, message, cursor: start, executed: 0, registers: registers.slice() });
             return;
           }
           const fault = quietFault;
           quietFault = "";
+          if (fault === "" && keyRingDirty.size > 0 && !ringPublish && !depositActive) {
+            const boardPort = board;
+            const spans = collectKeyRingSpans();
+            if (boardPort !== null && spans.length > 0) {
+              pendingBurst = { cursor: outcome.cursor, executed: outcome.executed, fault: "" };
+              ringPublish = true;
+              if (spans.length === 1) {
+                const one = spans[0];
+                if (one !== undefined) {
+                  boardPort.postMessage({ kind: "store-span", address: one.address, bytes: one.bytes });
+                }
+              } else {
+                const addresses: bigint[] = [];
+                const parts: Uint8Array[] = [];
+                for (const item of spans) {
+                  addresses.push(item.address);
+                  parts.push(item.bytes);
+                }
+                boardPort.postMessage({ kind: "store-spans", addresses, parts });
+              }
+              return;
+            }
+          }
           if (outcome.flush && heldQueue.length > 0) {
             const boardPort = board;
             if (boardPort === null) {
@@ -4290,10 +4620,21 @@ export namespace ZerOS {
             return;
           }
           if (fault !== "") {
-            port.postMessage({ kind: "burst", ok: false, message: fault, cursor: outcome.cursor, executed: outcome.executed });
+            port.postMessage({ kind: "burst", ok: false, message: fault, cursor: outcome.cursor, executed: outcome.executed, registers: registers.slice() });
             return;
           }
-          port.postMessage({ kind: "burst", ok: true, cursor: outcome.cursor, executed: outcome.executed, stop: outcome.stop });
+          const reply: Record<string, unknown> = {
+            kind: "burst",
+            ok: true,
+            cursor: outcome.cursor,
+            executed: outcome.executed,
+            stop: outcome.stop,
+          };
+          /* 只有真的停机/等待时才带寄存器；普通执行段不增加消息体积。 */
+          if (outcome.stop.length > 0) {
+            reply["registers"] = registers.slice();
+          }
+          port.postMessage(reply);
           return;
         }
         if (kind === "access") {

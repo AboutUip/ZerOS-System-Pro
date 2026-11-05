@@ -179,6 +179,27 @@ export namespace ZerOS {
       }
 
       /**
+       * 上一次已完成事件的 5 个字，小端。
+       * 0 是种类加重复乘 256，1 是键值，2 是修饰位，3 是码值，4 是关联号。
+       * 还没有事件时五个字都是 0。给 fill 取走，不在这里改次数。
+       */
+      export function snapshotWords(): Uint8Array {
+        const bytes = new Uint8Array(40);
+        const view = new DataView(bytes.buffer);
+        const values = [
+          lastKind + (lastRepeat << 8n),
+          lastKey,
+          lastModifiers,
+          lastCode,
+          lastCorrelation,
+        ];
+        for (let index = 0; index < values.length; index += 1) {
+          view.setBigUint64(index * 8, values[index] ?? 0n, true);
+        }
+        return bytes;
+      }
+
+      /**
        * 一次交换。方向只接受 0 或 1。
        * 失败时未完成的字已经被丢掉，已记下的事件不动。
        */

@@ -1,6 +1,6 @@
 /* 创建子任务，并把调用者的参数交过去。
    不管引导顺序。参数布局和 Resource/Bin/arg.obr 是同一张。 */
-#LINK /start.obr, /boot.obr
+#LINK /start.obr, /boot.obr, /loader.obr
 import proc;
 import fs;
 import exec;
@@ -9,7 +9,7 @@ import board;
 import memory;
 import obr.os;
 
-/* 参数和环境放在界限起点 +4194304。壳和 Resource/Bin/arg.obr 用同一张布局。
+/* 参数和环境放在界限起点 +4194304。客程序和 Resource/Bin/arg.obr 用同一张布局。
    字 0 个数，字 1 环境条数，字 2 参数八位组数，字 3 环境八位组数。
    +256 起 64 个参数长度，+4352 起 64 个环境长度。
    参数八位组从 +8448 起，环境从 +73984 起，相邻隔 8 位。整段 139520 位。 */
@@ -105,17 +105,9 @@ deRfun execSpawn(long caller, long home): long {
   if (argOk(home) == 0L) {
     return 13L;
   }
-  /* 只给 /os/sh 打点。后来的命令也走这里，不能每次派生都写 7296。 */
-  long shell = isShell(home + 16384L);
-  if (shell == 1L) {
-    bootMark(30L);
-  }
   long status = vfsPrepare(caller, home + 16384L);
   if (status != 0L) {
     return status;
-  }
-  if (shell == 1L) {
-    bootMark(31L);
   }
   long core = memory::load64(home + 128L);
   long sharing = 0L;
@@ -183,12 +175,43 @@ deRfun execSpawn(long caller, long home): long {
       return status;
     }
   }
+  /* 映像已经在核心上，而且核心还停着。导入名要在调度进 main 之前装上。 */
+  long bytes = size;
+  if (planted == 1L) {
+    bytes = lastPull(0L, 0L);
+  }
+  if (elfImage(imageAt()) == 0L) {
+    long bound = bindLibs(core, home, bytes);
+    if (bound != 0L) {
+      if (sharing == 1L) {
+        long back = taskAt(old).held - 1L;
+        if (back >= 0L) {
+          obr::os::restore(core, back);
+          Task* returned = taskAt(old);
+          taskAccount(old, TaskState::Running);
+          returned.state = TaskState::Running;
+          /* 被换下来的就是调用者时，回复要等它回到核上再交，免得子任务把状态取走。
+             换下来的不是调用者时，调用者还停在自己的核上，回复由返回值带回去。 */
+          if (old == taskIndex) {
+            obr::os::pass(core, bound);
+            obr::os::schedule(core);
+            return -1L;
+          }
+          obr::os::schedule(core);
+        }
+      }
+      return bound;
+    }
+  }
+  /* 独占这颗核时，清掉上一个程序留下的 static。
+     和父任务共用窗口时不能清，父任务还要回到这些格子上。 */
+  if (sharing == 0L && elfImage(imageAt()) == 0L) {
+    wipeStatics(kArena(core));
+  }
   if (sharing == 1L) {
     Task* previous = taskAt(old);
+    taskAccount(old, TaskState::Ready);
     previous.state = TaskState::Ready;
-  }
-  if (shell == 1L) {
-    bootMark(32L);
   }
   Task* parent = taskAt(taskIndex);
   long pid = taskSpawn(core, nextPid(), parent.cred.uid, parent.cred.gid, parent.cap, TaskState::Running);
@@ -197,10 +220,16 @@ deRfun execSpawn(long caller, long home): long {
       long back = taskAt(old).held - 1L;
       if (back >= 0L) {
         obr::os::restore(core, back);
+        Task* returned = taskAt(old);
+        taskAccount(old, TaskState::Running);
+        returned.state = TaskState::Running;
+        if (old == taskIndex) {
+          obr::os::pass(core, 7L);
+          obr::os::schedule(core);
+          return -1L;
+        }
+        obr::os::schedule(core);
       }
-      Task* returned = taskAt(old);
-      returned.state = TaskState::Running;
-      obr::os::schedule(core);
     }
     return 7L;
   }
@@ -210,30 +239,33 @@ deRfun execSpawn(long caller, long home): long {
   child.cred.egid = parent.cred.egid;
   child.cap = parent.cap;
   child.cwd = parent.cwd;
-  long rank = rankGet(taskIndex);
-  if (isShell(home + 16384L) == 1L) {
-    rank = 2L;
-  }
-  rankSet(taskByPid(pid), rank);
+  /* 子任务继承父任务的档。1 号在引导时写成前台，交互任务顺着这条链下来。
+     内核不按路径把某一个程序单独抬上去。 */
+  rankSet(taskByPid(pid), rankGet(taskIndex));
   commFromPath(taskByPid(pid), home + 16384L);
   vfsHand(taskIndex, taskByPid(pid));
   /* handArgs 按声明的条数和八位组数交接，不必先把 139520 位整段清零。
      用子任务所在核心的窗口起点，而不是 query(1,8,core)：子任务还没调度时，
      那颗核心上的 home 仍是上一个任务，参数会抄到旧窗口。 */
   handArgs(home, kArena(core));
-  /* 会话只空转。30 Hz 时一拍长于 1 毫秒，宿主才会睡。其它程序仍用 1000000。
-     再拉到 100000000 测过，按键仍是大约一秒，时间不在客程序的节拍上。 */
-  if (isSession(home + 16384L) == 1L) {
+  /* 1 号的直接子任务起来之后停在 core()。
+     频率低于 1000 时，宿主才把这种空转停住。其它程序用 1000000。
+     有效指令不受这个数限制，时间片仍按大约 1 毫秒让出。 */
+  if (parent.pid == 1L) {
     obr::os::hertz(core, 30L);
   } else {
     obr::os::hertz(core, 1000000L);
   }
   schedWake(core);
-  if (shell == 1L) {
-    bootMark(33L);
-  }
   memory::store64(pid, home + 192L);
   memory::store64(core, home + 256L);
+  if (sharing == 1L && old == taskIndex) {
+    /* 父任务在槽里，核上现在是子任务。spawn 的回复值先记在父任务上，
+       等父任务被 restore 回来、真正要跑之前再 pass，避免子任务把回复取走。
+       槽里是别的任务时不能记在它身上，否则调用者永远等不到这次回复。 */
+    taskAt(old).code = -2L;
+    return -1L;
+  }
   return 0L;
 }
 

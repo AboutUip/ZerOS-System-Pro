@@ -1,0 +1,243 @@
+/* POSIX.1-2017 what（utilities/what.html）。形式是 what [-s] file...
+   -s 在每个文件里找到第一处就停。-- 结束选项。
+   在文件里找八位组序列 @ ( # )，把紧跟其后的内容写到描述符 1，
+   直到 >、换行、NUL 或反斜杠（不含这些终止符），再写一个换行。
+   标识正文、路径前缀和这个换行都在描述符 1。
+   多个文件且没有 -s 时，每次匹配前写 路径: 和一个空格。
+   读入的块先拷到堆上再扫描，写出不打坏读入窗口。
+   标识跨过 4096 边界时接着写，读到文件末尾仍未遇到终止符也补一个换行。
+   没有文件操作数时读标准输入，不关闭描述符 0。
+   打开失败写 what: 路径: 原因 到描述符 2，继续后面的文件，最终退出 1。
+   成功退出 0。诊断英文。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeByte(long home, long fd, long bit): void {
+  memory::storeOctet(bit, obr::proc::bytes(home));
+  obr::proc::write(home, fd, 0L, 1L);
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun complain(long home, long addr, long count): void {
+  writeErr(home, "what: ");
+  writeSpan(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun stopByte(long bit): long {
+  if (bit == 62L || bit == 10L || bit == 0L || bit == 92L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+deRfun scanChunk(long home, long base, long count, long prefix, long path, long pathLen, long stopOne, long* inMatch, long* h0, long* h1, long* h2, long* done): void {
+  long pos = 0L;
+  while (pos < count && *done == 0L) {
+    long bit = u8(base + pos * 8L);
+    if (*inMatch == 1L) {
+      if (stopByte(bit) == 1L) {
+        writeByte(home, 1L, 10L);
+        *inMatch = 0L;
+        if (stopOne == 1L) {
+          *done = 1L;
+        }
+      } else {
+        writeByte(home, 1L, bit);
+      }
+    } else if (*h2 == 64L && *h1 == 40L && *h0 == 35L && bit == 41L) {
+      if (prefix == 1L) {
+        writeSpan(home, 1L, path, pathLen);
+        writeOut(home, ": ");
+      }
+      *inMatch = 1L;
+    }
+    *h2 = *h1;
+    *h1 = *h0;
+    *h0 = bit;
+    pos = pos + 1L;
+  }
+}
+
+deRfun scanFile(long home, long path, long pathLen, long stopOne, long prefix, long* failed): void {
+  long fd = 0L;
+  if (pathLen > 0L) {
+    plant(home, path, pathLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      complain(home, path, pathLen);
+      *failed = 1L;
+      return;
+    }
+    fd = obr::proc::slot(home, 192L);
+  }
+  long hold = obr::proc::alloc(home, 32768L);
+  if (hold == 0L) {
+    writeErr(home, "what: out of memory\n");
+    *failed = 1L;
+    if (pathLen > 0L) {
+      obr::proc::close(home, fd);
+    }
+    return;
+  }
+  long offset = 0L;
+  long done = 0L;
+  long inMatch = 0L;
+  long h0 = 0L;
+  long h1 = 0L;
+  long h2 = 0L;
+  while (done == 0L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      writeErr(home, "what: read error\n");
+      *failed = 1L;
+      done = 1L;
+    } else {
+      long n = obr::proc::slot(home, 320L);
+      if (n < 0L) {
+        writeErr(home, "what: read error\n");
+        *failed = 1L;
+        done = 1L;
+      } else if (n == 0L) {
+        if (inMatch == 1L) {
+          writeByte(home, 1L, 10L);
+        }
+        done = 1L;
+      } else {
+        if (n > 4096L) {
+          n = 4096L;
+        }
+        long index = 0L;
+        while (index < n) {
+          memory::storeOctet(u8(obr::proc::bytes(home) + index * 8L), hold + index * 8L);
+          index = index + 1L;
+        }
+        scanChunk(home, hold, n, prefix, path, pathLen, stopOne, &inMatch, &h0, &h1, &h2, &done);
+        offset = offset + n;
+      }
+    }
+  }
+  if (pathLen > 0L) {
+    obr::proc::close(home, fd);
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long stopOne = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 115L) {
+          stopOne = 1L;
+        } else {
+          writeErr(home, "what: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  long failed = 0L;
+  long fileCount = count - index;
+  if (fileCount < 1L) {
+    scanFile(home, 0L, 0L, stopOne, 0L, &failed);
+  } else {
+    long prefix = 0L;
+    if (fileCount > 1L && stopOne == 0L) {
+      prefix = 1L;
+    }
+    while (index < count) {
+      long at = argPtr(home, index);
+      long len = argLen(home, index);
+      scanFile(home, at, len, stopOne, prefix, &failed);
+      index = index + 1L;
+    }
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

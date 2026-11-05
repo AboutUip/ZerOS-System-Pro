@@ -47,7 +47,9 @@
    直线量词用一帧计数，按个数往回退。带分支的量词每次重复压一帧。
    量词先尽量多吃，失败再退。匹配到空串之后不再在同一位置打转。
    匹配函数不递归。结束用服务 28，main 仍返回 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -154,13 +156,8 @@ struct Prog {
   long scratch;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。不用移位。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

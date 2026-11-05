@@ -1,0 +1,276 @@
+{
+  "schema": "zeros.ztrace.corpus/1",
+  "description": "v1 全命令语料。每项只验证命令能回到提示符，不比较输出文本。",
+  "commands": [
+    {
+      "name": "basename",
+      "command": "basename /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "cat",
+      "command": "cat /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "chmod",
+      "command": "chmod 644 /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "chown",
+      "command": "chown 0 /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "cksum",
+      "command": "cksum /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "cmp",
+      "command": "cmp /home/test.txt /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "comm",
+      "command": "comm /home/perf/a.txt /home/perf/b.txt",
+      "exit": 0
+    },
+    {
+      "name": "cp",
+      "command": "cp /home/test.txt /home/perf/corpus-copy.txt",
+      "exit": 0
+    },
+    {
+      "name": "cut",
+      "command": "cut -f 1 /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "date",
+      "command": "date",
+      "exit": 0
+    },
+    {
+      "name": "dd",
+      "command": "dd if=/home/test.txt of=/home/perf/corpus-dd.txt",
+      "exit": 0
+    },
+    {
+      "name": "diff",
+      "command": "diff /home/test.txt /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "dirname",
+      "command": "dirname /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "du",
+      "command": "du /home/perf",
+      "exit": 0
+    },
+    {
+      "name": "echo",
+      "command": "echo ok",
+      "exit": 0
+    },
+    {
+      "name": "env",
+      "command": "env",
+      "exit": 0
+    },
+    {
+      "name": "expr",
+      "command": "expr 1 + 2",
+      "exit": 0
+    },
+    {
+      "name": "false",
+      "command": "false",
+      "exit": 1
+    },
+    {
+      "name": "find",
+      "command": "find /home/perf -name a.txt",
+      "exit": 0
+    },
+    {
+      "name": "fold",
+      "command": "fold -w 8 /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "grep",
+      "command": "grep Hello /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "head",
+      "command": "head /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "id",
+      "command": "id",
+      "exit": 0
+    },
+    {
+      "name": "install",
+      "command": "install /home/test.txt /home/perf/corpus-install.txt",
+      "exit": 0
+    },
+    {
+      "name": "kill",
+      "command": "kill",
+      "exit": 1
+    },
+    {
+      "name": "ls",
+      "command": "ls /home/perf",
+      "exit": 0
+    },
+    {
+      "name": "mkdir",
+      "command": "mkdir -p /home/perf/corpus-dir",
+      "exit": 0
+    },
+    {
+      "name": "mktemp",
+      "command": "mktemp /home/perf/tmp.XXXXXX",
+      "exit": 0
+    },
+    {
+      "name": "mv",
+      "command": "mv /home/perf/corpus-copy.txt /home/perf/corpus-copy2.txt",
+      "exit": 0
+    },
+    {
+      "name": "od",
+      "command": "od /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "paste",
+      "command": "paste /home/perf/a.txt /home/perf/b.txt",
+      "exit": 0
+    },
+    {
+      "name": "printf",
+      "command": "printf hi",
+      "exit": 0
+    },
+    {
+      "name": "ps",
+      "command": "ps",
+      "exit": 0
+    },
+    {
+      "name": "pwd",
+      "command": "pwd",
+      "exit": 0
+    },
+    {
+      "name": "realpath",
+      "command": "realpath /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "rm",
+      "command": "rm /home/perf/corpus-copy2.txt",
+      "exit": 0
+    },
+    {
+      "name": "rmdir",
+      "command": "rmdir /home/perf/corpus-dir",
+      "exit": 0
+    },
+    {
+      "name": "seq",
+      "command": "seq 1 3",
+      "exit": 0
+    },
+    {
+      "name": "sleep",
+      "command": "sleep 0.1",
+      "exit": 0
+    },
+    {
+      "name": "sort",
+      "command": "sort /home/perf/a.txt",
+      "exit": 0
+    },
+    {
+      "name": "tail",
+      "command": "tail /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "tee",
+      "command": "echo hi | tee /home/perf/corpus-tee.txt",
+      "exit": 0
+    },
+    {
+      "name": "test",
+      "command": "test -f /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "touch",
+      "command": "touch /home/perf/corpus-touch.txt",
+      "exit": 0
+    },
+    {
+      "name": "tr",
+      "command": "echo abc | tr a b",
+      "exit": 0
+    },
+    {
+      "name": "tree",
+      "command": "tree -L 1 /home/perf",
+      "exit": 0
+    },
+    {
+      "name": "true",
+      "command": "true",
+      "exit": 0
+    },
+    {
+      "name": "uname",
+      "command": "uname",
+      "exit": 0
+    },
+    {
+      "name": "uniq",
+      "command": "uniq /home/perf/a.txt",
+      "exit": 0
+    },
+    {
+      "name": "wc",
+      "command": "wc /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "which",
+      "command": "which ls",
+      "exit": 0
+    },
+    {
+      "name": "whoami",
+      "command": "whoami",
+      "exit": 0
+    },
+    {
+      "name": "xargs",
+      "command": "xargs echo < /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "yes",
+      "command": "yes --help",
+      "exit": 1
+    }
+  ]
+}

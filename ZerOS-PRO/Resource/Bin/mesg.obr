@@ -1,0 +1,73 @@
+/* POSIX.1-2017 mesg（utilities/mesg.html）。形式是 mesg [y|n]。
+   本系统没有终端消息许可位，也没有真正的 mesg 位；y 与 n 都不改内核状态。
+   选定：无操作数时向描述符 1 写 is y 和换行，退出 0。
+   操作数 y 退出 0。操作数 n 向描述符 2 写
+   mesg: terminal messages cannot be disabled 和换行，退出 1。
+   其它操作数写 mesg: invalid operand 和换行，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 mesg:。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count == 1L) {
+    writeOut(home, "is y\n");
+    return finish(home, 0L);
+  }
+  if (count > 2L) {
+    writeErr(home, "mesg: invalid operand\n");
+    return finish(home, 1L);
+  }
+  long at = argPtr(home, 1L);
+  long len = argLen(home, 1L);
+  if (len == 1L && u8(at) == 121L) {
+    return finish(home, 0L);
+  }
+  if (len == 1L && u8(at) == 110L) {
+    writeErr(home, "mesg: terminal messages cannot be disabled\n");
+    return finish(home, 1L);
+  }
+  writeErr(home, "mesg: invalid operand\n");
+  return finish(home, 1L);
+}

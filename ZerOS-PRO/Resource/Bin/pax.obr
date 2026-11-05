@@ -1,0 +1,736 @@
+/* POSIX.1-2017 pax（utilities/pax.html）。形式含 -r、-w、-f、-x 等。
+   选定只实现 ustar，块长 512。头字段：name 100、mode 8、uid 8、gid 8、size 12、
+   mtime 12、checksum 8、typeflag 1、linkname 100、magic ustar 与 NUL、version 00、
+   uname 32、gname 32、devmajor 8、devminor 8、prefix 155。
+   -r 读档案并抽出，-w 把操作数写成档案，-f 指定档案文件；无 -f 时读描述符 0、写描述符 1。
+   -x 只接受 ustar，否则 pax: unsupported format，退出 1。
+   校验和为全部无符号八位组之和，checksum 那 8 个八位组按空格计。
+   普通文件 typeflag 0 或 NUL，目录 5。写时目录先写目录项再递归成员。
+   读时校验和不对写 pax: bad checksum，退出 1。缺 -r 与 -w 写 pax: missing operation，退出 1。
+   同时 -r 与 -w 写 pax: copy mode not supported，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 pax:。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun note(long home, long addr, long count, string suffix): void {
+  writeErr(home, "pax: ");
+  if (count > 0L) {
+    writeSpan(home, addr, count);
+  }
+  writeErr(home, suffix);
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun isUstar(long addr, long len): long {
+  if (len != 5L) {
+    return 0L;
+  }
+  if (u8(addr) != 117L) {
+    return 0L;
+  }
+  if (u8(addr + 8L) != 115L) {
+    return 0L;
+  }
+  if (u8(addr + 16L) != 116L) {
+    return 0L;
+  }
+  if (u8(addr + 24L) != 97L) {
+    return 0L;
+  }
+  if (u8(addr + 32L) != 114L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isDot(long addr, long count): long {
+  if (count == 1L && u8(addr) == 46L) {
+    return 1L;
+  }
+  if (count == 2L && u8(addr) == 46L && u8(addr + 8L) == 46L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun blockAt(long home): long {
+  return obr::proc::bytes(home);
+}
+
+deRfun zeroBlock(long base): void {
+  long index = 0L;
+  while (index < 512L) {
+    memory::storeOctet(0L, base + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun blockZero(long base): long {
+  long index = 0L;
+  while (index < 512L) {
+    if (u8(base + index * 8L) != 0L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun putOctal(long base, long off, long width, long value): void {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long index = width - 2L;
+  while (index >= 0L) {
+    memory::storeOctet(48L + (value % 8L), base + (off + index) * 8L);
+    value = value / 8L;
+    index = index - 1L;
+  }
+  memory::storeOctet(0L, base + (off + width - 1L) * 8L);
+}
+
+deRfun putField(long base, long off, long max, long addr, long len): void {
+  long index = 0L;
+  while (index < max) {
+    long bit = 0L;
+    if (index < len) {
+      bit = u8(addr + index * 8L);
+    }
+    memory::storeOctet(bit, base + (off + index) * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun readOctal(long base, long off, long width): long {
+  long value = 0L;
+  long index = 0L;
+  while (index < width) {
+    long bit = u8(base + (off + index) * 8L);
+    if (bit == 0L || bit == 32L) {
+      index = width;
+    } else if (bit >= 48L && bit <= 55L) {
+      value = value * 8L + (bit - 48L);
+      index = index + 1L;
+    } else {
+      index = index + 1L;
+    }
+  }
+  return value;
+}
+
+deRfun checksumBlock(long base): long {
+  long sum = 0L;
+  long index = 0L;
+  while (index < 512L) {
+    long bit = u8(base + index * 8L);
+    if (index >= 148L && index < 156L) {
+      bit = 32L;
+    }
+    sum = sum + bit;
+    index = index + 1L;
+  }
+  return sum;
+}
+
+deRfun finishChecksum(long base): void {
+  long sum = checksumBlock(base);
+  putOctal(base, 148L, 8L, sum);
+}
+
+deRfun magicOk(long base): long {
+  if (u8(base + 257L * 8L) != 117L) {
+    return 0L;
+  }
+  if (u8(base + 258L * 8L) != 115L) {
+    return 0L;
+  }
+  if (u8(base + 259L * 8L) != 116L) {
+    return 0L;
+  }
+  if (u8(base + 260L * 8L) != 97L) {
+    return 0L;
+  }
+  if (u8(base + 261L * 8L) != 114L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun splitName(long addr, long len, long prefDest, long nameDest, long* prefLen, long* nameLen): void {
+  *prefLen = 0L;
+  *nameLen = len;
+  if (len <= 100L) {
+    copySpan(addr, nameDest, len);
+    return;
+  }
+  long cut = len - 100L;
+  while (cut < len && u8(addr + cut * 8L) != 47L) {
+    cut = cut + 1L;
+  }
+  if (cut >= len) {
+    *nameLen = 100L;
+    copySpan(addr + (len - 100L) * 8L, nameDest, 100L);
+    *prefLen = len - 100L;
+    copySpan(addr, prefDest, *prefLen);
+    return;
+  }
+  *prefLen = cut;
+  copySpan(addr, prefDest, cut);
+  long rest = len - cut - 1L;
+  *nameLen = rest;
+  copySpan(addr + (cut + 1L) * 8L, nameDest, rest);
+}
+
+deRfun writeBlockFd(long home, long fd, long outOff, long base): long {
+  long index = 0L;
+  while (index < 512L) {
+    memory::storeOctet(u8(base + index * 8L), obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (obr::proc::write(home, fd, outOff, 512L) != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun readBlockFd(long home, long fd, long inOff, long base): long {
+  if (obr::proc::read(home, fd, inOff, 512L) != 0L) {
+    return 1L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 512L) {
+    long index = 0L;
+    while (index < 512L) {
+      memory::storeOctet(0L, base + index * 8L);
+      index = index + 1L;
+    }
+    if (n > 0L) {
+      long cursor = 0L;
+      while (cursor < n) {
+        memory::storeOctet(u8(obr::proc::bytes(home) + cursor * 8L), base + cursor * 8L);
+        cursor = cursor + 1L;
+      }
+    }
+    return 0L;
+  }
+  long index = 0L;
+  while (index < 512L) {
+    memory::storeOctet(u8(obr::proc::bytes(home) + index * 8L), base + index * 8L);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun emitHeader(long home, long archiveFd, long* arcOff, long pathAt, long pathLen, long typeFlag, long fileSize, long mode, long uid, long gid, long mtimeSec): long {
+  long base = blockAt(home);
+  zeroBlock(base);
+  long hold = obr::proc::alloc(home, 2048L);
+  if (hold == 0L) {
+    return 1L;
+  }
+  long pref = hold;
+  long name = hold + 1240L;
+  long prefLen = 0L;
+  long nameLen = 0L;
+  splitName(pathAt, pathLen, pref, name, &prefLen, &nameLen);
+  putField(base, 0L, 100L, name, nameLen);
+  putOctal(base, 100L, 8L, mode);
+  putOctal(base, 108L, 8L, uid);
+  putOctal(base, 116L, 8L, gid);
+  putOctal(base, 124L, 12L, fileSize);
+  putOctal(base, 136L, 12L, mtimeSec);
+  memory::storeOctet(32L, base + 148L * 8L);
+  long ck = 0L;
+  while (ck < 8L) {
+    memory::storeOctet(32L, base + (148L + ck) * 8L);
+    ck = ck + 1L;
+  }
+  memory::storeOctet(typeFlag, base + 156L * 8L);
+  memory::storeOctet(117L, base + 257L * 8L);
+  memory::storeOctet(115L, base + 258L * 8L);
+  memory::storeOctet(116L, base + 259L * 8L);
+  memory::storeOctet(97L, base + 260L * 8L);
+  memory::storeOctet(114L, base + 261L * 8L);
+  memory::storeOctet(48L, base + 263L * 8L);
+  memory::storeOctet(48L, base + 264L * 8L);
+  putField(base, 345L, 155L, pref, prefLen);
+  finishChecksum(base);
+  long status = writeBlockFd(home, archiveFd, *arcOff, base);
+  obr::proc::free(home, hold, 2048L);
+  if (status != 0L) {
+    return 1L;
+  }
+  *arcOff = *arcOff + 512L;
+  return 0L;
+}
+
+deRfun copyFileData(long home, long readFd, long archiveFd, long* arcOff, long size): long {
+  long left = size;
+  long srcOff = 0L;
+  while (left > 0L) {
+    long chunk = left;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::read(home, readFd, srcOff, chunk) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      return 1L;
+    }
+    if (obr::proc::write(home, archiveFd, *arcOff, n) != 0L) {
+      return 1L;
+    }
+    *arcOff = *arcOff + n;
+    srcOff = srcOff + n;
+    left = left - n;
+  }
+  long pad = (512L - (size % 512L)) % 512L;
+  if (pad > 0L) {
+    zeroBlock(blockAt(home));
+    long index = 0L;
+    while (index < pad) {
+      memory::storeOctet(0L, obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (obr::proc::write(home, archiveFd, *arcOff, pad) != 0L) {
+      return 1L;
+    }
+    *arcOff = *arcOff + pad;
+  }
+  return 0L;
+}
+
+deRfun archivePath(long home, long archiveFd, long* arcOff, long pathAt, long pathLen, long depth): long {
+  if (depth > 32L) {
+    return 1L;
+  }
+  if (pathLen < 1L || pathLen > 8192L) {
+    return 1L;
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::stat(home) != 0L) {
+    return 1L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  long size = obr::proc::slot(home, 192L);
+  long mode = obr::proc::slot(home, 256L);
+  long uid = obr::proc::slot(home, 320L);
+  long gid = obr::proc::slot(home, 384L);
+  long modify = obr::proc::slot(home, 576L);
+  long mtimeSec = modify / 1000L;
+  if (isDir(kind) == 1L) {
+    if (emitHeader(home, archiveFd, arcOff, pathAt, pathLen, 53L, 0L, mode, uid, gid, mtimeSec) != 0L) {
+      return 1L;
+    }
+    long dent = 0L;
+    while (dent >= 0L) {
+      plant(home, pathAt, pathLen);
+      long listed = obr::proc::readdir(home, dent, 512L);
+      if (listed == 2L) {
+        dent = -1L;
+      } else if (listed != 0L) {
+        return 1L;
+      } else {
+        long nameLen = obr::proc::slot(home, 256L);
+        if (nameLen < 1L) {
+          dent = -1L;
+        } else {
+          long nameAt = obr::proc::bytes(home);
+          if (isDot(nameAt, nameLen) == 0L) {
+            long joinHold = obr::proc::alloc(home, 65536L);
+            if (joinHold == 0L) {
+              return 1L;
+            }
+            long out = joinHold;
+            long total = pathLen + 1L + nameLen;
+            if (total > 8192L) {
+              obr::proc::free(home, joinHold, 65536L);
+              return 1L;
+            }
+            copySpan(pathAt, out, pathLen);
+            memory::storeOctet(47L, out + pathLen * 8L);
+            copySpan(nameAt, out + (pathLen + 1L) * 8L, nameLen);
+            if (archivePath(home, archiveFd, arcOff, out, total, depth + 1L) != 0L) {
+              obr::proc::free(home, joinHold, 65536L);
+              return 1L;
+            }
+            obr::proc::free(home, joinHold, 65536L);
+          }
+          dent = dent + 1L;
+        }
+      }
+    }
+    return 0L;
+  }
+  if (emitHeader(home, archiveFd, arcOff, pathAt, pathLen, 0L, size, mode, uid, gid, mtimeSec) != 0L) {
+    return 1L;
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    return 1L;
+  }
+  long readFd = obr::proc::slot(home, 192L);
+  long status = copyFileData(home, readFd, archiveFd, arcOff, size);
+  if (readFd > 2L) {
+    obr::proc::close(home, readFd);
+  }
+  return status;
+}
+
+deRfun writeArchive(long home, long archiveFd, long argStart): long {
+  long arcOff = 0L;
+  long count = argc(home);
+  long index = argStart;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (archivePath(home, archiveFd, &arcOff, at, len, 1L) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  zeroBlock(blockAt(home));
+  if (writeBlockFd(home, archiveFd, arcOff, blockAt(home)) != 0L) {
+    return 1L;
+  }
+  arcOff = arcOff + 512L;
+  if (writeBlockFd(home, archiveFd, arcOff, blockAt(home)) != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun joinExtractName(long home, long base, long* outAt, long* outLen): void {
+  long prefLen = 0L;
+  long index = 345L;
+  while (index < 500L) {
+    long bit = u8(base + index * 8L);
+    if (bit == 0L) {
+      index = 500L;
+    } else {
+      prefLen = prefLen + 1L;
+      index = index + 1L;
+    }
+  }
+  long nameLen = 0L;
+  index = 0L;
+  while (index < 100L) {
+    long bit = u8(base + index * 8L);
+    if (bit == 0L) {
+      index = 100L;
+    } else {
+      nameLen = nameLen + 1L;
+      index = index + 1L;
+    }
+  }
+  long hold = obr::proc::alloc(home, 8192L);
+  if (hold == 0L) {
+    *outAt = 0L;
+    *outLen = 0L;
+    return;
+  }
+  long cursor = 0L;
+  if (prefLen > 0L) {
+    index = 0L;
+    while (index < prefLen) {
+      memory::storeOctet(u8(base + (345L + index) * 8L), hold + cursor * 8L);
+      cursor = cursor + 1L;
+      index = index + 1L;
+    }
+    memory::storeOctet(47L, hold + cursor * 8L);
+    cursor = cursor + 1L;
+  }
+  index = 0L;
+  while (index < nameLen) {
+    memory::storeOctet(u8(base + index * 8L), hold + cursor * 8L);
+    cursor = cursor + 1L;
+    index = index + 1L;
+  }
+  *outAt = hold;
+  *outLen = cursor;
+}
+
+deRfun extractRegular(long home, long archiveFd, long* arcOff, long base, long size): long {
+  long pathAt = 0L;
+  long pathLen = 0L;
+  joinExtractName(home, base, &pathAt, &pathLen);
+  if (pathLen < 1L || pathAt == 0L) {
+    if (pathAt != 0L) {
+      obr::proc::free(home, pathAt, 8192L);
+    }
+    return 1L;
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    obr::proc::free(home, pathAt, 8192L);
+    return 1L;
+  }
+  long outFd = obr::proc::slot(home, 192L);
+  long outOff = 0L;
+  long left = size;
+  while (left > 0L) {
+    long chunk = left;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::read(home, archiveFd, *arcOff, chunk) != 0L) {
+      obr::proc::free(home, pathAt, 8192L);
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      obr::proc::free(home, pathAt, 8192L);
+      return 1L;
+    }
+    if (obr::proc::write(home, outFd, outOff, n) != 0L) {
+      obr::proc::free(home, pathAt, 8192L);
+      return 1L;
+    }
+    *arcOff = *arcOff + n;
+    outOff = outOff + n;
+    left = left - n;
+  }
+  long pad = (512L - (size % 512L)) % 512L;
+  *arcOff = *arcOff + pad;
+  if (outFd > 2L) {
+    obr::proc::close(home, outFd);
+  }
+  obr::proc::free(home, pathAt, 8192L);
+  return 0L;
+}
+
+deRfun extractDir(long home, long base): long {
+  long pathAt = 0L;
+  long pathLen = 0L;
+  joinExtractName(home, base, &pathAt, &pathLen);
+  if (pathLen < 1L || pathAt == 0L) {
+    if (pathAt != 0L) {
+      obr::proc::free(home, pathAt, 8192L);
+    }
+    return 1L;
+  }
+  plant(home, pathAt, pathLen);
+  long status = obr::proc::mkdir(home);
+  obr::proc::free(home, pathAt, 8192L);
+  if (status != 0L && status != 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun readArchive(long home, long archiveFd): long {
+  long arcOff = 0L;
+  long zeros = 0L;
+  long base = blockAt(home);
+  while (zeros < 2L) {
+    if (readBlockFd(home, archiveFd, arcOff, base) != 0L) {
+      return 1L;
+    }
+    if (blockZero(base) == 1L) {
+      zeros = zeros + 1L;
+      arcOff = arcOff + 512L;
+    } else {
+      zeros = 0L;
+      if (magicOk(base) == 0L) {
+        writeErr(home, "pax: unsupported format\n");
+        return 1L;
+      }
+      long expect = readOctal(base, 148L, 8L);
+      long got = checksumBlock(base);
+      if (expect != got) {
+        writeErr(home, "pax: bad checksum\n");
+        return 1L;
+      }
+      long size = readOctal(base, 124L, 12L);
+      long typeFlag = u8(base + 156L * 8L);
+      arcOff = arcOff + 512L;
+      if (typeFlag == 53L) {
+        if (extractDir(home, base) != 0L) {
+          return 1L;
+        }
+      } else if (typeFlag == 0L || typeFlag == 48L) {
+        if (extractRegular(home, archiveFd, &arcOff, base, size) != 0L) {
+          return 1L;
+        }
+      } else {
+        long skip = size + (512L - (size % 512L)) % 512L;
+        arcOff = arcOff + skip;
+      }
+    }
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long modeRead = 0L;
+  long modeWrite = 0L;
+  long hasFile = 0L;
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long formatOkFlag = 1L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len > 0L && u8(at) == 45L) {
+      if (len == 1L) {
+        writeErr(home, "pax: invalid option\n");
+        return finish(home, 1L);
+      }
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 114L) {
+          modeRead = 1L;
+        } else if (bit == 119L) {
+          modeWrite = 1L;
+        } else if (bit == 102L) {
+          if (cursor + 1L < len) {
+            writeErr(home, "pax: invalid option\n");
+            return finish(home, 1L);
+          }
+          index = index + 1L;
+          if (index >= count) {
+            writeErr(home, "pax: invalid option\n");
+            return finish(home, 1L);
+          }
+          hasFile = 1L;
+          fileAt = argPtr(home, index);
+          fileLen = argLen(home, index);
+          cursor = len;
+        } else if (bit == 120L) {
+          if (cursor + 1L < len) {
+            writeErr(home, "pax: invalid option\n");
+            return finish(home, 1L);
+          }
+          index = index + 1L;
+          if (index >= count) {
+            writeErr(home, "pax: unsupported format\n");
+            return finish(home, 1L);
+          }
+          long fmtAt = argPtr(home, index);
+          long fmtLen = argLen(home, index);
+          if (isUstar(fmtAt, fmtLen) == 0L) {
+            writeErr(home, "pax: unsupported format\n");
+            return finish(home, 1L);
+          }
+          formatOkFlag = 1L;
+          cursor = len;
+        } else {
+          writeErr(home, "pax: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (modeRead == 0L && modeWrite == 0L) {
+    writeErr(home, "pax: missing operation\n");
+    return finish(home, 1L);
+  }
+  if (modeRead == 1L && modeWrite == 1L) {
+    writeErr(home, "pax: copy mode not supported\n");
+    return finish(home, 1L);
+  }
+  long archiveFd = 0L;
+  if (hasFile == 1L) {
+    plant(home, fileAt, fileLen);
+    long flags = 0L;
+    if (modeWrite == 1L) {
+      flags = 1L;
+    }
+    if (obr::proc::open(home, flags) != 0L) {
+      writeErr(home, "pax: cannot open archive\n");
+      return finish(home, 1L);
+    }
+    archiveFd = obr::proc::slot(home, 192L);
+  } else if (modeWrite == 1L) {
+    archiveFd = 1L;
+  } else {
+    archiveFd = 0L;
+  }
+  if (modeWrite == 1L) {
+    if (index >= count) {
+      writeErr(home, "pax: missing operand\n");
+      return finish(home, 1L);
+    }
+    if (writeArchive(home, archiveFd, index) != 0L) {
+      writeErr(home, "pax: write error\n");
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  if (readArchive(home, archiveFd) != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

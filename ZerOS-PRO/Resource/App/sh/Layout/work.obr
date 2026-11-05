@@ -1,0 +1,15 @@
+/* 工作区布局。当前目录长度、目录正文、上一屏的列数。
+   不读键盘，不写屏幕，也不碰进程服务。 */
+import work;
+
+deRfun cwdLenAt(long work): long {
+  return work;
+}
+
+deRfun cwdAt(long work): long {
+  return work + 64L;
+}
+
+deRfun prevAt(long work): long {
+  return work + 28736L;
+}

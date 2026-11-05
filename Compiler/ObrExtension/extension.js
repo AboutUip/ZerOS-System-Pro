@@ -24,6 +24,14 @@ const KEYWORDS = [
   "struct",
   "enum",
   "class",
+  "interface",
+  "implements",
+  "const",
+  "switch",
+  "case",
+  "default",
+  "fallthrough",
+  "in",
   "new",
   "goto",
   "break",
@@ -321,7 +329,8 @@ function parseFunctionHeadsWithLine(text) {
       fullName: sym.fullName,
       signature: sym.signature,
       ending: sym.ending,
-      line: sym.line
+      line: sym.line,
+      inInterface: sym.inInterface === true
     }));
 }
 
@@ -430,7 +439,8 @@ function buildFunctionCompletionItem(sym) {
   );
 
   const snippet = new vscode.SnippetString();
-  snippet.appendText(`${sym.fullName}(`);
+  // 类/接口方法写成 `obj.method(...)`：插入短名，不插 `Class::method`（那是编译器报错用的限定名）。
+  snippet.appendText(`${sym.owner ? sym.shortName : sym.fullName}(`);
   sym.params.forEach((p, index) => {
     if (index > 0) snippet.appendText(", ");
     snippet.appendPlaceholder(p.name || `arg${index + 1}`);
@@ -610,9 +620,10 @@ function collectDiagnosticsForDocument(document, index) {
     }
   }
 
-  // Rule 3: .obr should implement (end with '{').
+  // Rule 3: .obr should implement (end with '{')。#VERSION 2 的接口方法声明以 ';' 结束，是合法声明。
   if (ext === ".obr") {
     for (const h of heads) {
+      if (h.inInterface) continue;
       if (h.ending !== "{") {
         const lineText = lines[h.line] || "";
         const range = new vscode.Range(
@@ -760,6 +771,9 @@ function symbolLabel(sym) {
   if (sym.kind === "enum") return "枚举";
   if (sym.kind === "enumValue") return "枚举值";
   if (sym.kind === "struct") return "结构体";
+  if (sym.kind === "class") return "类";
+  if (sym.kind === "interface") return "接口";
+  if (sym.owner) return "方法";
   return "函数";
 }
 

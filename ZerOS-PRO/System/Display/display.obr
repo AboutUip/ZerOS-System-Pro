@@ -1,0 +1,19 @@
+/* 显示程序。在宿主显示器的节拍上，先把控制台环里的字节收成格子，再请求呈现。
+   格子的实现仍由监督核执行。这一份决定这一拍画不画。
+   客核心不能发显卡。收格子是服务 40，呈现是服务 39。 */
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  while (1) {
+    long epoch = obr::proc::frameWait(home);
+    if (epoch < 0L) {
+      obr::os::yield();
+    } else {
+      obr::proc::feed(home);
+      obr::proc::present(home);
+    }
+  }
+  return 0;
+}

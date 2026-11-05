@@ -2,17 +2,15 @@
    -- 结束选项；第一个不是选项的参数也结束选项，后面的 -u 是文件名。
    没有文件，或文件是单独一个 -，就读标准输入，并且不关闭描述符 0。
    打开失败写到标准错误，继续后面的文件，已经写出的内容留着，最后以 1 退出。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

@@ -1,0 +1,18 @@
+/* 标准输出流。只追加，不画画面，不订阅帧，不写诊断。
+   缓冲在库里，最多 4096 个八位组。
+   换行、缓冲满、flush，或宿主帧序号和上次记下的不同，就把已有字节写到描述符 1。
+   已经写到描述符上的字节由父任务的管道或重定向拿走。 */
+namespace obr {
+namespace print {
+/* from 起 count 个八位组，相邻隔 8 位。返回 0 是成功。 */
+deRfun out(long home, long from, long count): long;
+/* 追加一个八位组。 */
+deRfun byte(long home, long octet): long;
+/* 追加字符串。每个单位按八位组写入。 */
+deRfun text(long home, string text): long;
+/* 把同一个八位组追加 count 次。 */
+deRfun fill(long home, long octet, long count): long;
+/* 把还留在库里的字节写到描述符 1。 */
+deRfun flush(long home): long;
+}
+}

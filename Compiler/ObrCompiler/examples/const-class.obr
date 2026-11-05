@@ -1,0 +1,33 @@
+/* Plan 1：const 类聚合字面量和静态对象初始化。结果 0。 */
+class Point {
+  int x;
+  int y;
+  deRfun sum(): int {
+    return x + y;
+  }
+}
+
+class Label {
+  string text;
+}
+
+const Point ORIGIN = Point { x = 3, y = 4 };
+const Label TITLE = Label { text = "ok" };
+
+deRfun main(): int {
+  if (ORIGIN.x != 3) return 1;
+  if (ORIGIN.y != 4) return 2;
+  if (ORIGIN.sum() != 7) return 3;
+
+  var[Point] copy = ORIGIN;
+  if (copy.x != 3) return 4;
+
+  Point live = new Point();
+  live.x = 9;
+  live.y = 10;
+  if (ORIGIN.x != 3) return 5;
+  if (ORIGIN.sum() != 7) return 6;
+  if (length(TITLE.text) != 2) return 7;
+  if (TITLE.text[1] != 'k') return 8;
+  return 0;
+}

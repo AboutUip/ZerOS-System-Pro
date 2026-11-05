@@ -4,7 +4,8 @@
  *
  * 入口是 -slot 2 的原生映像。会装到核心 4 至 7 的程序是 -pie -slot 0。
  * Resource/Bin 里带 main 的每个 .obr 编成 /bin/同名文件，并链上 arg.obr 与 obr.proc.obr。
- * Resource/App 的每个子目录是一个程序：带 main 的那份是入口，同目录其余 .obr 链进去。
+ * obr.print、obr.oct、obr.path、obr.line 分别编成 /lib 下的同名 .zdll，不链进这些程序。
+ * Resource/App 的每个子目录是一个程序：带 main 的那份是入口，目录树里其余 .obr 都链进去。
  * sh 的客路径仍是 /os/sh。其它程序写成 /app/目录名。*-check.obr 只在宿主编过，不装进客根。
  * 不写 .zap。编完再跑 provision.mjs，已有的 /boot/display 和 /boot/debug 不覆盖。
  * 默认不生成 .debug；需要 B2 源行映射时显式加 --debug-maps。
@@ -83,41 +84,71 @@ compile(
     path.resolve(kernel, "Fs/pipe.obr"),
     path.resolve(kernel, "Fs/dev.obr"),
     path.resolve(kernel, "Fs/console.obr"),
+    path.resolve(kernel, "Fs/frame.obr"),
     path.resolve(kernel, "Fs/comm.obr"),
     path.resolve(kernel, "Exec/exec.obr"),
     path.resolve(kernel, "Exec/boot.obr"),
     path.resolve(kernel, "Exec/spawn.obr"),
+    path.resolve(product, "System/Loader/loader.obr"),
     path.resolve(kernel, "Font/font.obr"),
     path.resolve(kernel, "Text/utf8.obr"),
     path.resolve(kernel, "Test/suite.obr"),
     path.resolve(lib, "obr.nas.obr"),
   ],
   path.resolve(root, "kernel/start"),
-  [...(debugMaps ? ["-debug"] : []), "-slot", "2", ...kernelIncludes.flatMap((dir) => ["-I", dir]), "-I", memory, "-I", board],
+  [...(debugMaps ? ["-debug"] : []), "-slot", "2", ...kernelIncludes.flatMap((dir) => ["-I", dir]), "-I", path.resolve(product, "System/Loader"), "-I", memory, "-I", board],
 );
 
 const userIncludes = ["-pie", "-slot", "0", "-I", memory, "-I", board];
 const proc = path.resolve(lib, "obr.proc.obr");
 const text = path.resolve(lib, "obr.text.obr");
+const base = path.resolve(lib, "obr.base.obr");
 
 compile(
   [path.resolve(product, "System/Init/init.obr"), proc, text],
   path.resolve(root, "kernel/init"),
   userIncludes,
 );
+function walkFiles(dir, out) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkFiles(full, out);
+    } else if (entry.isFile()) {
+      out.push(full);
+    }
+  }
+}
+
+function includeArgs(dir) {
+  const dirs = [];
+  function visit(current) {
+    dirs.push(current);
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        visit(path.resolve(current, entry.name));
+      }
+    }
+  }
+  visit(dir);
+  return dirs.flatMap((item) => ["-I", item]);
+}
+
 const appRoot = path.resolve(product, "Resource/App");
+const guestLibs = ["obr.line.obr", "obr.path.obr", "obr.oct.obr"].map((name) => path.resolve(lib, name));
 for (const entry of fs.readdirSync(appRoot, { withFileTypes: true })) {
   if (!entry.isDirectory()) {
     continue;
   }
   const dir = path.resolve(appRoot, entry.name);
-  const obrs = fs.readdirSync(dir).filter((name) => name.endsWith(".obr"));
-  const checks = obrs.filter((name) => name.endsWith("-check.obr"));
-  const bodies = obrs.filter((name) => !name.endsWith("-check.obr"));
+  const files = [];
+  walkFiles(dir, files);
+  const obrs = files.filter((full) => full.endsWith(".obr"));
+  const checks = obrs.filter((full) => path.basename(full).endsWith("-check.obr"));
+  const bodies = obrs.filter((full) => !path.basename(full).endsWith("-check.obr"));
   let mainFile = null;
   const extras = [];
-  for (const name of bodies) {
-    const full = path.resolve(dir, name);
+  for (const full of bodies) {
     const source = fs.readFileSync(full, "utf8");
     if (source.includes("deRfun main")) {
       if (mainFile !== null) {
@@ -131,15 +162,15 @@ for (const entry of fs.readdirSync(appRoot, { withFileTypes: true })) {
   if (mainFile !== null) {
     const guest = entry.name === "sh" ? path.resolve(root, "os/sh") : path.resolve(root, "app", entry.name);
     const debug = debugMaps && entry.name === "sh" ? ["-debug"] : [];
-    compile([mainFile, ...extras, proc], guest, [...debug, ...userIncludes, "-I", dir]);
+    compile([mainFile, ...extras, proc], guest, [...debug, ...userIncludes, ...includeArgs(dir)]);
   }
-  for (const name of checks) {
+  for (const full of checks) {
     const checkDir = fs.mkdtempSync(path.join(os.tmpdir(), "zeros-app-"));
     try {
       compile(
-        [path.resolve(dir, name), ...extras],
-        path.resolve(checkDir, name.slice(0, -4)),
-        ["-I", dir, "-I", memory],
+        [full, ...extras, ...guestLibs],
+        path.resolve(checkDir, path.basename(full).slice(0, -4)),
+        [...includeArgs(dir), "-I", memory],
       );
     } finally {
       fs.rmSync(checkDir, { recursive: true, force: true });
@@ -147,8 +178,13 @@ for (const entry of fs.readdirSync(appRoot, { withFileTypes: true })) {
   }
 }
 compile(
-  [path.resolve(product, "System/Session/session.obr"), proc],
+  [path.resolve(product, "System/Session/session.obr"), proc, text],
   path.resolve(root, "os/session"),
+  userIncludes,
+);
+compile(
+  [path.resolve(product, "System/Display/display.obr"), proc],
+  path.resolve(root, "os/display"),
   userIncludes,
 );
 compile(
@@ -162,6 +198,19 @@ compile(
   userIncludes,
 );
 
+compile(
+  [path.resolve(lib, "obr.print.obr"), proc],
+  path.resolve(root, "lib/obr.print"),
+  ["-shared", "-slot", "0", "-I", memory, "-I", board],
+);
+for (const name of ["obr.oct", "obr.path", "obr.line"]) {
+  compile(
+    [path.resolve(lib, `${name}.obr`)],
+    path.resolve(root, "lib", name),
+    ["-shared", "-slot", "0", "-I", memory, "-I", board],
+  );
+}
+
 const bin = path.resolve(product, "Resource/Bin");
 const arg = path.resolve(bin, "arg.obr");
 const names = fs.readdirSync(bin).filter((name) => name.endsWith(".obr") && name !== "arg.obr");
@@ -171,8 +220,15 @@ for (const name of names) {
     continue;
   }
   const guest = name.slice(0, -4);
+  const extra = [];
+  if (source.includes("import obr.text")) {
+    extra.push(text);
+  }
+  if (source.includes("import obr.base")) {
+    extra.push(base);
+  }
   compile(
-    [path.resolve(bin, name), arg, proc],
+    [path.resolve(bin, name), arg, proc, ...extra],
     path.resolve(root, "bin", guest),
     [...userIncludes, "-I", bin],
   );

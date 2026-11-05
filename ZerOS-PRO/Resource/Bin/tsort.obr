@@ -1,0 +1,378 @@
+/* POSIX.1-2017 tsort（utilities/tsort.html）。形式是 tsort [file]。
+   从标准输入或至多一个文件读成对的前趣关系：每行两个词，空白分开。
+   空行跳过。只有一词的行忽略。输出一个全序，使每个对里第一个词都在第二个词前面。
+   有环写 tsort: cycle in data 到描述符 2，退出 1。
+   没有输入或打不开文件 tsort: 原因，退出 1。
+   词和边数各不超过 512，超出 tsort: input too large，退出 1。
+   单行不含换行超过 512 写 tsort: line too long，退出 1。
+   每个词占三个字：起点、长度、入度。堆只够放下这些表。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun nodeMax(): long {
+  return 512L;
+}
+
+deRfun edgeMax(): long {
+  return 512L;
+}
+
+deRfun lineMax(): long {
+  return 512L;
+}
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun die(long home, string text): void {
+  writeErr(home, text);
+  obr::proc::exit(home, 1L);
+}
+
+deRfun isSpace(long bit): long {
+  if (bit == 32L || bit == 9L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun nodeStride(): long {
+  return 192L;
+}
+
+deRfun edgeStride(): long {
+  return 128L;
+}
+
+deRfun nodeOff(long nodes, long id): long {
+  return memory::load64(nodes + id * nodeStride());
+}
+
+deRfun nodeLen(long nodes, long id): long {
+  return memory::load64(nodes + id * nodeStride() + 64L);
+}
+
+deRfun nodeIn(long nodes, long id): long {
+  return memory::load64(nodes + id * nodeStride() + 64L * 2L);
+}
+
+deRfun setNodeIn(long nodes, long id, long value): void {
+  memory::store64(value, nodes + id * nodeStride() + 64L * 2L);
+}
+
+deRfun findNode(long nodes, long nodeCount, long addr, long len): long {
+  long index = 0L;
+  while (index < nodeCount) {
+    long off = nodeOff(nodes, index);
+    long nlen = nodeLen(nodes, index);
+    if (nlen == len) {
+      long same = 1L;
+      long cursor = 0L;
+      while (same == 1L && cursor < len) {
+        if (u8(addr + cursor * 8L) != u8(off + cursor * 8L)) {
+          same = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (same == 1L) {
+        return index;
+      }
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun addNode(long home, long nodes, long* nodeCount, long body, long* bodyLen, long addr, long len): long {
+  long found = findNode(nodes, *nodeCount, addr, len);
+  if (found >= 0L) {
+    return found;
+  }
+  if (*nodeCount >= nodeMax()) {
+    die(home, "tsort: input too large\n");
+    return 0L;
+  }
+  if (*bodyLen + len > lineMax() * nodeMax()) {
+    die(home, "tsort: input too large\n");
+    return 0L;
+  }
+  long id = *nodeCount;
+  memory::store64(body + *bodyLen * 8L, nodes + id * nodeStride());
+  memory::store64(len, nodes + id * nodeStride() + 64L);
+  memory::store64(0L, nodes + id * nodeStride() + 64L * 2L);
+  copySpan(addr, body + *bodyLen * 8L, len);
+  *bodyLen = *bodyLen + len;
+  *nodeCount = *nodeCount + 1L;
+  return id;
+}
+
+deRfun addEdge(long home, long nodes, long edges, long* edgeCount, long from, long to): void {
+  if (*edgeCount >= edgeMax()) {
+    die(home, "tsort: input too large\n");
+    return;
+  }
+  memory::store64(from, edges + *edgeCount * edgeStride());
+  memory::store64(to, edges + *edgeCount * edgeStride() + 64L);
+  *edgeCount = *edgeCount + 1L;
+  setNodeIn(nodes, to, nodeIn(nodes, to) + 1L);
+}
+
+deRfun emitLine(long home, long* outAt, long addr, long len): void {
+  long pending = len + 1L;
+  long offset = 0L;
+  while (offset < len) {
+    long chunk = len - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      die(home, "tsort: write error\n");
+      return;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      die(home, "tsort: write error\n");
+      return;
+    }
+    *outAt = *outAt + wrote;
+    offset = offset + chunk;
+  }
+  memory::storeOctet(10L, obr::proc::bytes(home));
+  if (obr::proc::write(home, 1L, *outAt, 1L) != 0L) {
+    die(home, "tsort: write error\n");
+    return;
+  }
+  *outAt = *outAt + 1L;
+}
+
+deRfun parseLine(long home, long nodes, long* nodeCount, long body, long* bodyLen, long edges, long* edgeCount, long line, long lineLen): void {
+  if (lineLen == 0L) {
+    return;
+  }
+  long cursor = 0L;
+  while (cursor < lineLen && isSpace(u8(line + cursor * 8L)) == 1L) {
+    cursor = cursor + 1L;
+  }
+  if (cursor >= lineLen) {
+    return;
+  }
+  long w1Start = cursor;
+  while (cursor < lineLen && isSpace(u8(line + cursor * 8L)) == 0L) {
+    cursor = cursor + 1L;
+  }
+  long w1Len = cursor - w1Start;
+  while (cursor < lineLen && isSpace(u8(line + cursor * 8L)) == 1L) {
+    cursor = cursor + 1L;
+  }
+  if (cursor >= lineLen) {
+    return;
+  }
+  long w2Start = cursor;
+  while (cursor < lineLen && isSpace(u8(line + cursor * 8L)) == 0L) {
+    cursor = cursor + 1L;
+  }
+  long w2Len = cursor - w2Start;
+  long id1 = addNode(home, nodes, nodeCount, body, bodyLen, line + w1Start * 8L, w1Len);
+  long id2 = addNode(home, nodes, nodeCount, body, bodyLen, line + w2Start * 8L, w2Len);
+  addEdge(home, nodes, edges, edgeCount, id1, id2);
+}
+
+deRfun feed(long home, long fd, long nodes, long* nodeCount, long body, long* bodyLen, long edges, long* edgeCount): void {
+  long hold = obr::proc::alloc(home, lineMax() * 8L);
+  long holdLen = 0L;
+  long offset = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      die(home, "tsort: read error\n");
+      return;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      die(home, "tsort: read error\n");
+      return;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long index = 0L;
+      while (index < n) {
+        long bit = u8(obr::proc::bytes(home) + index * 8L);
+        if (bit == 10L) {
+          parseLine(home, nodes, nodeCount, body, bodyLen, edges, edgeCount, hold, holdLen);
+          holdLen = 0L;
+        } else {
+          if (holdLen >= lineMax()) {
+            die(home, "tsort: line too long\n");
+            return;
+          }
+          memory::storeOctet(bit, hold + holdLen * 8L);
+          holdLen = holdLen + 1L;
+        }
+        index = index + 1L;
+      }
+      offset = offset + n;
+    }
+  }
+  if (holdLen > 0L) {
+    parseLine(home, nodes, nodeCount, body, bodyLen, edges, edgeCount, hold, holdLen);
+  }
+}
+
+deRfun sortOut(long home, long nodes, long nodeCount, long edges, long edgeCount, long body): void {
+  long queue = obr::proc::alloc(home, nodeMax() * 64L);
+  long qHead = 0L;
+  long qTail = 0L;
+  long index = 0L;
+  while (index < nodeCount) {
+    if (nodeIn(nodes, index) == 0L) {
+      memory::store64(index, queue + qTail * 64L);
+      qTail = qTail + 1L;
+    }
+    index = index + 1L;
+  }
+  long outAt = 0L;
+  long emitted = 0L;
+  while (qHead < qTail) {
+    long id = memory::load64(queue + qHead * 64L);
+    qHead = qHead + 1L;
+    emitLine(home, &outAt, nodeOff(nodes, id), nodeLen(nodes, id));
+    emitted = emitted + 1L;
+    long edge = 0L;
+    while (edge < edgeCount) {
+      if (memory::load64(edges + edge * edgeStride()) == id) {
+        long to = memory::load64(edges + edge * edgeStride() + 64L);
+        long left = nodeIn(nodes, to) - 1L;
+        setNodeIn(nodes, to, left);
+        if (left == 0L) {
+          memory::store64(to, queue + qTail * 64L);
+          qTail = qTail + 1L;
+        }
+      }
+      edge = edge + 1L;
+    }
+  }
+  if (emitted != nodeCount) {
+    die(home, "tsort: cycle in data\n");
+    return;
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long total = argc(home);
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long hasFile = 0L;
+  if (index < total) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len >= 1L && u8(at) != 45L) {
+      fileAt = at;
+      fileLen = len;
+      hasFile = 1L;
+      index = index + 1L;
+    }
+  }
+  if (index < total) {
+    die(home, "tsort: too many arguments\n");
+    return 0;
+  }
+  long fd = 0L;
+  long opened = 0L;
+  if (hasFile == 1L) {
+    if (fileLen > 8192L) {
+      writeErr(home, "tsort: ");
+      writeErrSpan(home, fileAt, fileLen);
+      writeErr(home, ": No such file or directory\n");
+      return finish(home, 1L);
+    }
+    plant(home, fileAt, fileLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "tsort: ");
+      writeErrSpan(home, fileAt, fileLen);
+      writeErr(home, ": No such file or directory\n");
+      return finish(home, 1L);
+    }
+    fd = obr::proc::slot(home, 192L);
+    opened = 1L;
+  }
+  long nodes = obr::proc::alloc(home, nodeMax() * nodeStride());
+  long edges = obr::proc::alloc(home, edgeMax() * edgeStride());
+  long body = obr::proc::alloc(home, lineMax() * nodeMax() * 8L);
+  if (nodes == 0L || edges == 0L || body == 0L) {
+    die(home, "tsort: out of memory\n");
+    return 0;
+  }
+  long nodeCount = 0L;
+  long edgeCount = 0L;
+  long bodyLen = 0L;
+  feed(home, fd, nodes, &nodeCount, body, &bodyLen, edges, &edgeCount);
+  if (opened == 1L && fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  sortOut(home, nodes, nodeCount, edges, edgeCount, body);
+  return finish(home, 0L);
+}

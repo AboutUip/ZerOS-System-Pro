@@ -1,9 +1,16 @@
 /* 1 号拉起的会话。用 -pie -slot 0 编译，放到 /os/session。
-   加载画面由固件画。这里只核对布局，再在自己的堆里留下一块资源，然后空转。
-   不再写控制台，也不发显卡。 */
+   先拉起显示程序，再拉起 /os/sh。没有那份就跳过。
+   然后空转。不写控制台，也不发显卡。显示策略留在显示程序里。 */
 import obr.os;
 import obr.proc;
+import obr.text;
 import obr.ui;
+
+deRfun launch(long home, string path): void {
+  if (obr::text::put(obr::proc::path(home), path) == 0L) {
+    obr::proc::spawn(home, 0L);
+  }
+}
 
 deRfun main(): int {
   long bar = obr::ui::title(16L);
@@ -15,8 +22,10 @@ deRfun main(): int {
     bar = 0L;
   }
   long home = obr::proc::home();
-  long block = obr::proc::alloc(home, 4096L);
-  while (block >= 0L) {
+  launch(home, "/os/display");
+  launch(home, "/os/sh");
+  obr::proc::alloc(home, 4096L);
+  while (1) {
     obr::os::core();
   }
   return 0;

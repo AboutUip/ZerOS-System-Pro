@@ -79,6 +79,7 @@ int main(int argc, char** argv) {
     std::string output;
     std::vector<std::string> includes;
     int slot = 0;
+    int languageVersion = 2;
     bool shared = false;
     bool pie = false;
     bool writeZap = false;
@@ -109,6 +110,12 @@ int main(int argc, char** argv) {
         includes.push_back(argv[++index]);
         continue;
       }
+      if (arg == "-version" && index + 1 < argc) {
+        const std::string text = argv[++index];
+        if (text != "1" && text != "2") obr::fail("-version 只接受 1 或 2");
+        languageVersion = text == "2" ? 2 : 1;
+        continue;
+      }
       if (arg == "-slot" && index + 1 < argc) {
         const std::string text = argv[++index];
         slot = 0;
@@ -123,10 +130,12 @@ int main(int argc, char** argv) {
       inputs.push_back(arg);
     }
     if (inputs.empty() || output.empty()) {
-      std::cerr << "用法: obrc 文件.obr [更多.obr ...] [-I 头文件目录 ...] [-slot 核心号] [-shared] [-pie] [-zap] [-debug] -o 程序\n";
+      std::cerr << "用法: obrc 文件.obr [更多.obr ...] [-I 头文件目录 ...] [-version 1|2] [-slot 核心号] [-shared] [-pie] [-zap] [-debug] -o 程序\n";
+      std::cerr << "      -version 缺省是 2，也是当前最高语言版本。它必须大于等于每个源文件写出的 #VERSION。\n";
+      std::cerr << "      源文件没写 #VERSION 时，按这次的 -version 编译。同一个编译单元不能混用 1 和 2。\n";
       std::cerr << "      默认只写无扩展名二进制。-zap 才在旁边写文本，用来对照调试。\n";
       std::cerr << "      -debug 在二进制旁边再写 .debug 对照表。二进制与不加 -debug 时逐字节相同。\n";
-      std::cerr << "      -shared 编动态库，必须 -slot 0，并且不能有 main。\n";
+      std::cerr << "      -shared 编动态库，必须 -slot 0，并且不能有 main。二进制后缀是 .zdll。\n";
       std::cerr << "      -pie 编可重定位的可执行程序，必须 -slot 0。装入时再按目标核心挪数据地址。\n";
       std::cerr << "      -o 以 .zap 结尾时，二进制写在去掉这个后缀的路径上。\n";
       return 2;
@@ -139,6 +148,11 @@ int main(int argc, char** argv) {
       }
       obr::SourceFile source = obr::parseSource(readFile(input), false);
       source.path = input;
+      if (!source.versionSet) {
+        source.version = languageVersion;
+      } else if (source.version > languageVersion) {
+        obr::fail(input + " 的 #VERSION " + std::to_string(source.version) + " 高于 -version " + std::to_string(languageVersion));
+      }
       sources.push_back(std::move(source));
     }
     for (std::size_t index = 0; index < sources.size(); index += 1) {
@@ -166,6 +180,7 @@ int main(int argc, char** argv) {
         file.decls = std::move(header.functions);
         file.structs = std::move(header.structs);
         file.enums = std::move(header.enums);
+        file.consts = std::move(header.consts);
         headers.push_back(std::move(file));
       }
     }
@@ -180,7 +195,10 @@ int main(int argc, char** argv) {
     const obr::Generated generated = obr::generate(unit);
     const bool namedZap = output.size() >= 4 && output.compare(output.size() - 4, 4, ".zap") == 0;
     const std::string zapPath = namedZap ? output : output + ".zap";
-    const std::string binaryPath = namedZap ? output.substr(0, output.size() - 4) : output;
+    std::string binaryPath = namedZap ? output.substr(0, output.size() - 4) : output;
+    if (shared && (binaryPath.size() < 5 || binaryPath.compare(binaryPath.size() - 5, 5, ".zdll") != 0)) {
+      binaryPath += ".zdll";
+    }
     if (namedZap || writeZap) writeFile(zapPath, generated.text);
     obr::writeProgramBinary(binaryPath, generated.text, unit, debug ? &generated.sites : nullptr);
     return 0;

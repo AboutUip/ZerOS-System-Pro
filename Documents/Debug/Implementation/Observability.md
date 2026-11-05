@@ -1,9 +1,9 @@
-# 观测设施（当前实现）
+# ZTrace 观测设施（v1.1 当前实现）
 
-> 这是 `Implementation/` 层：描述当前仓库里的参考实现，不是调试标准。
+> 这是 `Implementation/` 层：描述 ZTrace v1.1 的参考实现，不是调试标准。
 > 规范见 `../Standard/Instrumentation.md`；实现可以落后于标准，但不能冒充标准。
 
-本文描述当前仓库里的宿主侧 trace 实现。它是实现说明，不是协议。
+本文描述 ZTrace v1.1 的宿主侧 trace 实现。它是实现说明，不是协议。
 
 ## 1. 开关与线程
 
@@ -34,7 +34,7 @@ GPU 线程在 `bind` 时拿到同一块 trace 页，写 `GpuStage`/`GpuPhase`；
 | 项 | 值 |
 |----|----|
 | 魔数 | `0x5a545243` |
-| 版本 | `1` |
+| 版本 | `2` |
 | 容量 | `65536` 条 |
 | 记录宽度 | `32` 字节 |
 | 头部 | `1024` 字节 |
@@ -78,11 +78,13 @@ GPU 线程在 `bind` 时拿到同一块 trace 页，写 `GpuStage`/`GpuPhase`；
 | 4 | `Op` | `uint8` | 事件码 |
 | 5 | `Layer` | `uint8` | 层 |
 | 6 | `Core` | `uint16` | 核号；宿主事件用 `-1` |
-| 8 | `At` | `uint32` | 从会话起点起的微秒 |
-| 12 | `A0` | `int32` | 服务号、端口、原因或编码后的种类 |
-| 16 | `A1` | `int32` | 方向、字节数、耗时或第二个参数 |
-| 20 | `Span` | `uint32` | span 编号；0 表示不是 span |
-| 24 | `Parent` | `uint32` | 父 span；0 表示没有父 |
+| 8 | `At` | `uint64` | 从会话起点起的 64 位微秒；JSON 里仍按 number |
+| 16 | `A0` | `int32` | 服务号、端口、原因或编码后的种类 |
+| 20 | `A1` | `int32` | 方向、字节数、耗时或第二个参数 |
+| 24 | `Span` | `uint32` | span 编号；0 表示不是 span |
+| 28 | `Parent` | `uint32` | 父 span；0 表示没有父 |
+
+`At` 从 32 位扩到 64 位后，不再在约 71.6 分钟回绕；记录仍是 32 字节，页大小不变。页版本升到 `2`，挂页时校验版本，避免旧线程按旧偏移读写。
 
 写入顺序：清序号 → 写字段 → 写序号。满页覆盖最旧。
 
@@ -118,11 +120,16 @@ GPU 线程在 `bind` 时拿到同一块 trace 页，写 `GpuStage`/`GpuPhase`；
 | 26 | `TaskExit` | 主板 | `A0 = 子 pid × 65536 + 退出码`，`A1` 父 pid |
 | 27 | `TaskSleep` | 主板 | `A0` 任务 pid，`A1` 核心 |
 | 28 | `TaskWake` | 主板 | `A0` 任务 pid，`A1` 核心 |
+
+注意：`TaskWait`/`TaskExit`/`TaskSleep`/`TaskWake` 仍共用 `sig.obr` 的 4416 诊断字，长批次下可能漏；独立 4424 字和 4 槽环都试过并回退。现在 `exitCode` 优先走宿主侧 `ProcessExit`：CPU 在服务 28 调用点直接读 `home+128`，不再依赖 guest 诊断字。全量曾只有 46/54，最后 8 条没有 `17 spawn`/`28 exit`；根因是 VFS 固定路径缓存耗尽。VFS 已扩到 512 项并加满时回收，最终全量 **54/54**、门禁 **8/8**，该路径可作发布门禁。
 | 29 | `Input` | 页面 | `A0` ZKP1/ZPP1 第 7 字关联号，`A1` 键值（键盘）或种类（鼠标） |
 | 30 | `KeyConsumed` | 主板 | `A0` ZKP1 关联号，`A1` 键值 |
 | 31 | `PointerConsumed` | 主板 | `A0` ZPP1 关联号，`A1 = 横坐标 × 65536 + 纵坐标` |
 | 32 | `GpuStage` | GPU | 每次 present：`A0` scene 命令数，`A1` accel 命令数 |
 | 33 | `GpuPhase` | GPU | `A0` 阶段（1=capture，2=compose，3=accel），`A1` 微秒 |
+| 34 | `ProcessExit` | CPU | `A0` 退出码，`Core` 核号；宿主在服务 28 调用点直接读 `home+128` |
+
+`CoreStop` 事件本身仍只带停机原因和指令号；页面保存的 `CoreStop` 记录另有 `At`、`Mode`（`native`/`interpreter`）和 `Snapshot`。解释器快照的 `Registers` 来自 worker 的 burst 回复，`StackPointer` 来自 `publish-sp`；失败停机时再补读 128 字节到 `StackBytes`。原生快照仍读原生寄存器。`FaultRecord` 另有 `At`、`HostStack` 和 `GuestStack` 摘要；`ztrace` 采集时按命令窗口标 `Scope=boot/command`，启动自检的旧记录不再混进命令。
 
 端口种类：1=`xchg`，2=`fill`，3=`carry`，4=`offer`。
 
@@ -177,7 +184,7 @@ GPU 线程在 `bind` 时拿到同一块 trace 页，写 `GpuStage`/`GpuPhase`；
 
 调试入口：`ZerOSDebug.trace.report()`（文本）、`.dump()`（原始记录数组）、`.status()`、`.clear()`。控制台和全局各有一份入口，取决于调试开关落点。
 
-仓库内的 `Documents/Debug/Tools/ztrace.mjs` 把 `report`、`dump`、`status` 组合成可保存的 `capture.json`；它是研发团队使用的默认入口。
+仓库内的 `Compiler/Debugger/Tools/ztrace.mjs` 把 `report`、`dump`、`status` 组合成可保存的 `capture.json`；它是研发团队使用的默认入口。
 
 ## 8. 报告
 
@@ -194,6 +201,7 @@ GPU 线程在 `bind` 时拿到同一块 trace 页，写 `GpuStage`/`GpuPhase`；
 - `protocol ports`：按端口/种类统计次数和字节
 - `core stops` 和 `latest stops`：最近一次停机的核、原因、`Pc`、栈窗口和寄存器；解释器路径没有栈范围
 - `wait spans`：按 svc span 配对的 `CoreStop(wait)` → `Wake` 宿主侧区间，显示服务名
+- `task exits`：`TaskExit` 的子 pid、父 pid、退出码和时刻；即使没有 `TaskWait` 也显示
 - `memory batches`：全局、每核、每服务边界；每服务行之后是 `unattributed` 尾巴
 - `gpu stages`：present 次数、scene/accel 命令数
 - `gpu phases`：capture/compose/accel 的次数、总耗时、最大耗时

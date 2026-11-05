@@ -22,18 +22,15 @@
    正文超过 262144 个八位组就写 tail: file too large，这个文件失败，后面的继续。
    正好 262144 个八位组仍然成功。
    读偏移按实际读到的字节累加。写到描述符 1 时，文件偏移按已写字节累加。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

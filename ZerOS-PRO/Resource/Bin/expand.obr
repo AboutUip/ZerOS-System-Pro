@@ -1,0 +1,413 @@
+/* POSIX.1-2017 expand（utilities/expand.html）。
+   形式是 expand [-t tablist] [file...]。
+   -- 结束选项。第一个不是选项的参数也结束选项。
+   没有文件读标准输入。单独一个 - 读标准输入，不关闭描述符 0。
+   -t 的参数若本参数里还有字节，就是 tablist；否则用下一个参数。
+   tablist 是逗号分开的正十进制。只有一项 N 时，制表位在 N、2N、3N…。
+   多项时制表位就是这些列号，用完最后一个后不再往后增。
+   0、空段、非数字写 expand: invalid tab stop，立刻退出 1。
+   没有 -t 时制表位在 9、17、25…（每 8 列一格，从第 9 列起）。
+   制表字节 9 推进到下一个严格大于当前列号的制表位，中间写空格 32。
+   其它字节原样写出，列号加 1。换行 10 后列号回到 1。
+   打开失败写 expand: 路径: No such file or directory，继续后面的文件，最终退出 1。
+   读失败写 expand: read error，继续。写失败写 expand: write error，立刻退出 1。
+   未规定：多个文件之间列号不重置，接着上一文件的列号走。
+   成功 exit 0，失败 exit 1。main 仍 return 0。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "expand: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun isDash(long addr, long count): long {
+  if (count == 1L && u8(addr) == 45L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 制表位表：字 0 是个数，字 1 起是每个 stop。repeat 非 0 表示只有一项，步进 repeat。 */
+struct Tabs {
+  long repeat;
+  long count;
+  long index;
+  long column;
+  long outAt;
+}
+
+deRfun tabMax(): long {
+  return 256L;
+}
+
+deRfun tabsAt(long buf): long {
+  return buf;
+}
+
+deRfun tabSlot(long buf, long slot): long {
+  return buf + (slot + 1L) * 64L;
+}
+
+deRfun tabBits(): long {
+  return (tabMax() + 2L) * 64L;
+}
+
+deRfun parseDigit(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    if (value > 922337203685477580L || (value == 922337203685477580L && digit > 7L)) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    cursor = cursor + 1L;
+  }
+  if (value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun parseTablist(long home, long at, long len, Tabs* tabs, long buf): long {
+  tabs.repeat = 0L;
+  tabs.count = 0L;
+  tabs.index = 0L;
+  long start = 0L;
+  long cursor = 0L;
+  while (cursor <= len) {
+    long bit = 44L;
+    if (cursor < len) {
+      bit = u8(at + cursor * 8L);
+    }
+    if (cursor == len || bit == 44L) {
+      long piece = cursor - start;
+      if (piece < 1L) {
+        writeErr(home, "expand: invalid tab stop\n");
+        return 1L;
+      }
+      long value = 0L;
+      if (parseDigit(at + start * 8L, piece, &value) == 0L) {
+        writeErr(home, "expand: invalid tab stop\n");
+        return 1L;
+      }
+      if (tabs.count >= tabMax()) {
+        writeErr(home, "expand: invalid tab stop\n");
+        return 1L;
+      }
+      memory::store64(value, tabSlot(buf, tabs.count));
+      tabs.count = tabs.count + 1L;
+      start = cursor + 1L;
+    }
+    cursor = cursor + 1L;
+  }
+  if (tabs.count < 1L) {
+    writeErr(home, "expand: invalid tab stop\n");
+    return 1L;
+  }
+  if (tabs.count == 1L) {
+    tabs.repeat = memory::load64(tabSlot(buf, 0L));
+  }
+  return 0L;
+}
+
+deRfun initDefaultTabs(Tabs* tabs, long buf): void {
+  tabs.repeat = 8L;
+  tabs.count = 1L;
+  tabs.index = 0L;
+  memory::store64(9L, tabSlot(buf, 0L));
+}
+
+deRfun nextStop(Tabs* tabs, long buf, long column): long {
+  if (tabs.repeat != 0L) {
+    long step = tabs.repeat;
+    long base = 9L;
+    if (tabs.count == 1L && step != 8L) {
+      base = step;
+    }
+    if (column < base) {
+      return base;
+    }
+    long delta = column - base;
+    long n = delta / step;
+    long rem = delta % step;
+    if (rem == 0L) {
+      return column + step;
+    }
+    return base + (n + 1L) * step;
+  }
+  long index = tabs.index;
+  while (index < tabs.count) {
+    long stop = memory::load64(tabSlot(buf, index));
+    if (stop > column) {
+      tabs.index = index;
+      return stop;
+    }
+    index = index + 1L;
+  }
+  return column + 1L;
+}
+
+deRfun emitReady(long home, Tabs* tabs, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, tabs.outAt, chunk) != 0L) {
+      writeErr(home, "expand: write error\n");
+      return 2L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "expand: write error\n");
+      return 2L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    tabs.outAt = tabs.outAt + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitByte(long home, Tabs* tabs, long value): long {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  return emitReady(home, tabs, 1L);
+}
+
+deRfun expandTab(long home, Tabs* tabs, long buf): long {
+  long target = nextStop(tabs, buf, tabs.column);
+  while (tabs.column < target) {
+    if (emitByte(home, tabs, 32L) != 0L) {
+      return 2L;
+    }
+    tabs.column = tabs.column + 1L;
+  }
+  return 0L;
+}
+
+deRfun runInput(long home, Tabs* tabs, long buf, long fd): long {
+  long offset = 0L;
+  while (1L == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      writeErr(home, "expand: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "expand: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      return 0L;
+    }
+    if (n > 4096L) {
+      n = 4096L;
+    }
+    long index = 0L;
+    while (index < n) {
+      long bit = u8(obr::proc::bytes(home) + index * 8L);
+      if (bit == 9L) {
+        if (expandTab(home, tabs, buf) != 0L) {
+          return 2L;
+        }
+      } else {
+        if (emitByte(home, tabs, bit) != 0L) {
+          return 2L;
+        }
+        if (bit == 10L) {
+          tabs.column = 1L;
+          tabs.index = 0L;
+        } else {
+          tabs.column = tabs.column + 1L;
+        }
+      }
+      index = index + 1L;
+    }
+    offset = offset + n;
+  }
+  return 0L;
+}
+
+deRfun pourFile(long home, Tabs* tabs, long buf, long addr, long count): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = runInput(home, tabs, buf, fd);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long hasTab = 0L;
+  long tabAt = 0L;
+  long tabLen = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 116L) {
+          if (cursor + 1L < len) {
+            tabAt = at + (cursor + 1L) * 8L;
+            tabLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "expand: invalid tab stop\n");
+              return finish(home, 1L);
+            }
+            tabAt = argPtr(home, index);
+            tabLen = argLen(home, index);
+            cursor = len;
+          }
+          hasTab = 1L;
+          cursor = cursor + 1L;
+        } else {
+          writeErr(home, "expand: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long buf = obr::proc::alloc(home, tabBits());
+  if (buf == 0L) {
+    writeErr(home, "expand: out of memory\n");
+    return finish(home, 1L);
+  }
+  Tabs tabs;
+  tabs.column = 1L;
+  tabs.outAt = 0L;
+  if (hasTab == 1L) {
+    if (parseTablist(home, tabAt, tabLen, &tabs, buf) != 0L) {
+      return finish(home, 1L);
+    }
+  } else {
+    initDefaultTabs(&tabs, buf);
+  }
+  long failed = 0L;
+  if (index >= count) {
+    long status = runInput(home, &tabs, buf, 0L);
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = 0L;
+    if (isDash(at, len) == 1L) {
+      status = runInput(home, &tabs, buf, 0L);
+    } else {
+      status = pourFile(home, &tabs, buf, at, len);
+    }
+    if (status == 2L) {
+      return finish(home, 1L);
+    }
+    if (status != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

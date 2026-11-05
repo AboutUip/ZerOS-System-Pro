@@ -1,0 +1,14 @@
+/* Plan 1：常量字符串拼接。结果 0。 */
+const string A = "he" + "llo";
+const string B = A + '!';
+const string C = 'x' + "yz";
+
+deRfun main(): int {
+  if (length(A) != 5) return 1;
+  if (A[0] != 'h') return 2;
+  if (length(B) != 6) return 3;
+  if (B[5] != '!') return 4;
+  if (length(C) != 3) return 5;
+  if (C[0] != 'x') return 6;
+  return 0;
+}

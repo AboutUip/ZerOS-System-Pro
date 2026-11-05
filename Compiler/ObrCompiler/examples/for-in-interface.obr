@@ -1,0 +1,30 @@
+/* Plan 1 M4：for-in 遍历接口数组，元素调用走动态派发。结果 0。 */
+#VERSION 2
+
+interface IValue {
+  deRfun value(): int;
+}
+
+class One implements IValue {
+  deRfun value(): int {
+    return 1;
+  }
+}
+
+class Two implements IValue {
+  deRfun value(): int {
+    return 2;
+  }
+}
+
+deRfun main(): int {
+  array[IValue] items = new array[IValue](2);
+  items[0] = new One();
+  items[1] = new Two();
+  var[int] sum = 0;
+  for (var[IValue] item in items) {
+    sum = sum + item.value();
+  }
+  if (sum != 3) return 1;
+  return 0;
+}

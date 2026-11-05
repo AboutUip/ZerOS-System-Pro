@@ -1,0 +1,85 @@
+/* POSIX.1-2017 tty（utilities/tty.html）。形式是 tty [-s] [file...]。
+   本系统没有 isatty；选定把标准输入视为终端，不检查其它描述符。
+   无 -s 时向描述符 1 写 /dev/con 和换行，退出 0。
+   -s 不向标准输出写任何字符，退出 0。
+   多余操作数写 tty: too many operands 和换行，退出 2。
+   诊断英文 ASCII，描述符 2，前缀 tty:。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long silent = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len > 0L && u8(at) == 45L) {
+      if (len == 1L) {
+        index = index + 1L;
+      } else {
+        long cursor = 1L;
+        while (cursor < len) {
+          long bit = u8(at + cursor * 8L);
+          if (bit != 115L) {
+            writeErr(home, "tty: invalid option\n");
+            return finish(home, 2L);
+          }
+          silent = 1L;
+          cursor = cursor + 1L;
+        }
+        index = index + 1L;
+      }
+    } else {
+      break;
+    }
+  }
+  if (index < count) {
+    writeErr(home, "tty: too many operands\n");
+    return finish(home, 2L);
+  }
+  if (silent == 0L) {
+    writeOut(home, "/dev/con\n");
+  }
+  return finish(home, 0L);
+}

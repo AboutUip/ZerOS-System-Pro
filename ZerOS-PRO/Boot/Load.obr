@@ -30,7 +30,10 @@ deRfun main(): int {
     halt();
     return 0;
   }
-  long stage = 944259072L;
+  /* 暂存在核心 0 窗口中部：固件堆上限约 138900000 位，客核堆池从各自的 kArena+kSpan 起。
+     不能放在核心 3 的堆池起点（944259072）：那里会被客任务的第一次分配覆盖，
+     监督核随后执行到被改写的指令并失败。 */
+  long stage = 150000000L;
   long offset = 0L;
   long span = 256L * 1024L;
   while (offset < size) {

@@ -342,6 +342,20 @@ export namespace ZerOS {
           onGuest(record);
           return;
         }
+        if (kind === "beat") {
+          RuntimeRoot.Hardware.Cpu.releaseGateWait();
+          RuntimeRoot.Hardware.Cpu.pokeFirmwareIfAttention();
+          return;
+        }
+        if (kind === "attention") {
+          RuntimeRoot.Hardware.Cpu.pokeFirmwareYield();
+          return;
+        }
+        if (kind === "ring") {
+          RuntimeRoot.Hardware.Cpu.noteKeyRing();
+          RuntimeRoot.Hardware.Cpu.pokeYield();
+          return;
+        }
         if (kind === "trace") {
           const buffer = record["buffer"];
           if (buffer instanceof SharedArrayBuffer) {

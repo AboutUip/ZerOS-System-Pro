@@ -1,0 +1,649 @@
+/* POSIX.1-2017 cflow（utilities/cflow.html）。形式是 cflow [-r] [-d num] [-o file] [-i spec] [-x] file...
+   只认 C 源文件，不做完整 C 语法。
+   函数定义是行首标识符后接 (；调用是同一函数体里的标识符后接 (。
+   -r 反向，-d 限制深度，-o 写到文件而不是描述符 1，-i 只实现 x，-x 接受但忽略。
+   输出是缩进的名字，一行一个。外部调用在 -i 含 x 时写出。
+   没有文件写 cflow: missing operand，退出 1。
+   打开失败写 cflow: 路径: No such file or directory，退出 1。
+   诊断英文 ASCII，以 cflow: 开头。结束用 obr::proc::exit。
+   大于等于 1048576 的立即数会被 -pie 当成数据地址重定位，位数用 65536 乘出来。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "cflow: ");
+  writeSpan(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun funcMax(): long {
+  return 128L;
+}
+
+deRfun edgeMax(): long {
+  return 512L;
+}
+
+deRfun lineMax(): long {
+  return 4096L;
+}
+
+deRfun funcStride(): long {
+  return 2048L;
+}
+
+deRfun edgeStride(): long {
+  return 512L;
+}
+
+deRfun lineStride(): long {
+  return 128L;
+}
+
+deRfun bodyMax(): long {
+  return 131072L;
+}
+
+deRfun identStart(long bit): long {
+  if (bit >= 97L && bit <= 122L) {
+    return 1L;
+  }
+  if (bit >= 65L && bit <= 90L) {
+    return 1L;
+  }
+  if (bit == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun identChar(long bit): long {
+  if (identStart(bit) == 1L) {
+    return 1L;
+  }
+  if (bit >= 48L && bit <= 57L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isSpace(long bit): long {
+  if (bit == 32L || bit == 9L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun funcName(long row): long {
+  return row + 256L;
+}
+
+deRfun findFunc(long funcs, long funcCount, long nameAt, long nameLen): long {
+  long index = 0L;
+  while (index < funcCount) {
+    long row = funcs + index * funcStride();
+    long flen = memory::load64(row);
+    if (flen == nameLen) {
+      long ok = 1L;
+      long step = 0L;
+      while (step < nameLen) {
+        if (u8(funcName(row) + step * 8L) != u8(nameAt + step * 8L)) {
+          ok = 0L;
+          break;
+        }
+        step = step + 1L;
+      }
+      if (ok == 1L) {
+        return index;
+      }
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun addFunc(long* funcCount, long funcs, long nameAt, long nameLen, long bodyStart, long bodyEnd): long {
+  long found = findFunc(funcs, *funcCount, nameAt, nameLen);
+  if (found >= 0L) {
+    return found;
+  }
+  if (*funcCount >= funcMax()) {
+    return -1L;
+  }
+  long row = funcs + *funcCount * funcStride();
+  memory::store64(nameLen, row);
+  memory::store64(bodyStart, row + 64L);
+  memory::store64(bodyEnd, row + 128L);
+  copySpan(nameAt, funcName(row), nameLen);
+  long id = *funcCount;
+  *funcCount = *funcCount + 1L;
+  return id;
+}
+
+deRfun addEdge(long* edgeCount, long edges, long from, long to, long nameAt, long nameLen): void {
+  if (*edgeCount >= edgeMax()) {
+    return;
+  }
+  long row = edges + *edgeCount * edgeStride();
+  memory::store64(from, row);
+  memory::store64(to, row + 64L);
+  memory::store64(nameLen, row + 128L);
+  if (nameLen > 0L && nameLen <= 64L) {
+    copySpan(nameAt, row + 256L, nameLen);
+  }
+  *edgeCount = *edgeCount + 1L;
+}
+
+deRfun lineStartDef(long data, long lineOff, long lineLen): long {
+  long index = 0L;
+  while (index < lineLen && isSpace(u8(data + (lineOff + index) * 8L)) == 1L) {
+    index = index + 1L;
+  }
+  if (index >= lineLen) {
+    return -1L;
+  }
+  if (identStart(u8(data + (lineOff + index) * 8L)) == 0L) {
+    return -1L;
+  }
+  long start = index;
+  index = index + 1L;
+  while (index < lineLen && identChar(u8(data + (lineOff + index) * 8L)) == 1L) {
+    index = index + 1L;
+  }
+  if (index >= lineLen || u8(data + (lineOff + index) * 8L) != 40L) {
+    return -1L;
+  }
+  return start;
+}
+
+deRfun scanCalls(long data, long lines, long lineCount, long lineOff, long lineLen, long funcs, long funcCount, long funcId, long* edgeCount, long edges): void {
+  long index = 0L;
+  while (index < lineLen) {
+    long bit = u8(data + (lineOff + index) * 8L);
+    if (identStart(bit) == 0L) {
+      index = index + 1L;
+      continue;
+    }
+    long start = index;
+    index = index + 1L;
+    while (index < lineLen && identChar(u8(data + (lineOff + index) * 8L)) == 1L) {
+      index = index + 1L;
+    }
+    long nlen = index - start;
+    if (index >= lineLen || u8(data + (lineOff + index) * 8L) != 40L) {
+      continue;
+    }
+    long nameAt = data + (lineOff + start) * 8L;
+    long to = findFunc(funcs, funcCount, nameAt, nlen);
+    addEdge(edgeCount, edges, funcId, to, nameAt, nlen);
+  }
+}
+
+deRfun readAll(long home, long fd, long buf, long limit, long* got): long {
+  long total = 0L;
+  long offset = 0L;
+  while (total < limit) {
+    long room = limit - total;
+    if (room > 4096L) {
+      room = 4096L;
+    }
+    if (obr::proc::read(home, fd, offset, room) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      break;
+    }
+    if (n > room) {
+      n = room;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, n);
+    total = total + n;
+    offset = offset + n;
+  }
+  *got = total;
+  return 0L;
+}
+
+deRfun endsWithC(long fileAt, long fileLen): long {
+  if (fileLen < 3L) {
+    return 0L;
+  }
+  if (u8(fileAt + (fileLen - 2L) * 8L) != 46L) {
+    return 0L;
+  }
+  long c = u8(fileAt + (fileLen - 1L) * 8L);
+  if (c == 99L || c == 67L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun ingest(long home, long fileAt, long fileLen, long funcs, long* funcCount, long edges, long* edgeCount, long lines, long* lineCount, long data): long {
+  if (endsWithC(fileAt, fileLen) == 0L) {
+    return 0L;
+  }
+  if (fileLen < 1L || fileLen > 8192L) {
+    miss(home, fileAt, fileLen);
+    return 1L;
+  }
+  plant(home, fileAt, fileLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, fileAt, fileLen);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long got = 0L;
+  if (readAll(home, fd, data, bodyMax(), &got) != 0L) {
+    return 1L;
+  }
+  obr::proc::close(home, fd);
+  long pos = 0L;
+  long lcount = 0L;
+  while (pos < got && lcount < lineMax()) {
+    long lineStart = pos;
+    while (pos < got && u8(data + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    long lineLen = pos - lineStart;
+    memory::store64(lineStart, lines + lcount * lineStride());
+    memory::store64(lineLen, lines + lcount * lineStride() + 64L);
+    lcount = lcount + 1L;
+    if (pos < got) {
+      pos = pos + 1L;
+    }
+  }
+  long prevRow = -1L;
+  long li = 0L;
+  while (li < lcount) {
+    long lineOff = memory::load64(lines + li * lineStride());
+    long lineLen = memory::load64(lines + li * lineStride() + 64L);
+    long rel = lineStartDef(data, lineOff, lineLen);
+    if (rel >= 0L) {
+      if (prevRow >= 0L) {
+        memory::store64(li, prevRow + 128L);
+      }
+      long nameStart = lineOff + rel;
+      long nameLen = 0L;
+      long scan = nameStart;
+      while (scan < lineOff + lineLen && identChar(u8(data + scan * 8L)) == 1L) {
+        nameLen = nameLen + 1L;
+        scan = scan + 1L;
+      }
+      long before = *funcCount;
+      long funcId = addFunc(funcCount, funcs, data + nameStart * 8L, nameLen, li + 1L, lcount);
+      if (funcId >= 0L && *funcCount > before) {
+        prevRow = funcs + funcId * funcStride();
+      }
+    }
+    li = li + 1L;
+  }
+  if (prevRow >= 0L) {
+    memory::store64(lcount, prevRow + 128L);
+  }
+  long fi = 0L;
+  while (fi < *funcCount) {
+    long row = funcs + fi * funcStride();
+    long bodyStart = memory::load64(row + 64L);
+    long bodyEnd = memory::load64(row + 128L);
+    long bl = bodyStart;
+    while (bl < bodyEnd) {
+      long lineOff = memory::load64(lines + bl * lineStride());
+      long lineLen = memory::load64(lines + bl * lineStride() + 64L);
+      scanCalls(data, lines, lcount, lineOff, lineLen, funcs, *funcCount, fi, edgeCount, edges);
+      bl = bl + 1L;
+    }
+    fi = fi + 1L;
+  }
+  *lineCount = lcount;
+  return 0L;
+}
+
+deRfun indeg(long edges, long edgeCount, long funcCount, long rev, long counts): void {
+  long index = 0L;
+  while (index < funcCount) {
+    memory::store64(0L, counts + index * 64L);
+    index = index + 1L;
+  }
+  index = 0L;
+  while (index < edgeCount) {
+    long row = edges + index * edgeStride();
+    long from = memory::load64(row);
+    long to = memory::load64(row + 64L);
+    if (rev == 0L) {
+      if (to >= 0L && to < funcCount) {
+        memory::store64(memory::load64(counts + to * 64L) + 1L, counts + to * 64L);
+      }
+    } else {
+      if (from >= 0L && from < funcCount) {
+        memory::store64(memory::load64(counts + from * 64L) + 1L, counts + from * 64L);
+      }
+    }
+    index = index + 1L;
+  }
+}
+
+deRfun putByte(long home, long fd, long* off, long* filled, long bit): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    obr::proc::write(home, fd, *off, count);
+    *off = *off + count;
+    count = 0L;
+  }
+  memory::storeOctet(bit, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun putSpan(long home, long fd, long* off, long* filled, long addr, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putByte(home, fd, off, filled, u8(addr + index * 8L));
+    index = index + 1L;
+  }
+}
+
+deRfun flushOut(long home, long fd, long* off, long filled): void {
+  if (filled > 0L) {
+    obr::proc::write(home, fd, *off, filled);
+    *off = *off + filled;
+  }
+}
+
+deRfun emitName(long home, long fd, long* off, long* filled, long funcs, long funcId, long depth): void {
+  long row = funcs + funcId * funcStride();
+  long nlen = memory::load64(row);
+  long step = 0L;
+  while (step < depth) {
+    putByte(home, fd, off, filled, 32L);
+    putByte(home, fd, off, filled, 32L);
+    step = step + 1L;
+  }
+  putSpan(home, fd, off, filled, funcName(row), nlen);
+  putByte(home, fd, off, filled, 10L);
+}
+
+deRfun walk(long home, long fd, long* off, long* filled, long funcs, long funcCount, long edges, long edgeCount, long funcId, long depth, long maxDepth, long rev, long incX, long seen): void {
+  if (funcId < 0L || funcId >= funcCount) {
+    return;
+  }
+  if (memory::load64(seen + funcId * 64L) == 1L) {
+    return;
+  }
+  memory::store64(1L, seen + funcId * 64L);
+  emitName(home, fd, off, filled, funcs, funcId, depth);
+  if (maxDepth >= 0L && depth >= maxDepth) {
+    return;
+  }
+  long index = 0L;
+  while (index < edgeCount) {
+    long row = edges + index * edgeStride();
+    long from = memory::load64(row);
+    long to = memory::load64(row + 64L);
+    long next = to;
+    if (rev == 1L) {
+      if (to != funcId) {
+        index = index + 1L;
+        continue;
+      }
+      next = from;
+    } else {
+      if (from != funcId) {
+        index = index + 1L;
+        continue;
+      }
+    }
+    if (next >= 0L) {
+      walk(home, fd, off, filled, funcs, funcCount, edges, edgeCount, next, depth + 1L, maxDepth, rev, incX, seen);
+    } else if (incX == 1L) {
+      long nlen = memory::load64(row + 128L);
+      long step = 0L;
+      while (step <= depth) {
+        putByte(home, fd, off, filled, 32L);
+        putByte(home, fd, off, filled, 32L);
+        step = step + 1L;
+      }
+      putSpan(home, fd, off, filled, row + 256L, nlen);
+      putByte(home, fd, off, filled, 10L);
+    }
+    index = index + 1L;
+  }
+}
+
+deRfun hasIx(long at, long len): long {
+  long index = 0L;
+  while (index < len) {
+    if (u8(at + index * 8L) == 120L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun parseDepth(long at, long len, long* depth): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long num = 0L;
+  long index = 0L;
+  while (index < len) {
+    long bit = u8(at + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    num = num * 10L + digit;
+    index = index + 1L;
+  }
+  *depth = num;
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long reverse = 0L;
+  long maxDepth = -1L;
+  long outAt = 0L;
+  long outLen = 0L;
+  long hasOut = 0L;
+  long incX = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 114L) {
+          reverse = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 120L) {
+          cursor = cursor + 1L;
+        } else if (bit == 100L) {
+          if (cursor + 1L < len) {
+            long depth = 0L;
+            if (parseDepth(at + (cursor + 1L) * 8L, len - (cursor + 1L), &depth) == 1L) {
+              maxDepth = depth;
+            }
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "cflow: missing operand\n");
+              return finish(home, 1L);
+            }
+            long depth = 0L;
+            long optAt = argPtr(home, index);
+            long optLen = argLen(home, index);
+            if (parseDepth(optAt, optLen, &depth) == 1L) {
+              maxDepth = depth;
+            }
+            cursor = len;
+          }
+        } else if (bit == 111L) {
+          if (cursor + 1L < len) {
+            outAt = at + (cursor + 1L) * 8L;
+            outLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "cflow: missing operand\n");
+              return finish(home, 1L);
+            }
+            outAt = argPtr(home, index);
+            outLen = argLen(home, index);
+            cursor = len;
+          }
+          hasOut = 1L;
+        } else if (bit == 105L) {
+          if (cursor + 1L < len) {
+            if (hasIx(at + (cursor + 1L) * 8L, len - (cursor + 1L)) == 1L) {
+              incX = 1L;
+            }
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "cflow: missing operand\n");
+              return finish(home, 1L);
+            }
+            long optAt = argPtr(home, index);
+            long optLen = argLen(home, index);
+            if (hasIx(optAt, optLen) == 1L) {
+              incX = 1L;
+            }
+            cursor = len;
+          }
+        } else {
+          ended = 1L;
+          cursor = len;
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "cflow: missing operand\n");
+    return finish(home, 1L);
+  }
+  long hold = obr::proc::alloc(home, 65536L * 32L);
+  if (hold == 0L) {
+    return finish(home, 1L);
+  }
+  long funcs = hold;
+  long edges = hold + 262144L;
+  long lines = hold + 524288L;
+  long data = hold + 65536L * 16L;
+  long counts = hold + 65536L * 24L;
+  long seen = hold + 65536L * 28L;
+  long funcCount = 0L;
+  long edgeCount = 0L;
+  long lineCount = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long fileAt = argPtr(home, index);
+    long fileLen = argLen(home, index);
+    if (ingest(home, fileAt, fileLen, funcs, &funcCount, edges, &edgeCount, lines, &lineCount, data) != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  long outFd = 1L;
+  if (hasOut == 1L) {
+    plant(home, outAt, outLen);
+    if (obr::proc::open(home, 1L) != 0L) {
+      miss(home, outAt, outLen);
+      obr::proc::free(home, hold, 65536L * 32L);
+      return finish(home, 1L);
+    }
+    outFd = obr::proc::slot(home, 192L);
+  }
+  indeg(edges, edgeCount, funcCount, reverse, counts);
+  long off = 0L;
+  long filled = 0L;
+  long fi = 0L;
+  while (fi < funcCount) {
+    if (memory::load64(counts + fi * 64L) == 0L) {
+      long si = 0L;
+      while (si < funcCount) {
+        memory::store64(0L, seen + si * 64L);
+        si = si + 1L;
+      }
+      walk(home, outFd, &off, &filled, funcs, funcCount, edges, edgeCount, fi, 0L, maxDepth, reverse, incX, seen);
+    }
+    fi = fi + 1L;
+  }
+  flushOut(home, outFd, &off, filled);
+  obr::proc::free(home, hold, 65536L * 32L);
+  if (failed == 1L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

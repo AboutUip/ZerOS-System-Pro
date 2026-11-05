@@ -1,15 +1,19 @@
-# 标准调试
+# ZTrace 调试设施
 
-本目录维护 ZerOS-System-Pro 的通用调试标准和当前观测设施说明。
+本目录维护 **ZTrace** 的标准和 v1.1 观测设施说明。ZTrace 是 ZerOS 专用的调试器，目标是成为官方性能分析与故障取证链的一环。
 
 它不针对某一次性能问题，也不把某组命令当成目标。命令、测试程序和工作负载只是验证手段；目标是让任意一个子系统、任意一条路径都能按同一套流程被观察、定位、验证和回归。
+
+当前交付版本是 **v1.1**（2026-11-02），合同见 [V1.1.md](./Implementation/V1.1.md)。v1.0 的 [V1.md](./Implementation/V1.md) 保留为历史。
+
+v2 的完整立项计划在本地 `dev/Plan/ZTrace-v2.md`，不进入版本库；仓库内只保留命名、目录边界和入口条件摘要。v1.1 的本地交付计划见 `dev/Plan/ZTrace-v1.1.md`。
 
 ## 两层文档
 
 | 层 | 目录 | 性质 | 内容 |
 |----|------|------|------|
 | 标准 | [Standard](./Standard/) | 规范，跨实现复用 | 方法、证据、观测设计、实验设计 |
-| 实现 | [Implementation](./Implementation/) | 当前设施的 profile | 现有 trace 实现、检测点、覆盖快照、runner、v1 合同 |
+| 实现 | [Implementation](./Implementation/) | 当前设施的 profile | 现有 trace 实现、检测点、覆盖快照、runner、v1.1 合同 |
 
 [Roadmap](./Roadmap.md) 是可复用的能力路线图，不是某次性能任务的待办。
 
@@ -32,7 +36,8 @@
 
 | 文档 | 回答 |
 |------|------|
-| [V1.md](./Implementation/V1.md) | v1 交付范围、验收命令和明确不在 v1 的能力 |
+| [V1.1.md](./Implementation/V1.1.md) | v1.1 交付范围、验收结果和明确不在 v1.1 的能力 |
+| [V1.md](./Implementation/V1.md) | v1.0 历史合同，保留作基线记录 |
 | [Observability.md](./Implementation/Observability.md) | 当前 trace 页、事件、API、报告和限制 |
 | [Points.md](./Implementation/Points.md) | 当前实际写入点清单 |
 | [Coverage.md](./Implementation/Coverage.md) | 当前覆盖快照与已确认/未解释项 |
@@ -40,15 +45,9 @@
 
 ## 工具
 
-| 工具 | 回答 |
-|------|------|
-| [ztrace.mjs](./Tools/ztrace.mjs) | 从预览页抓取启动报告和逐条命令的原始 trace，输出 `capture.json`、`report.txt`、`capture.log`；按提示符事件判断命令完成 |
-| [ztrace-check.mjs](./Tools/ztrace-check.mjs) | 校验 `capture.json` 的 schema、命令 status、report、raw entries 和停机快照字段 |
-| [ztrace-corpus.json](./Tools/ztrace-corpus.json) / [ztrace-corpus.mjs](./Tools/ztrace-corpus.mjs) | 54 条 `/bin` 命令的全量完成语料、进程级硬超时和逐条汇总 |
-| [ztrace-diff.mjs](./Tools/ztrace-diff.mjs) | 对比两份 capture 的结构、事件码、报告段落和停机签名；`--check` 用作门禁 |
-| [ztrace-gate.mjs](./Tools/ztrace-gate.mjs) | 组合结构校验、特性段、语料覆盖和可选基线 diff |
+工具入口、工具清单和运行说明归 [Compiler/Debugger](../../Compiler/Debugger/README.md) 管理；`Documents/Debug/` 只保留 `.md` 文档。
 
-工具的前置、参数和输出说明见 [Runbook.md](./Implementation/Runbook.md)。
+运行在宿主、trace 页和硬件线程里的实现仍留在 `ZerOS-PRO/Hardware/Diagnostics/`。
 
 ## 基本原则
 

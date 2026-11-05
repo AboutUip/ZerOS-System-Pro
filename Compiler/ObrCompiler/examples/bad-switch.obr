@@ -1,0 +1,12 @@
+/* 重复 case 编译应当失败。 */
+deRfun main(): int {
+  var[int] value = 1;
+  switch (value) {
+    case 1:
+      return 1;
+    case 1:
+      return 2;
+    default:
+      return 0;
+  }
+}

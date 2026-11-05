@@ -1,0 +1,25 @@
+/* Plan 1：const 类静态对象参与接口派发。结果 0。 */
+#VERSION 2
+
+interface IValue {
+  deRfun value(): int;
+}
+
+class Counter implements IValue {
+  int valueField;
+  deRfun Counter(): void {
+    valueField = 0;
+  }
+  deRfun value(): int {
+    return valueField + 1;
+  }
+}
+
+const Counter CONST_COUNTER = Counter { valueField = 9 };
+
+deRfun main(): int {
+  var[IValue] view = CONST_COUNTER;
+  if (view.value() != 10) return 1;
+  if (CONST_COUNTER.valueField != 9) return 2;
+  return 0;
+}

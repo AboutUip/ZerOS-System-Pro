@@ -1,0 +1,179 @@
+/* POSIX.1-2017 getconf（utilities/getconf.html）的本系统选定。
+   形式是 getconf [-a | -v] 系统配置变量名。
+   只实现本系统已经公开的上限，数值如下：
+   ARG_MAX 8192（参数块里两段八位组各 8192，按参数区计）
+   LINE_MAX 240（交互壳 obr.line 一行最多 240 个八位组）
+   NAME_MAX 512（路径分量上限，见 obr.proc）
+   OPEN_MAX 8（每任务描述符 0 到 7）
+   PATH_MAX 8192（请求路径最长 8192 个八位组）
+   -a 只列出以上五个名字，每行一个，按字母序。
+   -v 接受，不改变输出。
+   不认识的名字写 getconf: 名字: unknown variable 到描述符 2，退出 1。
+   成功查到单个名字时只写十进制数和换行到描述符 1。成功退出 0。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long cursor = 0L;
+  while (cursor < count) {
+    long chunk = count - cursor;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (cursor + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    cursor = cursor + chunk;
+  }
+}
+
+deRfun putDigit(long home, long* filled, long value): void {
+  if (value >= 10L) {
+    putDigit(home, filled, value / 10L);
+  }
+  long digit = value % 10L;
+  memory::storeOctet(48L + digit, obr::proc::bytes(home) + *filled * 8L);
+  *filled = *filled + 1L;
+}
+
+deRfun writeNum(long home, long value): void {
+  long filled = 0L;
+  if (value == 0L) {
+    memory::storeOctet(48L, obr::proc::bytes(home));
+    filled = 1L;
+  } else {
+    putDigit(home, &filled, value);
+  }
+  memory::storeOctet(10L, obr::proc::bytes(home) + filled * 8L);
+  obr::proc::write(home, 1L, 0L, filled + 1L);
+}
+
+deRfun nameEq(long addr, long count, string name): long {
+  int raw = length(name);
+  long need = raw;
+  if (count != need) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < need) {
+    long bit = (long)name[index];
+    if (u8(addr + index * 8L) != bit) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun lookup(long addr, long count, long* value): long {
+  if (nameEq(addr, count, "ARG_MAX") == 1L) {
+    *value = 8192L;
+    return 1L;
+  }
+  if (nameEq(addr, count, "LINE_MAX") == 1L) {
+    *value = 240L;
+    return 1L;
+  }
+  if (nameEq(addr, count, "NAME_MAX") == 1L) {
+    *value = 512L;
+    return 1L;
+  }
+  if (nameEq(addr, count, "OPEN_MAX") == 1L) {
+    *value = 8L;
+    return 1L;
+  }
+  if (nameEq(addr, count, "PATH_MAX") == 1L) {
+    *value = 8192L;
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long all = 0L;
+  long index = 1L;
+  long count = argc(home);
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 97L) {
+      all = 1L;
+      index = index + 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 118L) {
+      index = index + 1L;
+    } else if (len == 3L && u8(at) == 45L && u8(at + 8L) == 45L && u8(at + 16L) == 97L) {
+      all = 1L;
+      index = index + 1L;
+    } else if (len == 3L && u8(at) == 45L && u8(at + 8L) == 45L && u8(at + 16L) == 118L) {
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (all == 1L) {
+    writeOut(home, "ARG_MAX\nLINE_MAX\nNAME_MAX\nOPEN_MAX\nPATH_MAX\n");
+    return finish(home, 0L);
+  }
+  if (index >= count) {
+    writeErr(home, "getconf: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (index + 1L < count) {
+    writeErr(home, "getconf: too many operands\n");
+    return finish(home, 1L);
+  }
+  long at = argPtr(home, index);
+  long len = argLen(home, index);
+  long value = 0L;
+  if (lookup(at, len, &value) == 0L) {
+    writeErr(home, "getconf: ");
+    writeSpan(home, 2L, at, len);
+    writeErr(home, ": unknown variable\n");
+    return finish(home, 1L);
+  }
+  writeNum(home, value);
+  return finish(home, 0L);
+}

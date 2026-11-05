@@ -50,6 +50,7 @@ export namespace ZerOS {
       const requestDebugRun = CpuSeatRoot.Hardware.Motherboard.requestDebugRun;
       const seatBinary = CpuSeatRoot.Hardware.Motherboard.seatBinary;
       const pushInbox = InboxRoot.Hardware.Motherboard.pushInbox;
+      const drainInboxThrough = InboxRoot.Hardware.Motherboard.drainInboxThrough;
       const notePanel = QueryRoot.Hardware.Motherboard.notePanel;
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
       const PointerPort = PointerConfigRoot.Hardware.Pointer.PointerConfig.OfficialPort;
@@ -371,6 +372,26 @@ export namespace ZerOS {
           return packed;
         };
         try {
+          if (direction === 2) {
+            const done = CpuSeatRoot.Hardware.Motherboard.finishDirectionTwo(index, word, (way, item): Uint8Array => {
+              const packed = new Uint8Array(8);
+              let rest = item;
+              for (let octet = 0; octet < 8; octet += 1) {
+                packed[octet] = Number(rest & 0xffn);
+                rest >>= 8n;
+              }
+              const accepted = exchangePort(index, way, packed);
+              if (accepted instanceof Promise) {
+                throw new Error("the expansion exchange is not ready");
+              }
+              return accepted;
+            });
+            if (done.snapshot !== null) {
+              CpuSeatRoot.Hardware.Motherboard.commitDirectionSnapshot(word, done.snapshot);
+            }
+            deliver(done.value, "");
+            return;
+          }
           const result = exchangePort(index, direction, payload);
           if (result instanceof Promise) {
             void result.then((value: Uint8Array) => {
@@ -434,6 +455,7 @@ export namespace ZerOS {
           const pushed = pushInbox(words);
           if (pushed === "ok") {
             traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Inbox, words.length);
+            CpuSeatRoot.Hardware.Motherboard.notifyCpuAttention();
           } else {
             traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Inbox, pushed === "overflow" ? TraceRejectReason.Overflow : TraceRejectReason.Invalid);
           }

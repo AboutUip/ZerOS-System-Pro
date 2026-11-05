@@ -41,12 +41,17 @@ export namespace ZerOS {
         if (!Number.isInteger(record.Reason) || !Number.isInteger(record.Index) || record.Index < 0) {
           return;
         }
+        const previous = latest.get(record.Core);
+        if (previous !== undefined && record.At < previous.At) {
+          return;
+        }
         latest.set(record.Core, {
           Core: record.Core,
           Reason: record.Reason,
           Index: record.Index,
           Op: record.Op,
           Detail: record.Detail,
+          At: record.At,
           Snapshot: record.Snapshot,
         });
       }
@@ -69,6 +74,7 @@ export namespace ZerOS {
           Index: found.Index,
           Op: found.Op,
           Detail: found.Detail,
+          At: found.At,
           Snapshot: found.Snapshot,
         };
       }

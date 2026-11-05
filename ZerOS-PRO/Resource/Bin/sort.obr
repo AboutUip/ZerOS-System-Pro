@@ -36,7 +36,9 @@
    单行不含换行超过 8192 写 sort: line too long。行数超过 4096 写 sort: too many lines。
    读失败 sort: read error。写失败 sort: write error。都是立刻退出 1。
    状态经 obr::proc::exit 交出，main 仍返回 0。long 的比较和初值用 0L。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -99,13 +101,8 @@ deRfun keyStride(): long {
   return 384L;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

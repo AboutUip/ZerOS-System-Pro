@@ -20,17 +20,15 @@
    -c 时文件不在：不创建，不写诊断，这一项不算失败。
    别的 stat 或打开失败写 touch: 路径: 原因，继续后面的文件，最后退出 1。
    诊断在描述符 2。结束用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

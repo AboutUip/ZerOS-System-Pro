@@ -328,7 +328,7 @@ export namespace ZerOS {
             }
             /* 先记下叫醒计数，再看这次是不是已经写完。
                内存线程往往比主板进入等待更快：状态已经是完成，计数也已经加过。
-               若这时仍按新计数去等下一次叫醒，没人会再通知，每次读写都要睡满 50 毫秒。
+               若这时仍按新计数去等下一次叫醒，没人会再通知。
                计数没变而状态仍是忙，才睡。完成发生在这两次读取之间时，等的是旧计数，通知能立刻回来。 */
             const token = Atomics.load(this.control, MailSlot.Wake);
             const seenNow = Atomics.load(this.control, MailSlot.Seq);
@@ -336,7 +336,10 @@ export namespace ZerOS {
             if (seenNow === seq && statusNow !== MailStatus.Busy) {
               continue;
             }
-            Atomics.wait(this.control, MailSlot.Wake, token, 50);
+            /* 通知没对上时，不能把主板线程按住 50 毫秒。
+               这一截里键盘交换和别的核心的读写都排在后面。
+               1 毫秒后再看状态。调用方给的总时限不变。 */
+            Atomics.wait(this.control, MailSlot.Wake, token, 1);
           }
         }
 

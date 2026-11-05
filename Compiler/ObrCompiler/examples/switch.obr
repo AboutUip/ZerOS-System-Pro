@@ -1,0 +1,62 @@
+/* Plan 1 M2 切片：整数/枚举 switch、默认不 fallthrough、显式 fallthrough、break。结果 0。 */
+enum Axis: long { X, Y = 3, Z = -1 }
+
+deRfun label(int value): int {
+  var[int] result = 0;
+  switch (value) {
+    case 0:
+      result = 10;
+      break;
+    case 1:
+    case 2:
+      result = 20;
+      break;
+    case 3:
+      result = 30;
+      fallthrough;
+    case 4:
+      result = result + 1;
+      break;
+    default:
+      result = 99;
+  }
+  return result;
+}
+
+deRfun main(): int {
+  if (label(0) != 10) return 1;
+  if (label(1) != 20) return 2;
+  if (label(2) != 20) return 3;
+  if (label(3) != 31) return 4;
+  if (label(4) != 1) return 5;
+  if (label(5) != 99) return 6;
+
+  var[Axis] axis = Axis::Y;
+  switch (axis) {
+    case Axis::X:
+      return 7;
+    case Axis::Y:
+      break;
+    case Axis::Z:
+      return 8;
+    default:
+      return 9;
+  }
+
+  var[int] i = 0;
+  var[int] total = 0;
+  var[int] passes = 0;
+  while (i < 3) {
+    passes = passes + 1;
+    switch (i) {
+      case 1:
+        break;
+      default:
+        total = total + 10;
+    }
+    i = i + 1;
+  }
+  if (passes != 3) return 10;
+  if (total != 20) return 11;
+  return 0;
+}

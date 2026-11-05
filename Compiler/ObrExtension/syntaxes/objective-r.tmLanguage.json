@@ -114,7 +114,7 @@
       "patterns": [
         {
           "name": "keyword.control.objective-r",
-          "match": "\\b(import|export|namespace|return|if|else|while|for|break|continue|goto|async|await|new)\\b"
+          "match": "\\b(import|export|namespace|return|if|else|while|for|break|continue|goto|async|await|new|switch|case|default|fallthrough|in)\\b"
         },
         {
           "name": "storage.type.function.objective-r",
@@ -122,15 +122,15 @@
         },
         {
           "name": "storage.type.struct.objective-r",
-          "match": "\\b(struct|enum|class)\\b"
+          "match": "\\b(struct|enum|class|interface)\\b"
         },
         {
           "name": "storage.modifier.objective-r",
-          "match": "\\b(public|private|static)\\b"
+          "match": "\\b(public|private|static|implements)\\b"
         },
         {
           "name": "storage.type.var.objective-r",
-          "match": "\\bvar\\b"
+          "match": "\\b(var|const)\\b"
         }
       ]
     },

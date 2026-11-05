@@ -112,6 +112,11 @@ export namespace ZerOS {
         Inbox: "inbox",
         Panel: "panel",
         PanelSize: "panel-size",
+        /**
+         * 主板把指标页交给页面。缓冲是共享的，不是拷贝。
+         * 页面上的显示器把已经走完的拍写进座位 4 的字段 3。客程序看不见这条消息。
+         */
+        Metrics: "metrics",
         Pointer: "pointer",
         Exchange: "exchange",
         ExchangeResult: "exchange-result",

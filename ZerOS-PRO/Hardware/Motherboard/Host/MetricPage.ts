@@ -56,29 +56,36 @@ export namespace ZerOS {
       /** 座位 3：帧宽、帧高、显存字节、Hz、已完成命令。 */
       const GpuBase = MemoryBase + 4;
 
-      /** 座位 4：面板宽、高、刷新率。 */
+      /** 座位 4：面板宽、高、刷新率，以及已经走完的拍。 */
       const PanelBase = GpuBase + 5;
 
       /** 座位 5 字段 0：每个口的状态。 */
-      const PortBase = PanelBase + 3;
+      const PortBase = PanelBase + 4;
 
       const SlotCount = PortBase + PortMax;
 
       /**
        * 数值在前，发布标记在后。
        * 标记用 Atomics，避免核心读到写了一半的 64 位。
+       * 页尾两个整数：入站队列里有还没取走的字，以及只增不减的入站序号。
+       * 都不是查询字段。序号用来区分「这一次已经写进环」和「后面又来的键」。
        */
       const ValueBytes = SlotCount * 8;
-      const PageBytes = ValueBytes + SlotCount * 4;
+      const FlagBytes = SlotCount * 4;
+      const PageBytes = ValueBytes + FlagBytes + 8;
 
       let owned: SharedArrayBuffer | null = null;
       let values: BigInt64Array | null = null;
       let flags: Int32Array | null = null;
+      let attention: Int32Array | null = null;
+      let keySerial: Int32Array | null = null;
 
       function bind(buffer: SharedArrayBuffer): void {
         owned = buffer;
         values = new BigInt64Array(buffer, 0, SlotCount);
         flags = new Int32Array(buffer, ValueBytes, SlotCount);
+        attention = new Int32Array(buffer, ValueBytes + FlagBytes, 1);
+        keySerial = new Int32Array(buffer, ValueBytes + FlagBytes + 4, 1);
       }
 
       /**
@@ -128,7 +135,7 @@ export namespace ZerOS {
         if (seat === 3 && field === 7) {
           return GpuBase + 4;
         }
-        if (seat === 4 && field >= 0 && field <= 2) {
+        if (seat === 4 && field >= 0 && field <= 3) {
           return PanelBase + field;
         }
         if (seat === 5 && field === 0) {
@@ -163,7 +170,7 @@ export namespace ZerOS {
         return buffer;
       }
 
-      /** 核心或 CPU 线程挂上主板交来的那一块。 */
+      /** 核心、CPU 或页面线程挂上主板交来的那一块。长度不符就保持原样。 */
       export function attachMetricPage(buffer: SharedArrayBuffer): void {
         if (buffer.byteLength !== PageBytes) {
           return;
@@ -245,6 +252,19 @@ export namespace ZerOS {
         Atomics.store(marks, slot, 1);
       }
 
+      /** 页面把新的一拍写上之后通知监督核。监督核停在客程序后面时，才能把已经到期的等待交回去。 */
+      let beatNotify: (() => void) | null = null;
+
+      export function onDisplayBeat(notify: () => void): void {
+        beatNotify = notify;
+      }
+
+      export function raiseDisplayBeat(): void {
+        if (beatNotify !== null) {
+          beatNotify();
+        }
+      }
+
       /** 核心挂上或卸下。卸下后字段 5 至 12 失败，不再把旧数交出去。 */
       export function writeCoreMounted(index: number, mounted: boolean): void {
         const words = values;
@@ -258,6 +278,71 @@ export namespace ZerOS {
         }
         Atomics.store(words, slot, mounted ? 1n : 0n);
         Atomics.store(marks, slot, 1);
+      }
+
+      /**
+       * 入站队列有新的字。监督核正在做调用时看见它就让出，固件才能来取。
+       * press 只在按下和连按时为真。松开仍叫醒固件去取走，但不增加按下序号。
+       */
+      export function raiseKeyAttention(press: boolean): void {
+        const mark = attention;
+        if (mark === null) {
+          return;
+        }
+        if (press) {
+          const serial = keySerial;
+          if (serial !== null) {
+            Atomics.add(serial, 0, 1);
+          }
+        }
+        Atomics.add(mark, 0, 1);
+        /* 序号先加上，再通知。醒来的监督核要已经看得见这次按下，否则会先睡回去，键要等下一拍。 */
+        Atomics.notify(mark, 0);
+      }
+
+      /** 入站序号。只增不减。固件每完成一次取出才在 CPU 上追上。 */
+      export function keySerialNow(): number {
+        const serial = keySerial;
+        if (serial === null) {
+          return 0;
+        }
+        return Atomics.load(serial, 0);
+      }
+
+      /** 固件已经把这一次事件写进环，或这次交换后面的指令已经跑完。只减一次。 */
+      export function clearKeyAttention(): void {
+        const mark = attention;
+        if (mark === null) {
+          return;
+        }
+        for (;;) {
+          const current = Atomics.load(mark, 0);
+          if (current <= 0) {
+            return;
+          }
+          if (Atomics.compareExchange(mark, 0, current, current - 1) === current) {
+            return;
+          }
+        }
+      }
+
+      /** 入站标记本身。监督核在让出时等这一格，键一进队列就醒，不必等消息通道的下一帧。 */
+      export function keyAttentionWords(): Int32Array | null {
+        return attention;
+      }
+
+      /** 还有没取走的入站字。不清除，取空时由队列自己清。 */
+      export function keyAttention(): boolean {
+        const mark = attention;
+        if (mark === null) {
+          return false;
+        }
+        return Atomics.load(mark, 0) !== 0;
+      }
+
+      /** 这一页已经挂上。没挂上时不能把「标记是 0」当成队列空。 */
+      export function keyAttentionAttached(): boolean {
+        return attention !== null;
       }
     }
   }

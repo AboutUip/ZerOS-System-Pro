@@ -91,6 +91,12 @@ void append16(std::vector<uint8_t>& out, uint16_t value) {
   appendByte(out, static_cast<uint8_t>((value >> 8) & 0xff));
 }
 
+void append64(std::vector<uint8_t>& out, uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    appendByte(out, static_cast<uint8_t>((value >> shift) & 0xff));
+  }
+}
+
 std::vector<std::string> tokensOf(const std::string& line) {
   std::vector<std::string> parts;
   std::string current;
@@ -206,13 +212,15 @@ const WideForm* absoluteAsIndirect(const std::string& name) {
   return nullptr;
 }
 
-enum class Kind { Bias, Restore, Halt, Return, Place, Jump, Call, Absolute, Indirect, Wide, Escape, Scale };
+enum class Kind { Bias, Restore, Halt, Return, Place, Jump, Call, Absolute, Indirect, Wide, Escape, Scale, SwitchTable, ItableCall };
 
 struct Plan {
   Kind kind = Kind::Halt;
   int opcode = 0;
   int registers = 0;
   int size = 0;
+  /** switch.table 的 case 数。 */
+  int count = 0;
 };
 
 bool supported(const std::vector<std::string>& parts) {
@@ -221,6 +229,8 @@ bool supported(const std::vector<std::string>& parts) {
   if (head == "rsp.bias" || head == "rsp.restore" || head == "halt" || head == "place") return parts.size() == (head == "place" ? 3 : 1);
   if (head == "jmp") return parts.size() == 2;
   if (head == "jz" || head == "jnz" || head == "link" || head == "call") return parts.size() == 3;
+  if (head == "switch.table") return parts.size() >= 4;
+  if (head == "itable.call") return parts.size() >= 5;
   if (head == "lea" || head == "load.scale" || head == "store.scale") return parts.size() == 6;
   if (absoluteMemory(head)) return parts.size() == 3 && absoluteAsIndirect(head) != nullptr;
   const WideForm* indirect = findIndirect(head);
@@ -256,6 +266,22 @@ Plan planOf(const std::vector<std::string>& parts) {
     if (parts.size() != 3) fail("无法编码 place");
     plan.kind = Kind::Place;
     plan.size = 10;
+    return plan;
+  }
+  if (head == "switch.table") {
+    if (parts.size() < 4) fail("switch.table 缺少 case");
+    plan.kind = Kind::SwitchTable;
+    plan.count = static_cast<int>(parts.size()) - 4;
+    /* 54 字节分派前缀加每项 4 字节相对偏移。 */
+    plan.size = 54 + plan.count * 4;
+    return plan;
+  }
+  if (head == "itable.call") {
+    if (parts.size() < 5) fail("itable.call 缺少方法项");
+    plan.kind = Kind::ItableCall;
+    plan.count = static_cast<int>(parts.size()) - 4;
+    /* 51 字节查表/调用前缀、每项 8 字节方法位地址、末尾 1 字节 halt。 */
+    plan.size = 52 + plan.count * 8;
     return plan;
   }
   if (head == "jz" || head == "jnz") {
@@ -348,6 +374,103 @@ void emitOne(std::vector<uint8_t>& out, const std::vector<std::string>& parts, c
   if (plan.kind == Kind::Place) {
     const std::vector<uint8_t> bytes = nativeMovImm(zapReg(parts[1]), bitsOf(parts[2]));
     out.insert(out.end(), bytes.begin(), bytes.end());
+    return;
+  }
+  if (plan.kind == Kind::SwitchTable) {
+    if (zapReg(parts[1]) != 0) fail("switch.table 只接受 r0");
+    const int64_t min = static_cast<int64_t>(bitsOf(parts[2]));
+    if (min < INT32_MIN || min > INT32_MAX) fail("switch.table 最小值放不进 32 位");
+    if (plan.count < 1 || plan.count > 0x3fffffff) fail("switch.table case 数不对");
+    const uint32_t defaultIndex = jumpIndex(parts[3]);
+    if (defaultIndex >= starts.size()) fail("switch.table 默认目标越出映像");
+    appendByte(out, 0x48);
+    appendByte(out, 0x81);
+    appendByte(out, 0xF8);
+    append32(out, static_cast<uint32_t>(min));
+    appendByte(out, 0x0F);
+    appendByte(out, 0x8C);
+    appendRel(out, at + 13, starts[defaultIndex]);
+    appendByte(out, 0x48);
+    appendByte(out, 0x81);
+    appendByte(out, 0xE8);
+    append32(out, static_cast<uint32_t>(min));
+    appendByte(out, 0x48);
+    appendByte(out, 0x81);
+    appendByte(out, 0xF8);
+    append32(out, static_cast<uint32_t>(plan.count));
+    appendByte(out, 0x0F);
+    appendByte(out, 0x8D);
+    appendRel(out, at + 33, starts[defaultIndex]);
+    const uint8_t lea[] = {0x4C, 0x8D, 0x1D, 0x0E, 0x00, 0x00, 0x00};
+    out.insert(out.end(), lea, lea + sizeof(lea));
+    /* 32 位 load 零扩展；原生执行器只支持寄存器形式的 movsxd，不支持内存形式。 */
+    const uint8_t load[] = {0x41, 0x8B, 0x04, 0x83};
+    out.insert(out.end(), load, load + sizeof(load));
+    const uint8_t add[] = {0x49, 0x01, 0xC3};
+    out.insert(out.end(), add, add + sizeof(add));
+    /* 表里存字节偏移，跳转前换成位地址。 */
+    const uint8_t shift[] = {0x49, 0xC1, 0xE3, 0x03};
+    out.insert(out.end(), shift, shift + sizeof(shift));
+    const uint8_t jump[] = {0x49, 0xFF, 0xE3};
+    out.insert(out.end(), jump, jump + sizeof(jump));
+    const int64_t tableStart = at + 54;
+    for (int index = 0; index < plan.count; index += 1) {
+      const uint32_t target = jumpIndex(parts[static_cast<std::size_t>(index + 4)]);
+      if (target >= starts.size()) fail("switch.table 目标越出映像");
+      const int64_t rel = static_cast<int64_t>(starts[target]) - tableStart;
+      if (rel < INT32_MIN || rel > INT32_MAX) fail("switch.table 偏移放不进 32 位");
+      append32(out, static_cast<uint32_t>(rel));
+    }
+    return;
+  }
+  if (plan.kind == Kind::ItableCall) {
+    if (zapReg(parts[1]) != 0) fail("itable.call 只接受 r0");
+    const int64_t min = static_cast<int64_t>(bitsOf(parts[2]));
+    const int64_t max = static_cast<int64_t>(bitsOf(parts[3]));
+    if (min < INT32_MIN || min > INT32_MAX || max < min || max > INT32_MAX) fail("itable.call class ID 范围不对");
+    if (plan.count < 1 || plan.count != static_cast<int>(max - min + 1)) fail("itable.call 方法项数量不对");
+    const int64_t tableStart = at + 51;
+    const int64_t stub = tableStart + static_cast<int64_t>(plan.count) * 8;
+    const int64_t after = at + plan.size;
+    appendByte(out, 0x48);
+    appendByte(out, 0x81);
+    appendByte(out, 0xF8);
+    append32(out, static_cast<uint32_t>(min));
+    appendByte(out, 0x0F);
+    appendByte(out, 0x8C);
+    appendRel(out, at + 13, stub);
+    appendByte(out, 0x48);
+    appendByte(out, 0x81);
+    appendByte(out, 0xF8);
+    append32(out, static_cast<uint32_t>(max));
+    appendByte(out, 0x0F);
+    appendByte(out, 0x8F);
+    appendRel(out, at + 26, stub);
+    appendByte(out, 0x48);
+    appendByte(out, 0x81);
+    appendByte(out, 0xE8);
+    append32(out, static_cast<uint32_t>(min));
+    const uint8_t lea[] = {0x4C, 0x8D, 0x1D, 0x0B, 0x00, 0x00, 0x00};
+    out.insert(out.end(), lea, lea + sizeof(lea));
+    /* 表里是 64 位方法位地址，直接 call。 */
+    const uint8_t load[] = {0x49, 0x8B, 0x04, 0xC3};
+    out.insert(out.end(), load, load + sizeof(load));
+    const uint8_t call[] = {0xFF, 0xD0};
+    out.insert(out.end(), call, call + sizeof(call));
+    appendByte(out, 0xE9);
+    appendRel(out, at + 51, after);
+    for (int index = 0; index < plan.count; index += 1) {
+      const std::string& token = parts[static_cast<std::size_t>(index + 4)];
+      int64_t target = stub;
+      if (token != "-1") {
+        const uint32_t method = jumpIndex(token);
+        if (method >= starts.size()) fail("itable.call 方法目标越出映像");
+        target = starts[method];
+      }
+      /* starts 是代码区偏移；原生运行时地址前面还有 12 字节头。 */
+      append64(out, static_cast<uint64_t>(target + 12) * 8);
+    }
+    appendByte(out, 0xF4);
     return;
   }
   if (plan.kind == Kind::Jump) {

@@ -1,0 +1,4 @@
+/* 壳工作区里几处固定位址。实现在 work.obr，画屏和壳都按这里找，不各写一份。 */
+deRfun cwdLenAt(long work): long;
+deRfun cwdAt(long work): long;
+deRfun prevAt(long work): long;

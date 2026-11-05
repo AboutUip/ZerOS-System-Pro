@@ -1,0 +1,13 @@
+/* parse 给壳里其它文件用的函数。 */
+deRfun listCount(long out): long;
+deRfun listJoiner(long out, long index): long;
+deRfun listCmdCount(long out, long index): long;
+deRfun listCmd(long out, long index): long;
+deRfun cmdOf(long out, long index): long;
+deRfun cmdArgc(long cmd): long;
+deRfun cmdRedir(long cmd): long;
+deRfun cmdRedirLen(long cmd): long;
+deRfun cmdRedirAt(long cmd): long;
+deRfun cmdArgLen(long cmd, long index): long;
+deRfun cmdArgAt(long cmd, long index): long;
+deRfun parseLine(long src, long count, long out, long status): long;

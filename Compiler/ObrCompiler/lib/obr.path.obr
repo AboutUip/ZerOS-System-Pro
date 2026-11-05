@@ -1,0 +1,118 @@
+/* 路径整理的实现。编成 /lib/obr.path.zdll。不打开文件，也不改工作目录。 */
+import memory;
+import obr.path;
+
+
+deRfun copyBytes(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putByte(to, index, u8(from + index * 8L));
+    index = index + 1L;
+  }
+}
+
+
+deRfun putByte(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+
+deRfun pathNorm(long cwd, long cwdLen, long rel, long relLen, long dest, long scratch, long* outLen): long {
+  long filled = 0L;
+  long relAbs = 0L;
+  if (relLen > 0L && u8(rel) == 47L) {
+    relAbs = 1L;
+  }
+  if (relAbs == 1L) {
+    if (relLen > 512L) {
+      return 7L;
+    }
+    copyBytes(rel, scratch, relLen);
+    filled = relLen;
+  } else {
+    if (cwdLen < 1L) {
+      putByte(scratch, 0L, 47L);
+      filled = 1L;
+    } else {
+      if (cwdLen > 512L) {
+        return 7L;
+      }
+      copyBytes(cwd, scratch, cwdLen);
+      filled = cwdLen;
+    }
+    if (relLen > 0L) {
+      if (filled < 1L || u8(scratch + (filled - 1L) * 8L) != 47L) {
+        if (filled >= 512L) {
+          return 7L;
+        }
+        putByte(scratch, filled, 47L);
+        filled = filled + 1L;
+      }
+      if (filled + relLen > 512L) {
+        return 7L;
+      }
+      copyBytes(rel, scratch + filled * 8L, relLen);
+      filled = filled + relLen;
+    }
+  }
+  long out = 0L;
+  long index = 0L;
+  while (index < filled) {
+    while (index < filled && u8(scratch + index * 8L) == 47L) {
+      index = index + 1L;
+    }
+    if (index >= filled) {
+      break;
+    }
+    long start = index;
+    while (index < filled && u8(scratch + index * 8L) != 47L) {
+      index = index + 1L;
+    }
+    long size = index - start;
+    if (size == 1L && u8(scratch + start * 8L) == 46L) {
+      continue;
+    }
+    if (size == 2L && u8(scratch + start * 8L) == 46L && u8(scratch + (start + 1L) * 8L) == 46L) {
+      while (out > 1L && u8(dest + (out - 1L) * 8L) != 47L) {
+        out = out - 1L;
+      }
+      if (out > 1L) {
+        out = out - 1L;
+      }
+      continue;
+    }
+    if (out == 1L && u8(dest) == 47L) {
+      out = 0L;
+    }
+    if (out + 1L + size > 512L) {
+      return 7L;
+    }
+    putByte(dest, out, 47L);
+    out = out + 1L;
+    long step = 0L;
+    while (step < size) {
+      putByte(dest, out, u8(scratch + (start + step) * 8L));
+      out = out + 1L;
+      step = step + 1L;
+    }
+  }
+  if (out == 0L) {
+    putByte(dest, 0L, 47L);
+    out = 1L;
+  }
+  *outLen = out;
+  return 0L;
+}
+
+export deRfun obr::path::norm(long cwd, long cwdLen, long rel, long relLen, long dest, long scratch, long* outLen): long {
+  return pathNorm(cwd, cwdLen, rel, relLen, dest, scratch, outLen);
+}

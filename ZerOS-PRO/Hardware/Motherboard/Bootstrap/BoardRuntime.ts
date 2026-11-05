@@ -20,6 +20,7 @@
 /* 1. 导入                                                                     */
 /* -------------------------------------------------------------------------- */
 
+import { ZerOS as MailboxRoot } from "../Host/Mailbox";
 import { ZerOS as QueryRoot } from "../Host/HardwareQuery";
 import { ZerOS as CpuSeatRoot } from "../Seat/CpuSeat";
 import { ZerOS as ExpansionSeatRoot } from "../Seat/ExpansionSeat";
@@ -48,7 +49,12 @@ export namespace ZerOS {
         /* 每一段结束再打点。差值就是这一段自己的耗时，不含下一段。 */
         markBoot("board");
         ClockRoot.Hardware.Clock.startClock();
-        QueryRoot.Hardware.Motherboard.openQueryPage();
+        /* 页在这条线程上建好。同一块交给页面，显示器才能把拍号写进监督核正在读的格子。 */
+        const metrics = QueryRoot.Hardware.Motherboard.openQueryPage();
+        globalThis.postMessage({
+          kind: MailboxRoot.Hardware.Motherboard.MailMessage.Metrics,
+          buffer: metrics,
+        });
         BoardSelfCheckRoot.Hardware.Motherboard.runBoardSelfCheck();
         await GpuSeatRoot.Hardware.Motherboard.seatGpu();
         markBoot("gpu");

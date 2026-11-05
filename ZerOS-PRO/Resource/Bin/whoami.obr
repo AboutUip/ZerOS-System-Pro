@@ -5,18 +5,15 @@
    -- 结束选项。单独的 - 以及其它操作数写 whoami: too many arguments。
    簇里任何一个字母都写 whoami: invalid option。
    诊断在描述符 2，以 whoami: 开头，以换行结束。结束用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun writeErr(long home, string text): void {

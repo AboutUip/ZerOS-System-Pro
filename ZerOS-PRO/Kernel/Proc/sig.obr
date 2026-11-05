@@ -41,7 +41,7 @@ deRfun sigPendingKill(long core): long {
 
 /* 1 号被非 0 信号打中时整机不能再跑。停机字由宿主在写入时接走，这里不会返回。 */
 deRfun machineHalt(): void {
-  memory::storeOctet(1L, kArena(2L) + 49216L);
+  memory::storeOctet(1L, kSupervisor() + 49216L);
 }
 
 deRfun sigRaise(long caller, long pid, long sig): long {
@@ -115,6 +115,7 @@ deRfun procExit(long core, long code): void {
   if (task.state == TaskState::Zombie || task.state == TaskState::Empty) {
     return;
   }
+  taskAccount(index, TaskState::Zombie);
   task.state = TaskState::Zombie;
   task.code = code;
   /* 不会再被放回去。槽交还给还没领到槽的任务。 */
@@ -209,7 +210,7 @@ deRfun dropOwnCall(long core): void {
 
 /* Ctrl+C 要停掉正在被等的子进程。只认一个 Sleeping 且 waitFor 不是 0 的任务。
    没有，或者没能停掉，返回 0，键盘仍入队字节 3。真正停掉才返回 1，这次不要入队。
-   1 号自己一直在 wait，行编辑时壳的 waitFor 仍是 0。把 1 号算成等待者的话，字节 3 永远进不了队列。
+   1 号自己一直在 wait，读键盘的任务 waitFor 仍是 0。把 1 号算成等待者的话，字节 3 永远进不了队列。
    所以 1 号不作这次的等待者，也不杀 pid 1。
    waitFor 大于 0 就是那个 pid。等于 -1 时，找 ppid 是这个等待者、还没成僵尸的子进程，只停第一个。
    子进程若在等待者自己那颗核上，或就在监督核上，不停。
@@ -276,7 +277,7 @@ deRfun procBreak(): long {
     obr::os::capture(core, slot);
   }
   dropOwnCall(core);
-  /* 先拨光标、放开键盘等待，再收进程。收的时候才会把父进程叫醒去画提示符。 */
+  /* 先拨光标、放开键盘等待，再收进程。收的时候才会把父进程叫醒。 */
   conInterrupt(core);
   procExit(core, 130L);
   return 1L;

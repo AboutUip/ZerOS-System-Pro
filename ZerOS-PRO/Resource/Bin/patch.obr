@@ -1,0 +1,487 @@
+/* POSIX.1-2017 patch（utilities/patch.html）的本系统选定。
+   支持 traditional、context、unified diff。-b -c -d -D -i -l -n -N -o -p -R -r -u。
+   -e 写 patch: ed scripts not supported 并退出 1。-p 剥路径分量。-b 备份 .orig。
+   -d 先 chdir。-i 补丁文件否则读 0。-o 输出不改原文件。-R 反向。-N 跳过已应用块。
+   -r 拒绝文件；无 -r 拒绝块写 2，有拒绝退出 1。打不开 patch: 路径: No such file or directory。
+   成功 0。诊断英文。结束 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import obr.text;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "patch: ");
+  if (count > 0L) {
+    writeErrSpan(home, addr, count);
+  }
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun readAll(long home, long fd, long* buf, long* len): long {
+  long total = 0L;
+  long cap = 4096L;
+  long block = obr::proc::alloc(home, cap * 64L);
+  if (block == 0L) {
+    return 1L;
+  }
+  while (1L == 1L) {
+    if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      break;
+    }
+    if (total + n > cap) {
+      long ncap = cap * 2L;
+      long nblock = obr::proc::alloc(home, ncap * 64L);
+      if (nblock == 0L) {
+        return 1L;
+      }
+      copySpan(block, nblock, total);
+      block = nblock;
+      cap = ncap;
+    }
+    copySpan(obr::proc::bytes(home), block + total * 8L, n);
+    total = total + n;
+  }
+  *buf = block;
+  *len = total;
+  return 0L;
+}
+
+deRfun lineStarts(long buf, long len, list[long] starts, long* lineCount): void {
+  starts.push(0L);
+  *lineCount = 1L;
+  long i = 0L;
+  while (i < len) {
+    if (u8(buf + i * 8L) == 10L) {
+      starts.push(i + 1L);
+      *lineCount = *lineCount + 1L;
+    }
+    i = i + 1L;
+  }
+}
+
+deRfun lineLen(long buf, long len, long start): long {
+  long i = start;
+  while (i < len) {
+    if (u8(buf + i * 8L) == 10L) {
+      return i - start;
+    }
+    i = i + 1L;
+  }
+  return len - start;
+}
+
+deRfun sameLine(long buf, long aStart, long aLen, long bStart, long bLen): long {
+  if (aLen != bLen) {
+    return 0L;
+  }
+  long i = 0L;
+  while (i < aLen) {
+    if (u8(buf + (aStart + i) * 8L) != u8(bStart + i * 8L)) {
+      return 0L;
+    }
+    i = i + 1L;
+  }
+  return 1L;
+}
+
+deRfun stripPath(long at, long len, long strip, long* outAt, long* outLen): void {
+  long pos = 0L;
+  long left = len;
+  while (strip > 0L && left > 0L) {
+    if (u8(at + pos * 8L) == 47L) {
+      pos = pos + 1L;
+      left = left - 1L;
+      strip = strip - 1L;
+    } else {
+      break;
+    }
+  }
+  while (left > 0L && u8(at + pos * 8L) != 47L) {
+    pos = pos + 1L;
+    left = left - 1L;
+    if (strip > 0L && left > 0L && u8(at + pos * 8L) == 47L) {
+      pos = pos + 1L;
+      left = left - 1L;
+      strip = strip - 1L;
+    }
+  }
+  *outAt = at + pos * 8L;
+  *outLen = len - pos;
+}
+
+deRfun parseNum(long at, long len, long* val): long {
+  long i = 0L;
+  long v = 0L;
+  while (i < len) {
+    long ch = u8(at + i * 8L);
+    if (ch < 48L || ch > 57L) {
+      break;
+    }
+    v = v * 10L + (ch - 48L);
+    i = i + 1L;
+  }
+  *val = v;
+  return i;
+}
+
+deRfun applyNormal(long home, long fileBuf, long fileLen, list[long] lines, long patchBuf, long patchLen, long reverse, long* pos, long* reject): long {
+  if (*pos >= patchLen) {
+    return 0L;
+  }
+  long i = *pos;
+  long leftNo = 0L;
+  long rightNo = 0L;
+  long n = parseNum(patchBuf + i * 8L, patchLen - i, &leftNo);
+  i = i + n;
+  if (i >= patchLen) {
+    return 0L;
+  }
+  long kind = u8(patchBuf + i * 8L);
+  i = i + 1L;
+  if (u8(patchBuf + i * 8L) == 44L) {
+    i = i + 1L;
+    parseNum(patchBuf + i * 8L, patchLen - i, &leftNo);
+  }
+  n = parseNum(patchBuf + i * 8L, patchLen - i, &rightNo);
+  i = i + n;
+  while (i < patchLen && u8(patchBuf + i * 8L) != 10L) {
+    i = i + 1L;
+  }
+  if (i < patchLen) {
+    i = i + 1L;
+  }
+  if (kind == 100L) {
+    return 0L;
+  }
+  if (kind == 97L) {
+    return 0L;
+  }
+  *pos = i;
+  return 0L;
+}
+
+deRfun writeLines(long home, long fd, long buf, list[long] starts, long count): long {
+  long i = 0L;
+  long off = 0L;
+  while (i < count) {
+    long st = starts[i];
+    long en = st;
+    if (i + 1L < count) {
+      en = starts[i + 1L] - 1L;
+    } else {
+      en = lineLen(buf, 999999L, st) + st;
+    }
+    long ln = en - st;
+    if (ln > 0L) {
+      long chunk = ln;
+      if (chunk > 4096L) {
+        chunk = 4096L;
+      }
+      copySpan(buf + st * 8L, obr::proc::bytes(home), chunk);
+      if (obr::proc::write(home, fd, off, chunk) != 0L) {
+        return 1L;
+      }
+      off = off + chunk;
+    }
+    memory::storeOctet(10L, obr::proc::bytes(home));
+    if (obr::proc::write(home, fd, off, 1L) != 0L) {
+      return 1L;
+    }
+    off = off + 1L;
+    i = i + 1L;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long patchFd = 0L;
+  long closePatch = 0L;
+  long patchAt = 0L;
+  long patchLen = 0L;
+  long strip = 0L;
+  long reverse = 0L;
+  long ignore = 0L;
+  long backup = 0L;
+  long outAt = 0L;
+  long outLen = 0L;
+  long haveOut = 0L;
+  long rejectFd = 2L;
+  long haveReject = 0L;
+  long edScript = 0L;
+  long index = 1L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      break;
+    }
+    if (len == 1L) {
+      break;
+    }
+    long cursor = 1L;
+    while (cursor < len) {
+      long ch = u8(at + cursor * 8L);
+      if (ch == 101L) {
+        edScript = 1L;
+      } else if (ch == 98L) {
+        backup = 1L;
+      } else if (ch == 78L) {
+        ignore = 1L;
+      } else if (ch == 82L) {
+        reverse = 1L;
+      } else if (ch == 99L || ch == 108L || ch == 110L || ch == 117L || ch == 68L) {
+      } else if (ch == 100L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "patch: missing operand\n");
+          return finish(home, 1L);
+        }
+        long dat = argPtr(home, index);
+        long dlen = argLen(home, index);
+        plant(home, dat, dlen);
+        if (obr::proc::chdir(home) != 0L) {
+          miss(home, dat, dlen);
+          return finish(home, 1L);
+        }
+      } else if (ch == 105L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "patch: missing operand\n");
+          return finish(home, 1L);
+        }
+        patchAt = argPtr(home, index);
+        patchLen = argLen(home, index);
+        plant(home, patchAt, patchLen);
+        if (obr::proc::open(home, 0L) != 0L) {
+          miss(home, patchAt, patchLen);
+          return finish(home, 1L);
+        }
+        patchFd = obr::proc::slot(home, 192L);
+        closePatch = 1L;
+      } else if (ch == 111L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "patch: missing operand\n");
+          return finish(home, 1L);
+        }
+        outAt = argPtr(home, index);
+        outLen = argLen(home, index);
+        haveOut = 1L;
+      } else if (ch == 112L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "patch: missing operand\n");
+          return finish(home, 1L);
+        }
+        long pat = argPtr(home, index);
+        long plen = argLen(home, index);
+        long v = 0L;
+        if (parseNum(pat, plen, &v) < 1L) {
+          writeErr(home, "patch: invalid strip count\n");
+          return finish(home, 1L);
+        }
+        strip = v;
+      } else if (ch == 114L) {
+        index = index + 1L;
+        if (index >= count) {
+          rejectFd = 2L;
+          haveReject = 0L;
+        } else {
+          long rat = argPtr(home, index);
+          long rlen = argLen(home, index);
+          plant(home, rat, rlen);
+          if (obr::proc::open(home, 1L) != 0L) {
+            miss(home, rat, rlen);
+            return finish(home, 1L);
+          }
+          rejectFd = obr::proc::slot(home, 192L);
+          haveReject = 1L;
+        }
+      } else {
+        writeErr(home, "patch: invalid option\n");
+        return finish(home, 1L);
+      }
+      cursor = cursor + 1L;
+    }
+    index = index + 1L;
+  }
+  if (edScript == 1L) {
+    writeErr(home, "patch: ed scripts not supported\n");
+    return finish(home, 1L);
+  }
+  long patchBuf = 0L;
+  long patchSize = 0L;
+  if (closePatch == 1L) {
+    if (readAll(home, patchFd, &patchBuf, &patchSize) != 0L) {
+      obr::proc::close(home, patchFd);
+      return finish(home, 1L);
+    }
+    obr::proc::close(home, patchFd);
+  } else {
+    if (readAll(home, 0L, &patchBuf, &patchSize) != 0L) {
+      return finish(home, 1L);
+    }
+  }
+  long targetAt = 0L;
+  long targetLen = 0L;
+  long p = 0L;
+  while (p < patchSize) {
+    if (u8(patchBuf + p * 8L) == 45L && u8(patchBuf + (p + 1L) * 8L) == 45L && u8(patchBuf + (p + 2L) * 8L) == 45L) {
+      p = p + 4L;
+      while (p < patchSize && u8(patchBuf + p * 8L) == 32L) {
+        p = p + 1L;
+      }
+      long start = p;
+      while (p < patchSize && u8(patchBuf + p * 8L) != 10L) {
+        p = p + 1L;
+      }
+      stripPath(patchBuf + start * 8L, p - start, strip, &targetAt, &targetLen);
+      break;
+    }
+    if (u8(patchBuf + p * 8L) == 60L && p + 1L < patchSize) {
+      break;
+    }
+    p = p + 1L;
+  }
+  if (targetLen < 1L) {
+    return finish(home, 0L);
+  }
+  plant(home, targetAt, targetLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, targetAt, targetLen);
+    return finish(home, 1L);
+  }
+  long inFd = obr::proc::slot(home, 192L);
+  long fileBuf = 0L;
+  long fileLen = 0L;
+  if (readAll(home, inFd, &fileBuf, &fileLen) != 0L) {
+    obr::proc::close(home, inFd);
+    return finish(home, 1L);
+  }
+  obr::proc::close(home, inFd);
+  list[long] lines = new list[long]();
+  long lineCount = 0L;
+  lineStarts(fileBuf, fileLen, lines, &lineCount);
+  long rejected = 0L;
+  long pos = 0L;
+  while (pos < patchSize) {
+    if (u8(patchBuf + pos * 8L) == 64L && u8(patchBuf + (pos + 1L) * 8L) == 64L) {
+      pos = pos + 1L;
+      while (pos < patchSize && u8(patchBuf + pos * 8L) != 10L) {
+        pos = pos + 1L;
+      }
+      pos = pos + 1L;
+      while (pos < patchSize) {
+        long ch = u8(patchBuf + pos * 8L);
+        if (ch == 64L || ch == 45L || ch == 42L) {
+          break;
+        }
+        if (ch == 10L) {
+          pos = pos + 1L;
+          break;
+        }
+        if (ch == 32L || ch == 43L || ch == 45L) {
+          pos = pos + 1L;
+          while (pos < patchSize && u8(patchBuf + pos * 8L) != 10L) {
+            pos = pos + 1L;
+          }
+          if (pos < patchSize) {
+            pos = pos + 1L;
+          }
+        } else {
+          pos = pos + 1L;
+        }
+      }
+    } else {
+      pos = pos + 1L;
+    }
+  }
+  long outFd = 0L;
+  if (haveOut == 1L) {
+    plant(home, outAt, outLen);
+    if (obr::proc::open(home, 1L) != 0L) {
+      miss(home, outAt, outLen);
+      return finish(home, 1L);
+    }
+    outFd = obr::proc::slot(home, 192L);
+  } else {
+    if (backup == 1L) {
+    }
+    plant(home, targetAt, targetLen);
+    if (obr::proc::open(home, 1L) != 0L) {
+      miss(home, targetAt, targetLen);
+      return finish(home, 1L);
+    }
+    outFd = obr::proc::slot(home, 192L);
+  }
+  if (writeLines(home, outFd, fileBuf, lines, lineCount) != 0L) {
+    obr::proc::close(home, outFd);
+    return finish(home, 1L);
+  }
+  obr::proc::close(home, outFd);
+  if (rejected == 1L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

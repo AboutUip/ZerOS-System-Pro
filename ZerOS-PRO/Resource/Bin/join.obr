@@ -1,0 +1,832 @@
+/* POSIX.1-2017 join（utilities/join.html）。
+   形式是 join [-a file_number] [-e string] [-o list] [-t char] [-v file_number]
+   [-1 field] [-2 field] file1 file2。
+   正好两个文件。少了 join: missing operand，多了 join: too many arguments，退出 1。
+   -- 结束选项。单独 - 读标准输入，不关闭 0。两个都是 - 写 join: standard input used twice。
+   默认按第 1 字段相等连接，空白分隔字段（连续空白算一个分隔，行首空白忽略）。
+   -t 用单个字节分隔输入和输出，空字段保留。
+   默认输出：连接字段、file1 其余字段、file2 其余字段，字段间一个空格 32。
+   -1 -2 指定连接字段，从 1 起。非法写 join: invalid field number。
+   -a 1 或 -a 2 额外输出配不上的一行；-v 1 或 -v 2 只输出配不上的行。可重复。
+   -e string 只配合 -o：选中项缺字段时用 string 代替。
+   -o list 项为 0 或 file.field（file 为 1 或 2，field 为十进制，可多位如 1.10）。
+   逗号分开；可写在一个参数里，也可多次 -o 各跟一个参数，顺序累加。
+   同一键在任一侧连续多行时，两侧按行序做笛卡尔积输出。
+   打开失败 join: 路径: No such file or directory，退出 1。
+   读 join: read error，写 join: write error，行太长 join: line too long，立刻退出 1。
+   比较按无符号八位组。成功 0，失败 1。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun lineMax(): long { return 8192L; }
+deRfun chunkMax(): long { return 4096L; }
+deRfun oMax(): long { return 64L; }
+deRfun groupMax(): long { return 128L; }
+
+deRfun u8(long addr): long { return obr::oct::get(addr); }
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) { chunk = chunkMax(); }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun isDash(long addr, long count): long {
+  if (count == 1L && u8(addr) == 45L) { return 1L; }
+  return 0L;
+}
+
+deRfun isBlank(long bit): long {
+  if (bit == 32L || bit == 9L) { return 1L; }
+  return 0L;
+}
+
+struct Join {
+  long field1;
+  long field2;
+  long useSep;
+  long sep;
+  long a1;
+  long a2;
+  long v1;
+  long v2;
+  long useO;
+  long oCount;
+  long outSep;
+  long hasE;
+  long emptyAt;
+  long emptyLen;
+}
+
+deRfun oFile(long meta, long slot): long {
+  return memory::load64(meta + slot * 16L);
+}
+
+deRfun oField(long meta, long slot): long {
+  return memory::load64(meta + slot * 16L + 8L);
+}
+
+deRfun oPush(long meta, Join* cfg, long file, long field): long {
+  if (cfg.oCount >= oMax()) {
+    return 1L;
+  }
+  memory::store64(file, meta + cfg.oCount * 16L);
+  memory::store64(field, meta + cfg.oCount * 16L + 8L);
+  cfg.oCount = cfg.oCount + 1L;
+  return 0L;
+}
+
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > chunkMax()) { chunk = chunkMax(); }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      writeErr(home, "join: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "join: write error\n");
+      return 1L;
+    }
+    if (wrote > chunk) { wrote = chunk; }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  if (count < 1L) {
+    return 0L;
+  }
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > chunkMax()) { chunk = chunkMax(); }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) { return 1L; }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitByte(long home, long* place, long value): long {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  return writeReady(home, place, 1L);
+}
+
+deRfun order(long a, long aLen, long b, long bLen): long {
+  long n = aLen;
+  if (bLen < aLen) { n = bLen; }
+  long index = 0L;
+  while (index < n) {
+    long av = u8(a + index * 8L);
+    long bv = u8(b + index * 8L);
+    if (av < bv) { return -1L; }
+    if (av > bv) { return 1L; }
+    index = index + 1L;
+  }
+  if (aLen < bLen) { return -1L; }
+  if (aLen > bLen) { return 1L; }
+  return 0L;
+}
+
+deRfun countFields(long line, long len, Join* cfg): long {
+  if (cfg.useSep == 1L) {
+    if (len == 0L) { return 1L; }
+    long count = 1L;
+    long index = 0L;
+    while (index < len) {
+      if (u8(line + index * 8L) == cfg.sep) { count = count + 1L; }
+      index = index + 1L;
+    }
+    return count;
+  }
+  if (len == 0L) { return 1L; }
+  long count = 0L;
+  long index = 0L;
+  while (index < len) {
+    while (index < len && isBlank(u8(line + index * 8L)) == 1L) { index = index + 1L; }
+    if (index >= len) { break; }
+    count = count + 1L;
+    while (index < len && isBlank(u8(line + index * 8L)) == 0L) { index = index + 1L; }
+  }
+  if (count < 1L) { count = 1L; }
+  return count;
+}
+
+deRfun fieldSpan(long line, long len, long field, Join* cfg, long* start, long* end): long {
+  if (field < 1L) { return 1L; }
+  if (cfg.useSep == 1L) {
+    long cur = 1L;
+    long index = 0L;
+    long s = 0L;
+    while (index <= len) {
+      if (index == len || u8(line + index * 8L) == cfg.sep) {
+        if (cur == field) {
+          *start = s;
+          *end = index;
+          return 0L;
+        }
+        cur = cur + 1L;
+        s = index + 1L;
+      }
+      index = index + 1L;
+    }
+    return 1L;
+  }
+  long cur = 1L;
+  long index = 0L;
+  while (index < len) {
+    while (index < len && isBlank(u8(line + index * 8L)) == 1L) { index = index + 1L; }
+    if (index >= len) { break; }
+    long s = index;
+    while (index < len && isBlank(u8(line + index * 8L)) == 0L) { index = index + 1L; }
+    if (cur == field) {
+      *start = s;
+      *end = index;
+      return 0L;
+    }
+    cur = cur + 1L;
+  }
+  return 1L;
+}
+
+deRfun extractKey(long line, long len, long field, Join* cfg, long keyBuf): long {
+  long s = 0L;
+  long e = 0L;
+  if (fieldSpan(line, len, field, cfg, &s, &e) != 0L) {
+    memory::store64(0L, keyBuf);
+    return 0L;
+  }
+  long kLen = e - s;
+  copySpan(line + s * 8L, keyBuf + 64L, kLen);
+  memory::store64(kLen, keyBuf);
+  return kLen;
+}
+
+deRfun keyMatch(long line, long len, long field, Join* cfg, long keyBuf): long {
+  long k2 = keyBuf + 128L;
+  long l1 = memory::load64(keyBuf);
+  long l2 = extractKey(line, len, field, cfg, k2);
+  return order(keyBuf + 64L, l1, k2 + 64L, l2);
+}
+
+deRfun openRead(long home, long addr, long count, long* fd): long {
+  if (isDash(addr, count) == 1L) { *fd = 0L; return 0L; }
+  if (count < 0L || count > 8192L) {
+    writeErr(home, "join: ");
+    writeErrSpan(home, addr, count);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "join: ");
+    writeErrSpan(home, addr, count);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  *fd = obr::proc::slot(home, 192L);
+  return 0L;
+}
+
+deRfun readChunk(long home, long fd, long stage, long* fileOff, long* got): long {
+  if (obr::proc::read(home, fd, *fileOff, chunkMax()) != 0L) {
+    writeErr(home, "join: read error\n");
+    return 1L;
+  }
+  long n = obr::proc::slot(home, 320L);
+  if (n < 0L) {
+    writeErr(home, "join: read error\n");
+    return 1L;
+  }
+  if (n > chunkMax()) { n = chunkMax(); }
+  copySpan(obr::proc::bytes(home), stage, n);
+  *fileOff = *fileOff + n;
+  *got = n;
+  return 0L;
+}
+
+deRfun nextLine(long home, long fd, long buf, long* fileOff, long* hold, long* cursor, long* lineLen, long* has): long {
+  long stage = buf + lineMax() * 8L;
+  *lineLen = 0L;
+  while (1L == 1L) {
+    if (*cursor >= *hold) {
+      long got = 0L;
+      if (readChunk(home, fd, stage, fileOff, &got) != 0L) { return 1L; }
+      *hold = got;
+      *cursor = 0L;
+      if (got == 0L) {
+        if (*lineLen > 0L) { *has = 1L; } else { *has = 0L; }
+        return 0L;
+      }
+    }
+    long bit = u8(stage + *cursor * 8L);
+    *cursor = *cursor + 1L;
+    if (bit == 10L) { *has = 1L; return 0L; }
+    if (*lineLen >= lineMax()) {
+      writeErr(home, "join: line too long\n");
+      return 1L;
+    }
+    memory::storeOctet(bit, buf + *lineLen * 8L);
+    *lineLen = *lineLen + 1L;
+  }
+  return 0L;
+}
+
+deRfun parseFieldNum(long at, long len, long* out): long {
+  if (len < 1L) { return 0L; }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) { return 0L; }
+    value = value * 10L + bit - 48L;
+    cursor = cursor + 1L;
+  }
+  if (value < 1L) { return 0L; }
+  *out = value;
+  return 1L;
+}
+
+deRfun parseOItem(long home, long at, long len, long meta, Join* cfg): long {
+  if (len < 1L) {
+    writeErr(home, "join: invalid option\n");
+    return 1L;
+  }
+  if (len == 1L && u8(at) == 48L) {
+    if (oPush(meta, cfg, 0L, 0L) != 0L) {
+      writeErr(home, "join: invalid option\n");
+      return 1L;
+    }
+    return 0L;
+  }
+  long dot = -1L;
+  long cursor = 0L;
+  while (cursor < len) {
+    if (u8(at + cursor * 8L) == 46L) {
+      dot = cursor;
+      break;
+    }
+    cursor = cursor + 1L;
+  }
+  if (dot < 1L || dot + 1L >= len) {
+    writeErr(home, "join: invalid option\n");
+    return 1L;
+  }
+  long fileNum = 0L;
+  if (parseFieldNum(at, dot, &fileNum) == 0L || (fileNum != 1L && fileNum != 2L)) {
+    writeErr(home, "join: invalid option\n");
+    return 1L;
+  }
+  long fld = 0L;
+  if (parseFieldNum(at + (dot + 1L) * 8L, len - dot - 1L, &fld) == 0L) {
+    writeErr(home, "join: invalid option\n");
+    return 1L;
+  }
+  if (oPush(meta, cfg, fileNum, fld) != 0L) {
+    writeErr(home, "join: invalid option\n");
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun parseOlist(long home, long at, long len, long meta, Join* cfg): long {
+  long start = 0L;
+  long cursor = 0L;
+  while (cursor <= len) {
+    long bit = 44L;
+    if (cursor < len) {
+      bit = u8(at + cursor * 8L);
+    }
+    if (cursor == len || bit == 44L) {
+      long piece = cursor - start;
+      if (piece < 1L) {
+        writeErr(home, "join: invalid option\n");
+        return 1L;
+      }
+      if (parseOItem(home, at + start * 8L, piece, meta, cfg) != 0L) {
+        return 1L;
+      }
+      start = cursor + 1L;
+    }
+    cursor = cursor + 1L;
+  }
+  return 0L;
+}
+
+deRfun emitSep(long home, long* place, Join* cfg, long* first): long {
+  if (*first == 0L) {
+    if (emitByte(home, place, cfg.outSep) != 0L) { return 1L; }
+  }
+  *first = 0L;
+  return 0L;
+}
+
+deRfun emitEmpty(long home, long* place, Join* cfg, long* first): long {
+  if (emitSep(home, place, cfg, first) != 0L) { return 1L; }
+  if (cfg.hasE == 1L && cfg.emptyLen > 0L) {
+    if (emitSpan(home, place, cfg.emptyAt, cfg.emptyLen) != 0L) { return 1L; }
+  }
+  return 0L;
+}
+
+deRfun emitFieldBytes(long home, long* place, Join* cfg, long* first, long line, long len, long field, long fillE): long {
+  long s = 0L;
+  long e = 0L;
+  if (fieldSpan(line, len, field, cfg, &s, &e) != 0L) {
+    if (fillE == 1L) {
+      return emitEmpty(home, place, cfg, first);
+    }
+    return emitSep(home, place, cfg, first);
+  }
+  if (emitSep(home, place, cfg, first) != 0L) { return 1L; }
+  if (emitSpan(home, place, line + s * 8L, e - s) != 0L) { return 1L; }
+  return 0L;
+}
+
+deRfun emitOlist(long home, long* place, long line1, long len1, long line2, long len2, Join* cfg, long meta): long {
+  long first = 1L;
+  long slot = 0L;
+  while (slot < cfg.oCount) {
+    long file = oFile(meta, slot);
+    long fld = oField(meta, slot);
+    if (file == 0L) {
+      if (len1 < 1L) {
+        if (emitEmpty(home, place, cfg, &first) != 0L) { return 1L; }
+      } else {
+        if (emitFieldBytes(home, place, cfg, &first, line1, len1, cfg.field1, 1L) != 0L) { return 1L; }
+      }
+    } else if (file == 1L) {
+      if (len1 < 1L) {
+        if (emitEmpty(home, place, cfg, &first) != 0L) { return 1L; }
+      } else {
+        if (emitFieldBytes(home, place, cfg, &first, line1, len1, fld, 1L) != 0L) { return 1L; }
+      }
+    } else if (file == 2L) {
+      if (len2 < 1L) {
+        if (emitEmpty(home, place, cfg, &first) != 0L) { return 1L; }
+      } else {
+        if (emitFieldBytes(home, place, cfg, &first, line2, len2, fld, 1L) != 0L) { return 1L; }
+      }
+    } else {
+      writeErr(home, "join: invalid option\n");
+      return 1L;
+    }
+    slot = slot + 1L;
+  }
+  if (emitByte(home, place, 10L) != 0L) { return 1L; }
+  return 0L;
+}
+
+deRfun emitDefault(long home, long* place, long line1, long len1, long line2, long len2, Join* cfg): long {
+  long first = 1L;
+  long total1 = 0L;
+  long total2 = 0L;
+  if (len1 > 0L) {
+    total1 = countFields(line1, len1, cfg);
+  }
+  if (len2 > 0L) {
+    total2 = countFields(line2, len2, cfg);
+  }
+  if (len1 > 0L) {
+    long s = 0L;
+    long e = 0L;
+    if (fieldSpan(line1, len1, cfg.field1, cfg, &s, &e) == 0L) {
+      if (emitSpan(home, place, line1 + s * 8L, e - s) != 0L) { return 1L; }
+      first = 0L;
+    }
+  }
+  long index = 1L;
+  while (index <= total1) {
+    if (index != cfg.field1) {
+      if (emitFieldBytes(home, place, cfg, &first, line1, len1, index, 0L) != 0L) { return 1L; }
+    }
+    index = index + 1L;
+  }
+  index = 1L;
+  while (index <= total2) {
+    if (index != cfg.field2) {
+      if (emitFieldBytes(home, place, cfg, &first, line2, len2, index, 0L) != 0L) { return 1L; }
+    }
+    index = index + 1L;
+  }
+  if (emitByte(home, place, 10L) != 0L) { return 1L; }
+  return 0L;
+}
+
+deRfun emitMatched(long home, long* place, long line1, long len1, long line2, long len2, Join* cfg, long meta): long {
+  if (cfg.useO == 1L) {
+    return emitOlist(home, place, line1, len1, line2, len2, cfg, meta);
+  }
+  return emitDefault(home, place, line1, len1, line2, len2, cfg);
+}
+
+deRfun emitWhole(long home, long* place, long line, long len, Join* cfg): long {
+  if (cfg.useSep == 1L) {
+    if (emitSpan(home, place, line, len) != 0L) { return 1L; }
+    if (emitByte(home, place, 10L) != 0L) { return 1L; }
+    return 0L;
+  }
+  long first = 1L;
+  long total = countFields(line, len, cfg);
+  long index = 1L;
+  while (index <= total) {
+    if (emitFieldBytes(home, place, cfg, &first, line, len, index, 0L) != 0L) { return 1L; }
+    index = index + 1L;
+  }
+  if (emitByte(home, place, 10L) != 0L) { return 1L; }
+  return 0L;
+}
+
+deRfun emitSide(long home, long* place, long line, long len, Join* cfg, long meta, long only): long {
+  if (only == 1L) {
+    return emitWhole(home, place, line, len, cfg);
+  }
+  return emitMatched(home, place, line, len, 0L, 0L, cfg, meta);
+}
+
+deRfun keysEqual(long line1, long len1, long line2, long len2, Join* cfg, long keyStore): long {
+  long k1 = keyStore;
+  long k2 = keyStore + 128L;
+  long l1 = extractKey(line1, len1, cfg.field1, cfg, k1);
+  long l2 = extractKey(line2, len2, cfg.field2, cfg, k2);
+  return order(k1 + 64L, l1, k2 + 64L, l2);
+}
+
+deRfun groupLineAt(long pool, long index): long {
+  return pool + index * lineMax() * 8L;
+}
+
+deRfun groupLenAt(long lens, long index): long {
+  return memory::load64(lens + index * 64L);
+}
+
+deRfun storeGroupLine(long pool, long lens, long index, long line, long len): void {
+  copySpan(line, groupLineAt(pool, index), len);
+  memory::store64(len, lens + index * 64L);
+}
+
+deRfun collectGroup(long home, long fd, long buf, long* off, long* hold, long* cur, long* len, long* has, long field, Join* cfg, long keyStore, long pool, long lens, long* count): long {
+  *count = 0L;
+  if (*has == 0L) {
+    return 0L;
+  }
+  extractKey(buf, *len, field, cfg, keyStore);
+  while (*has == 1L) {
+    if (*count > 0L) {
+      if (keyMatch(buf, *len, field, cfg, keyStore) != 0L) {
+        break;
+      }
+    }
+    if (*count >= groupMax()) {
+      writeErr(home, "join: line too long\n");
+      return 1L;
+    }
+    storeGroupLine(pool, lens, *count, buf, *len);
+    *count = *count + 1L;
+    if (nextLine(home, fd, buf, off, hold, cur, len, has) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun emitCartesian(long home, long* place, long pool1, long lens1, long n1, long pool2, long lens2, long n2, Join* cfg, long meta): long {
+  long i = 0L;
+  while (i < n1) {
+    long j = 0L;
+    while (j < n2) {
+      if (cfg.v1 == 0L && cfg.v2 == 0L) {
+        if (emitMatched(home, place, groupLineAt(pool1, i), groupLenAt(lens1, i), groupLineAt(pool2, j), groupLenAt(lens2, j), cfg, meta) != 0L) {
+          return 1L;
+        }
+      }
+      j = j + 1L;
+    }
+    i = i + 1L;
+  }
+  return 0L;
+}
+
+deRfun runJoin(long home, long fd1, long buf1, long fd2, long buf2, Join* cfg, long meta, long pool1, long lens1, long pool2, long lens2): long {
+  long off1 = 0L; long hold1 = 0L; long cur1 = 0L; long len1 = 0L; long has1 = 0L;
+  long off2 = 0L; long hold2 = 0L; long cur2 = 0L; long len2 = 0L; long has2 = 0L;
+  long place = 0L;
+  long keyStore = buf1 + (lineMax() + 2048L) * 8L;
+  if (nextLine(home, fd1, buf1, &off1, &hold1, &cur1, &len1, &has1) != 0L) { return 1L; }
+  if (nextLine(home, fd2, buf2, &off2, &hold2, &cur2, &len2, &has2) != 0L) { return 1L; }
+  while (has1 == 1L && has2 == 1L) {
+    long rel = keysEqual(buf1, len1, buf2, len2, cfg, keyStore);
+    if (rel == 0L) {
+      long n1 = 0L;
+      long n2 = 0L;
+      if (collectGroup(home, fd1, buf1, &off1, &hold1, &cur1, &len1, &has1, cfg.field1, cfg, keyStore, pool1, lens1, &n1) != 0L) {
+        return 1L;
+      }
+      if (collectGroup(home, fd2, buf2, &off2, &hold2, &cur2, &len2, &has2, cfg.field2, cfg, keyStore, pool2, lens2, &n2) != 0L) {
+        return 1L;
+      }
+      if (emitCartesian(home, &place, pool1, lens1, n1, pool2, lens2, n2, cfg, meta) != 0L) {
+        return 1L;
+      }
+    } else if (rel < 0L) {
+      if (cfg.a1 == 1L || cfg.v1 == 1L) {
+        if (emitSide(home, &place, buf1, len1, cfg, meta, cfg.v1) != 0L) { return 1L; }
+      }
+      if (nextLine(home, fd1, buf1, &off1, &hold1, &cur1, &len1, &has1) != 0L) { return 1L; }
+    } else {
+      if (cfg.a2 == 1L || cfg.v2 == 1L) {
+        if (emitSide(home, &place, buf2, len2, cfg, meta, cfg.v2) != 0L) { return 1L; }
+      }
+      if (nextLine(home, fd2, buf2, &off2, &hold2, &cur2, &len2, &has2) != 0L) { return 1L; }
+    }
+  }
+  while (has1 == 1L) {
+    if (cfg.a1 == 1L || cfg.v1 == 1L) {
+      if (emitSide(home, &place, buf1, len1, cfg, meta, cfg.v1) != 0L) { return 1L; }
+    }
+    if (nextLine(home, fd1, buf1, &off1, &hold1, &cur1, &len1, &has1) != 0L) { return 1L; }
+  }
+  while (has2 == 1L) {
+    if (cfg.a2 == 1L || cfg.v2 == 1L) {
+      if (emitSide(home, &place, buf2, len2, cfg, meta, cfg.v2) != 0L) { return 1L; }
+    }
+    if (nextLine(home, fd2, buf2, &off2, &hold2, &cur2, &len2, &has2) != 0L) { return 1L; }
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Join cfg;
+  cfg.field1 = 1L;
+  cfg.field2 = 1L;
+  cfg.useSep = 0L;
+  cfg.sep = 9L;
+  cfg.a1 = 0L; cfg.a2 = 0L; cfg.v1 = 0L; cfg.v2 = 0L;
+  cfg.useO = 0L; cfg.oCount = 0L;
+  cfg.outSep = 32L;
+  cfg.hasE = 0L;
+  cfg.emptyAt = 0L;
+  cfg.emptyLen = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long meta = 0L;
+  long emptyHold = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 97L) {
+          cursor = cursor + 1L;
+          if (cursor >= len) {
+            writeErr(home, "join: invalid option\n");
+            return finish(home, 1L);
+          }
+          long num = u8(at + cursor * 8L) - 48L;
+          if (num == 1L) { cfg.a1 = 1L; }
+          else if (num == 2L) { cfg.a2 = 1L; }
+          else { writeErr(home, "join: invalid option\n"); return finish(home, 1L); }
+          cursor = cursor + 1L;
+        } else if (bit == 118L) {
+          cursor = cursor + 1L;
+          if (cursor >= len) { writeErr(home, "join: invalid option\n"); return finish(home, 1L); }
+          long num = u8(at + cursor * 8L) - 48L;
+          if (num == 1L) { cfg.v1 = 1L; cfg.a1 = 0L; }
+          else if (num == 2L) { cfg.v2 = 1L; cfg.a2 = 0L; }
+          else { writeErr(home, "join: invalid option\n"); return finish(home, 1L); }
+          cursor = cursor + 1L;
+        } else if (bit == 49L) {
+          long valAt = 0L; long valLen = 0L;
+          if (cursor + 1L < len) { valAt = at + (cursor + 1L) * 8L; valLen = len - (cursor + 1L); cursor = len; }
+          else { index = index + 1L; if (index >= count) { writeErr(home, "join: invalid field number\n"); return finish(home, 1L); }
+            valAt = argPtr(home, index); valLen = argLen(home, index); cursor = len; }
+          long value = 0L;
+          if (parseFieldNum(valAt, valLen, &value) == 0L) { writeErr(home, "join: invalid field number\n"); return finish(home, 1L); }
+          cfg.field1 = value;
+        } else if (bit == 50L) {
+          long valAt = 0L; long valLen = 0L;
+          if (cursor + 1L < len) { valAt = at + (cursor + 1L) * 8L; valLen = len - (cursor + 1L); cursor = len; }
+          else { index = index + 1L; if (index >= count) { writeErr(home, "join: invalid field number\n"); return finish(home, 1L); }
+            valAt = argPtr(home, index); valLen = argLen(home, index); cursor = len; }
+          long value = 0L;
+          if (parseFieldNum(valAt, valLen, &value) == 0L) { writeErr(home, "join: invalid field number\n"); return finish(home, 1L); }
+          cfg.field2 = value;
+        } else if (bit == 116L) {
+          cursor = cursor + 1L;
+          if (cursor >= len) { writeErr(home, "join: invalid option\n"); return finish(home, 1L); }
+          cfg.useSep = 1L;
+          cfg.sep = u8(at + cursor * 8L);
+          cfg.outSep = cfg.sep;
+          cursor = len;
+        } else if (bit == 101L) {
+          long valAt = 0L; long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "join: invalid option\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          if (emptyHold == 0L) {
+            emptyHold = obr::proc::alloc(home, 8192L * 8L);
+            if (emptyHold == 0L) {
+              writeErr(home, "join: out of memory\n");
+              return finish(home, 1L);
+            }
+          }
+          if (valLen > 8192L) {
+            writeErr(home, "join: invalid option\n");
+            return finish(home, 1L);
+          }
+          copySpan(valAt, emptyHold + 64L, valLen);
+          cfg.emptyAt = emptyHold + 64L;
+          cfg.emptyLen = valLen;
+          cfg.hasE = 1L;
+        } else if (bit == 111L) {
+          long valAt = 0L; long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "join: invalid option\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          if (meta == 0L) {
+            meta = obr::proc::alloc(home, oMax() * 16L);
+            if (meta == 0L) {
+              writeErr(home, "join: out of memory\n");
+              return finish(home, 1L);
+            }
+          }
+          cfg.useO = 1L;
+          if (parseOlist(home, valAt, valLen, meta, &cfg) != 0L) {
+            return finish(home, 1L);
+          }
+        } else {
+          writeErr(home, "join: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long files = count - index;
+  if (files < 2L) {
+    writeErr(home, "join: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (files > 2L) {
+    writeErr(home, "join: too many arguments\n");
+    return finish(home, 1L);
+  }
+  long f1 = argPtr(home, index);
+  long l1 = argLen(home, index);
+  long f2 = argPtr(home, index + 1L);
+  long l2 = argLen(home, index + 1L);
+  if (isDash(f1, l1) == 1L && isDash(f2, l2) == 1L) {
+    writeErr(home, "join: standard input used twice\n");
+    return finish(home, 1L);
+  }
+  long bits = (lineMax() + chunkMax() + 4096L) * 8L;
+  long buf1 = obr::proc::alloc(home, bits);
+  long buf2 = obr::proc::alloc(home, bits);
+  long pool1 = obr::proc::alloc(home, groupMax() * lineMax() * 8L);
+  long pool2 = obr::proc::alloc(home, groupMax() * lineMax() * 8L);
+  long lens1 = obr::proc::alloc(home, groupMax() * 64L);
+  long lens2 = obr::proc::alloc(home, groupMax() * 64L);
+  if (buf1 == 0L || buf2 == 0L || pool1 == 0L || pool2 == 0L || lens1 == 0L || lens2 == 0L) {
+    writeErr(home, "join: out of memory\n");
+    return finish(home, 1L);
+  }
+  if (meta == 0L) {
+    meta = obr::proc::alloc(home, oMax() * 16L);
+    if (meta == 0L) {
+      writeErr(home, "join: out of memory\n");
+      return finish(home, 1L);
+    }
+  }
+  long fd1 = 0L;
+  long fd2 = 0L;
+  if (openRead(home, f1, l1, &fd1) != 0L) { return finish(home, 1L); }
+  if (openRead(home, f2, l2, &fd2) != 0L) { return finish(home, 1L); }
+  long status = runJoin(home, fd1, buf1, fd2, buf2, &cfg, meta, pool1, lens1, pool2, lens2);
+  if (fd1 != 0L) { obr::proc::close(home, fd1); }
+  if (fd2 != 0L) { obr::proc::close(home, fd2); }
+  if (status != 0L) { return finish(home, 1L); }
+  return finish(home, 0L);
+}

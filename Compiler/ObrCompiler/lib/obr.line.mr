@@ -1,0 +1,22 @@
+/* 一行编辑。状态由调用方提供，不读键盘，也不写屏幕。
+   一行最多 240 个八位组。历史 32 条。
+   字 0 长度，1 光标，2 历史条数，3 历史游标（-1 是正在打的新行），4 暂存长度，5 转义状态。
+   字 6 为 1 时正在收 here-document 正文：换行不进历史，制表符写进行。
+   其余时候制表符返回 5。0 继续，1 提交，2 空行 Ctrl-D，3 Ctrl-C，4 Ctrl-L。
+   正文从 +4096 起。暂存从 +6144 起。历史从 +8192 起。 */
+namespace obr {
+namespace line {
+deRfun editLen(long state): long;
+deRfun editCursor(long state): long;
+deRfun editAt(long state, long index): long;
+deRfun editHistCount(long state): long;
+deRfun editInit(long state): void;
+deRfun lineBytes(long state): long;
+deRfun editBody(long state): long;
+deRfun editBodySet(long state, long value): void;
+deRfun editClear(long state): void;
+deRfun editSplice(long state, long at, long span, long src, long srcLen): void;
+deRfun editHist(long state, long index, long dest, long* count): long;
+deRfun editFeed(long state, long unit): long;
+}
+}

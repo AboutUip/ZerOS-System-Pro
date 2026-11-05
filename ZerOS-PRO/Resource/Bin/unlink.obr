@@ -1,0 +1,125 @@
+/* POSIX.1-2017 unlink（utilities/unlink.html）。形式是 unlink pathname。
+   恰好一个操作数。调用 obr::proc::unlink。不实现符号链接语义。
+   没有操作数写 unlink: missing operand，多于一个写 unlink: too many operands，退出 1。
+   失败写 unlink: 路径: 原因 到描述符 2，退出 1。成功退出 0。
+   非空目录若内核拒绝，把返回状态翻成英文诊断。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeWhy(long home, long status): void {
+  if (status == -1L) {
+    writeErr(home, "Permission denied");
+    return;
+  }
+  if (status == 2L) {
+    writeErr(home, "No such file or directory");
+    return;
+  }
+  if (status == 3L) {
+    writeErr(home, "Not a directory");
+    return;
+  }
+  if (status == 4L) {
+    writeErr(home, "Is a directory");
+    return;
+  }
+  if (status == 6L) {
+    writeErr(home, "File name too long");
+    return;
+  }
+  if (status == 12L) {
+    writeErr(home, "Directory not empty");
+    return;
+  }
+  if (status == 13L) {
+    writeErr(home, "Invalid argument");
+    return;
+  }
+  writeErr(home, "Unknown error");
+}
+
+deRfun complain(long home, long addr, long count, long status): void {
+  writeErr(home, "unlink: ");
+  writeSpan(home, addr, count);
+  writeErr(home, ": ");
+  writeWhy(home, status);
+  writeErr(home, "\n");
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count < 2L) {
+    writeErr(home, "unlink: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (count > 2L) {
+    writeErr(home, "unlink: too many operands\n");
+    return finish(home, 1L);
+  }
+  long at = argPtr(home, 1L);
+  long len = argLen(home, 1L);
+  plant(home, at, len);
+  long status = obr::proc::unlink(home);
+  if (status != 0L) {
+    complain(home, at, len, status);
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

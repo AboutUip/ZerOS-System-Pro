@@ -25,8 +25,17 @@ class Generator {
   int words_ = 0;
   int temp_ = 0;
   std::vector<std::pair<std::string, std::string>> loops_;
+  /** break 的最近目标：循环或 switch。continue 仍只看 loops_。 */
+  std::vector<std::string> breakTargets_;
+  /** 当前 case 的 fallthrough 目标；空表示不在 switch 里。 */
+  std::string fallthrough_;
   bool needString_ = false;
+  bool needFrom_ = false;
   bool needCollect_ = false;
+  /** 原生映像支持 switch.table；链接程序和 ZPB1 回退仍用比较链。 */
+  bool jumpTables_ = false;
+  /** 原生映像支持 itable.call；链接程序和 ZPB1 回退仍用 class ID 比较链。 */
+  bool itables_ = false;
   bool uiInk_ = false;
   bool uiBox_ = false;
   bool uiGlyph_ = false;
@@ -52,6 +61,14 @@ class Generator {
   std::vector<int> extraMemo_;
   const std::vector<Function>* functions_ = nullptr;
   const std::vector<ClassDecl>* classes_ = nullptr;
+  const std::vector<InterfaceDecl>* interfaces_ = nullptr;
+  const std::vector<std::string>* strings_ = nullptr;
+  const std::vector<ConstStruct>* structConstants_ = nullptr;
+  const std::vector<ConstClass>* classConstants_ = nullptr;
+  std::vector<int> stringAddresses_;
+  std::vector<int> structAddresses_;
+  std::vector<int> classAddresses_;
+  int stringHeapEnd_ = 0;
   const std::vector<StructDecl>* structs_ = nullptr;
 
   void emit(const std::string& line);
@@ -86,10 +103,15 @@ class Generator {
   int keep(int reg);
   void bump();
   void emitString(const std::string& text);
+  void layoutConstStrings();
+  void emitConstStringInit();
+  void emitConstValue(int address, TypeKind type, const Expr& value);
   void boxChar();
   void concat();
   void emitConcatRoutine();
   void emitCopyRoutine();
+  void emitFrom(const Expr& expr);
+  void emitFromRoutine();
   void markCollect();
   void restoreFrame();
   void emitCollectCall(const std::string& label);
@@ -97,9 +119,17 @@ class Generator {
   void emitCollectMethod(const Expr& expr);
   void emitElementAddress(const Expr& box, const Expr& index);
   void emitCollectRoutines();
+  const InterfaceDecl* findInterface(const std::string& name) const;
+  bool classImplements(const std::string& className, const std::string& interfaceName) const;
+  int findMethodIndex(const std::string& className, const Function& method) const;
+  void emitDispatchCall(const std::string& interfaceName, int methodIndex, int object, const std::vector<int>& args, const std::vector<TypeKind>& argKinds);
+  void emitDispatch(const Expr& expr);
   void asFloat();
   void truth(TypeKind type);
   void narrow(TypeKind type);
+  void truncate(TypeKind type);
+  void floatToInteger();
+  void castValue(TypeKind from, TypeKind to);
   void gen(const Expr& expr);
   void arith(Tok op, TypeKind left, TypeKind right, TypeKind result);
   void collectExpr(const Expr& expr, std::vector<int>& calls, bool& zap) const;

@@ -18,9 +18,15 @@ bool identPart(char unit) {
 Tok keyword(const std::string& text) {
   if (text == "if") return Tok::If;
   if (text == "else") return Tok::Else;
+  if (text == "switch") return Tok::Switch;
+  if (text == "case") return Tok::Case;
+  if (text == "default") return Tok::Default;
+  if (text == "fallthrough") return Tok::Fallthrough;
   if (text == "while") return Tok::While;
   if (text == "for") return Tok::For;
   if (text == "class") return Tok::Class;
+  if (text == "interface") return Tok::Interface;
+  if (text == "implements") return Tok::Implements;
   if (text == "struct") return Tok::Struct;
   if (text == "enum") return Tok::Enum;
   if (text == "new") return Tok::New;
@@ -38,6 +44,7 @@ Tok keyword(const std::string& text) {
   if (text == "public") return Tok::Public;
   if (text == "private") return Tok::Private;
   if (text == "var") return Tok::Var;
+  if (text == "const") return Tok::Const;
   if (text == "null") return Tok::Null;
   if (text == "undefined") return Tok::Undefined;
   if (text == "true") return Tok::True;

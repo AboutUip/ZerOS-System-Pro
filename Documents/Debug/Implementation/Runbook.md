@@ -1,8 +1,8 @@
-# 运行手册（当前实现）
+# ZTrace 运行手册（v1.1 当前实现）
 
-> 这是 `Implementation/` 层：当前 runner 的操作说明，不是实验标准。
+> 这是 `Implementation/` 层：ZTrace v1.1 runner 的操作说明，不是实验标准。
 > 实验设计、重复和证据口径见 `../Standard/Experiments.md` 与 `../Standard/Evidence.md`。
-> 文中的批次和命令是验证载荷，不是调试目标。
+> 文中的批次和命令是验证载荷，不是调试目标。v1.1 已交付；v2 P4 进行中，完整计划在本地 `dev/Plan/ZTrace-v2.md`。
 
 ## 1. 前置
 
@@ -53,7 +53,7 @@ node ZerOS-PRO/Hardware/Nas/Server/serve.mjs
 
 ### 3.1 自包含 capture CLI
 
-`Documents/Debug/Tools/ztrace.mjs` 是仓库内的宿主侧采集工具，只依赖 Node 22+ 自带的 `fetch` 和 `WebSocket`，不安装外部包。它以 `ZerOSDebug.trace.status().Prompts` 的增量为命令完成信号，不以固定睡眠判断结束。
+`Compiler/Debugger/Tools/ztrace.mjs` 是仓库内的宿主侧采集工具，只依赖 Node 22+ 自带的 `fetch` 和 `WebSocket`，不安装外部包。它以 `ZerOSDebug.trace.status().Prompts` 的增量为命令完成信号，不以固定睡眠判断结束。
 
 前置与第 1 节相同，另外要求：
 
@@ -63,30 +63,30 @@ node ZerOS-PRO/Hardware/Nas/Server/serve.mjs
 - 工具在清空 trace 后等 800ms 再打字，避免抢在 shell 读循环就绪之前
 - `ZerOS-PRO/Hardware/Nas/Root/boot/debug` 是单个字节 `01`；工具只读检查，不打开、不改写
 - 预览默认 `http://localhost:5173/` 返回 `200`，NAS `http://127.0.0.1:8765/` 返回 `426`
-- 本轮规范化环境预览在 `http://localhost:5180/`；5173 被其它项目占用时用 `--url` 指定，`V1.md` 的验收命令已显式传 5180
+- 本轮规范化环境预览在 `http://localhost:5180/`；5173 被其它项目占用时用 `--url` 指定，`V1.1.md` 的验收命令已显式传 5180
 
 只抓启动报告：
 
 ```powershell
-node Documents\Debug\Tools\ztrace.mjs --out dev\Debug\ztrace-boot
+node Compiler\Debugger\Tools\ztrace.mjs --out dev\Debug\ztrace-boot
 ```
 
 抓一条命令：
 
 ```powershell
-node Documents\Debug\Tools\ztrace.mjs --command "seq 1 5" --out dev\Debug\ztrace-test --key-delay 200 --timeout 60000
+node Compiler\Debugger\Tools\ztrace.mjs --command "seq 1 5" --out dev\Debug\ztrace-test --key-delay 200 --timeout 60000
 ```
 
 抓多条命令：
 
 ```powershell
-node Documents\Debug\Tools\ztrace.mjs --command "id" --command "pwd" --out dev\Debug\ztrace-basic
+node Compiler\Debugger\Tools\ztrace.mjs --command "id" --command "pwd" --out dev\Debug\ztrace-basic
 ```
 
 超时后继续下一条（后续样本可能受未完成命令影响）：
 
 ```powershell
-node Documents\Debug\Tools\ztrace.mjs --command "sleep 10" --command "pwd" --timeout 5000 --keep-going
+node Compiler\Debugger\Tools\ztrace.mjs --command "sleep 10" --command "pwd" --timeout 5000 --keep-going
 ```
 
 | 选项 | 默认 | 说明 |
@@ -134,23 +134,28 @@ runner 以提示符事件为完成信号，不用固定等待时间判断命令�
 
 ### 3.3 54 条全命令语料
 
-仓库内语料是 `Documents/Debug/Tools/ztrace-corpus.json`，覆盖 `/bin` 下除 `arg.obr` 外的全部 54 条命令。runner 会先校验语料与目录一致，少一条或多一条都直接失败。
+仓库内语料是 `Compiler/Debugger/Tools/ztrace-corpus.json`，覆盖 `/bin` 下除 `arg.obr` 外的全部 54 条命令。runner 会先校验语料与目录一致，少一条或多一条都直接失败。
 
 ```powershell
-node Documents\Debug\Tools\ztrace-corpus.mjs --url "http://localhost:5180/" --out dev\Debug\ztrace-corpus --key-delay 120 --timeout 60000
+node Compiler\Debugger\Tools\ztrace-corpus.mjs --url "http://localhost:5180/" --out dev\Debug\ztrace-corpus --key-delay 200 --timeout 60000
 ```
 
 默认整个进程有硬超时（`--timeout × 54 + 120000` 毫秒），单条命令仍各有 `--timeout`。结果写到 `corpus-summary.json` 和 `corpus-summary.txt`；只有 54 条全部回到提示符、无 `error` 才返回 0。`--only name,...` 只用于定位，结果会标 `complete=false`，不能当验收。
+
+v1.1 或 v2 要验证退出码时加 `--require-exit-codes`；v1.0 历史完成基线不加。退出码优先走宿主侧 `ProcessExit`：CPU 在服务 28 调用点直接读 `home+128`。全量曾停在 46/54，最后 8 条没有 `17 spawn`/`28 exit`，根因是 VFS 固定路径缓存耗尽；VFS 已扩到 512 项并加满时回收，最终全量 **54/54**、门禁 **8/8**，该开关可作为发布门禁。
 
 语料对会永久运行或读标准输入的命令使用有界调用：`xargs echo < /home/test.txt` 用输入重定向制造 EOF，`yes --help` 走非法选项退出。它们验证的是命令入口和退出路径，不验证无限输出本身。
 
 ### 3.4 结构对比与门禁
 
 ```powershell
-node Documents\Debug\Tools\ztrace-diff.mjs --base dev\Debug\ztrace-baseline\capture.json --head dev\Debug\ztrace-acceptance\capture.json --check
-node Documents\Debug\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-acceptance\capture.json --require-features
-node Documents\Debug\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-corpus\capture.json --require-corpus --require-features
+node Compiler\Debugger\Tools\ztrace-diff.mjs --base dev\Debug\ztrace-baseline\capture.json --head dev\Debug\ztrace-acceptance\capture.json --check
+node Compiler\Debugger\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-acceptance\capture.json --require-features
+node Compiler\Debugger\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-corpus\capture.json --require-corpus --require-features
+node Compiler\Debugger\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-corpus\capture.json --require-corpus --require-exit-codes --require-features
 ```
+
+第二条是 v2 的 G1b 门禁；v1 完成基线只用第一条。
 
 `ztrace-diff` 只比较结构：schema、命令集合/顺序、每条命令的 `error` 类别、事件码集合、报告段落集合和停机快照签名；不比较耗时和记录条数。`--check` 有结构差异返回 1。
 
@@ -161,15 +166,16 @@ node Documents\Debug\Tools\ztrace-gate.mjs --file dev\Debug\ztrace-corpus\captur
 ### 4.1 ztrace 采集
 
 - `capture.log`：带时间戳的进度，包含 preflight、浏览器、启动、每条命令和清理。
-- `capture.json`：`schema` 为 `zeros.ztrace.capture/1`；含 `url`、`startedAt`、`debug`、`git`、`environment`、`sourceMaps`、`boot`、`commands`、`log`。`boot` 和每条命令都含 `status`、`report`、`entries`、`faults`、`stops`；`boot.entries` 是启动期原始记录，`faults` 是 `ZerOSDebug.faults()` 的结构化快照，`stops` 是 `ZerOSDebug.stop(0..7)` 的最近停机记录和 `Snapshot`。
+- `capture.json`：当前工具写 `schema` `zeros.ztrace.capture/2`，含 `url`、`startedAt`、`debug`、`git`、`environment`、`sourceMaps`、`boot`、`commands`、`log`。v1 的 `/1` 文件仍可读。`boot` 和每条命令都含 `status`、`report`、`entries`、`faults`、`stops`；`boot.entries` 是启动期原始记录，`faults` 是 `ZerOSDebug.faults()` 的结构化快照，`stops` 是 `ZerOSDebug.stop(0..7)` 的最近停机记录和 `Snapshot`。
+- v2 命令对象另有 `windows`（trace/command/prompt 时间点与 `commandMs`）、`exitCode`、`exitCodeSource`、`exitEvents`、`outputCaptured`。`exitCode` 取命令窗口内最后一条 `TaskExit`；没有 `TaskExit` 时为 `null`，不猜。服务 28 的 `procExit` 已补诊断字，`false`/`true` 也能看到退出码。
 - `report.txt`：启动报告和每条命令报告的文本拼接。
 - `capture.json` 可用仓库内校验器检查结构：
 
 ```powershell
-node Documents\Debug\Tools\ztrace-check.mjs --file dev\Debug\ztrace-check\capture.json
+node Compiler\Debugger\Tools\ztrace-check.mjs --file dev\Debug\ztrace-check\capture.json
 ```
 
-校验器只检查 schema/字段类型/每条命令的 status/report/entries/faults/stops，包括 `Snapshot` 的字符串字段，不解释 trace 语义。
+校验器接受 `zeros.ztrace.capture/1` 和 `/2`；只检查 schema/字段类型/每条命令的 status/report/entries/faults/stops，以及 v2 的 windows/exitCode/exitEvents/outputCaptured，不解释 trace 语义。
 
 `faults` 是 `ZerOSDebug.faults()` 保留的故障历史，不保证只属于当前命令；启动自检留下的故障也会出现在 `boot.faults`。看 `Core/Index/Op/Stack/Window`，不要只看数量。
 
@@ -177,7 +183,7 @@ node Documents\Debug\Tools\ztrace-check.mjs --file dev\Debug\ztrace-check\captur
 
 `Keys.obr` 在写 key ring 次数前写 6592。没有这次写，槽数据和次数可能乱序可见，终端收不到按键；排查“输入没反应”时先确认构建包含这次写，并且没有写到 7296 或 7360。固件扫描键盘口按 `ZKP1` 匹配；设备也用 `ZKP1`。键盘线格式以 `Documents/Protocol/PhysicalHardware/Keyboard/ZKP1.md` 为准。
 
-每条成功命令的对象含 `command`、`elapsedMs`、`status`、`report`、`entries`、`faults`、`stops`。`entries` 是 `trace.dump()` 的原始记录数组；`status` 是采集结束时的 `Records/Pending/Dropped/Prompts`。失败命令另有 `error`，此时 `report` 为空、`entries` 为空、`stops` 为空，`status` 是最后一次成功读到的值或 `null`。
+每条成功命令的对象含 `command`、`elapsedMs`、`windows`、`exitCode`、`exitEvents`、`outputCaptured`、`status`、`report`、`entries`、`faults`、`stops`。`entries` 是 `trace.dump()` 的原始记录数组；`status` 是采集结束时的 `Records/Pending/Dropped/Prompts`。失败命令另有 `error`，此时 `report` 为空、`entries` 为空、`stops` 为空、`windows` 为 `null`，`status` 是最后一次成功读到的值或 `null`。
 
 `capture.log` 不写 `report` 正文，也不写 `entries` 明细；大对象只进 `capture.json`。
 

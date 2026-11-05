@@ -1,0 +1,206 @@
+/* POSIX.1-2017 who（utilities/who.html）。形式是 who [-abdHlmpqrstTu] [file] [am i] 等。
+   本系统没有 utmp/wtmp；选定只有一条固定记录，不是登录数据库。
+   无选项或 -m 时写一行：root、console，以及 clock 给出的日期 YYYY-MM-DD HH:MM。
+   -T 在 root 后写空格和 +。-u 在行尾写空格和一个点。
+   不认识的选项写 who: invalid option 和换行，退出 1。
+   成功退出 0。诊断英文 ASCII，描述符 2，前缀 who:。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun putByte(long home, long* filled, long bit): void {
+  memory::storeOctet(bit, obr::proc::bytes(home) + *filled * 8L);
+  *filled = *filled + 1L;
+}
+
+deRfun putText(long home, long* filled, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    putByte(home, filled, text[index]);
+    index = index + 1L;
+  }
+}
+
+deRfun putTwo(long home, long* filled, long value): void {
+  long high = value / 10L;
+  long low = value % 10L;
+  putByte(home, filled, 48L + high);
+  putByte(home, filled, 48L + low);
+}
+
+deRfun putFour(long home, long* filled, long value): void {
+  long d0 = value / 1000L;
+  long rest = value - d0 * 1000L;
+  long d1 = rest / 100L;
+  rest = rest - d1 * 100L;
+  long d2 = rest / 10L;
+  long d3 = rest - d2 * 10L;
+  putByte(home, filled, 48L + d0);
+  putByte(home, filled, 48L + d1);
+  putByte(home, filled, 48L + d2);
+  putByte(home, filled, 48L + d3);
+}
+
+deRfun floorDiv(long n, long d): long {
+  long q = n / d;
+  if (n % d < 0L) {
+    q = q - 1L;
+  }
+  return q;
+}
+
+deRfun civilFromDays(long z, long* y, long* m, long* d): void {
+  z = z + 719468L;
+  long era = z / 146097L;
+  if (z < 0L) {
+    era = (z - 146096L) / 146097L;
+  }
+  long doe = z - era * 146097L;
+  long yoe = (doe - doe / 1460L + doe / 36524L - doe / 146096L) / 365L;
+  long year = yoe + era * 400L;
+  long doy = doe - (365L * yoe + yoe / 4L - yoe / 100L);
+  long mp = (5L * doy + 2L) / 153L;
+  long day = doy - (153L * mp + 2L) / 5L + 1L;
+  long month = mp + 3L;
+  if (mp >= 10L) {
+    month = mp - 9L;
+  }
+  if (month <= 2L) {
+    year = year + 1L;
+  }
+  *y = year;
+  *m = month;
+  *d = day;
+}
+
+deRfun breakMillis(long ms, long* year, long* month, long* day, long* hour, long* minute, long* second): void {
+  long days = floorDiv(ms, 86400000L);
+  long tod = ms - days * 86400000L;
+  long seconds = tod / 1000L;
+  *hour = seconds / 3600L;
+  *minute = (seconds % 3600L) / 60L;
+  *second = seconds % 60L;
+  civilFromDays(days, year, month, day);
+}
+
+deRfun flushOut(long home, long filled): void {
+  long offset = 0L;
+  while (offset < filled) {
+    long chunk = filled - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (offset > 0L) {
+      long index = 0L;
+      while (index < chunk) {
+        memory::storeOctet(
+          u8(obr::proc::bytes(home) + (offset + index) * 8L),
+          obr::proc::bytes(home) + index * 8L);
+        index = index + 1L;
+      }
+    }
+    obr::proc::write(home, 1L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long flagT = 0L;
+  long flagU = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len > 0L && u8(at) == 45L) {
+      if (len == 1L) {
+        writeErr(home, "who: invalid option\n");
+        return finish(home, 1L);
+      }
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 109L) {
+          cursor = cursor + 1L;
+        } else if (bit == 84L) {
+          flagT = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 117L) {
+          flagU = 1L;
+          cursor = cursor + 1L;
+        } else {
+          writeErr(home, "who: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (index < count) {
+    writeErr(home, "who: invalid option\n");
+    return finish(home, 1L);
+  }
+  if (obr::proc::clock(home) != 0L) {
+    writeErr(home, "who: cannot read clock\n");
+    return finish(home, 1L);
+  }
+  long ms = obr::proc::slot(home, 128L);
+  long year = 0L;
+  long month = 0L;
+  long day = 0L;
+  long hour = 0L;
+  long minute = 0L;
+  long second = 0L;
+  breakMillis(ms, &year, &month, &day, &hour, &minute, &second);
+  long filled = 0L;
+  putText(home, &filled, "root");
+  if (flagT == 1L) {
+    putText(home, &filled, " +");
+  }
+  putText(home, &filled, " console ");
+  putFour(home, &filled, year);
+  putByte(home, &filled, 45L);
+  putTwo(home, &filled, month);
+  putByte(home, &filled, 45L);
+  putTwo(home, &filled, day);
+  putByte(home, &filled, 32L);
+  putTwo(home, &filled, hour);
+  putByte(home, &filled, 58L);
+  putTwo(home, &filled, minute);
+  if (flagU == 1L) {
+    putText(home, &filled, " .");
+  }
+  putByte(home, &filled, 10L);
+  flushOut(home, filled);
+  return finish(home, 0L);
+}

@@ -1,0 +1,448 @@
+/* POSIX.1-2017 compress（utilities/compress.html）的本系统选定。
+   形式 compress [-f] [-v] [-b bits] [file...]。bits 9 至 16，缺省 16。
+   .Z 头三字节 31、157、(bits|128)。LZW：清除码 256，新码从 257，初宽 9，表满加宽，
+   到 maxbits 后发清除码并重置。词典只存前缀码和追加的一个八位组，不用字符串表。
+   有操作数写 同名.Z、删源；-f 才盖已有 .Z。
+   无操作数 0 压 1，不关 0/1。-v 向 2 写压缩百分比。非法 bits：compress: invalid bits，1。
+   其它失败 1，成功 0。诊断英文 ASCII，命令名开头。结束 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 码 257 起的条目：前缀码在 +0，追加八位组在 +64，相邻条目隔 128 位。找不到返回 -1。 */
+deRfun findCode(long tab, long used, long prefix, long ch): long {
+  long index = 0L;
+  while (index < used) {
+    long at = tab + index * 128L;
+    if (memory::load64(at) == prefix && memory::load64(at + 64L) == ch) {
+      return 257L + index;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun parseBits(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    value = value * 10L + (bit - 48L);
+    cursor = cursor + 1L;
+  }
+  if (value < 9L || value > 16L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun writeFd(long home, long fd, long* off, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, fd, *off, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *off = *off + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitPct(long home, long orig, long comp): void {
+  if (orig < 1L) {
+    return;
+  }
+  long pct = (orig - comp) * 10000L / orig;
+  long whole = pct / 100L;
+  long frac = pct % 100L;
+  writeErr(home, "Compression: ");
+  long at = obr::proc::bytes(home);
+  long pos = 0L;
+  if (whole >= 100L) {
+    memory::storeOctet(48L + whole / 100L, at + pos * 8L);
+    pos = pos + 1L;
+    whole = whole % 100L;
+  }
+  if (whole >= 10L || pos > 0L) {
+    memory::storeOctet(48L + whole / 10L, at + pos * 8L);
+    pos = pos + 1L;
+    whole = whole % 10L;
+  }
+  memory::storeOctet(48L + whole, at + pos * 8L);
+  pos = pos + 1L;
+  memory::storeOctet(46L, at + pos * 8L);
+  pos = pos + 1L;
+  memory::storeOctet(48L + frac / 10L, at + pos * 8L);
+  pos = pos + 1L;
+  memory::storeOctet(48L + frac % 10L, at + pos * 8L);
+  pos = pos + 1L;
+  memory::storeOctet(37L, at + pos * 8L);
+  pos = pos + 1L;
+  memory::storeOctet(10L, at + pos * 8L);
+  pos = pos + 1L;
+  obr::proc::write(home, 2L, 0L, pos);
+}
+
+deRfun tableInit(long maxbits, long* nextCode, long* nbits, long* limit): void {
+  *nextCode = 257L;
+  *nbits = 9L;
+  *limit = 512L;
+}
+
+deRfun codeCap(long maxbits): long {
+  long cap = 512L;
+  long b = 9L;
+  while (b < maxbits) {
+    cap = cap * 2L;
+    b = b + 1L;
+  }
+  return cap;
+}
+
+deRfun putCode(long home, long fd, long* outOff, long* acc, long* accBits, long code, long width): long {
+  long need = width;
+  long bits = code;
+  while (need > 0L) {
+    long take = 8L - *accBits;
+    if (take > need) {
+      take = need;
+    }
+    long mask = (1L << take) - 1L;
+    *acc = *acc | ((bits & mask) << *accBits);
+    bits = bits >> take;
+    *accBits = *accBits + take;
+    need = need - take;
+    if (*accBits >= 8L) {
+      memory::storeOctet(*acc & 255L, obr::proc::bytes(home));
+      if (writeFd(home, fd, outOff, 1L) != 0L) {
+        return 1L;
+      }
+      *acc = 0L;
+      *accBits = 0L;
+    }
+  }
+  return 0L;
+}
+
+deRfun flushAcc(long home, long fd, long* outOff, long* acc, long* accBits): long {
+  if (*accBits > 0L) {
+    memory::storeOctet(*acc & 255L, obr::proc::bytes(home));
+    if (writeFd(home, fd, outOff, 1L) != 0L) {
+      return 1L;
+    }
+    *acc = 0L;
+    *accBits = 0L;
+  }
+  return 0L;
+}
+
+deRfun compressStream(long home, long inFd, long outFd, long maxbits, long verbose, long* origOut, long* compOut): long {
+  long tab = obr::proc::alloc(home, 65536L * 128L);
+  long hold = obr::proc::alloc(home, 4096L * 8L);
+  if (tab == 0L || hold == 0L) {
+    return 1L;
+  }
+  long nextCode = 257L;
+  long nbits = 9L;
+  long limit = 512L;
+  tableInit(maxbits, &nextCode, &nbits, &limit);
+  long outOff = 0L;
+  long acc = 0L;
+  long accBits = 0L;
+  long orig = 0L;
+  memory::storeOctet(31L, obr::proc::bytes(home));
+  memory::storeOctet(157L, obr::proc::bytes(home) + 8L);
+  memory::storeOctet(maxbits | 128L, obr::proc::bytes(home) + 16L);
+  if (writeFd(home, outFd, &outOff, 3L) != 0L) {
+    return 1L;
+  }
+  if (putCode(home, outFd, &outOff, &acc, &accBits, 256L, nbits) != 0L) {
+    return 1L;
+  }
+  long inOff = 0L;
+  long bufLen = 0L;
+  long bufPos = 0L;
+  long gotFirst = 0L;
+  long w = 0L;
+  while (1L == 1L) {
+    if (bufPos >= bufLen) {
+      if (obr::proc::read(home, inFd, inOff, 4096L) != 0L) {
+        return 1L;
+      }
+      bufLen = obr::proc::slot(home, 320L);
+      if (bufLen < 1L) {
+        break;
+      }
+      if (bufLen > 4096L) {
+        bufLen = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), hold, bufLen);
+      inOff = inOff + bufLen;
+      orig = orig + bufLen;
+      bufPos = 0L;
+    }
+    long c = u8(hold + bufPos * 8L);
+    bufPos = bufPos + 1L;
+    if (gotFirst == 0L) {
+      w = c;
+      gotFirst = 1L;
+    } else {
+      long found = findCode(tab, nextCode - 257L, w, c);
+      if (found >= 0L) {
+        w = found;
+      } else {
+        if (putCode(home, outFd, &outOff, &acc, &accBits, w, nbits) != 0L) {
+          return 1L;
+        }
+        if (nextCode < codeCap(maxbits)) {
+          long slot = tab + (nextCode - 257L) * 128L;
+          memory::store64(w, slot);
+          memory::store64(c, slot + 64L);
+          nextCode = nextCode + 1L;
+          if (nextCode >= limit && nbits < maxbits) {
+            nbits = nbits + 1L;
+            limit = limit * 2L;
+          }
+        } else {
+          if (putCode(home, outFd, &outOff, &acc, &accBits, 256L, nbits) != 0L) {
+            return 1L;
+          }
+          tableInit(maxbits, &nextCode, &nbits, &limit);
+        }
+        w = c;
+      }
+    }
+  }
+  if (gotFirst == 1L) {
+    long emit = w;
+    if (putCode(home, outFd, &outOff, &acc, &accBits, emit, nbits) != 0L) {
+      return 1L;
+    }
+  }
+  if (flushAcc(home, outFd, &outOff, &acc, &accBits) != 0L) {
+    return 1L;
+  }
+  *origOut = orig;
+  *compOut = outOff;
+  if (verbose == 1L) {
+    emitPct(home, orig, outOff);
+  }
+  return 0L;
+}
+
+deRfun appendZ(long home, long src, long srcLen, long dest): long {
+  if (srcLen + 2L > 8192L) {
+    return 0L;
+  }
+  memory::store64(srcLen + 2L, obr::proc::path(home));
+  copySpan(src, obr::proc::path(home) + 64L, srcLen);
+  memory::storeOctet(46L, obr::proc::path(home) + 64L + srcLen * 8L);
+  memory::storeOctet(90L, obr::proc::path(home) + 64L + (srcLen + 1L) * 8L);
+  return srcLen + 2L;
+}
+
+deRfun compressPath(long home, long pathAt, long pathLen, long force, long verbose, long maxbits): long {
+  if (pathLen > 8192L) {
+    return 1L;
+  }
+  if (appendZ(home, pathAt, pathLen, 0L) < 1L) {
+    return 1L;
+  }
+  if (force == 0L) {
+    if (obr::proc::stat(home) == 0L) {
+      writeErr(home, "compress: ");
+      writeErrSpan(home, pathAt, pathLen);
+      writeErr(home, ".Z: already exists\n");
+      return 1L;
+    }
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "compress: ");
+    writeErrSpan(home, pathAt, pathLen);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  long inFd = obr::proc::slot(home, 192L);
+  /* 读打开会占用路径窗。写出前再放上同名加 .Z，避免截断源文件。 */
+  if (appendZ(home, pathAt, pathLen, 0L) < 1L) {
+    obr::proc::close(home, inFd);
+    return 1L;
+  }
+  if (obr::proc::open(home, 1L) != 0L) {
+    obr::proc::close(home, inFd);
+    writeErr(home, "compress: ");
+    writeErrSpan(home, pathAt, pathLen);
+    writeErr(home, ".Z: No such file or directory\n");
+    return 1L;
+  }
+  long outFd = obr::proc::slot(home, 192L);
+  long orig = 0L;
+  long comp = 0L;
+  long st = compressStream(home, inFd, outFd, maxbits, verbose, &orig, &comp);
+  obr::proc::close(home, inFd);
+  obr::proc::close(home, outFd);
+  if (st != 0L) {
+    plant(home, pathAt, pathLen);
+    appendZ(home, pathAt, pathLen, 0L);
+    obr::proc::unlink(home);
+    return 1L;
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::unlink(home) != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long force = 0L;
+  long verbose = 0L;
+  long maxbits = 16L;
+  long index = 1L;
+  long count = argc(home);
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      break;
+    }
+    if (len == 1L) {
+      break;
+    }
+    long cursor = 1L;
+    while (cursor < len) {
+      long ch = u8(at + cursor * 8L);
+      if (ch == 102L) {
+        force = 1L;
+      } else if (ch == 118L) {
+        verbose = 1L;
+      } else if (ch == 98L) {
+        cursor = cursor + 1L;
+        if (cursor < len) {
+          long bits = 0L;
+          if (parseBits(at + cursor * 8L, len - cursor, &bits) == 0L) {
+            writeErr(home, "compress: invalid bits\n");
+            return finish(home, 1L);
+          }
+          maxbits = bits;
+          cursor = len;
+        } else {
+          index = index + 1L;
+          if (index >= count) {
+            writeErr(home, "compress: invalid bits\n");
+            return finish(home, 1L);
+          }
+          long bat = argPtr(home, index);
+          long blen = argLen(home, index);
+          long bits = 0L;
+          if (parseBits(bat, blen, &bits) == 0L) {
+            writeErr(home, "compress: invalid bits\n");
+            return finish(home, 1L);
+          }
+          maxbits = bits;
+        }
+      } else {
+        writeErr(home, "compress: invalid option\n");
+        return finish(home, 1L);
+      }
+      cursor = cursor + 1L;
+    }
+    index = index + 1L;
+  }
+  long fail = 0L;
+  if (index >= count) {
+    long orig = 0L;
+    long comp = 0L;
+    if (compressStream(home, 0L, 1L, maxbits, verbose, &orig, &comp) != 0L) {
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (compressPath(home, at, len, force, verbose, maxbits) != 0L) {
+      fail = 1L;
+    }
+    index = index + 1L;
+  }
+  return finish(home, fail);
+}

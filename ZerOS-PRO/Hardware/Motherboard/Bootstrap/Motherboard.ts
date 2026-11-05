@@ -21,6 +21,7 @@
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as MailboxRoot } from "../Host/Mailbox";
+import { ZerOS as MetricPageRoot } from "../Host/MetricPage";
 import { ZerOS as PageCoreStopRoot } from "../../Cpu/Host/PageCoreStop";
 import { type ZerOS as StopRoot } from "../../Cpu/Structure/CoreStop";
 import { ZerOS as QueuedWorkerRoot } from "../Host/QueuedWorker";
@@ -173,6 +174,14 @@ export namespace ZerOS {
         if (kind === MailMessage.Trace) {
           return;
         }
+        if (kind === MailMessage.Metrics) {
+          const buffer = record["buffer"];
+          /* 挂上主板那一块。长度不对就保持未挂，显示器的拍号继续写不进去。 */
+          if (buffer instanceof SharedArrayBuffer) {
+            MetricPageRoot.Hardware.Motherboard.attachMetricPage(buffer);
+          }
+          return;
+        }
         if (kind === MailMessage.BootMark) {
           const name = record["name"];
           const at = record["at"];
@@ -196,6 +205,7 @@ export namespace ZerOS {
               Index: index,
               Op: op,
               Detail: detail,
+              At: typeof record["at"] === "number" ? record["at"] : 0,
               Snapshot: (record["snapshot"] ?? null) as CoreStop["Snapshot"],
             });
           }

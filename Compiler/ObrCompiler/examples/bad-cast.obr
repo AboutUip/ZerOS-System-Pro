@@ -1,0 +1,6 @@
+/* 标量 cast 不能跨到 string。编译应当失败。 */
+deRfun main(): int {
+  var[string] text = "abc";
+  var[int] number = (int)text;
+  return number;
+}

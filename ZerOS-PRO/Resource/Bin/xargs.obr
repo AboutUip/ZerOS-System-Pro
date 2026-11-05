@@ -39,18 +39,15 @@
    描述符 0 不关闭。诊断写描述符 2，偏移从 0。一次读写最多 4096 个八位组。
    alloc 的单位是位。失败写 xargs: out of memory，退出 1。
    main 经 finish 调 exit。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {
@@ -360,7 +357,7 @@ deRfun resolve(long home, long scratch, long name, long nameLen, long* outLen): 
 /* 先把抄出来的整段放回活窗口，环境就回来了。然后只改参数条数、参数八位组数、
    64 个参数长度和参数八位组。用不到的参数长度写 0。这里不清 139520 位。 */
 deRfun publish(long home, long saved, long batch): void {
-  long base = home + 65536L * 64L;
+  long base = obr::proc::args(home);
   copyWindow(saved, base);
   long argcOut = memory::load64(batch);
   long total = memory::load64(batch + 64L);
@@ -620,7 +617,7 @@ deRfun main(): int {
     writeErr(home, "xargs: out of memory\n");
     return finish(home, 1L);
   }
-  copyWindow(home + 65536L * 64L, saved);
+  copyWindow(obr::proc::args(home), saved);
   if (windowOk(saved) == 0L) {
     writeErr(home, "xargs: argument list too long\n");
     return finish(home, 1L);

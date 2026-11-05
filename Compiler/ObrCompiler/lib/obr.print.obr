@@ -1,0 +1,240 @@
+/* 标准输出流的实现。编成 /lib/obr.print.zdll，不链进调用方。
+   只追加。换行、写满、flush，以及帧序号变化时，把缓冲写到描述符 1。
+   不订阅帧，不调用 present，不写诊断。 */
+import memory;
+import obr.print;
+import obr.proc;
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun copyOctets(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 缓冲状态。op 0 保证已经分配。op 1 写已用个数。op 2 写文件偏移。
+   op 3 写上次交出的帧序号。op 4 只查询，还没分配就返回 0。
+   这块状态必须留在这一份函数里，out 和 flush 才看得到同一块缓冲。 */
+deRfun hold(long home, long op, long arg, long* buf, long* used, long* place, long* epoch): long {
+  static long storage = 0L;
+  static long count = 0L;
+  static long cursor = 0L;
+  static long seen = 0L;
+  /* home 是这颗核心窗口的起点。堆块一定落在窗口里。
+     0 和窗口以下的值都不是缓冲：上一个程序可能把旗标 1 留在同一格。
+     把它当成指针会写到位地址 1，客核直接越界。 */
+  if (storage < home) {
+    if (op == 4L) {
+      return 0L;
+    }
+    storage = obr::proc::alloc(home, 4096L * 8L);
+    if (storage < home) {
+      storage = 0L;
+      return 0L;
+    }
+    count = 0L;
+    cursor = 0L;
+    seen = 0L;
+  }
+  if (op == 1L) {
+    count = arg;
+  } else if (op == 2L) {
+    cursor = arg;
+  } else if (op == 3L) {
+    seen = arg;
+  }
+  *buf = storage;
+  *used = count;
+  *place = cursor;
+  *epoch = seen;
+  return 1L;
+}
+
+/* 把缓冲里已有的字节写到描述符 1。写不满就按实际个数再写。失败时留下还没写走的那一截。 */
+deRfun drain(long home): long {
+  long buf = 0L;
+  long used = 0L;
+  long place = 0L;
+  long epoch = 0L;
+  if (hold(home, 4L, 0L, &buf, &used, &place, &epoch) == 0L) {
+    return 0L;
+  }
+  if (used < 1L) {
+    return 0L;
+  }
+  long pending = used;
+  long offset = 0L;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copyOctets(buf + offset * 8L, obr::proc::bytes(home), chunk);
+    long status = obr::proc::write(home, 1L, place, chunk);
+    long wrote = obr::proc::slot(home, 320L);
+    if (status != 0L || wrote < 1L || wrote > chunk) {
+      if (offset > 0L) {
+        copyOctets(buf + offset * 8L, buf, pending);
+        long sink = 0L;
+        long sinkUsed = 0L;
+        long sinkPlace = 0L;
+        long sinkEpoch = 0L;
+        hold(home, 1L, pending, &sink, &sinkUsed, &sinkPlace, &sinkEpoch);
+        hold(home, 2L, place, &sink, &sinkUsed, &sinkPlace, &sinkEpoch);
+      }
+      return 1L;
+    }
+    pending = pending - wrote;
+    offset = offset + wrote;
+    place = place + wrote;
+  }
+  long sink = 0L;
+  long sinkUsed = 0L;
+  long sinkPlace = 0L;
+  long sinkEpoch = 0L;
+  if (hold(home, 1L, 0L, &sink, &sinkUsed, &sinkPlace, &sinkEpoch) == 0L) {
+    return 1L;
+  }
+  if (hold(home, 2L, place, &sink, &sinkUsed, &sinkPlace, &sinkEpoch) == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 缓冲里还有字节时，帧序号变了就先交出去。一次调用只问一次。
+   缓冲是空的就没有可交的字节，不再为了对齐序号去问帧。 */
+deRfun sync(long home): long {
+  long buf = 0L;
+  long used = 0L;
+  long place = 0L;
+  long epoch = 0L;
+  if (hold(home, 0L, 0L, &buf, &used, &place, &epoch) == 0L) {
+    return 1L;
+  }
+  if (used == 0L) {
+    return 0L;
+  }
+  long now = obr::proc::frame(home);
+  if (now != epoch && used > 0L) {
+    if (drain(home) != 0L) {
+      return 1L;
+    }
+  }
+  if (hold(home, 3L, now, &buf, &used, &place, &epoch) == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 放入一个八位组。满 4096 或这个字节是换行时交出。 */
+deRfun pour(long home, long byte): long {
+  long buf = 0L;
+  long used = 0L;
+  long place = 0L;
+  long epoch = 0L;
+  if (hold(home, 0L, 0L, &buf, &used, &place, &epoch) == 0L) {
+    return 1L;
+  }
+  if (used >= 4096L) {
+    if (drain(home) != 0L) {
+      return 1L;
+    }
+    if (hold(home, 0L, 0L, &buf, &used, &place, &epoch) == 0L) {
+      return 1L;
+    }
+  }
+  long unit = byte;
+  if (unit < 0L) {
+    unit = unit + 256L;
+  }
+  if (unit > 255L) {
+    unit = unit % 256L;
+  }
+  memory::storeOctet(unit, buf + used * 8L);
+  if (hold(home, 1L, used + 1L, &buf, &used, &place, &epoch) == 0L) {
+    return 1L;
+  }
+  if (unit == 10L || used >= 4096L) {
+    if (drain(home) != 0L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+export deRfun obr::print::byte(long home, long octet): long {
+  if (sync(home) != 0L) {
+    return 1L;
+  }
+  return pour(home, octet);
+}
+
+export deRfun obr::print::out(long home, long from, long count): long {
+  if (count < 0L) {
+    return 1L;
+  }
+  if (sync(home) != 0L) {
+    return 1L;
+  }
+  long index = 0L;
+  while (index < count) {
+    if (pour(home, u8(from + index * 8L)) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+export deRfun obr::print::text(long home, string text): long {
+  if (sync(home) != 0L) {
+    return 1L;
+  }
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    if (pour(home, text[index]) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+export deRfun obr::print::fill(long home, long octet, long count): long {
+  if (count < 0L) {
+    return 1L;
+  }
+  if (sync(home) != 0L) {
+    return 1L;
+  }
+  long unit = octet;
+  if (unit < 0L) {
+    unit = unit + 256L;
+  }
+  if (unit > 255L) {
+    unit = unit % 256L;
+  }
+  long left = count;
+  while (left > 0L) {
+    if (pour(home, unit) != 0L) {
+      return 1L;
+    }
+    left = left - 1L;
+  }
+  return 0L;
+}
+
+export deRfun obr::print::flush(long home): long {
+  return drain(home);
+}

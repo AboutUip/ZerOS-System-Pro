@@ -1,0 +1,8 @@
+/* run 给壳里其它文件用的函数。 */
+deRfun argHome(long home): long;
+deRfun hdSlot(long out, long index): long;
+deRfun hdCount(long out): long;
+deRfun hdDelimLen(long out, long index): long;
+deRfun hdDelimAt(long out, long index): long;
+deRfun absorbLine(long state, long out, long body, long index, long* tooBig): long;
+deRfun runParsed(long home, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long;

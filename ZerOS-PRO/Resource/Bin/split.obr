@@ -1,0 +1,509 @@
+/* POSIX.1-2017 split（utilities/split.html）。
+   形式是 split [-a suffix_length] [-b n[k|m]] [-l line_count] [file [prefix]]。
+   缺省 -l 1000、前缀 x、后缀长度 2，首段后缀 aa。
+   -- 结束选项。没有 file 读标准输入。prefix 缺省 x。
+   -a 后缀长度 2 到 97 的正十进制。非法写 split: invalid suffix length。
+   -b 与 -l 同时出现时以后出现的生效。
+   -b 的 n 可跟 k（乘 1024）或 m（乘 1048576），必须放进有符号 64 位且至少 1。
+   -l 至少 1。非法数字写 split: invalid number。
+   行模式按字节 10 分行；最后一段无换行仍算一行。
+   字节模式不按行切。输出名 prefix+suffix，路径用 obr::text::put 放进 path 再 open(...,1)。
+   打开输出失败写 split: 路径: No such file or directory，退出 1。
+   读失败 split: read error，写失败 split: write error，立刻退出 1。
+   未规定：后缀用尽（zz…）写 split: suffix exhausted，退出 1。
+   成功 0，失败 1。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import obr.text;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+/* 有符号 64 位上限。拆开写，避免一个大于等于 1048576 的立即数被 -pie 重定位后装入失败。 */
+deRfun intMax(): long {
+  long value = 922337L;
+  value = value * 1000000L + 203685L;
+  value = value * 1000000L + 477580L;
+  value = value * 10L + 7L;
+  return value;
+}
+
+deRfun parseDigits(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    long digit = bit - 48L;
+    long limit = intMax() / 10L;
+    if (value > limit || (value == limit && digit > 7L)) {
+      return 0L;
+    }
+    value = value * 10L + digit;
+    cursor = cursor + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun parsePositive(long at, long len, long* out): long {
+  long value = 0L;
+  if (parseDigits(at, len, &value) == 0L || value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun parseSize(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long tail = len;
+  long mult = 1L;
+  long last = u8(at + (len - 1L) * 8L);
+  if (last == 107L || last == 109L) {
+    tail = len - 1L;
+    if (last == 107L) {
+      mult = 1024L;
+    } else {
+      mult = 65536L * 16L;
+    }
+  }
+  long base = 0L;
+  if (parsePositive(at, tail, &base) == 0L) {
+    return 0L;
+  }
+  if (base > intMax() / mult) {
+    return 0L;
+  }
+  *out = base * mult;
+  return 1L;
+}
+
+struct Split {
+  long mode;
+  long chunk;
+  long suffixLen;
+  long prefixAt;
+  long prefixLen;
+  long inFd;
+  long outFd;
+  long linesLeft;
+  long bytesLeft;
+  long readOff;
+  long outOff;
+}
+
+deRfun pathBuf(): long {
+  return 8192L;
+}
+
+deRfun suffixAt(long buf): long {
+  return buf;
+}
+
+deRfun nameAt(long buf): long {
+  return buf + 64L;
+}
+
+deRfun initSuffix(long buf, long len): void {
+  long index = 0L;
+  while (index < len) {
+    memory::storeOctet(97L, suffixAt(buf) + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun bumpSuffix(long buf, long len): long {
+  long pos = len - 1L;
+  while (pos >= 0L) {
+    long bit = u8(suffixAt(buf) + pos * 8L);
+    if (bit < 122L) {
+      memory::storeOctet(bit + 1L, suffixAt(buf) + pos * 8L);
+      return 0L;
+    }
+    memory::storeOctet(97L, suffixAt(buf) + pos * 8L);
+    pos = pos - 1L;
+  }
+  return 1L;
+}
+
+deRfun buildName(long home, Split* run, long buf): long {
+  long total = run.prefixLen + run.suffixLen;
+  if (total > 8192L) {
+    return 1L;
+  }
+  copySpan(run.prefixAt, nameAt(buf), run.prefixLen);
+  copySpan(suffixAt(buf), nameAt(buf) + run.prefixLen * 8L, run.suffixLen);
+  memory::store64(total, buf);
+  copySpan(nameAt(buf), obr::proc::path(home) + 64L, total);
+  memory::store64(total, obr::proc::path(home));
+  if (obr::text::len(obr::proc::path(home)) != total) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun openOut(long home, Split* run, long buf): long {
+  if (buildName(home, run, buf) != 0L) {
+    writeErr(home, "split: output name too long\n");
+    return 1L;
+  }
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "split: ");
+    writeErrSpan(home, obr::proc::path(home) + 64L, obr::text::len(obr::proc::path(home)));
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  run.outFd = obr::proc::slot(home, 192L);
+  run.outOff = 0L;
+  if (run.mode == 1L) {
+    run.linesLeft = run.chunk;
+  } else {
+    run.bytesLeft = run.chunk;
+  }
+  return 0L;
+}
+
+deRfun closeOut(long home, Split* run): void {
+  if (run.outFd >= 0L) {
+    obr::proc::close(home, run.outFd);
+    run.outFd = -1L;
+  }
+}
+
+deRfun rotate(long home, Split* run, long buf): long {
+  closeOut(home, run);
+  if (bumpSuffix(buf, run.suffixLen) != 0L) {
+    writeErr(home, "split: suffix exhausted\n");
+    return 1L;
+  }
+  return openOut(home, run, buf);
+}
+
+deRfun writeChunk(long home, Split* run, long addr, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long piece = count - done;
+    if (piece > 4096L) {
+      piece = 4096L;
+    }
+    copySpan(addr + done * 8L, obr::proc::bytes(home), piece);
+    if (obr::proc::write(home, run.outFd, run.outOff, piece) != 0L) {
+      writeErr(home, "split: write error\n");
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "split: write error\n");
+      return 1L;
+    }
+    if (wrote > piece) {
+      wrote = piece;
+    }
+    done = done + wrote;
+    run.outOff = run.outOff + wrote;
+  }
+  return 0L;
+}
+
+deRfun emitBytes(long home, Split* run, long buf, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    if (run.outFd < 0L) {
+      if (openOut(home, run, buf) != 0L) {
+        return 1L;
+      }
+    }
+    if (run.mode == 2L) {
+      long room = run.bytesLeft;
+      if (room < 1L) {
+        if (rotate(home, run, buf) != 0L) {
+          return 1L;
+        }
+        room = run.bytesLeft;
+      }
+      long take = count - offset;
+      if (take > room) {
+        take = room;
+      }
+      if (writeChunk(home, run, addr + offset * 8L, take) != 0L) {
+        return 1L;
+      }
+      run.bytesLeft = run.bytesLeft - take;
+      offset = offset + take;
+    } else {
+      long index = offset;
+      while (index < count) {
+        long bit = u8(addr + index * 8L);
+        if (run.linesLeft < 1L) {
+          if (rotate(home, run, buf) != 0L) {
+            return 1L;
+          }
+        }
+        if (writeChunk(home, run, addr + index * 8L, 1L) != 0L) {
+          return 1L;
+        }
+        if (bit == 10L) {
+          run.linesLeft = run.linesLeft - 1L;
+        }
+        index = index + 1L;
+      }
+      offset = count;
+    }
+  }
+  return 0L;
+}
+
+deRfun runInput(long home, Split* run, long buf): long {
+  long hold = obr::proc::alloc(home, 4096L * 8L);
+  if (hold == 0L) {
+    writeErr(home, "split: out of memory\n");
+    return 1L;
+  }
+  run.readOff = 0L;
+  while (1L == 1L) {
+    if (obr::proc::read(home, run.inFd, run.readOff, 4096L) != 0L) {
+      writeErr(home, "split: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "split: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      return 0L;
+    }
+    if (n > 4096L) {
+      n = 4096L;
+    }
+    copySpan(obr::proc::bytes(home), hold, n);
+    if (emitBytes(home, run, buf, hold, n) != 0L) {
+      return 1L;
+    }
+    run.readOff = run.readOff + n;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  Split run;
+  run.mode = 1L;
+  run.chunk = 1000L;
+  run.suffixLen = 2L;
+  run.prefixAt = 0L;
+  run.prefixLen = 1L;
+  run.inFd = 0L;
+  run.outFd = -1L;
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long hasFile = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len >= 2L && u8(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 97L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "split: invalid suffix length\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parsePositive(valAt, valLen, &value) == 0L || value < 2L || value > 97L) {
+            writeErr(home, "split: invalid suffix length\n");
+            return finish(home, 1L);
+          }
+          run.suffixLen = value;
+        } else if (bit == 98L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "split: invalid number\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parseSize(valAt, valLen, &value) == 0L) {
+            writeErr(home, "split: invalid number\n");
+            return finish(home, 1L);
+          }
+          run.mode = 2L;
+          run.chunk = value;
+        } else if (bit == 108L) {
+          long valAt = 0L;
+          long valLen = 0L;
+          if (cursor + 1L < len) {
+            valAt = at + (cursor + 1L) * 8L;
+            valLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "split: invalid number\n");
+              return finish(home, 1L);
+            }
+            valAt = argPtr(home, index);
+            valLen = argLen(home, index);
+            cursor = len;
+          }
+          long value = 0L;
+          if (parsePositive(valAt, valLen, &value) == 0L) {
+            writeErr(home, "split: invalid number\n");
+            return finish(home, 1L);
+          }
+          run.mode = 1L;
+          run.chunk = value;
+        } else {
+          writeErr(home, "split: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+  }
+  long hold = obr::proc::alloc(home, (pathBuf() + 256L) * 8L);
+  if (hold == 0L) {
+    writeErr(home, "split: out of memory\n");
+    return finish(home, 1L);
+  }
+  long prefixBuf = hold + pathBuf() * 8L;
+  if (obr::text::put(prefixBuf, "x") != 0L) {
+    writeErr(home, "split: out of memory\n");
+    return finish(home, 1L);
+  }
+  run.prefixAt = prefixBuf + 64L;
+  run.prefixLen = 1L;
+  long remain = count - index;
+  if (remain == 1L) {
+    fileAt = argPtr(home, index);
+    fileLen = argLen(home, index);
+    hasFile = 1L;
+    index = index + 1L;
+  } else if (remain >= 2L) {
+    fileAt = argPtr(home, index);
+    fileLen = argLen(home, index);
+    run.prefixAt = argPtr(home, index + 1L);
+    run.prefixLen = argLen(home, index + 1L);
+    hasFile = 1L;
+    index = index + 2L;
+  }
+  initSuffix(hold, run.suffixLen);
+  if (hasFile == 1L) {
+    if (fileLen == 1L && u8(fileAt) == 45L) {
+      run.inFd = 0L;
+    } else {
+      plant(home, fileAt, fileLen);
+      if (obr::proc::open(home, 0L) != 0L) {
+        writeErr(home, "split: ");
+        writeErrSpan(home, fileAt, fileLen);
+        writeErr(home, ": No such file or directory\n");
+        return finish(home, 1L);
+      }
+      run.inFd = obr::proc::slot(home, 192L);
+    }
+  } else {
+    run.inFd = 0L;
+  }
+  long status = runInput(home, &run, hold);
+  closeOut(home, &run);
+  if (run.inFd != 0L) {
+    obr::proc::close(home, run.inFd);
+  }
+  if (status != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

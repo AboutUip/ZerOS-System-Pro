@@ -24,7 +24,8 @@ export namespace ZerOS {
       /** 诊断页的固定布局。头部 1024 字节，随后是定长记录。 */
       export const TraceConfig = {
         Magic: 0x5a545243,
-        Version: 1,
+        /* v2：记录仍是 32 字节，At 从 32 位微秒扩到 64 位微秒。 */
+        Version: 2,
         Capacity: 65536,
         RecordBytes: 32,
         HeaderBytes: 1024,

@@ -1,0 +1,3 @@
+/* cd 给壳里其它文件用的函数。 */
+deRfun normalize(long work, long rel, long relLen): long;
+deRfun doCd(long home, long work, long cmd, long env, long begin): long;

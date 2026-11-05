@@ -16,7 +16,9 @@
    读失败写 wc: read error，这一文件不打印、不进合计，继续后面的文件。
    写失败写 wc: write error，立刻退出 1。
    描述符 1 的文件偏移按已写字节累加。诊断写描述符 2。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -39,13 +41,8 @@ struct Pick {
   long longest;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

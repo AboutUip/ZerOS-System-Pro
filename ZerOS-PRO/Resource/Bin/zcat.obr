@@ -1,0 +1,341 @@
+/* POSIX.1-2017 zcat（utilities/zcat.html）的本系统选定。
+   等价于 uncompress -c。形式 zcat [file...]。读 compress .Z，写到描述符 1，不删源。
+   无操作数从 0 解到 1。魔数不对：zcat: not in compressed format，1。
+   打不开 zcat: 路径: No such file or directory。成功 0，失败 1。诊断英文。结束 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun writeFd(long home, long fd, long* off, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, fd, *off, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *off = *off + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun readFully(long home, long fd, long off, long count): long {
+  long got = 0L;
+  while (got < count) {
+    if (obr::proc::read(home, fd, off + got, count - got) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      return 1L;
+    }
+    got = got + n;
+  }
+  return 0L;
+}
+
+deRfun getBit(long home, long fd, long* inOff, long* acc, long* accBits): long {
+  if (*accBits < 1L) {
+    if (obr::proc::read(home, fd, *inOff, 1L) != 0L) {
+      return -1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      return -1L;
+    }
+    *inOff = *inOff + 1L;
+    *acc = u8(obr::proc::bytes(home));
+    *accBits = 8L;
+  }
+  long bit = (long)(*acc & 1L);
+  *acc = *acc >> 1L;
+  *accBits = *accBits - 1L;
+  return bit;
+}
+
+deRfun getCode(long home, long fd, long* inOff, long* acc, long* accBits, long width): long {
+  long code = 0L;
+  long pos = 0L;
+  while (pos < width) {
+    long bit = getBit(home, fd, inOff, acc, accBits);
+    if (bit < 0L) {
+      return -1L;
+    }
+    if (bit != 0L) {
+      long bitVal = 1L;
+      long shift = 0L;
+      while (shift < pos) {
+        bitVal = bitVal * 2L;
+        shift = shift + 1L;
+      }
+      code = code | bitVal;
+    }
+    pos = pos + 1L;
+  }
+  return code;
+}
+
+deRfun decReset(long* nextCode, long* nbits, long* limit): void {
+  *nextCode = 257L;
+  *nbits = 9L;
+  *limit = 512L;
+}
+
+deRfun prefGet(long pref, long idx): long {
+  return memory::load64(pref + idx * 64L);
+}
+
+deRfun prefSet(long pref, long idx, long val): void {
+  memory::store64(val, pref + idx * 64L);
+}
+
+deRfun suffGet(long suff, long idx): long {
+  return memory::load64(suff + idx * 64L);
+}
+
+deRfun suffSet(long suff, long idx, long val): void {
+  memory::store64(val, suff + idx * 64L);
+}
+
+deRfun emitChain(long home, long fd, long* outOff, long pref, long suff, long code): long {
+  long stackTop = 0L;
+  long c = code;
+  while (c > 255L) {
+    memory::storeOctet(suffGet(suff, c), obr::proc::bytes(home) + stackTop * 8L);
+    stackTop = stackTop + 1L;
+    if (stackTop > 4096L) {
+      return 1L;
+    }
+    c = prefGet(pref, c);
+  }
+  memory::storeOctet(c, obr::proc::bytes(home) + stackTop * 8L);
+  stackTop = stackTop + 1L;
+  while (stackTop > 0L) {
+    long chunk = stackTop;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (writeFd(home, fd, outOff, chunk) != 0L) {
+      return 1L;
+    }
+    stackTop = stackTop - chunk;
+    if (stackTop > 0L) {
+      copySpan(obr::proc::bytes(home) + chunk * 8L, obr::proc::bytes(home), stackTop);
+    }
+  }
+  return 0L;
+}
+
+deRfun firstByte(long pref, long suff, long code): long {
+  long c = code;
+  while (c > 255L) {
+    c = prefGet(pref, c);
+  }
+  return c;
+}
+
+deRfun decompressStream(long home, long inFd, long outFd): long {
+  if (readFully(home, inFd, 0L, 3L) != 0L) {
+    return 2L;
+  }
+  long b0 = u8(obr::proc::bytes(home));
+  long b1 = u8(obr::proc::bytes(home) + 8L);
+  long b2 = u8(obr::proc::bytes(home) + 16L);
+  long blockFlag = (long)(b2 & 128L);
+  if (b0 != 31L || b1 != 157L || blockFlag == 0L) {
+    return 2L;
+  }
+  long maxbits = (long)(b2 & 31L);
+  if (maxbits < 9L || maxbits > 16L) {
+    return 2L;
+  }
+  long slots = 65536;
+  long tabBits = slots * 64L;
+  long pref = obr::proc::alloc(home, tabBits);
+  long suff = obr::proc::alloc(home, tabBits);
+  if (pref == 0L || suff == 0L) {
+    return 1L;
+  }
+  long nextCode = 257L;
+  long nbits = 9L;
+  long limit = 512L;
+  decReset(&nextCode, &nbits, &limit);
+  long inOff = 3L;
+  long outOff = 0L;
+  long acc = 0L;
+  long accBits = 0L;
+  long code = getCode(home, inFd, &inOff, &acc, &accBits, nbits);
+  if (code < 0L) {
+    return 1L;
+  }
+  while (code == 256L) {
+    decReset(&nextCode, &nbits, &limit);
+    code = getCode(home, inFd, &inOff, &acc, &accBits, nbits);
+    if (code < 0L) {
+      return 1L;
+    }
+  }
+  if (emitChain(home, outFd, &outOff, pref, suff, code) != 0L) {
+    return 1L;
+  }
+  long oldcode = code;
+  while (1L == 1L) {
+    code = getCode(home, inFd, &inOff, &acc, &accBits, nbits);
+    if (code < 0L) {
+      break;
+    }
+    if (code == 256L) {
+      decReset(&nextCode, &nbits, &limit);
+      continue;
+    }
+    if (code > nextCode) {
+      return 1L;
+    }
+    long first = 0L;
+    if (code == nextCode) {
+      first = firstByte(pref, suff, oldcode);
+      if (emitChain(home, outFd, &outOff, pref, suff, oldcode) != 0L) {
+        return 1L;
+      }
+      memory::storeOctet(first, obr::proc::bytes(home));
+      if (writeFd(home, outFd, &outOff, 1L) != 0L) {
+        return 1L;
+      }
+    } else {
+      first = firstByte(pref, suff, code);
+      if (emitChain(home, outFd, &outOff, pref, suff, code) != 0L) {
+        return 1L;
+      }
+    }
+    if (nextCode < 65536L) {
+      prefSet(pref, nextCode, oldcode);
+      suffSet(suff, nextCode, first);
+      nextCode = nextCode + 1L;
+      if (nextCode >= limit && nbits < maxbits) {
+        nbits = nbits + 1L;
+        limit = limit * 2L;
+      }
+    }
+    oldcode = code;
+  }
+  return 0L;
+}
+
+deRfun zcatOne(long home, long pathAt, long pathLen): long {
+  if (pathLen > 8192L) {
+    return 1L;
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "zcat: ");
+    writeErrSpan(home, pathAt, pathLen);
+    writeErr(home, ": No such file or directory\n");
+    return 1L;
+  }
+  long inFd = obr::proc::slot(home, 192L);
+  long st = decompressStream(home, inFd, 1L);
+  obr::proc::close(home, inFd);
+  if (st == 2L) {
+    writeErr(home, "zcat: not in compressed format\n");
+    return 1L;
+  }
+  if (st != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long fail = 0L;
+  if (index >= count) {
+    long st = decompressStream(home, 0L, 1L);
+    if (st == 2L) {
+      writeErr(home, "zcat: not in compressed format\n");
+      return finish(home, 1L);
+    }
+    if (st != 0L) {
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (zcatOne(home, at, len) != 0L) {
+      fail = 1L;
+    }
+    index = index + 1L;
+  }
+  return finish(home, fail);
+}

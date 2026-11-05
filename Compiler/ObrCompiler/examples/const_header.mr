@@ -1,0 +1,13 @@
+/* Plan 1：.mr 导出编译期常量。 */
+enum HeaderAxis: long { X = 3, Y = 5 }
+
+struct HeaderPair {
+  long a;
+  long b;
+}
+
+const HeaderPair HEADER_PAIR = HeaderPair { a = 3L, b = 4L };
+const int HEADER_VALUE = 21;
+const long HEADER_DOUBLE = HEADER_VALUE * 2L;
+const long HEADER_ENUM = HeaderAxis::Y;
+const string HEADER_TEXT = "hi";

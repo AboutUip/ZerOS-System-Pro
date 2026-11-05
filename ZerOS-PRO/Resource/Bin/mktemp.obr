@@ -15,18 +15,15 @@
    新建文件的描述符不是 0 才关闭。描述符 0 保持原样。
    成功把换好的路径和一个换行写到描述符 1，退出 0。失败退出 1。
    诊断写到描述符 2，每条以换行结束。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

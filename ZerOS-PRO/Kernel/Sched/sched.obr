@@ -1,7 +1,7 @@
 /* 调度。用户核上的任务数不再按核封顶。同一核上前台优先：更高档立刻抢占，同一档轮转。
    后台只有在没有更高档就绪时才换上。前台自己停住或时间片让出之后，后台马上可以上。
    停在系统调用里的不换。停机的交给进程层。领不到槽的不换。跨核的让法在宿主，不在这一圈。 */
-#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr, /pipe.obr, /dev.obr, /sig.obr, /boot.obr, /spawn.obr
+#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr, /pipe.obr, /dev.obr, /sig.obr, /boot.obr, /spawn.obr, /frame.obr
 import proc;
 import board;
 import obr.os;
@@ -16,6 +16,7 @@ export deRfun schedWake(long core): void {
   if (task.state == TaskState::Sleeping) {
     diagTask(4L, task.pid, core, 0L);
   }
+  taskAccount(index, TaskState::Running);
   task.state = TaskState::Running;
   rankPublish(core);
   obr::os::schedule(core);
@@ -28,6 +29,7 @@ deRfun schedSleep(long core): void {
   }
   /* 3 = 调度睡眠；a 是任务 pid，b 是核心。 */
   diagTask(3L, taskAt(index).pid, core, 0L);
+  taskAccount(index, TaskState::Sleeping);
   taskAt(index).state = TaskState::Sleeping;
 }
 
@@ -36,7 +38,18 @@ deRfun schedStop(long core): void {
   if (index < 0L) {
     return;
   }
+  taskAccount(index, TaskState::Stopped);
   taskAt(index).state = TaskState::Stopped;
+}
+
+/* 1 号的直接子任务按 30 Hz 空转。其它任务把核交回去时升到 1000000，
+   否则被借走核之后会一直停在借走者的频率上。 */
+deRfun schedPace(long core, long index): void {
+  if (taskAt(index).ppid == 1L) {
+    obr::os::hertz(core, 30L);
+  } else {
+    obr::os::hertz(core, 1000000L);
+  }
 }
 
 /* 槽号由进程层分配，不必等于任务表下标。放回后仍要 schedule 才会跑。没有就绪的兄弟就什么也不做。 */
@@ -50,19 +63,34 @@ deRfun schedResume(long core): void {
     return;
   }
   obr::os::restore(core, slot);
+  /* 同核派生时父任务在槽里等 spawn 的回复。核上已经是子任务，
+     回复不能提前 pass，否则会落到子任务身上；恢复父任务时再交回去。 */
+  if (taskAt(next).code == -2L) {
+    taskAt(next).code = 0L;
+    obr::os::pass(core, 0L);
+  }
+  taskAccount(next, TaskState::Running);
   taskAt(next).state = TaskState::Running;
   rankPublish(core);
+  schedPace(core, next);
   obr::os::schedule(core);
 }
 
 deRfun schedSweep(): void {
-  procCollect();
+  if (runLedger(8L, 0L) > 0L) {
+    procCollect();
+  }
   long core = 3L;
   while (core < 8L) {
+    long running = query(1L, 5L, core);
+    long why = query(1L, 11L, core);
+    /* 还在取指，或停在系统调用里且没有待杀：这一核没有可换的任务，不必扫表。 */
+    if (running == 1L || (why == 2L && sigPendingKill(core) == 0L)) {
+      core = core + 1L;
+      continue;
+    }
     long index = taskFind(core);
     if (index >= 0L) {
-      long running = query(1L, 5L, core);
-      long why = query(1L, 11L, core);
       long state = taskAt(index).state;
       if (running == 0L && sigPendingKill(core) == 1L) {
         procExit(core, 9L);
@@ -83,17 +111,31 @@ deRfun schedSweep(): void {
           long to = taskAt(next).held - 1L;
           if (from >= 0L && to >= 0L) {
             obr::os::capture(core, from);
+            taskAccount(index, TaskState::Ready);
             taskAt(index).state = TaskState::Ready;
             obr::os::restore(core, to);
+            if (taskAt(next).code == -2L) {
+              taskAt(next).code = 0L;
+              obr::os::pass(core, 0L);
+            }
+            taskAccount(next, TaskState::Running);
             taskAt(next).state = TaskState::Running;
             rankPublish(core);
+            schedPace(core, next);
             obr::os::schedule(core);
           }
         } else {
-          taskAt(index).state = TaskState::Ready;
-          obr::os::schedule(core);
+          /* 同核共享时，旧任务在 capture 里，held 是槽号 + 1。
+             直接 schedule 会拿子任务留在核上的寄存器去跑旧任务；先 restore 回它的上下文。 */
+          long slot = taskAt(index).held - 1L;
+          if (slot >= 0L) {
+            obr::os::restore(core, slot);
+          }
+          taskAccount(index, TaskState::Running);
           taskAt(index).state = TaskState::Running;
           rankPublish(core);
+          schedPace(core, index);
+          obr::os::schedule(core);
         }
       }
     }
@@ -103,6 +145,9 @@ deRfun schedSweep(): void {
 
 /* 30 Hz 空转前调用一次。核心还在取指，且同核有一份在槽里的就绪任务，capture 会先停在下一条再抄走。 */
 deRfun schedTick(): void {
+  if (runLedger(6L, 0L) == 0L) {
+    return;
+  }
   long core = 3L;
   while (core < 8L) {
     long index = taskFind(core);
@@ -121,10 +166,17 @@ deRfun schedTick(): void {
             long to = taskAt(next).held - 1L;
             if (from >= 0L && to >= 0L) {
               obr::os::capture(core, from);
+              taskAccount(index, TaskState::Ready);
               taskAt(index).state = TaskState::Ready;
               obr::os::restore(core, to);
+              if (taskAt(next).code == -2L) {
+                taskAt(next).code = 0L;
+                obr::os::pass(core, 0L);
+              }
+              taskAccount(next, TaskState::Running);
               taskAt(next).state = TaskState::Running;
               rankPublish(core);
+              schedPace(core, next);
               obr::os::schedule(core);
             }
           }

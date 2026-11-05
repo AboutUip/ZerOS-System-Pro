@@ -29,9 +29,9 @@ function scanLiveDiagnostics(document) {
     const line = stripLineComment(raw).trim();
     const range = new vscode.Range(index, 0, index, Math.max(1, raw.length));
     const version = line.match(/^#VERSION\b(.*)$/);
-    if (version && version[1].trim() !== "1") {
+    if (version && version[1].trim() !== "1" && version[1].trim() !== "2") {
       diagnostics.push(
-        new vscode.Diagnostic(range, "#VERSION 只接受语言版本 1。", vscode.DiagnosticSeverity.Error)
+        new vscode.Diagnostic(range, "#VERSION 只接受语言版本 1 或 2。", vscode.DiagnosticSeverity.Error)
       );
     }
     const dyn = line.match(/^#DYN\b(.*)$/);

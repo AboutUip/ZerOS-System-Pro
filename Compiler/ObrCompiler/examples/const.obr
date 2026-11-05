@@ -1,0 +1,27 @@
+/* Plan 1 const 首批：文件级、局部、枚举、宽度转换。结果 0。 */
+enum Axis: long { X, Y = 3 }
+
+const int NUMBER = 42;
+const long WIDE = NUMBER;
+const boolean YES = true;
+const char LETTER = 'A';
+const long FROM_ENUM = Axis::Y;
+const float FLOAT_ONE = 1;
+const double DOUBLE_ONE = 1.5F;
+const long NEGATIVE = -7L;
+
+deRfun main(): int {
+  const int LOCAL = 7;
+  const long LOCAL_WIDE = LOCAL;
+  if (NUMBER != 42) return 1;
+  if (WIDE != 42L) return 2;
+  if (LOCAL != 7) return 3;
+  if (LOCAL_WIDE != 7L) return 4;
+  if (LETTER != 'A') return 5;
+  if (FROM_ENUM != 3L) return 6;
+  if (FLOAT_ONE != 1.0F) return 7;
+  if (DOUBLE_ONE != 1.5D) return 8;
+  if (NEGATIVE != -7L) return 9;
+  if (!YES) return 10;
+  return 0;
+}

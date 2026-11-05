@@ -21,7 +21,10 @@ class Parser {
       const std::string rest = line.size() > 8 ? line.substr(8) : "";
       std::size_t index = 0;
       while (index < rest.size() && (rest[index] == ' ' || rest[index] == '\t')) index += 1;
-      if (rest.substr(index) != "1") fail("#VERSION 只接受语言版本 1");
+      const std::string version = rest.substr(index);
+      if (version != "1" && version != "2") fail("#VERSION 只接受语言版本 1 或 2");
+      file.version = version == "2" ? 2 : 1;
+      file.versionSet = true;
     }
     while (tokens_[static_cast<std::size_t>(at_)].kind == Tok::Link || tokens_[static_cast<std::size_t>(at_)].kind == Tok::Dyn) {
       const std::string line = tokens_[static_cast<std::size_t>(at_)].text;
@@ -145,6 +148,28 @@ class Parser {
     return index + 1 < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star && tokens_[static_cast<std::size_t>(index + 1)].kind == Tok::RParen;
   }
 
+  bool scalarCastName(const std::string& name) const {
+    return name == "byte" || name == "short" || name == "int" || name == "long" || name == "float"
+      || name == "double" || name == "boolean" || name == "char";
+  }
+
+  /* (标量类型) 后面必须真的跟着一个表达式，才把它当转换。
+     这样写法奇怪的 (int) 单独出现时仍会报表达式错误，而不是静默吃掉。 */
+  bool looksLikeScalarCast() const {
+    int index = at_;
+    const int size = static_cast<int>(tokens_.size());
+    if (index + 2 >= size) return false;
+    if (tokens_[static_cast<std::size_t>(index)].kind != Tok::Ident) return false;
+    if (!scalarCastName(tokens_[static_cast<std::size_t>(index)].text)) return false;
+    if (tokens_[static_cast<std::size_t>(index + 1)].kind != Tok::RParen) return false;
+    const Tok next = tokens_[static_cast<std::size_t>(index + 2)].kind;
+    return next == Tok::Ident || next == Tok::Int || next == Tok::Float || next == Tok::StringLit
+      || next == Tok::CharLit || next == Tok::True || next == Tok::False || next == Tok::Null
+      || next == Tok::Undefined || next == Tok::LParen || next == Tok::Plus || next == Tok::Minus
+      || next == Tok::Not || next == Tok::BitNot || next == Tok::Star || next == Tok::BitAnd
+      || next == Tok::PlusPlus || next == Tok::MinusMinus || next == Tok::New || next == Tok::Await;
+  }
+
   std::string typeIdent() {
     if (!check(Tok::Ident)) fail("缺少类型");
     std::string name = take().text;
@@ -165,6 +190,31 @@ class Parser {
     /* array[long]* 名字 仍是声明，解析类型时再拒绝。array[i] * 2 后面不是名字，保持表达式。 */
     if (index + 1 < size && tokens_[static_cast<std::size_t>(index)].kind == Tok::Star && tokens_[static_cast<std::size_t>(index + 1)].kind == Tok::Ident) return true;
     return typeName(peek().text);
+  }
+
+  bool inWordAt(int index) const {
+    return index >= 0 && index < static_cast<int>(tokens_.size())
+      && tokens_[static_cast<std::size_t>(index)].kind == Tok::Ident
+      && tokens_[static_cast<std::size_t>(index)].text == "in";
+  }
+
+  bool looksLikeForIn() const {
+    const int size = static_cast<int>(tokens_.size());
+    int index = at_;
+    if (index >= size) return false;
+    if (tokens_[static_cast<std::size_t>(index)].kind == Tok::Ident) {
+      return inWordAt(index + 1);
+    }
+    if (tokens_[static_cast<std::size_t>(index)].kind != Tok::Var) return false;
+    index += 1;
+    if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::LBracket) return false;
+    index += 1;
+    if (!scanTypeAt(index)) return false;
+    if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::RBracket) return false;
+    index += 1;
+    if (index >= size || tokens_[static_cast<std::size_t>(index)].kind != Tok::Ident) return false;
+    index += 1;
+    return inWordAt(index);
   }
 
   ParsedType parseCollection() {
@@ -273,6 +323,11 @@ class Parser {
       if (check(Tok::Semi)) fail("namespace 的 } 后面不能写 ;");
       return;
     }
+    if (eat(Tok::Interface)) {
+      if (header_) fail(".mr 接口声明还没接");
+      file.interfaces.push_back(parseInterface(space));
+      return;
+    }
     if (eat(Tok::Class)) {
       file.classes.push_back(parseClass(file, space));
       return;
@@ -283,6 +338,10 @@ class Parser {
     }
     if (eat(Tok::Enum)) {
       file.enums.push_back(parseEnum(space));
+      return;
+    }
+    if (eat(Tok::Const)) {
+      file.consts.push_back(parseConst(space));
       return;
     }
     std::vector<std::string> callfun;
@@ -348,6 +407,23 @@ class Parser {
     return decl;
   }
 
+  ConstDecl parseConst(const std::string& space) {
+    ConstDecl decl;
+    const ParsedType parsed = parseType();
+    decl.type = parsed.kind;
+    decl.pointee = parsed.pointee;
+    decl.alt = parsed.alt;
+    decl.typeName = parsed.typeName;
+    decl.altName = parsed.altName;
+    if (decl.type == TypeKind::Void) fail("常量不能是 void");
+    decl.name = declaredName(space);
+    expect(Tok::Assign, "常量缺少 =");
+    decl.expr = parseExpr();
+    expect(Tok::Semi, "常量缺少 ;");
+    decl.line = tokens_[static_cast<std::size_t>(at_ - 1)].line;
+    return decl;
+  }
+
   EnumDecl parseEnum(const std::string& space) {
     EnumDecl decl;
     decl.name = declaredName(space);
@@ -388,6 +464,21 @@ class Parser {
     return decl;
   }
 
+  InterfaceDecl parseInterface(const std::string& space) {
+    if (!check(Tok::Ident)) fail("interface 缺少名字");
+    InterfaceDecl decl;
+    decl.name = declaredName(space);
+    expect(Tok::LBrace, "interface 缺少 {");
+    while (!check(Tok::RBrace) && !check(Tok::End)) {
+      if (!check(Tok::DeRfun)) fail("interface 里只能写 deRfun 方法声明");
+      Function method = parseFunction(decl.name, true);
+      method.owner = decl.name;
+      decl.methods.push_back(std::move(method));
+    }
+    expect(Tok::RBrace, "interface 缺少 }");
+    return decl;
+  }
+
   ClassDecl parseClass(SourceFile& file, const std::string& space) {
     if (!check(Tok::Ident)) fail("class 缺少名字");
     ClassDecl decl;
@@ -396,6 +487,12 @@ class Parser {
       if (!check(Tok::Ident)) fail("继承缺少基类名字");
       decl.base = take().text;
       if (check(Tok::Comma)) fail("不支持多重继承，多个基类不能同时从偏移 0 开始");
+    }
+    if (eat(Tok::Implements)) {
+      do {
+        if (!check(Tok::Ident)) fail("implements 缺少接口名字");
+        decl.interfaces.push_back(take().text);
+      } while (eat(Tok::Comma));
     }
     expect(Tok::LBrace, "class 缺少 {");
     int offset = 0;
@@ -454,7 +551,7 @@ class Parser {
     return decl;
   }
 
-  Function parseFunction(const std::string& space) {
+  Function parseFunction(const std::string& space, bool signatureOnly = false) {
     const bool exported = eat(Tok::Export);
     const bool asyncFun = eat(Tok::Async);
     Function function;
@@ -488,7 +585,7 @@ class Parser {
     function.retAlt = ret.alt;
     function.retName = ret.typeName;
     function.retAltName = ret.altName;
-    if (header_) {
+    if (header_ || signatureOnly) {
       expect(Tok::Semi, "函数头必须以 ; 结束");
       return function;
     }
@@ -523,6 +620,43 @@ class Parser {
       if (eat(Tok::Else)) stmt.other.push_back(parseStmt());
       return finish(stmt);
     }
+    if (eat(Tok::Switch)) {
+      Stmt stmt;
+      stmt.kind = Stmt::Kind::Switch;
+      expect(Tok::LParen, "switch 缺少 (");
+      stmt.expr = parseExpr();
+      expect(Tok::RParen, "switch 缺少 )");
+      expect(Tok::LBrace, "switch 缺少 {");
+      while (!check(Tok::RBrace) && !check(Tok::End)) {
+        const int armLine = peek().line;
+        if (eat(Tok::Case)) {
+          Stmt arm;
+          arm.kind = Stmt::Kind::Case;
+          arm.line = armLine;
+          arm.expr = parseExpr();
+          expect(Tok::Colon, "case 缺少 :");
+          while (!check(Tok::Case) && !check(Tok::Default) && !check(Tok::RBrace) && !check(Tok::End)) {
+            arm.body.push_back(parseStmt());
+          }
+          stmt.body.push_back(std::move(arm));
+          continue;
+        }
+        if (eat(Tok::Default)) {
+          Stmt arm;
+          arm.kind = Stmt::Kind::Default;
+          arm.line = armLine;
+          expect(Tok::Colon, "default 缺少 :");
+          while (!check(Tok::Case) && !check(Tok::Default) && !check(Tok::RBrace) && !check(Tok::End)) {
+            arm.body.push_back(parseStmt());
+          }
+          stmt.body.push_back(std::move(arm));
+          continue;
+        }
+        fail("switch 里只能写 case 或 default");
+      }
+      expect(Tok::RBrace, "switch 缺少 }");
+      return finish(stmt);
+    }
     if (eat(Tok::While)) {
       Stmt stmt;
       stmt.kind = Stmt::Kind::While;
@@ -534,8 +668,30 @@ class Parser {
     }
     if (eat(Tok::For)) {
       Stmt stmt;
-      stmt.kind = Stmt::Kind::For;
       expect(Tok::LParen, "for 缺少 (");
+      if (looksLikeForIn()) {
+        stmt.kind = Stmt::Kind::ForIn;
+        if (eat(Tok::Var)) {
+          stmt.declares = true;
+          expect(Tok::LBracket, "for-in 的 var 声明要写成 var[类型]");
+          const ParsedType parsed = parseType();
+          stmt.type = parsed.kind;
+          stmt.pointee = parsed.pointee;
+          stmt.alt = parsed.alt;
+          stmt.typeName = parsed.typeName;
+          stmt.altName = parsed.altName;
+          expect(Tok::RBracket, "for-in 的 var 声明缺少 ]");
+        }
+        if (!check(Tok::Ident)) fail("for-in 缺少循环变量");
+        stmt.name = take().text;
+        if (!inWordAt(at_)) fail("for-in 缺少 in");
+        take();
+        stmt.expr = parseExpr();
+        expect(Tok::RParen, "for-in 缺少 )");
+        stmt.body.push_back(parseStmt());
+        return finish(stmt);
+      }
+      stmt.kind = Stmt::Kind::For;
       stmt.other.push_back(parseStmt());
       if (!check(Tok::Semi)) stmt.expr = parseExpr();
       expect(Tok::Semi, "for 缺少条件后的 ;");
@@ -562,6 +718,12 @@ class Parser {
       expect(Tok::Semi, "continue 缺少 ;");
       Stmt stmt;
       stmt.kind = Stmt::Kind::Continue;
+      return finish(stmt);
+    }
+    if (eat(Tok::Fallthrough)) {
+      expect(Tok::Semi, "fallthrough 缺少 ;");
+      Stmt stmt;
+      stmt.kind = Stmt::Kind::Fallthrough;
       return finish(stmt);
     }
     if (check(Tok::Zap)) {
@@ -600,6 +762,23 @@ class Parser {
       isStatic = true;
     } else if (eat(Tok::Static)) {
       isStatic = true;
+    }
+    if (eat(Tok::Const)) {
+      if (isStatic) fail("const 不能和 static 连用");
+      Stmt stmt;
+      stmt.kind = Stmt::Kind::Const;
+      const ParsedType parsed = parseType();
+      stmt.type = parsed.kind;
+      stmt.pointee = parsed.pointee;
+      stmt.alt = parsed.alt;
+      stmt.typeName = parsed.typeName;
+      stmt.altName = parsed.altName;
+      if (stmt.type == TypeKind::Void) fail("常量不能是 void");
+      stmt.name = take().text;
+      expect(Tok::Assign, "常量缺少 =");
+      stmt.expr = parseExpr();
+      expect(Tok::Semi, "常量缺少 ;");
+      return finish(stmt);
     }
     if (eat(Tok::Var)) {
       expect(Tok::LBracket, "var 声明要写成 var[类型]");
@@ -871,6 +1050,21 @@ class Parser {
     }
     if (check(Tok::Ident)) {
       const std::string name = qualified();
+      if (eat(Tok::LBrace)) {
+        Expr expr;
+        expr.kind = Expr::Kind::StructLiteral;
+        expr.text = name;
+        if (!check(Tok::RBrace)) {
+          do {
+            if (!check(Tok::Ident)) fail("结构体字面量缺少字段名");
+            expr.labels.push_back(take().text);
+            expect(Tok::Assign, "结构体字面量字段缺少 =");
+            expr.kids.push_back(parseExpr());
+          } while (eat(Tok::Comma));
+        }
+        expect(Tok::RBrace, "结构体字面量缺少 }");
+        return expr;
+      }
       if (eat(Tok::LParen)) {
         Expr expr;
         expr.kind = Expr::Kind::Call;
@@ -889,7 +1083,7 @@ class Parser {
       return expr;
     }
     if (eat(Tok::LParen)) {
-      if (looksLikePointerCast()) {
+      if (looksLikePointerCast() || looksLikeScalarCast()) {
         const ParsedType parsed = parseType();
         expect(Tok::RParen, "转换缺少 )");
         Expr expr;

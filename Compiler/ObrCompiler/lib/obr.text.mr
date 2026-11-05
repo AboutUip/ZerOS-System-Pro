@@ -1,13 +1,29 @@
-/* 位元线上的计数字符串。长度是一个 64 位字，八位组从 +64 起、相邻隔 8 位。整段最长 8192。 */
+/* 位元线上的计数字符串，以及 UTF-8 和 string 的互转。
+   计数字符串的长度是一个 64 位字，八位组从 +64 起、相邻隔 8 位。整段最长 8192。
+   string 里是 Unicode 标量。放进计数字符串、参数块或文件时写成 UTF-8。
+   不解码的程序仍按八位组调用内核。 */
 namespace obr {
 namespace text {
-/* 把字符串写到 address。成功返回 0。长于 8192 或长度为负时返回 7，原处不动。 */
+/* 把字符串按 UTF-8 写到 address。成功返回 0。超过 8192 个八位组、或标量不合法时返回 7，原处不动。 */
 deRfun put(long address, string text): long;
-/* 读出长度字。 */
+/* 读出长度字。长度是八位组数，不是标量个数。 */
 deRfun len(long address): long;
 /* 读第 index 个八位组。调用方自己保证下标在长度以内。 */
 deRfun at(long address, long index): long;
 /* 按码点比较。相同是 1。string 的 == 只比引用，内容要走这里。 */
 deRfun same(string left, string right): long;
+/* 这段字符串按 UTF-8 占多少个八位组。标量不在 Unicode 范围时返回 -1。 */
+deRfun span(string text): long;
+/* 把字符串按 UTF-8 写到 addr，相邻隔 8 位。room 是能写的八位组数。
+   成功返回写下的个数。放不下或标量不合法返回 -1，已经写下的前缀留着。 */
+deRfun encode(long addr, long room, string text): long;
+/* 从隔 8 位的 UTF-8 里取出一个标量。index 是字节下标。
+   成功时 *scalar 是码点，返回下一字节下标。截断、过短编码或越界返回 -1，*scalar 不动。 */
+deRfun next(long addr, long count, long index, long* scalar): long;
+/* 把 scalars 的前 count 个码点收成一份字符串。个数为 0 得到空字符串。
+   个数为负、超过数组长度、或标量不在 Unicode 范围时停机。 */
+deRfun from(array[long] scalars, long count): string;
+/* 解开一段 UTF-8。成功时 *ok 为 1，空字节串得到空字符串。不合法时 *ok 为 0，返回空字符串。 */
+deRfun decode(long addr, long count, long* ok): string;
 }
 }

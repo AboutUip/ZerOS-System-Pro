@@ -1,0 +1,170 @@
+/* POSIX.1-2017 groups（utilities/groups.html）。形式是 groups [user...]。
+   没有用户名数据库，也没有补充组列表。
+   本系统选定：无操作数时用服务 32 读有效组标识，只写一个十进制数字和换行。
+   有操作数时，只有操作数是十进制数字且等于当前有效用户标识才写当前有效组标识；
+   其它名字写 groups: unknown user 到描述符 2，退出 1。
+   -- 结束选项。单独的 - 是用户名，不是选项。多余操作数逐个处理，有一个失败则最终 1。
+   不认识的选项 groups: invalid option，退出 1。服务 32 失败写 groups: cannot read identity，退出 1。
+   结束用服务 28。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun writeOut(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 1L, 0L, count);
+  }
+}
+
+deRfun writeDec(long home, long value): void {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long rev = home + 9664L;
+  long count = 0L;
+  if (value == 0L) {
+    memory::storeOctet(48L, rev);
+    count = 1L;
+  } else {
+    while (value > 0L && count < 20L) {
+      memory::storeOctet(48L + (value % 10L), rev + count * 8L);
+      value = value / 10L;
+      count = count + 1L;
+    }
+  }
+  long index = 0L;
+  while (count > 0L) {
+    count = count - 1L;
+    memory::storeOctet(u8(rev + count * 8L), obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (index > 0L) {
+    obr::proc::write(home, 1L, 0L, index);
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun parseDec(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    value = value * 10L + bit - 48L;
+    cursor = cursor + 1L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun showEgid(long home): long {
+  if (obr::proc::ident(home) != 0L) {
+    writeErr(home, "groups: cannot read identity\n");
+    return 1L;
+  }
+  writeDec(home, obr::proc::slot(home, 320L));
+  writeOut(home, "\n");
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      writeErr(home, "groups: invalid option\n");
+      return finish(home, 1L);
+    }
+  }
+  if (index >= count) {
+    return finish(home, showEgid(home));
+  }
+  if (obr::proc::ident(home) != 0L) {
+    writeErr(home, "groups: cannot read identity\n");
+    return finish(home, 1L);
+  }
+  long euid = obr::proc::slot(home, 256L);
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long num = 0L;
+    if (parseDec(at, len, &num) == 1L && num == euid) {
+      if (showEgid(home) != 0L) {
+        failed = 1L;
+      }
+    } else {
+      writeErr(home, "groups: unknown user\n");
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed == 1L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

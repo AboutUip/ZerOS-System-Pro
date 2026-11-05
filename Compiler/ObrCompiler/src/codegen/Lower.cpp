@@ -115,6 +115,16 @@ bool Generator::tryScaled(const Expr& address, const Expr* value, TypeKind type)
 }
 
 void Generator::emitAddress(const Expr& expr) {
+  if (expr.kind == Expr::Kind::StructConst) {
+    if (expr.integer < 0 || expr.integer >= static_cast<long long>(structAddresses_.size())) fail("结构体常量编号越界");
+    emit("place r0, " + std::to_string(structAddresses_[static_cast<std::size_t>(expr.integer)]));
+    return;
+  }
+  if (expr.kind == Expr::Kind::ClassConst) {
+    if (expr.integer < 0 || expr.integer >= static_cast<long long>(classAddresses_.size())) fail("类常量编号越界");
+    emit("place r0, " + std::to_string(classAddresses_[static_cast<std::size_t>(expr.integer)]));
+    return;
+  }
   if (expr.kind == Expr::Kind::Member) {
     if (expr.prefix) emitAddress(expr.kids[0]);
     else gen(expr.kids[0]);
@@ -143,6 +153,179 @@ int Generator::structWords(const std::string& name) const {
   fail("没有结构体 " + name);
 }
 
+const InterfaceDecl* Generator::findInterface(const std::string& name) const {
+    if (interfaces_ == nullptr) return nullptr;
+    for (const InterfaceDecl& decl : *interfaces_) {
+      if (decl.name == name) return &decl;
+    }
+    return nullptr;
+  }
+
+bool Generator::classImplements(const std::string& className, const std::string& interfaceName) const {
+    if (classes_ == nullptr) return false;
+    const ClassDecl* decl = nullptr;
+    for (const ClassDecl& item : *classes_) {
+      if (item.name == className) {
+        decl = &item;
+        break;
+      }
+    }
+    while (decl != nullptr) {
+      for (const std::string& item : decl->interfaces) {
+        if (item == interfaceName) return true;
+      }
+      if (decl->base.empty()) return false;
+      const std::string base = decl->base;
+      decl = nullptr;
+      for (const ClassDecl& item : *classes_) {
+        if (item.name == base) {
+          decl = &item;
+          break;
+        }
+      }
+    }
+    return false;
+  }
+
+int Generator::findMethodIndex(const std::string& className, const Function& method) const {
+    if (classes_ == nullptr || functions_ == nullptr) return -1;
+    const std::string wanted = shortFunctionName(method.name);
+    const ClassDecl* decl = nullptr;
+    for (const ClassDecl& item : *classes_) {
+      if (item.name == className) {
+        decl = &item;
+        break;
+      }
+    }
+    while (decl != nullptr) {
+      for (std::size_t index = 0; index < functions_->size(); index += 1) {
+        const Function& function = (*functions_)[index];
+        if (function.owner != decl->name) continue;
+        if (shortFunctionName(function.name) != wanted) continue;
+        if (function.params.size() != method.params.size() + 1) continue;
+        if (function.ret != method.ret || function.retName != method.retName) continue;
+        bool same = true;
+        for (std::size_t param = 0; param < method.params.size(); param += 1) {
+          const Param& left = function.params[param + 1];
+          const Param& right = method.params[param];
+          if (left.type != right.type || left.typeName != right.typeName) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return static_cast<int>(index);
+      }
+      if (decl->base.empty()) return -1;
+      const std::string base = decl->base;
+      decl = nullptr;
+      for (const ClassDecl& item : *classes_) {
+        if (item.name == base) {
+          decl = &item;
+          break;
+        }
+      }
+    }
+    return -1;
+  }
+
+void Generator::emitDispatchCall(const std::string& interfaceName, int methodIndex, int object, const std::vector<int>& args, const std::vector<TypeKind>& argKinds) {
+    const InterfaceDecl* iface = findInterface(interfaceName);
+    if (iface == nullptr) fail("没有接口 " + interfaceName);
+    if (methodIndex < 0 || methodIndex >= static_cast<int>(iface->methods.size())) fail("接口方法编号越界");
+    const Function& method = iface->methods[static_cast<std::size_t>(methodIndex)];
+    if (itables_) {
+      if (args.size() > 5) fail("接口方法参数超过 5 个还没接");
+      const int maxId = classes_ == nullptr ? 0 : static_cast<int>(classes_->size());
+      if (maxId < 1) fail("接口派发没有类");
+      std::vector<int> entries(static_cast<std::size_t>(maxId) + 1, -1);
+      bool emitted = false;
+      for (const ClassDecl& decl : *classes_) {
+        if (decl.id < 1 || decl.id > maxId) continue;
+        if (!classImplements(decl.name, iface->name)) continue;
+        const int index = findMethodIndex(decl.name, method);
+        if (index < 0) continue;
+        entries[static_cast<std::size_t>(decl.id)] = index;
+        emitted = true;
+      }
+      if (!emitted) fail("没有类实现接口 " + iface->name);
+      loadSlot(object, TypeKind::Long);
+      copy(1, 0);
+      for (std::size_t index = 0; index < args.size(); index += 1) {
+        loadSlot(args[index], argKinds[index]);
+        copy(static_cast<int>(index) + 2, 0);
+      }
+      loadSlot(object, TypeKind::Long);
+      emit("ldi.64 r0, r0");
+      std::string line = "itable.call r0, 1, " + std::to_string(maxId);
+      for (int id = 1; id <= maxId; id += 1) {
+        const int index = entries[static_cast<std::size_t>(id)];
+        line += ", " + (index < 0 ? std::string("-1") : (*functions_)[static_cast<std::size_t>(index)].label);
+      }
+      emit(line);
+      /* 被调方会把 kFrame 改成自己的帧；返回后恢复调用方的帧。 */
+      emit("load.64 r4, " + std::to_string(kSp));
+      emit("place r5, " + std::to_string(frameBits()));
+      emit("sub r4, r4, r5");
+      emit("store.64 r4, " + std::to_string(kFrame));
+      frameHeld_ = true;
+      return;
+    }
+    loadSlot(object, TypeKind::Long);
+    emit("ldi.64 r0, r0");
+    const int classSlot = words_ + temp_;
+    hold();
+    storeSlot(classSlot, TypeKind::Long);
+    const std::string done = fresh("e");
+    bool emitted = false;
+    for (const ClassDecl& decl : *classes_) {
+      if (!classImplements(decl.name, iface->name)) continue;
+      const int index = findMethodIndex(decl.name, method);
+      if (index < 0) continue;
+      loadSlot(classSlot, TypeKind::Long);
+      emit("place r1, " + std::to_string(decl.id));
+      emit("eq r0, r0, r1");
+      const std::string next = fresh("e");
+      emit("jz r0, " + next);
+      std::vector<int> slots;
+      slots.push_back(object);
+      for (const int slot : args) slots.push_back(slot);
+      std::vector<TypeKind> kinds(1, TypeKind::Long);
+      for (const TypeKind kind : argKinds) kinds.push_back(kind);
+      emitIntegerCall((*functions_)[static_cast<std::size_t>(index)].label, slots, kinds);
+      emit("place r1, 1");
+      emit("jnz r1, " + done);
+      emit(next + ":");
+      emitted = true;
+    }
+    if (!emitted) fail("没有类实现接口 " + iface->name);
+    emit("halt");
+    emit(done + ":");
+    release();
+    frameHeld_ = false;
+  }
+
+void Generator::emitDispatch(const Expr& expr) {
+    gen(expr.kids[0]);
+    const int object = words_ + temp_;
+    hold();
+    storeSlot(object, TypeKind::Long);
+    std::vector<int> args;
+    std::vector<TypeKind> argKinds;
+    for (std::size_t index = 1; index < expr.kids.size(); index += 1) {
+      const Expr& argument = expr.kids[index];
+      gen(argument);
+      const TypeKind kind = argument.type == TypeKind::Float || argument.type == TypeKind::Double ? argument.type : TypeKind::Long;
+      const int slot = words_ + temp_;
+      hold();
+      storeSlot(slot, kind);
+      args.push_back(slot);
+      argKinds.push_back(kind);
+    }
+    emitDispatchCall(expr.text, expr.integer, object, args, argKinds);
+    for (std::size_t index = 0; index < args.size(); index += 1) release();
+    release();
+  }
+
 void Generator::gen(const Expr& expr) {
     if (expr.kind == Expr::Kind::LitInt) {
       emit("place r0, " + std::to_string(expr.integer));
@@ -160,14 +343,33 @@ void Generator::gen(const Expr& expr) {
       emitString(expr.text);
       return;
     }
+    if (expr.kind == Expr::Kind::LitStringStatic) {
+      if (expr.integer < 0 || expr.integer >= static_cast<long long>(stringAddresses_.size())) fail("字符串常量编号越界");
+      emit("place r0, " + std::to_string(stringAddresses_[static_cast<std::size_t>(expr.integer)]));
+      return;
+    }
     if (expr.kind == Expr::Kind::LitNull || expr.kind == Expr::Kind::LitUndefined) {
       emit("place r0, 0");
+      return;
+    }
+    if (expr.kind == Expr::Kind::StructConst) {
+      if (expr.integer < 0 || expr.integer >= static_cast<long long>(structAddresses_.size())) fail("结构体常量编号越界");
+      emit("place r0, " + std::to_string(structAddresses_[static_cast<std::size_t>(expr.integer)]));
+      return;
+    }
+    if (expr.kind == Expr::Kind::ClassConst) {
+      if (expr.integer < 0 || expr.integer >= static_cast<long long>(classAddresses_.size())) fail("类常量编号越界");
+      emit("place r0, " + std::to_string(classAddresses_[static_cast<std::size_t>(expr.integer)]));
       return;
     }
     if (expr.kind == Expr::Kind::Await) {
       gen(expr.kids[0]);
       /* 调用已经把结果留在 r0。yield 停住这颗核心，寄存器和栈都保留。 */
       emit("yield");
+      return;
+    }
+    if (expr.kind == Expr::Kind::Dispatch) {
+      emitDispatch(expr);
       return;
     }
     if (expr.kind == Expr::Kind::New) {
@@ -182,7 +384,9 @@ void Generator::gen(const Expr& expr) {
         }
       }
       if (decl == nullptr) fail("没有类 " + expr.text);
-      const int bits = decl->fields.empty() ? 64 : static_cast<int>(decl->fields.size()) * 64;
+      const int words = decl->headerWords + static_cast<int>(decl->fields.size());
+      const int allocated = words < 1 ? 1 : words;
+      const int bits = allocated * 64;
       const std::string ready = fresh("e");
       emit("load.64 r4, " + std::to_string(kHeapPtr));
       emit("place r5, 0");
@@ -197,13 +401,17 @@ void Generator::gen(const Expr& expr) {
       const int base = words_ + temp_;
       hold();
       storeSlot(base, TypeKind::Long);
-      const int words = bits / 64;
-      for (int index = 0; index < words; index += 1) {
+      for (int index = 0; index < allocated; index += 1) {
         loadSlot(base, TypeKind::Long);
         emit("place r1, 0");
         emit("place r5, " + std::to_string(index * 64));
         emit("add r5, r0, r5");
         emit("sti.64 r1, r5");
+      }
+      if (decl->headerWords > 0) {
+        loadSlot(base, TypeKind::Long);
+        emit("place r1, " + std::to_string(decl->id));
+        emit("sti.64 r1, r0");
       }
       if (expr.integer >= 0) {
         const Function& target = (*functions_)[static_cast<std::size_t>(expr.integer)];
@@ -241,6 +449,7 @@ void Generator::gen(const Expr& expr) {
     }
     if (expr.kind == Expr::Kind::Cast) {
       gen(expr.kids[0]);
+      castValue(expr.kids[0].type, expr.type);
       return;
     }
     if (expr.kind == Expr::Kind::Name) {
@@ -880,6 +1089,7 @@ void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
       return;
     }
     if (stmt.kind == Stmt::Kind::Nop) return;
+    if (stmt.kind == Stmt::Kind::Const) return;
     if (stmt.kind == Stmt::Kind::Block) {
       for (const Stmt& inner : stmt.body) emitStmt(inner, ret);
       return;
@@ -934,6 +1144,93 @@ void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
       if (hasInit) remember(stmt.slot, stmt.expr);
       return;
     }
+    if (stmt.kind == Stmt::Kind::Switch) {
+      const std::string end = fresh("d");
+      std::vector<std::string> labels;
+      std::string defaultLabel = end;
+      for (std::size_t index = 0; index < stmt.body.size(); index += 1) {
+        labels.push_back(fresh("c"));
+        if (stmt.body[index].kind == Stmt::Kind::Default) defaultLabel = labels.back();
+      }
+      std::vector<std::pair<long long, std::string>> cases;
+      for (std::size_t index = 0; index < stmt.body.size(); index += 1) {
+        const Stmt& arm = stmt.body[index];
+        if (arm.kind == Stmt::Kind::Case) cases.push_back({arm.expr.integer, labels[index]});
+      }
+      bool table = false;
+      long long minValue = 0;
+      long long maxValue = 0;
+      if (jumpTables_ && cases.size() >= 4) {
+        minValue = cases[0].first;
+        maxValue = cases[0].first;
+        for (const auto& item : cases) {
+          if (item.first < minValue) minValue = item.first;
+          if (item.first > maxValue) maxValue = item.first;
+        }
+        if (minValue >= -2147483648LL && maxValue <= 2147483647LL) {
+          const long long range = maxValue - minValue + 1;
+          table = range >= 1 && range <= 256 && range <= static_cast<long long>(cases.size()) * 2;
+        }
+      }
+      if (table) {
+        gen(stmt.expr);
+        std::string line = "switch.table r0, " + std::to_string(minValue) + ", " + defaultLabel;
+        for (long long value = minValue; value <= maxValue; value += 1) {
+          std::string target = defaultLabel;
+          for (const auto& item : cases) {
+            if (item.first != value) continue;
+            target = item.second;
+            break;
+          }
+          line += ", " + target;
+        }
+        emit(line);
+      } else {
+        gen(stmt.expr);
+        const int selector = words_ + temp_;
+        hold();
+        storeSlot(selector, stmt.expr.type);
+        for (std::size_t index = 0; index < stmt.body.size(); index += 1) {
+          const Stmt& arm = stmt.body[index];
+          if (arm.kind != Stmt::Kind::Case) continue;
+          loadSlot(selector, stmt.expr.type);
+          emit("place r1, " + std::to_string(arm.expr.integer));
+          emit("eq r0, r0, r1");
+          emit("jnz r0, " + labels[index]);
+        }
+        emit("place r1, 1");
+        emit("jnz r1, " + defaultLabel);
+      }
+      breakTargets_.push_back(end);
+      const std::string savedFallthrough = fallthrough_;
+      for (std::size_t index = 0; index < stmt.body.size(); index += 1) {
+        const Stmt& arm = stmt.body[index];
+        emit(labels[index] + ":");
+        const std::string next = index + 1 < labels.size() ? labels[index + 1] : end;
+        /* 空 case 共享下一段标签体，例如 case 1: case 2: ...。 */
+        if (arm.body.empty()) {
+          emit("place r1, 1");
+          emit("jnz r1, " + next);
+          continue;
+        }
+        fallthrough_ = next;
+        for (const Stmt& inner : arm.body) emitStmt(inner, ret);
+        /* 默认不 fallthrough；显式 fallthrough 已经在语句里跳走，这条是不可达的。 */
+        emit("place r1, 1");
+        emit("jnz r1, " + end);
+      }
+      fallthrough_ = savedFallthrough;
+      breakTargets_.pop_back();
+      if (!table) release();
+      emit(end + ":");
+      return;
+    }
+    if (stmt.kind == Stmt::Kind::Fallthrough) {
+      if (fallthrough_.empty()) fail("fallthrough 不在 switch 里");
+      emit("place r1, 1");
+      emit("jnz r1, " + fallthrough_);
+      return;
+    }
     if (stmt.kind == Stmt::Kind::If) {
       gen(stmt.expr);
       truth(stmt.expr.type);
@@ -951,10 +1248,100 @@ void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
       emit(end + ":");
       return;
     }
+    if (stmt.kind == Stmt::Kind::ForIn) {
+      if (stmt.expr.type != TypeKind::Array && stmt.expr.type != TypeKind::List) {
+        const InterfaceDecl* iterable = findInterface("Iterable");
+        if (iterable == nullptr) fail("没有 Iterable 接口");
+        int hasNext = -1;
+        int next = -1;
+        for (std::size_t index = 0; index < iterable->methods.size(); index += 1) {
+          const std::string name = shortFunctionName(iterable->methods[index].name);
+          if (name == "hasNext") hasNext = static_cast<int>(index);
+          if (name == "next") next = static_cast<int>(index);
+        }
+        if (hasNext < 0 || next < 0) fail("Iterable 接口需要 hasNext() 和 next()");
+        gen(stmt.expr);
+        const int object = words_ + temp_;
+        hold();
+        storeSlot(object, TypeKind::Long);
+        const std::string head = fresh("w");
+        const std::string end = fresh("d");
+        loops_.push_back({end, head});
+        breakTargets_.push_back(end);
+        emit(head + ":");
+        emitDispatchCall("Iterable", hasNext, object, {}, {});
+        emit("jz r0, " + end);
+        emitDispatchCall("Iterable", next, object, {}, {});
+        storeSlot(stmt.slot, stmt.type);
+        for (const Stmt& inner : stmt.body) emitStmt(inner, ret);
+        emit("place r1, 1");
+        emit("jnz r1, " + head);
+        emit(end + ":");
+        breakTargets_.pop_back();
+        loops_.pop_back();
+        release();
+        return;
+      }
+      gen(stmt.expr);
+      const int object = words_ + temp_;
+      hold();
+      storeSlot(object, TypeKind::Long);
+      loadSlot(object, TypeKind::Long);
+      emit("ldi.64 r0, r0");
+      const int length = words_ + temp_;
+      hold();
+      storeSlot(length, TypeKind::Long);
+      const int index = words_ + temp_;
+      hold();
+      emit("place r0, 0");
+      storeSlot(index, TypeKind::Long);
+      const std::string head = fresh("w");
+      const std::string step = fresh("w");
+      const std::string end = fresh("d");
+      loops_.push_back({end, step});
+      breakTargets_.push_back(end);
+      emit(head + ":");
+      loadSlot(index, TypeKind::Long);
+      copy(1, 0);
+      loadSlot(length, TypeKind::Long);
+      copy(2, 0);
+      emit("lt r0, r1, r2");
+      emit("jz r0, " + end);
+      if (stmt.expr.type == TypeKind::List) {
+        /* 列表在循环里缩短时按当前长度提前结束，不越界。 */
+        loadSlot(object, TypeKind::Long);
+        emit("ldi.64 r0, r0");
+        copy(2, 0);
+        emit("lt r0, r1, r2");
+        emit("jz r0, " + end);
+      }
+      loadSlot(index, TypeKind::Long);
+      copy(1, 0);
+      loadSlot(object, TypeKind::Long);
+      emitCollectCall(stmt.expr.type == TypeKind::Array ? "obrcidx" : "obrlidx");
+      emit("ldi.64 r0, r0");
+      storeSlot(stmt.slot, stmt.type);
+      for (const Stmt& inner : stmt.body) emitStmt(inner, ret);
+      emit(step + ":");
+      loadSlot(index, TypeKind::Long);
+      emit("place r1, 1");
+      emit("add r0, r0, r1");
+      storeSlot(index, TypeKind::Long);
+      emit("place r1, 1");
+      emit("jnz r1, " + head);
+      emit(end + ":");
+      breakTargets_.pop_back();
+      loops_.pop_back();
+      release();
+      release();
+      release();
+      return;
+    }
     if (stmt.kind == Stmt::Kind::While) {
       const std::string head = fresh("w");
       const std::string end = fresh("d");
       loops_.push_back({end, head});
+      breakTargets_.push_back(end);
       emit(head + ":");
       gen(stmt.expr);
       truth(stmt.expr.type);
@@ -963,6 +1350,7 @@ void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
       emit("place r1, 1");
       emit("jnz r1, " + head);
       emit(end + ":");
+      breakTargets_.pop_back();
       loops_.pop_back();
       return;
     }
@@ -972,6 +1360,7 @@ void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
       const std::string step = fresh("w");
       const std::string end = fresh("d");
       loops_.push_back({end, step});
+      breakTargets_.push_back(end);
       emit(head + ":");
       gen(stmt.expr);
       truth(stmt.expr.type);
@@ -982,12 +1371,14 @@ void Generator::emitStmt(const Stmt& stmt, TypeKind ret) {
       emit("place r1, 1");
       emit("jnz r1, " + head);
       emit(end + ":");
+      breakTargets_.pop_back();
       loops_.pop_back();
       return;
     }
     if (stmt.kind == Stmt::Kind::Break) {
+      if (breakTargets_.empty()) fail("break 不在循环或 switch 里");
       emit("place r1, 1");
-      emit("jnz r1, " + loops_.back().first);
+      emit("jnz r1, " + breakTargets_.back());
       return;
     }
     if (stmt.kind == Stmt::Kind::Continue) {

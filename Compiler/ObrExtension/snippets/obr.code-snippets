@@ -9,9 +9,49 @@
   "Version Directive": {
     "prefix": "#VERSION",
     "body": [
-      "#VERSION ${1:1}"
+      "#VERSION ${1|1,2|}"
     ],
-    "description": "Insert #VERSION line (see docs/obr/preprocessor.md)"
+    "description": "Insert #VERSION line：1 或 2（2 启用 interface/const/switch/for-in 和对象头）"
+  },
+  "Interface": {
+    "prefix": "interface",
+    "body": [
+      "interface ${1:Name} {",
+      "\tdeRfun ${2:method}(${3}): ${4:int};",
+      "}"
+    ],
+    "description": "#VERSION 2 接口声明（只写方法签名）"
+  },
+  "Implements": {
+    "prefix": "implements",
+    "body": [
+      "class ${1:Name} implements ${2:Interface} {",
+      "\tdeRfun ${2:method}(${3}): ${4:int} {",
+      "\t\t${0}",
+      "\t}",
+      "}"
+    ],
+    "description": "#VERSION 2 实现接口的类"
+  },
+  "Const": {
+    "prefix": "const",
+    "body": [
+      "const ${1:long} ${2:NAME} = ${3:value};"
+    ],
+    "description": "编译期常量"
+  },
+  "Switch": {
+    "prefix": "switch",
+    "body": [
+      "switch (${1:value}) {",
+      "\tcase ${2:const}:",
+      "\t\t${0}",
+      "\t\tbreak;",
+      "\tdefault:",
+      "\t\tbreak;",
+      "}"
+    ],
+    "description": "switch：非空 case 默认跳出，不隐式 fallthrough"
   },
   "Link Directive": {
     "prefix": "#LINK",

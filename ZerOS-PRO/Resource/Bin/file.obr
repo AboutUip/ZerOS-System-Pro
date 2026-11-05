@@ -1,0 +1,360 @@
+/* POSIX.1-2017 file（utilities/file.html）。形式是 file [-dh] [-m|-M file] [-i] [file...]。
+   没有系统 magic 文件，也不装假 magic 数据库。
+   本系统选定：目录报 directory；普通文件大小为 0 报 empty；
+   全部八位组都在 9、10、13、32 至 126 报 ASCII text；
+   合法 UTF-8 且含非 ASCII 报 UTF-8 text；其余报 data。
+   -h 接受，本系统没有符号链接，结果与不加 -h 相同。
+   -d 不读正文，只按 stat：目录、空、或一律 data。
+   -i 仍用上述固定类型名，不用 MIME 树。
+   -m 或 -M 且给了待测文件时，向描述符 2 写 file: magic file not used，
+   仍按上面规则写标准输出，但退出状态为 1（规范要求 magic 不可用则非 0）。
+   没有文件时读标准输入，名字写 (standard input)。-- 结束选项。
+   打开失败写 file: 路径: No such file or directory，继续，最终 1。
+   读失败写 file: read error，立刻 1。结束用服务 28。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import obr.text;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun isDir(long kind): long {
+  if (kind == 2L || kind == 4L || kind == 6L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun putOut(long home, long* filled, long bit): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    obr::proc::write(home, 1L, 0L, count);
+    count = 0L;
+  }
+  memory::storeOctet(bit, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun putText(long home, long* filled, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    putOut(home, filled, text[index]);
+    index = index + 1L;
+  }
+}
+
+deRfun putSpan(long home, long* filled, long addr, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putOut(home, filled, u8(addr + index * 8L));
+    index = index + 1L;
+  }
+}
+
+deRfun flushOut(long home, long filled): void {
+  if (filled > 0L) {
+    obr::proc::write(home, 1L, 0L, filled);
+  }
+}
+
+deRfun asciiOk(long bit): long {
+  if (bit == 9L || bit == 10L || bit == 13L) {
+    return 1L;
+  }
+  if (bit >= 32L && bit <= 126L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun classify(long home, long data, long size, long dry): long {
+  if (dry == 1L) {
+    if (size == 0L) {
+      return 1L;
+    }
+    return 4L;
+  }
+  if (size == 0L) {
+    return 1L;
+  }
+  long allAscii = 1L;
+  long hasHigh = 0L;
+  long index = 0L;
+  while (index < size) {
+    long bit = u8(data + index * 8L);
+    if (asciiOk(bit) == 0L) {
+      allAscii = 0L;
+    }
+    if (bit >= 128L) {
+      hasHigh = 1L;
+    }
+    index = index + 1L;
+  }
+  if (allAscii == 1L) {
+    return 2L;
+  }
+  long ok = 0L;
+  obr::text::decode(data, size, &ok);
+  if (ok == 1L && hasHigh == 1L) {
+    return 3L;
+  }
+  return 4L;
+}
+
+deRfun typeText(long kind): string {
+  if (kind == 0L) {
+    return "directory";
+  }
+  if (kind == 1L) {
+    return "empty";
+  }
+  if (kind == 2L) {
+    return "ASCII text";
+  }
+  if (kind == 3L) {
+    return "UTF-8 text";
+  }
+  return "data";
+}
+
+deRfun emitLine(long home, long labelAt, long labelLen, long kind, long* filled): void {
+  if (labelLen > 0L) {
+    putSpan(home, filled, labelAt, labelLen);
+    putText(home, filled, ": ");
+  }
+  putText(home, filled, typeText(kind));
+  putOut(home, filled, 10L);
+}
+
+deRfun readAll(long home, long fd, long buf, long max, long* size): long {
+  long total = 0L;
+  long offset = 0L;
+  while (total < max) {
+    long room = max - total;
+    if (room > 4096L) {
+      room = 4096L;
+    }
+    if (obr::proc::read(home, fd, offset, room) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      return 1L;
+    }
+    if (n == 0L) {
+      break;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, n);
+    total = total + n;
+    offset = offset + n;
+  }
+  *size = total;
+  return 0L;
+}
+
+deRfun describePath(long home, long addr, long count, long dry, long* filled, long* failed): long {
+  if (count < 1L || count > 8192L) {
+    writeErr(home, "file: ");
+    writeSpan(home, addr, count);
+    writeErr(home, ": No such file or directory\n");
+    *failed = 1L;
+    return 0L;
+  }
+  plant(home, addr, count);
+  long status = obr::proc::stat(home);
+  if (status != 0L) {
+    writeErr(home, "file: ");
+    writeSpan(home, addr, count);
+    writeErr(home, ": No such file or directory\n");
+    *failed = 1L;
+    return 0L;
+  }
+  long kind = obr::proc::slot(home, 128L);
+  long size = obr::proc::slot(home, 192L);
+  if (isDir(kind) == 1L) {
+    emitLine(home, addr, count, 0L, filled);
+    return 0L;
+  }
+  if (dry == 1L) {
+    long cls = classify(home, 0L, size, 1L);
+    emitLine(home, addr, count, cls, filled);
+    return 0L;
+  }
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "file: ");
+    writeSpan(home, addr, count);
+    writeErr(home, ": No such file or directory\n");
+    *failed = 1L;
+    return 0L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long buf = obr::proc::alloc(home, 524288L);
+  if (buf == 0L) {
+    writeErr(home, "file: read error\n");
+    return 1L;
+  }
+  long got = 0L;
+  if (readAll(home, fd, buf, 262144L, &got) != 0L) {
+    obr::proc::free(home, buf, 524288L);
+    writeErr(home, "file: read error\n");
+    return 1L;
+  }
+  long cls = classify(home, buf, got, 0L);
+  obr::proc::free(home, buf, 524288L);
+  emitLine(home, addr, count, cls, filled);
+  return 0L;
+}
+
+deRfun describeStdin(long home, long dry, long* filled): long {
+  long buf = obr::proc::alloc(home, 524288L);
+  if (buf == 0L) {
+    writeErr(home, "file: read error\n");
+    return 1L;
+  }
+  long got = 0L;
+  if (readAll(home, 0L, buf, 262144L, &got) != 0L) {
+    obr::proc::free(home, buf, 524288L);
+    writeErr(home, "file: read error\n");
+    return 1L;
+  }
+  long cls = classify(home, buf, got, dry);
+  obr::proc::free(home, buf, 524288L);
+  putText(home, filled, "(standard input): ");
+  putText(home, filled, typeText(cls));
+  putOut(home, filled, 10L);
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long flagD = 0L;
+  long flagH = 0L;
+  long flagI = 0L;
+  long flagMagic = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 100L) {
+          flagD = 1L;
+        } else if (bit == 104L) {
+          flagH = 1L;
+        } else if (bit == 105L) {
+          flagI = 1L;
+        } else if (bit == 109L || bit == 77L) {
+          flagMagic = 1L;
+        } else {
+          writeErr(home, "file: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  if (flagH == 1L) {
+  }
+  if (flagI == 1L) {
+  }
+  if (flagMagic == 1L && index < count) {
+    writeErr(home, "file: magic file not used\n");
+  }
+  long filled = 0L;
+  long failed = 0L;
+  if (index >= count) {
+    long status = describeStdin(home, flagD, &filled);
+    flushOut(home, filled);
+    if (status != 0L) {
+      return finish(home, 1L);
+    }
+    long code = 0L;
+    if (failed == 1L || flagMagic == 1L) {
+      code = 1L;
+    }
+    return finish(home, code);
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = describePath(home, at, len, flagD, &filled, &failed);
+    if (status != 0L) {
+      flushOut(home, filled);
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  flushOut(home, filled);
+  long code = 0L;
+  if (failed == 1L || flagMagic == 1L) {
+    code = 1L;
+  }
+  return finish(home, code);
+}

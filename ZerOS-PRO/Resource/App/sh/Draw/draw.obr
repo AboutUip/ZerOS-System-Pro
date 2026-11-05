@@ -1,0 +1,192 @@
+/* 壳的画面和标准输出。
+   只负责把一行画出来，并把八位组交给 obr.print。不解析命令，不派生进程。
+   画面缓冲由本库申请，不占用壳的工作区。键入、退格和提示符画完就 flush，避免停在库里等下一行。
+   列数和原先壳里的算法相同：128 到 191 的续字节不加列，其余每个八位组加一列。 */
+#DYN
+import memory;
+import obr.print;
+import obr.proc;
+import obr.line;
+import obr.oct;
+import draw;
+import work;
+
+deRfun octetAt(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun columnCount(long addr, long count): long {
+  long index = 0L;
+  long total = 0L;
+  while (index < count) {
+    long value = octetAt(addr + index * 8L);
+    if (value < 128L || value >= 192L) {
+      total = total + 1L;
+    }
+    index = index + 1L;
+  }
+  return total;
+}
+
+deRfun placeText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun moveOctets(long from, long to, long count): void {
+  obr::oct::copy(from, to, count);
+}
+
+/* 画面缓冲只在本函数里。画整行、退格和画提示符都会进来，静态区不会被内联拆开。 */
+deRfun screen(long home): long {
+  static long paint = 0L;
+  if (paint == 0L) {
+    paint = obr::proc::alloc(home, 2048L * 8L);
+  }
+  return paint;
+}
+
+deRfun say(long home, string text): void {
+  if (obr::print::text(home, text) != 0L) {
+    return;
+  }
+  obr::print::flush(home);
+}
+
+deRfun saySpan(long home, long addr, long count): void {
+  if (count < 1L) {
+    return;
+  }
+  if (obr::print::out(home, addr, count) != 0L) {
+    return;
+  }
+  obr::print::flush(home);
+}
+
+deRfun sayByte(long home, long value): void {
+  if (obr::print::byte(home, value) != 0L) {
+    return;
+  }
+  obr::print::flush(home);
+}
+
+deRfun sayBack(long home): void {
+  long paint = screen(home);
+  if (paint == 0L) {
+    return;
+  }
+  memory::storeOctet(8L, paint);
+  memory::storeOctet(32L, paint + 8L);
+  memory::storeOctet(8L, paint + 16L);
+  saySpan(home, paint, 3L);
+}
+
+deRfun sayMissing(long home, string lead, long addr, long count, string tail): void {
+  say(home, lead);
+  saySpan(home, addr, count);
+  say(home, tail);
+}
+
+/* 提示符加当前行，再抹掉变短的尾巴，光标退回到插入点。一次交给流。 */
+deRfun paintEdit(long home, long state, long work): void {
+  long paint = screen(home);
+  if (paint == 0L) {
+    return;
+  }
+  long at = 0L;
+  memory::storeOctet(13L, paint);
+  at = 1L;
+  if (obr::line::editBody(state) == 1L) {
+    at = placeText(paint, at, "> ");
+  } else {
+    at = placeText(paint, at, "root@zeros:");
+    long cwdLen = memory::load64(cwdLenAt(work));
+    moveOctets(cwdAt(work), paint + at * 8L, cwdLen);
+    at = at + cwdLen;
+    at = placeText(paint, at, "# ");
+  }
+  long promptCols = columnCount(paint + 8L, at - 1L);
+  long lineLen = obr::line::editLen(state);
+  moveOctets(obr::line::lineBytes(state), paint + at * 8L, lineLen);
+  long lineCols = columnCount(obr::line::lineBytes(state), lineLen);
+  long cursorCols = columnCount(obr::line::lineBytes(state), obr::line::editCursor(state));
+  at = at + lineLen;
+  long shown = promptCols + lineCols;
+  long prev = memory::load64(prevAt(work));
+  long pad = 0L;
+  if (prev > shown) {
+    pad = prev - shown;
+  }
+  long spaces = 0L;
+  while (spaces < pad && at < 2000L) {
+    memory::storeOctet(32L, paint + at * 8L);
+    at = at + 1L;
+    spaces = spaces + 1L;
+  }
+  long backs = pad + (lineCols - cursorCols);
+  long step = 0L;
+  while (step < backs && at < 2000L) {
+    memory::storeOctet(8L, paint + at * 8L);
+    at = at + 1L;
+    step = step + 1L;
+  }
+  saySpan(home, paint, at);
+  memory::store64(shown, prevAt(work));
+}
+
+/* 普通按键只追加或删掉行尾一个字节。整行重画会把提示符再送一遍。
+   光标不在行尾、或一次删掉不止一个字节时，仍走整行。长度和光标都没变就不画。 */
+deRfun paintStep(long home, long state, long work, long beforeLen, long beforeCur): void {
+  long afterLen = obr::line::editLen(state);
+  long afterCur = obr::line::editCursor(state);
+  if (afterLen == beforeLen && afterCur == beforeCur) {
+    return;
+  }
+  if (afterCur == afterLen && beforeCur == beforeLen && afterLen == beforeLen + 1L) {
+    long added = obr::line::editAt(state, afterLen - 1L);
+    sayByte(home, added);
+    long cols = 1L;
+    if (added >= 128L && added < 192L) {
+      cols = 0L;
+    }
+    memory::store64(memory::load64(prevAt(work)) + cols, prevAt(work));
+    return;
+  }
+  if (afterCur == afterLen && beforeCur == beforeLen && beforeLen > 0L && afterLen == beforeLen - 1L) {
+    sayBack(home);
+    long shown = memory::load64(prevAt(work));
+    if (shown > 0L) {
+      memory::store64(shown - 1L, prevAt(work));
+    }
+    return;
+  }
+  paintEdit(home, state, work);
+}
+
+/* 收 here-document 时不画正常提示符，只写 > 和一个空格。 */
+deRfun paintMark(long home, long work): void {
+  say(home, "> ");
+  memory::store64(2L, prevAt(work));
+}
+
+deRfun paintPrompt(long home, long work): void {
+  long paint = screen(home);
+  if (paint == 0L) {
+    return;
+  }
+  long at = placeText(paint, 0L, "root@zeros:");
+  long cwdLen = memory::load64(cwdLenAt(work));
+  moveOctets(cwdAt(work), paint + at * 8L, cwdLen);
+  at = at + cwdLen;
+  at = placeText(paint, at, "# ");
+  saySpan(home, paint, at);
+  memory::store64(columnCount(paint, at), prevAt(work));
+  /* 提示符画完，发一次 no-op 服务 35。宿主在 svc 边界记 prompt 事件。 */
+  obr::proc::prompt(home);
+}

@@ -1,0 +1,546 @@
+/* 行编辑的实现。编成 /lib/obr.line.zdll。
+   不读键盘，不写屏幕，也不知道壳的提示符。 */
+import memory;
+import obr.line;
+
+
+deRfun u8(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+
+deRfun editLen(long state): long {
+  return memory::load64(state);
+}
+
+
+deRfun editCursor(long state): long {
+  return memory::load64(state + 64L);
+}
+
+
+deRfun lineAt(long state): long {
+  return state + 4096L;
+}
+
+
+deRfun editAt(long state, long index): long {
+  if (index < 0L || index >= editLen(state)) {
+    return 0L;
+  }
+  return u8(lineAt(state) + index * 8L);
+}
+
+
+deRfun stashAt(long state): long {
+  return state + 6144L;
+}
+
+
+deRfun histAt(long state, long index): long {
+  return state + 8192L + index * 2112L;
+}
+
+
+deRfun editHistCount(long state): long {
+  return memory::load64(state + 128L);
+}
+
+
+deRfun editInit(long state): void {
+  memory::store64(0L, state);
+  memory::store64(0L, state + 64L);
+  memory::store64(0L, state + 128L);
+  memory::store64(-1L, state + 192L);
+  memory::store64(0L, state + 256L);
+  memory::store64(0L, state + 320L);
+  memory::store64(0L, state + 384L);
+}
+
+
+deRfun lineBytes(long state): long {
+  return state + 4096L;
+}
+
+
+/* 1 表示后续行是 here-document 正文。editClear 不清这一字，收齐或取消时由壳自己写回 0。 */
+deRfun editBody(long state): long {
+  return memory::load64(state + 384L);
+}
+
+
+deRfun editBodySet(long state, long value): void {
+  memory::store64(value, state + 384L);
+}
+
+
+deRfun editClear(long state): void {
+  memory::store64(0L, state);
+  memory::store64(0L, state + 64L);
+  memory::store64(-1L, state + 192L);
+  memory::store64(0L, state + 320L);
+}
+
+
+deRfun putByte(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+
+deRfun copyBytes(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putByte(to, index, u8(from + index * 8L));
+    index = index + 1L;
+  }
+}
+
+
+/* 光标左边一个码点的起点。续字节是 128 到 191。 */
+deRfun seqBack(long state, long index): long {
+  while (index > 0L) {
+    long value = editAt(state, index - 1L);
+    if (value < 128L || value >= 192L) {
+      return index - 1L;
+    }
+    index = index - 1L;
+  }
+  return 0L;
+}
+
+
+deRfun seqForward(long state, long index): long {
+  long len = editLen(state);
+  if (index >= len) {
+    return len;
+  }
+  long value = editAt(state, index);
+  long step = 1L;
+  if (value >= 192L && value < 224L) {
+    step = 2L;
+  } else if (value >= 224L && value < 240L) {
+    step = 3L;
+  } else if (value >= 240L) {
+    step = 4L;
+  }
+  if (index + step > len) {
+    return len;
+  }
+  return index + step;
+}
+
+
+deRfun editInsert(long state, long value): void {
+  long len = editLen(state);
+  long cur = editCursor(state);
+  if (len >= 240L || value < 0L || value > 255L) {
+    return;
+  }
+  long at = len;
+  while (at > cur) {
+    putByte(lineAt(state), at, editAt(state, at - 1L));
+    at = at - 1L;
+  }
+  putByte(lineAt(state), cur, value);
+  memory::store64(len + 1L, state);
+  memory::store64(cur + 1L, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+
+deRfun editDrop(long state, long from, long to): void {
+  long len = editLen(state);
+  if (from < 0L || to < from || to > len) {
+    return;
+  }
+  long gap = to - from;
+  long index = from;
+  while (index + gap < len) {
+    putByte(lineAt(state), index, editAt(state, index + gap));
+    index = index + 1L;
+  }
+  memory::store64(len - gap, state);
+  memory::store64(from, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+
+/* 用 src 的 srcLen 个八位组换掉行内 [at, at+span)。光标落到换进去的末尾。放不下就不动。 */
+deRfun editSplice(long state, long at, long span, long src, long srcLen): void {
+  long len = editLen(state);
+  if (at < 0L || span < 0L || srcLen < 0L || at + span > len) {
+    return;
+  }
+  long next = len - span + srcLen;
+  if (next > 240L) {
+    return;
+  }
+  long line = lineAt(state);
+  long tail = len - (at + span);
+  if (srcLen > span) {
+    long index = tail;
+    while (index > 0L) {
+      index = index - 1L;
+      putByte(line, at + srcLen + index, editAt(state, at + span + index));
+    }
+  } else if (srcLen < span) {
+    long index = 0L;
+    while (index < tail) {
+      putByte(line, at + srcLen + index, editAt(state, at + span + index));
+      index = index + 1L;
+    }
+  }
+  copyBytes(src, line + at * 8L, srcLen);
+  memory::store64(next, state);
+  memory::store64(at + srcLen, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+
+deRfun sameSpan(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (u8(left + index * 8L) != u8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+
+deRfun histRemember(long state): void {
+  long len = editLen(state);
+  if (len < 1L) {
+    return;
+  }
+  long count = editHistCount(state);
+  if (count > 0L) {
+    long last = histAt(state, count - 1L);
+    if (sameSpan(lineAt(state), len, last + 64L, memory::load64(last)) == 1L) {
+      return;
+    }
+  }
+  if (count >= 32L) {
+    long index = 0L;
+    while (index < 31L) {
+      long from = histAt(state, index + 1L);
+      long into = histAt(state, index);
+      long got = memory::load64(from);
+      memory::store64(got, into);
+      copyBytes(from + 64L, into + 64L, got);
+      index = index + 1L;
+    }
+    count = 31L;
+  }
+  long slot = histAt(state, count);
+  memory::store64(len, slot);
+  copyBytes(lineAt(state), slot + 64L, len);
+  memory::store64(count + 1L, state + 128L);
+}
+
+
+deRfun histLoad(long state, long index): void {
+  long slot = histAt(state, index);
+  long got = memory::load64(slot);
+  if (got < 0L || got > 240L) {
+    got = 0L;
+  }
+  copyBytes(slot + 64L, lineAt(state), got);
+  memory::store64(got, state);
+  memory::store64(got, state + 64L);
+}
+
+
+deRfun stashSave(long state): void {
+  long len = editLen(state);
+  memory::store64(len, state + 256L);
+  copyBytes(lineAt(state), stashAt(state), len);
+}
+
+
+deRfun stashLoad(long state): void {
+  long got = memory::load64(state + 256L);
+  if (got < 0L || got > 240L) {
+    got = 0L;
+  }
+  copyBytes(stashAt(state), lineAt(state), got);
+  memory::store64(got, state);
+  memory::store64(got, state + 64L);
+  memory::store64(-1L, state + 192L);
+}
+
+
+deRfun editHist(long state, long index, long dest, long* count): long {
+  if (index < 0L || index >= editHistCount(state)) {
+    *count = 0L;
+    return 1L;
+  }
+  long slot = histAt(state, index);
+  long got = memory::load64(slot);
+  *count = got;
+  copyBytes(slot + 64L, dest, got);
+  return 0L;
+}
+
+
+deRfun moveLeft(long state): void {
+  long cur = editCursor(state);
+  if (cur < 1L) {
+    return;
+  }
+  memory::store64(seqBack(state, cur), state + 64L);
+}
+
+
+deRfun moveRight(long state): void {
+  memory::store64(seqForward(state, editCursor(state)), state + 64L);
+}
+
+
+deRfun moveHome(long state): void {
+  memory::store64(0L, state + 64L);
+}
+
+
+deRfun moveEnd(long state): void {
+  memory::store64(editLen(state), state + 64L);
+}
+
+
+deRfun rubWord(long state): void {
+  long cur = editCursor(state);
+  long at = cur;
+  while (at > 0L && editAt(state, at - 1L) == 32L) {
+    at = at - 1L;
+  }
+  while (at > 0L && editAt(state, at - 1L) != 32L) {
+    at = seqBack(state, at);
+  }
+  if (at < cur) {
+    editDrop(state, at, cur);
+  }
+}
+
+
+deRfun killEnd(long state): void {
+  memory::store64(editCursor(state), state);
+  memory::store64(-1L, state + 192L);
+}
+
+
+deRfun killStart(long state): void {
+  long cur = editCursor(state);
+  if (cur > 0L) {
+    editDrop(state, 0L, cur);
+  }
+}
+
+
+deRfun histUp(long state): void {
+  long count = editHistCount(state);
+  if (count < 1L) {
+    return;
+  }
+  long pos = memory::load64(state + 192L);
+  if (pos < 0L) {
+    stashSave(state);
+    memory::store64(count - 1L, state + 192L);
+    histLoad(state, count - 1L);
+    memory::store64(count - 1L, state + 192L);
+    return;
+  }
+  if (pos > 0L) {
+    memory::store64(pos - 1L, state + 192L);
+    histLoad(state, pos - 1L);
+    memory::store64(pos - 1L, state + 192L);
+  }
+}
+
+
+deRfun histDown(long state): void {
+  long count = editHistCount(state);
+  long pos = memory::load64(state + 192L);
+  if (pos < 0L || count < 1L) {
+    return;
+  }
+  if (pos + 1L >= count) {
+    stashLoad(state);
+    return;
+  }
+  memory::store64(pos + 1L, state + 192L);
+  histLoad(state, pos + 1L);
+  memory::store64(pos + 1L, state + 192L);
+}
+
+
+deRfun delForward(long state): void {
+  long cur = editCursor(state);
+  long next = seqForward(state, cur);
+  if (next > cur) {
+    editDrop(state, cur, next);
+  }
+}
+
+
+/* 0 继续。1 提交。2 空行上的 Ctrl-D。3 Ctrl-C。4 Ctrl-L。5 制表符，调用方补路径。 */
+deRfun editFeed(long state, long unit): long {
+  if (unit < 0L) {
+    unit = unit + 256L;
+  }
+  long csi = memory::load64(state + 320L);
+  if (csi == 1L) {
+    memory::store64(0L, state + 320L);
+    if (unit == 91L) {
+      memory::store64(2L, state + 320L);
+    }
+    return 0L;
+  }
+  if (csi == 2L) {
+    memory::store64(0L, state + 320L);
+    if (unit == 65L) {
+      histUp(state);
+    } else if (unit == 66L) {
+      histDown(state);
+    } else if (unit == 67L) {
+      moveRight(state);
+    } else if (unit == 68L) {
+      moveLeft(state);
+    } else if (unit == 72L) {
+      moveHome(state);
+    } else if (unit == 70L) {
+      moveEnd(state);
+    } else if (unit == 51L) {
+      memory::store64(3L, state + 320L);
+    }
+    return 0L;
+  }
+  if (csi == 3L) {
+    memory::store64(0L, state + 320L);
+    if (unit == 126L) {
+      delForward(state);
+    }
+    return 0L;
+  }
+  if (unit == 27L) {
+    memory::store64(1L, state + 320L);
+    return 0L;
+  }
+  if (unit == 10L || unit == 13L) {
+    if (editBody(state) == 0L) {
+      histRemember(state);
+    }
+    memory::store64(-1L, state + 192L);
+    return 1L;
+  }
+  if (unit == 127L || unit == 8L) {
+    long cur = editCursor(state);
+    if (cur > 0L) {
+      editDrop(state, seqBack(state, cur), cur);
+    }
+    return 0L;
+  }
+  if (unit == 1L) {
+    moveHome(state);
+    return 0L;
+  }
+  if (unit == 5L) {
+    moveEnd(state);
+    return 0L;
+  }
+  if (unit == 21L) {
+    killStart(state);
+    return 0L;
+  }
+  if (unit == 11L) {
+    killEnd(state);
+    return 0L;
+  }
+  if (unit == 23L) {
+    rubWord(state);
+    return 0L;
+  }
+  if (unit == 3L) {
+    editClear(state);
+    return 3L;
+  }
+  if (unit == 12L) {
+    return 4L;
+  }
+  if (unit == 4L) {
+    if (editLen(state) == 0L) {
+      return 2L;
+    }
+    delForward(state);
+    return 0L;
+  }
+  if (unit == 9L) {
+    if (editBody(state) == 1L) {
+      editInsert(state, 9L);
+      return 0L;
+    }
+    return 5L;
+  }
+  if (unit >= 32L && unit < 127L) {
+    editInsert(state, unit);
+  } else if (unit >= 128L) {
+    editInsert(state, unit);
+  }
+  return 0L;
+}
+
+export deRfun obr::line::editLen(long state): long {
+  return editLen(state);
+}
+
+export deRfun obr::line::editCursor(long state): long {
+  return editCursor(state);
+}
+
+export deRfun obr::line::editAt(long state, long index): long {
+  return editAt(state, index);
+}
+
+export deRfun obr::line::editHistCount(long state): long {
+  return editHistCount(state);
+}
+
+export deRfun obr::line::editInit(long state): void {
+  editInit(state);
+}
+
+export deRfun obr::line::lineBytes(long state): long {
+  return lineBytes(state);
+}
+
+export deRfun obr::line::editBody(long state): long {
+  return editBody(state);
+}
+
+export deRfun obr::line::editBodySet(long state, long value): void {
+  editBodySet(state, value);
+}
+
+export deRfun obr::line::editClear(long state): void {
+  editClear(state);
+}
+
+export deRfun obr::line::editSplice(long state, long at, long span, long src, long srcLen): void {
+  editSplice(state, at, span, src, srcLen);
+}
+
+export deRfun obr::line::editHist(long state, long index, long dest, long* count): long {
+  return editHist(state, index, dest, count);
+}
+
+export deRfun obr::line::editFeed(long state, long unit): long {
+  return editFeed(state, unit);
+}
+

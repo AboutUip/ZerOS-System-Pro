@@ -1,0 +1,6 @@
+/* 常量 int 运算溢出时编译应当失败，而不是静默回绕。 */
+const int OVERFLOW = 2147483647 + 1;
+
+deRfun main(): int {
+  return OVERFLOW;
+}

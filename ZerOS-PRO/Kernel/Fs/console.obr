@@ -9,7 +9,7 @@ import obr.ui;
 import obr.font;
 
 /* 终端格子紧挨内存文件正文。头 1024 位，行长到 4096，输入队列到 8192，格子到 253952。
-   一次写入只把脏行画出来，再呈现一帧。抽键不呈现。
+   写入只把字节放进设备环。显示程序调用 conFeed 时才收成格子并记下脏行，再另一次请求呈现。
    行长字的低 8 位是这一行有几个格子，其余是这行正文落在哪一条物理行。滚屏只转动这些字。 */
 deRfun gridBase(): long {
   long cached = memory::load64(layoutWord(1L));
@@ -117,6 +117,14 @@ deRfun conMark(long row): void {
 
 deRfun conMarkAll(): void {
   memory::store64(63L, gridBase() + 320L);
+}
+
+/* 还有没画上的行。回复写入时用来叫醒显示，不必再等下一拍。 */
+deRfun rowsDirty(): long {
+  if (memory::load64(gridBase() + 320L) % 64L != 0L) {
+    return 1L;
+  }
+  return 0L;
 }
 
 deRfun conRowLen(long row): long {
@@ -415,7 +423,7 @@ deRfun conCopyOut(long home, long count): long {
 }
 
 /* 打断正在跑的程序。键盘等待若就是这颗核，清掉，免得稍后 reply 到已经卸下的核。
-   光标不在 0 列就换一行。提示符由父进程醒来之后再画，这里只拨光标。 */
+   光标不在 0 列就换一行。下一行由父进程醒来之后再写，这里只拨光标。 */
 deRfun conInterrupt(long core): void {
   long base = gridBase();
   if (memory::load64(base + 384L) == core) {
@@ -426,14 +434,17 @@ deRfun conInterrupt(long core): void {
   }
 }
 
+deRfun conForget(long core): void {
+  long base = gridBase();
+  if (memory::load64(base + 384L) == core) {
+    memory::store64(-1L, base + 384L);
+  }
+}
+
 deRfun conWake(): void {
   long base = gridBase();
   long waiter = memory::load64(base + 384L);
-  /* 等键盘的那颗核已经收掉时，队列里即使还有字节也不能再 reply。 */
-  if (waiter >= 0L && taskFind(waiter) < 0L) {
-    memory::store64(-1L, base + 384L);
-    return;
-  }
+  /* 等键盘的任务收掉时，taskRelease 已经把等待者清掉。这里不再扫任务表。 */
   if (waiter < 0L || memory::load64(base + 640L) < 1L) {
     return;
   }
@@ -525,6 +536,10 @@ deRfun conPaint(): void {
   long packed = memory::load64(base + 320L);
   long count = packed % 64L;
   memory::store64(0L, base + 320L);
+  /* 没有脏行就停。空闲的呈现不再为光标单独交一帧。 */
+  if (count == 0L) {
+    return;
+  }
   if (count == 63L) {
     long row = 0L;
     while (row < rows) {
@@ -548,45 +563,73 @@ deRfun conPaint(): void {
   if (crow >= 0L && crow < rows && col >= 0L && col <= conCols()) {
     obr::ui::rect(8L + col * 8L, 8L + crow * 18L, 2L, 16L, ink, 255L);
   }
+  conPresentWant(1L, 1L);
+}
+
+deRfun conPresentWant(long op, long value): long {
+  static long dirty = 0L;
+  if (op == 1L) {
+    dirty = value;
+  }
+  return dirty;
+}
+
+deRfun conPresent(): void {
+  /* 先把写入记下的脏行画进队列，这一次提交才带得上刚写的字。 */
+  conPaint();
+  if (conPresentWant(0L, 0L) == 0L) {
+    return;
+  }
+  conPresentWant(1L, 0L);
   obr::ui::present();
 }
 
-deRfun conEmit(long home): void {
+/* 监督核上的那台字符设备。别的设备不走格子。 */
+deRfun conDevice(): long {
+  long index = 0L;
+  while (index < devCount()) {
+    Dev* dev = devAt(index);
+    if (dev.used == 1L && dev.core == 2L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+/* 控制台环里还有没收成格子的字节。写入不再改脏行，只看这个才不会把输出留在环里。 */
+deRfun conPending(): long {
+  long index = conDevice();
+  if (index < 0L) {
+    return 0L;
+  }
+  if (devAt(index).downCount > 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 把已经写进环里的字节收成格子。一次最多一条环。呈现由调用方另一次请求。 */
+deRfun conFeed(): void {
   conInit();
   if (conCols() < 1L) {
     conMeasure();
   }
-  long count = memory::load64(home + 256L);
-  if (count < 0L) {
-    memory::store64(0L, home + 320L);
+  long index = conDevice();
+  if (index < 0L) {
     return;
   }
-  if (count > 4096L) {
-    count = 4096L;
-  }
-  long index = 0L;
-  long bytes = byteAt(home);
-  long breaks = 0L;
-  while (index < count) {
-    if (conOctet(bytes + index * 8L) == 10L) {
-      breaks = breaks + 1L;
+  conBulk(1L, 0L);
+  long guard = 0L;
+  while (guard < ringRoom()) {
+    long value = devPullDown(index);
+    if (value < 0L) {
+      break;
     }
-    index = index + 1L;
+    conByte(value);
+    guard = guard + 1L;
   }
-  if (breaks > 1L) {
-    conBulk(1L, 1L);
-  } else {
-    conBulk(1L, 0L);
-  }
-  index = 0L;
-  while (index < count) {
-    conByte(conOctet(bytes + index * 8L));
-    index = index + 1L;
-  }
-  memory::store64(count, home + 320L);
-  if (count > 0L) {
-    conPaint();
-  }
+  devWake(index);
   conBulk(1L, 0L);
 }
 
@@ -647,7 +690,7 @@ deRfun conKey(long at): void {
     pushSeq(27L, 91L, 51L, 126L, 4L);
     return;
   }
-  /* Tab 交给行编辑。正文里写成制表符，命令行上由 shell 补路径。 */
+  /* Tab 交成制表符。读这一行的程序自己决定要不要补。 */
   if (name == 0x626154L) {
     qPush(9L);
     return;

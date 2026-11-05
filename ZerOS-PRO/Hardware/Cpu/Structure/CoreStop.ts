@@ -24,11 +24,15 @@ export namespace ZerOS {
        * Op 是这一条的操作名。走到头时是空串。Detail 是失败原文，没有失败时是空串。
        */
       export interface CoreSnapshot {
+        /** 这颗核心跑的是原生映像还是 ZAP 解释器。 */
+        readonly Mode: string;
         readonly Registers: readonly string[];
         readonly Pc: string;
         readonly StackPointer: string;
         readonly StackStart: string;
         readonly StackEnd: string;
+        /** 栈窗口的十六进制字节；空串表示这次没有读回内容。 */
+        readonly StackBytes?: string;
       }
 
       export interface CoreStop {
@@ -37,6 +41,8 @@ export namespace ZerOS {
         readonly Index: number;
         readonly Op: string;
         readonly Detail: string;
+        /** 会话微秒时间；0 表示来源没有给出时间。 */
+        readonly At: number;
         readonly Snapshot: CoreSnapshot | null;
       }
     }

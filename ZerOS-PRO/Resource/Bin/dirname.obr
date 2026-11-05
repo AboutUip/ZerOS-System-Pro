@@ -9,18 +9,15 @@
    其余先拿掉末尾斜杠；拿完变空则是 / 。
    剩下的没有斜杠则是 . 。
    否则删掉最后一个分量，再拿掉新的末尾斜杠；变空则是 / 。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun writeErr(long home, string text): void {

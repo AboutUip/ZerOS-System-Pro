@@ -42,18 +42,15 @@
    诊断和询问都写描述符 2，偏移每次从 0。
    用自己的堆栈，不递归。分配单位是位。失败写 rm: out of memory，退出 1。
    main 用服务 28 交出状态。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

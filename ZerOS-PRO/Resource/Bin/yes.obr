@@ -7,18 +7,15 @@
    不自己限制次数。一次写出最多 4096 个八位组。
    描述符 1 的偏移按已经写出的个数往下加，普通文件才不会每次盖住开头。
    写出失败写 yes: write error，退出 1。不关闭描述符 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

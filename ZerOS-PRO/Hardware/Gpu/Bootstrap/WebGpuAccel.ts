@@ -1828,11 +1828,11 @@ struct Vout {
       }
 
       /**
-       * 把颜色目标里这块矩形画进位图。
-       * 先等这一次提交做完，再把画布交出去。位图拿走之后画布是空的，下一帧会再画。
-       * 只交改过的那一块。整帧读回会让每个键都等一两百毫秒。
+       * 把颜色目标里这块矩形提交到画布。
+       * 提交之后同一条队列上的后续绘制排在这次拷贝后面。
+       * 位图要等这次提交做完再拿走，这里不等。
        */
-      async function copyColor(active: GPUDevice, source: GPUTexture, originX: number, originY: number, patchWidth: number, patchHeight: number): Promise<ImageBitmap> {
+      function paintView(active: GPUDevice, source: GPUTexture, originX: number, originY: number, patchWidth: number, patchHeight: number): OffscreenCanvas {
         const canvas = ensureView(active, patchWidth, patchHeight);
         const context = viewContext;
         const pipe = viewPipe;
@@ -1865,10 +1865,172 @@ struct Vout {
         pass.draw(3);
         pass.end();
         active.queue.submit([encoder.finish()]);
-        await active.queue.onSubmittedWorkDone();
         postedX = originX;
         postedY = originY;
+        return canvas;
+      }
+
+      /**
+       * 把颜色目标里这块矩形画进位图。
+       * 先等这一次提交做完，再把画布交出去。位图拿走之后画布是空的，下一帧会再画。
+       * 只交改过的那一块。整帧读回会让每个键都等一两百毫秒。
+       */
+      async function copyColor(active: GPUDevice, source: GPUTexture, originX: number, originY: number, patchWidth: number, patchHeight: number): Promise<ImageBitmap> {
+        const canvas = paintView(active, source, originX, originY, patchWidth, patchHeight);
+        await active.queue.onSubmittedWorkDone();
         return canvas.transferToImageBitmap();
+      }
+
+      /**
+       * 交位图的画布池。一张还在被拿走时，下一帧用另一张。
+       * 池里都忙就再加一张。提交进队列后就可以画下一帧，不必等显卡把上一张读完。
+       */
+      const handCanvases: Array<OffscreenCanvas | null> = [];
+      const handContexts: Array<GPUCanvasContext | null> = [];
+      const handBusy: boolean[] = [];
+
+      function takeHandCanvas(): number {
+        for (let index = 0; index < handBusy.length; index += 1) {
+          if (handBusy[index] !== true) {
+            handBusy[index] = true;
+            return index;
+          }
+        }
+        const index = handCanvases.length;
+        handCanvases.push(null);
+        handContexts.push(null);
+        handBusy.push(true);
+        return index;
+      }
+
+      function ensureHandCanvas(active: GPUDevice, index: number, patchWidth: number, patchHeight: number): OffscreenCanvas {
+        const existing = handCanvases[index];
+        const context = handContexts[index];
+        if (existing !== null && context !== null && existing.width === patchWidth && existing.height === patchHeight) {
+          return existing;
+        }
+        const canvas = new OffscreenCanvas(patchWidth, patchHeight);
+        const created = canvas.getContext("webgpu");
+        if (created === null || !isGpuCanvas(created)) {
+          fail("画面画布没有 WebGPU 上下文");
+        }
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        created.configure({
+          device: active,
+          format,
+          alphaMode: "opaque",
+        });
+        handCanvases[index] = canvas;
+        handContexts[index] = created;
+        viewOriginBuffer ??= active.createBuffer({
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        if (viewPipe === null) {
+          const module = active.createShaderModule({ code: viewShader });
+          viewPipe = active.createRenderPipeline({
+            layout: "auto",
+            vertex: { module, entryPoint: "vs" },
+            fragment: {
+              module,
+              entryPoint: "fs",
+              targets: [{ format }],
+            },
+            primitive: { topology: "triangle-list" },
+          });
+        }
+        return canvas;
+      }
+
+      /**
+       * 提交这一帧的画面后立刻允许下一条绘制。
+       * accepted 在拷贝命令进入队列时完成。picture 等显卡做完再拿走位图。
+       * 没有加速绘制时 picture 是空，调用方改走像素副本。
+       */
+      export function handoffSnapshot(): {
+        readonly accepted: Promise<void>;
+        readonly picture: Promise<ImageBitmap | null>;
+      } {
+        let settled = false;
+        let acceptHandoff!: () => void;
+        let rejectHandoff!: (error: Error) => void;
+        const accepted = new Promise<void>((resolve, reject): void => {
+          acceptHandoff = (): void => {
+            if (!settled) {
+              settled = true;
+              resolve();
+            }
+          };
+          rejectHandoff = (error: Error): void => {
+            if (!settled) {
+              settled = true;
+              reject(error);
+            }
+          };
+        });
+        const picture = (async (): Promise<ImageBitmap | null> => {
+          const index = takeHandCanvas();
+          try {
+            await flushScreen();
+            const active = device;
+            const source = color;
+            if (!drawn || active === null || source === null) {
+              acceptHandoff();
+              return null;
+            }
+            const originX = inkAny ? inkLeft : 0;
+            const originY = inkAny ? inkTop : 0;
+            const patchWidth = inkAny ? Math.max(1, inkRight - inkLeft) : width;
+            const patchHeight = inkAny ? Math.max(1, inkBottom - inkTop) : height;
+            inkAny = false;
+            const canvas = ensureHandCanvas(active, index, patchWidth, patchHeight);
+            const context = handContexts[index];
+            const pipe = viewPipe;
+            const originBuffer = viewOriginBuffer;
+            if (context == null || pipe === null || originBuffer === null) {
+              fail("画面画布还没有建立");
+            }
+            const packed = new Uint32Array([originX, originY]);
+            active.queue.writeBuffer(originBuffer, 0, packed);
+            const group = viewGroup ??= active.createBindGroup({
+              layout: pipe.getBindGroupLayout(0),
+              entries: [
+                { binding: 0, resource: colorAttachment(source) },
+                { binding: 1, resource: { buffer: originBuffer } },
+              ],
+            });
+            const encoder = active.createCommandEncoder();
+            const pass = encoder.beginRenderPass({
+              colorAttachments: [{
+                view: context.getCurrentTexture().createView(),
+                loadOp: "clear",
+                storeOp: "store",
+                clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              }],
+            });
+            pass.setPipeline(pipe);
+            pass.setBindGroup(0, group);
+            pass.draw(3);
+            pass.end();
+            active.queue.submit([encoder.finish()]);
+            postedX = originX;
+            postedY = originY;
+            drawn = false;
+            acceptHandoff();
+            await active.queue.onSubmittedWorkDone();
+            return canvas.transferToImageBitmap();
+          } catch (error: unknown) {
+            handCanvases[index] = null;
+            handContexts[index] = null;
+            viewGroup = null;
+            const wrapped = error instanceof Error ? error : new Error("present handoff failed");
+            rejectHandoff(wrapped);
+            throw wrapped;
+          } finally {
+            handBusy[index] = false;
+          }
+        })();
+        return { accepted, picture };
       }
 
       /**

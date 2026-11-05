@@ -1,0 +1,33 @@
+/* Plan 1 M1：标量显式 cast。结果 0。 */
+deRfun main(): int {
+  var[long] wide = 4294967297L;
+  var[long] negative = -1L;
+  var[double] fraction = -3.9D;
+
+  if ((int)wide != 1) return 1;
+  if ((int)negative != -1) return 2;
+  if ((short)0x18000 != (short)-32768) return 3;
+  if ((byte)300 != (byte)44) return 4;
+  if ((char)65 != 'A') return 5;
+  if ((int)'A' != 65) return 6;
+  if ((int)true != 1) return 7;
+  if ((boolean)0) return 8;
+  if (!(boolean)2) return 9;
+  if (!(boolean)3.5D) return 10;
+  if ((boolean)0.0D) return 11;
+  if ((double)true != 1.0D) return 12;
+  if ((double)false != 0.0D) return 13;
+  if ((double)3 != 3.0D) return 14;
+  if ((float)3 != 3.0F) return 15;
+  if ((int)3.9D != 3) return 16;
+  if ((int)-3.9D != -3) return 17;
+  if ((long)fraction != -3L) return 18;
+  if ((long)-0.5D != 0L) return 19;
+  if ((long)9007199254740992.0D != 9007199254740992L) return 20;
+  if ((double)9007199254740993L != 9007199254740992.0D) return 21;
+  if ((int)2147483648.0D != (int)-2147483648L) return 22;
+  if ((int)(char)0x1F600 != 128512) return 23;
+  if ((long)(long*)4096 != 4096L) return 24;
+  if ((int)(long*)4096 != 4096) return 25;
+  return 0;
+}

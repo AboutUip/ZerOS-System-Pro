@@ -45,7 +45,9 @@
    诊断写描述符 2，偏移从 0。
    分配 32 个八位组倒着放整数各位，单位是位。失败写 printf: out of memory。
    状态经 obr::proc::exit 交出，main 仍返回 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -73,13 +75,8 @@ deRfun fieldMax(): long {
   return 4096L;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。不用移位。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

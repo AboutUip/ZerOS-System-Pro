@@ -1,0 +1,235 @@
+/* POSIX.1-2017 df（utilities/df.html）的选定子集。
+   形式是 df [-k] [-P] [路径...]。-k 和 -P 接受，不改变下面固定数字。
+   没有磁盘统计。表头只在 -P 时输出：
+   Filesystem 512-blocks Used Available Capacity Mounted on
+   每行固定：文件系统名 nas，512 字节块数 0，已用 0，可用 0，容量 0%，
+   挂载点为该路径；没有操作数时挂载点是 /。
+   这些数字不是测量值。
+   没有操作数时 stat 根 / 并打一行。有操作数则先 stat，失败写
+   df: 路径: No such file or directory，最终退出 1；成功也打一行。
+   不认识的选项写 df: invalid option，退出 1。
+   诊断英文 ASCII，描述符 2，以 df: 开头。main 经 finish 调 exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  long next = at + raw;
+  return next;
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeErrSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun writeReady(long home, long* place, long count): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *place, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *place = *place + wrote;
+    if (pending > 0L) {
+      copySpan(obr::proc::bytes(home) + wrote * 8L, obr::proc::bytes(home), pending);
+    }
+  }
+  return 0L;
+}
+
+deRfun emitText(long home, long* place, string text): long {
+  int raw = length(text);
+  long count = raw;
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(text[offset + index], obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun emitSpan(long home, long* place, long addr, long count): long {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
+    if (writeReady(home, place, chunk) != 0L) {
+      return 1L;
+    }
+    offset = offset + chunk;
+  }
+  return 0L;
+}
+
+deRfun showRow(long home, long* place, long mount, long mountLen): long {
+  if (emitText(home, place, "nas 0 0 0 0% ") != 0L) {
+    return 1L;
+  }
+  if (emitSpan(home, place, mount, mountLen) != 0L) {
+    return 1L;
+  }
+  return emitText(home, place, "\n");
+}
+
+deRfun sayMiss(long home, long addr, long count): void {
+  writeErr(home, "df: ");
+  writeErrSpan(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  long posix = 0L;
+  long fileBegin = 0L;
+  long foundFile = 0L;
+  while (index < count && ended == 0L) {
+    long word = argPtr(home, index);
+    long wordLen = argLen(home, index);
+    if (wordLen == 2L && u8(word) == 45L && u8(word + 8L) == 45L) {
+      ended = 1L;
+      index = index + 1L;
+      if (index < count) {
+        fileBegin = index;
+        foundFile = 1L;
+      }
+    } else if (wordLen >= 2L && u8(word) == 45L) {
+      long cursor = 1L;
+      while (cursor < wordLen) {
+        long bit = u8(word + cursor * 8L);
+        if (bit == 107L || bit == 80L) {
+          if (bit == 80L) {
+            posix = 1L;
+          }
+          cursor = cursor + 1L;
+        } else {
+          writeErr(home, "df: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+      fileBegin = index;
+      foundFile = 1L;
+    }
+  }
+  long place = 0L;
+  if (posix == 1L) {
+    if (emitText(home, &place, "Filesystem 512-blocks Used Available Capacity Mounted on\n") != 0L) {
+      return finish(home, 1L);
+    }
+  }
+  long fail = 0L;
+  if (foundFile == 0L) {
+    long root = obr::proc::alloc(home, 512L);
+    if (root == 0L) {
+      return finish(home, 1L);
+    }
+    long rootLen = putText(root, 0L, "/");
+    plant(home, root, rootLen);
+    if (obr::proc::stat(home) != 0L) {
+      sayMiss(home, root, rootLen);
+      return finish(home, 1L);
+    }
+    if (showRow(home, &place, root, rootLen) != 0L) {
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  while (fileBegin < count) {
+    long path = argPtr(home, fileBegin);
+    long pathLen = argLen(home, fileBegin);
+    plant(home, path, pathLen);
+    if (obr::proc::stat(home) != 0L) {
+      sayMiss(home, path, pathLen);
+      fail = 1L;
+    } else {
+      if (showRow(home, &place, path, pathLen) != 0L) {
+        return finish(home, 1L);
+      }
+    }
+    fileBegin = fileBegin + 1L;
+  }
+  return finish(home, fail);
+}

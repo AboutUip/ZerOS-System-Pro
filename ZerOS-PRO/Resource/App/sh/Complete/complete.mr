@@ -1,0 +1,2 @@
+/* complete 给壳里其它文件用的函数。 */
+deRfun completeLine(long home, long state, long work, long env): void;

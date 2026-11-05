@@ -1,0 +1,28 @@
+/* Plan 1 M3：`#VERSION 2` 类对象头，字段从 64 位开始。结果 0。 */
+#VERSION 2
+
+class Unit {
+  int n;
+  deRfun value(): int {
+    return n;
+  }
+}
+
+class Box : Unit {
+  int extra;
+  deRfun Box(int start): void {
+    n = start;
+    extra = 1;
+  }
+  deRfun total(): int {
+    return value() + extra;
+  }
+}
+
+deRfun main(): int {
+  Box box = new Box(3);
+  if (box.total() != 4) return 1;
+  if (box.n != 3) return 2;
+  if (box.extra != 1) return 3;
+  return 0;
+}

@@ -1,0 +1,30 @@
+/* Plan 1：const 结构体聚合字面量和静态初始化。结果 0。 */
+struct Pair {
+  long a;
+  long b;
+}
+
+struct Label {
+  long id;
+  string text;
+}
+
+const Pair ORIGIN = Pair { a = 10L, b = 20L };
+const Label TITLE = Label { id = 7L, text = "ok" };
+
+deRfun main(): int {
+  if (ORIGIN.a != 10L) return 1;
+  if (ORIGIN.b != 20L) return 2;
+  if (TITLE.id != 7L) return 3;
+  if (length(TITLE.text) != 2) return 4;
+  if (TITLE.text[0] != 'o') return 5;
+
+  array[long] junk = new array[long](4);
+  junk[0] = 1L;
+  if (ORIGIN.a != 10L) return 6;
+  if (TITLE.text[1] != 'k') return 7;
+
+  const Pair LOCAL = Pair { a = 1L, b = 2L };
+  if (LOCAL.a + LOCAL.b != 3L) return 8;
+  return 0;
+}

@@ -1,0 +1,363 @@
+/* POSIX.1-2017 iconv（utilities/iconv.html）的本系统选定。
+   形式是 iconv [-cs] -f fromcode -t tocode [file...]。
+   只接受 UTF-8、utf-8、UTF8 作为 -f 与 -t 的代码名；其它名字写
+   iconv: unsupported conversion 到描述符 2，退出 1。
+   -c 在双方都是 UTF-8 时接受，不改变行为，也不丢弃非法序列。
+   没有 file 时读标准输入；有 file 时按顺序处理。单独一个 - 表示标准输入，
+   不关闭描述符 0。打不开写 iconv: 路径: No such file or directory，继续后面的
+   file，最终退出 1。合法 UTF-8 原样写到标准输出；非法 UTF-8 写
+   iconv: illegal input sequence 到描述符 2，退出 1。
+   用 obr::text::next 校验，不在命令里写私有解码器。
+   段尾续字节留在 hold 区，下次 read 拼到 bytes(home) 开头再校验；EOF 仍不完整才判非法。
+   成功退出 0。诊断英文，描述符 2。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+import obr.text;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long cursor = 0L;
+  while (cursor < count) {
+    long chunk = count - cursor;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (cursor + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    cursor = cursor + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "iconv: ");
+  writeSpan(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun nameEq(long addr, long count, string name): long {
+  int raw = length(name);
+  long need = raw;
+  if (count != need) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < need) {
+    long bit = (long)name[index];
+    if (u8(addr + index * 8L) != bit) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun isUtf8(long addr, long count): long {
+  if (nameEq(addr, count, "UTF-8") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "utf-8") == 1L) {
+    return 1L;
+  }
+  if (nameEq(addr, count, "UTF8") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 把 base 里 count 个八位组写到描述符 1，*outAt 累加。返回 3 写失败，否则 0。 */
+deRfun emitOut(long home, long base, long count, long* outAt): long {
+  long pending = count;
+  while (pending > 0L) {
+    long chunk = pending;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    if (obr::proc::write(home, 1L, *outAt, chunk) != 0L) {
+      writeErr(home, "iconv: write error\n");
+      return 3L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      writeErr(home, "iconv: write error\n");
+      return 3L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    pending = pending - wrote;
+    *outAt = *outAt + wrote;
+    if (pending > 0L) {
+      long move = 0L;
+      while (move < pending) {
+        memory::storeOctet(u8(base + (wrote + move) * 8L), base + move * 8L);
+        move = move + 1L;
+      }
+    }
+  }
+  return 0L;
+}
+
+/* 校验并写出一段已拼好的 UTF-8。more 非 0 表示后面还有 read。
+   返回 0 成功，2 非法，3 写失败。carryLen 与 hold 更新未完成前缀。 */
+deRfun processChunk(long home, long base, long totalLen, long more, long hold, long* carryLen, long* outAt): long {
+  long cursor = 0L;
+  while (cursor < totalLen) {
+    long scalar = 0L;
+    long nextAt = obr::text::next(base, totalLen, cursor, &scalar);
+    if (nextAt < 0L) {
+      long remain = totalLen - cursor;
+      if (more == 1L) {
+        if (remain > 3L) {
+          writeErr(home, "iconv: illegal input sequence\n");
+          return 2L;
+        }
+        long status = emitOut(home, base, cursor, outAt);
+        if (status != 0L) {
+          return status;
+        }
+        long index = 0L;
+        while (index < remain) {
+          memory::storeOctet(u8(base + (cursor + index) * 8L), hold + index * 8L);
+          index = index + 1L;
+        }
+        *carryLen = remain;
+        return 0L;
+      }
+      long at = base + cursor * 8L;
+      long subLen = remain;
+      long sub = 0L;
+      while (sub < subLen) {
+        long unit = 0L;
+        long step = obr::text::next(at, subLen, sub, &unit);
+        if (step < 0L) {
+          writeErr(home, "iconv: illegal input sequence\n");
+          return 2L;
+        }
+        sub = step;
+      }
+      long status = emitOut(home, base, totalLen, outAt);
+      if (status != 0L) {
+        return status;
+      }
+      *carryLen = 0L;
+      return 0L;
+    }
+    cursor = nextAt;
+  }
+  long ok = emitOut(home, base, totalLen, outAt);
+  if (ok != 0L) {
+    return ok;
+  }
+  *carryLen = 0L;
+  return 0L;
+}
+
+/* 从 fd 读到 EOF，校验并写到描述符 1。*outAt 累加写出偏移。
+   返回 0 成功，1 读失败，2 非法 UTF-8，3 写失败。 */
+deRfun convertStream(long home, long fd, long* outAt): long {
+  long hold = obr::proc::alloc(home, 32L);
+  if (hold == 0L) {
+    writeErr(home, "iconv: out of memory\n");
+    return 1L;
+  }
+  long carryLen = 0L;
+  long inOff = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, inOff, 4096L) != 0L) {
+      writeErr(home, "iconv: read error\n");
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "iconv: read error\n");
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+      if (carryLen > 0L) {
+        long base = obr::proc::bytes(home);
+        long index = 0L;
+        while (index < carryLen) {
+          memory::storeOctet(u8(hold + index * 8L), base + index * 8L);
+          index = index + 1L;
+        }
+        long status = processChunk(home, base, carryLen, 0L, hold, &carryLen, outAt);
+        if (status != 0L) {
+          return status;
+        }
+      }
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long base = obr::proc::bytes(home);
+      if (carryLen > 0L) {
+        long move = n;
+        while (move > 0L) {
+          move = move - 1L;
+          memory::storeOctet(u8(base + move * 8L), base + (carryLen + move) * 8L);
+        }
+        long index = 0L;
+        while (index < carryLen) {
+          memory::storeOctet(u8(hold + index * 8L), base + index * 8L);
+          index = index + 1L;
+        }
+      }
+      long totalLen = carryLen + n;
+      long status = processChunk(home, base, totalLen, 1L, hold, &carryLen, outAt);
+      if (status != 0L) {
+        return status;
+      }
+      inOff = inOff + n;
+    }
+  }
+  return 0L;
+}
+
+/* 打开只读路径并转换。打不开返回 4，其它状态同 convertStream。 */
+deRfun convertPath(long home, long addr, long count, long* outAt): long {
+  if (count < 0L || count > 8192L) {
+    miss(home, addr, count);
+    return 4L;
+  }
+  plant(home, addr, count);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, addr, count);
+    return 4L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long status = convertStream(home, fd, outAt);
+  if (fd != 0L) {
+    obr::proc::close(home, fd);
+  }
+  return status;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long fromSet = 0L;
+  long toSet = 0L;
+  long fromOk = 0L;
+  long toOk = 0L;
+  long index = 1L;
+  long count = argc(home);
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 99L) {
+      index = index + 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 115L) {
+      index = index + 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 102L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "iconv: missing operand\n");
+        return finish(home, 1L);
+      }
+      long codeAt = argPtr(home, index);
+      long codeLen = argLen(home, index);
+      fromSet = 1L;
+      if (isUtf8(codeAt, codeLen) == 1L) {
+        fromOk = 1L;
+      }
+      index = index + 1L;
+    } else if (len == 2L && u8(at) == 45L && u8(at + 8L) == 116L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "iconv: missing operand\n");
+        return finish(home, 1L);
+      }
+      long codeAt = argPtr(home, index);
+      long codeLen = argLen(home, index);
+      toSet = 1L;
+      if (isUtf8(codeAt, codeLen) == 1L) {
+        toOk = 1L;
+      }
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (fromSet == 0L) {
+    fromOk = 1L;
+  }
+  if (toSet == 0L) {
+    toOk = 1L;
+  }
+  if (fromOk == 0L || toOk == 0L) {
+    writeErr(home, "iconv: unsupported conversion\n");
+    return finish(home, 1L);
+  }
+  long outAt = 0L;
+  long failed = 0L;
+  if (index >= count) {
+    long status = convertStream(home, 0L, &outAt);
+    if (status == 2L || status == 3L || status == 1L) {
+      return finish(home, 1L);
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    long status = 0L;
+    if (len == 1L && u8(at) == 45L) {
+      status = convertStream(home, 0L, &outAt);
+    } else {
+      status = convertPath(home, at, len, &outAt);
+    }
+    if (status == 1L || status == 2L || status == 3L) {
+      return finish(home, 1L);
+    }
+    if (status == 4L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed == 1L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

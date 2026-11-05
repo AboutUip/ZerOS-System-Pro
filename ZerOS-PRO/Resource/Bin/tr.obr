@@ -12,7 +12,9 @@
    不把 string2 的末字节再重复出去。后写的映射盖过先写的。
    [c*0] 是零次。[c*] 把 c 重复到和展开后的 string1 一样长，这个长度含补集。
    删除在映射之前。-d 不用 string2 做映射。压缩在删除和映射之后。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -42,13 +44,8 @@ struct Atom {
   long err;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

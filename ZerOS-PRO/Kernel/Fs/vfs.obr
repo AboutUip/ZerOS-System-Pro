@@ -21,12 +21,14 @@ deRfun vfsBase(): long {
   return tableBase() + taskLimit() * taskStride();
 }
 
+/* 路径缓存会随执行过的程序增长。512 项够放一整轮，
+   满时再由 evictCache 丢掉没有被打开、也没有被当作当前目录的普通文件。 */
 deRfun inodeCount(): long {
-  return 128L;
+  return 512L;
 }
 
 deRfun dentryCount(): long {
-  return 256L;
+  return 512L;
 }
 
 /* 512 份任务、每份 8 个描述符。 */
@@ -106,13 +108,26 @@ deRfun scratchRoom(): long {
   return 8192L;
 }
 
-/* 128 个索引节点，每个 11 个字、704 位。路径分量的 512 个八位组不在这个步长里。 */
+/* 索引节点 11 个字、704 位。路径分量的 512 个八位组不在这个步长里。 */
+deRfun inodeStride(): long {
+  return 704L;
+}
+
 deRfun inodeBytes(): long {
-  return inodeCount() * 704L;
+  return inodeCount() * inodeStride();
+}
+
+/* 目录项 6 个字。步长只写在这里，dentryAt 和整张表的跨度都引用它。 */
+deRfun dentryStride(): long {
+  return 384L;
+}
+
+deRfun dentryBase(): long {
+  return vfsBase() + inodeBytes();
 }
 
 deRfun dentryBytes(): long {
-  return dentryCount() * 256L;
+  return dentryCount() * dentryStride();
 }
 
 deRfun nameBase(): long {
@@ -166,7 +181,7 @@ deRfun devBase(): long {
 /* 任务上界在监督核窗口 +13248。紧挨着放两个字：0 是文件系统末址，1 是字符格起点。
    这两处都是常量。每次按键若重新乘一遍，光算地址就要几万条指令。 */
 deRfun layoutWord(long slot): long {
-  return kArena(2L) + 13312L + slot * 64L;
+  return kSupervisor() + 13312L + slot * 64L;
 }
 
 deRfun vfsEnd(): long {
@@ -201,11 +216,11 @@ deRfun devDown(long index): long {
 }
 
 deRfun inodeAt(long index): Inode* {
-  return (Inode*)(vfsBase() + index * 704L);
+  return (Inode*)(vfsBase() + index * inodeStride());
 }
 
 deRfun dentryAt(long index): Dentry* {
-  return (Dentry*)(vfsBase() + inodeBytes() + index * 256L);
+  return (Dentry*)(dentryBase() + index * dentryStride());
 }
 
 deRfun nameAt(long index): long {
@@ -437,7 +452,8 @@ deRfun bootMark(long id): void {
 deRfun vfsInit(): void {
   bootMark(13L);
   /* 上电后的内存每个八位组都是 0。文件槽清空后仍是全 0，不再逐项重写。
-     目录项的 parent、内存文件槽、管道两端的等待号必须是 -1。写成 0 会被当成下标。 */
+     目录项的 parent、内存文件槽、管道两端的等待号必须是 -1。写成 0 会被当成下标。
+     child 和 next 保持 0，0 在孩子链上表示到头，不能改成 -1。 */
   long index = 0L;
   while (index < inodeCount()) {
     memory::store64(-1L, memSlotAt(index));
@@ -563,13 +579,36 @@ deRfun findChild(long parent, long path, long from, long count): long {
     }
     return up;
   }
-  long index = 1L;
-  while (index < dentryCount()) {
-    Dentry* entry = dentryAt(index);
-    if (entry.used == 1L && entry.parent == parent && nameEq(index, path, from, count) == 1L) {
-      return index;
+  /* 只走这个父目录自己的孩子链。目录项区和名字区的起点各算一次，
+     比较时不再为每一格重算 vfsBase。空槽和别的目录不再逐个发问。 */
+  long base = dentryBase();
+  long span = dentryStride();
+  long names = nameBase();
+  long nameStep = nameStride();
+  Dentry* owner = (Dentry*)(base + parent * span);
+  long index = owner.child;
+  long guard = 0L;
+  long limit = dentryCount();
+  while (index > 0L && guard < limit) {
+    guard = guard + 1L;
+    Dentry* entry = (Dentry*)(base + index * span);
+    long next = entry.next;
+    if (entry.used == 1L && entry.nameLen == count) {
+      long name = names + index * nameStep;
+      long at = 0L;
+      long same = 1L;
+      while (at < count && same == 1L) {
+        long left = memory::loadOctet(name + at * 8L);
+        if (left != octetAt(path, from + at)) {
+          same = 0L;
+        }
+        at = at + 1L;
+      }
+      if (same == 1L) {
+        return index;
+      }
     }
-    index = index + 1L;
+    index = next;
   }
   return -1L;
 }
@@ -625,33 +664,63 @@ deRfun scratchAdd(long path, long from, long count): long {
 }
 
 deRfun copyName(long dent, long path, long from, long count): void {
+  long name = nameBase() + dent * nameStride();
   long index = 0L;
   while (index < count) {
     long value = octetAt(path, from + index);
-    memory::storeOctet(value, nameAt(dent) + index * 8L);
+    memory::storeOctet(value, name + index * 8L);
     index = index + 1L;
   }
   dentryAt(dent).nameLen = count;
 }
 
+/* 空槽从 1 往后找。区段起点只算一次，避免每一格都重算监督核窗口。 */
 deRfun allocInode(): long {
+  long base = vfsBase();
+  long span = inodeStride();
+  long limit = inodeCount();
   long index = 1L;
-  while (index < inodeCount()) {
-    if (inodeAt(index).used == 0L) {
+  while (index < limit) {
+    Inode* node = (Inode*)(base + index * span);
+    if (node.used == 0L) {
       return index;
     }
     index = index + 1L;
+  }
+  if (evictCache() == 1L) {
+    index = 1L;
+    while (index < limit) {
+      Inode* node = (Inode*)(base + index * span);
+      if (node.used == 0L) {
+        return index;
+      }
+      index = index + 1L;
+    }
   }
   return -1L;
 }
 
 deRfun allocDentry(): long {
+  long base = dentryBase();
+  long span = dentryStride();
+  long limit = dentryCount();
   long index = 1L;
-  while (index < dentryCount()) {
-    if (dentryAt(index).used == 0L) {
+  while (index < limit) {
+    Dentry* entry = (Dentry*)(base + index * span);
+    if (entry.used == 0L) {
       return index;
     }
     index = index + 1L;
+  }
+  if (evictCache() == 1L) {
+    index = 1L;
+    while (index < limit) {
+      Dentry* entry = (Dentry*)(base + index * span);
+      if (entry.used == 0L) {
+        return index;
+      }
+      index = index + 1L;
+    }
   }
   return -1L;
 }
@@ -671,10 +740,59 @@ deRfun fillNode(long ino, long parent, long kind, long mode, long uid, long gid,
   node.ctime = 0L;
 }
 
+/* 新槽接到父目录的链头。0 是到头，根的孩子也从这里挂出去。 */
+deRfun linkChild(long parent, long dent): void {
+  long base = dentryBase();
+  long span = dentryStride();
+  Dentry* entry = (Dentry*)(base + dent * span);
+  Dentry* owner = (Dentry*)(base + parent * span);
+  entry.child = 0L;
+  entry.next = owner.child;
+  owner.child = dent;
+}
+
+/* 从父链上摘掉。父目录的 parent 是 -1 时本来就不在链上。 */
+deRfun unlinkChild(long dent): void {
+  long base = dentryBase();
+  long span = dentryStride();
+  Dentry* entry = (Dentry*)(base + dent * span);
+  long parent = entry.parent;
+  if (parent < 0L) {
+    entry.next = 0L;
+    return;
+  }
+  Dentry* owner = (Dentry*)(base + parent * span);
+  long index = owner.child;
+  long prev = 0L;
+  long guard = 0L;
+  long limit = dentryCount();
+  while (index > 0L && guard < limit) {
+    guard = guard + 1L;
+    Dentry* item = (Dentry*)(base + index * span);
+    long next = item.next;
+    if (index == dent) {
+      if (prev == 0L) {
+        owner.child = next;
+      } else {
+        Dentry* before = (Dentry*)(base + prev * span);
+        before.next = next;
+      }
+      entry.next = 0L;
+      return;
+    }
+    prev = index;
+    index = next;
+  }
+}
+
 deRfun takeChild(long parent, long path, long from, long count, long kind, long size, long uid, long gid, long mode): long {
   long ino = allocInode();
+  if (ino < 0L) {
+    return -1L;
+  }
   long dent = allocDentry();
-  if (ino < 0L || dent < 0L) {
+  if (dent < 0L) {
+    inodeAt(ino).used = 0L;
     return -1L;
   }
   long parentIno = dentryAt(parent).ino;
@@ -685,14 +803,19 @@ deRfun takeChild(long parent, long path, long from, long count, long kind, long 
   entry.parent = parent;
   entry.ino = ino;
   copyName(dent, path, from, count);
+  linkChild(parent, dent);
   return dent;
 }
 
 /* 已有名字按设备给出的修改时间登记，不改成现在。 */
 deRfun takeKnown(long parent, long path, long from, long count, long kind, long size, long uid, long gid, long mode, long stamp): long {
   long ino = allocInode();
+  if (ino < 0L) {
+    return -1L;
+  }
   long dent = allocDentry();
-  if (ino < 0L || dent < 0L) {
+  if (dent < 0L) {
+    inodeAt(ino).used = 0L;
     return -1L;
   }
   long parentIno = dentryAt(parent).ino;
@@ -703,6 +826,7 @@ deRfun takeKnown(long parent, long path, long from, long count, long kind, long 
   entry.parent = parent;
   entry.ino = ino;
   copyName(dent, path, from, count);
+  linkChild(parent, dent);
   return dent;
 }
 
@@ -864,10 +988,13 @@ deRfun dropDent(long dent): void {
   if (dent <= 0L) {
     return;
   }
+  unlinkChild(dent);
   Dentry* entry = dentryAt(dent);
   long ino = entry.ino;
   entry.used = 0L;
   entry.nameLen = 0L;
+  entry.child = 0L;
+  entry.next = 0L;
   long fd = 0L;
   while (fd < fileCount()) {
     if (fileAt(fd).used == 1L && fileAt(fd).ino == ino) {
@@ -879,6 +1006,43 @@ deRfun dropDent(long dent): void {
   if (inodeAt(ino).kind == 5L) {
     memDrop(ino);
   }
+}
+
+/* 表满时回收一个普通文件缓存。只碰种类 1 和 5：它们不会有子目录，
+   也不会是当前路径解析中的父项，回收不会让正在走的路径失效。
+   打开中的文件和任务当前目录都保留。 */
+deRfun evictCache(): long {
+  long dent = 1L;
+  while (dent < dentryCount()) {
+    Dentry* entry = dentryAt(dent);
+    if (entry.used == 1L) {
+      long ino = entry.ino;
+      Inode* node = inodeAt(ino);
+      if (node.kind == 1L || node.kind == 5L) {
+        long held = 0L;
+        long slot = 0L;
+        while (slot < fileCount()) {
+          if (fileAt(slot).used == 1L && fileAt(slot).ino == ino) {
+            held = 1L;
+          }
+          slot = slot + 1L;
+        }
+        long task = 0L;
+        while (task < taskLimit()) {
+          if (taskAt(task).cwd == dent) {
+            held = 1L;
+          }
+          task = task + 1L;
+        }
+        if (held == 0L) {
+          dropDent(dent);
+          return 1L;
+        }
+      }
+    }
+    dent = dent + 1L;
+  }
+  return 0L;
 }
 
 deRfun wantOf(long flags): long {
@@ -915,13 +1079,15 @@ deRfun vfsPrepare(long caller, long path): long {
   return pathOf(dent);
 }
 
-/* 子任务的描述符表一开始是空的。这里按号抄过去，管道和 NAS 句柄各多记一份。 */
+/* 子任务的描述符表一开始是空的。只抄标准描述符 0、1、2。
+   管道两端留在父任务更高的号码上。若子任务一并握住写端，读的那一端就等不到结束。
+   抄过去的每一格仍多记一份，关掉一边不影响另一边。 */
 deRfun vfsHand(long fromTask, long toTask): void {
   if (fromTask < 0L || toTask < 0L || fromTask == toTask) {
     return;
   }
   long fd = 0L;
-  while (fd < 8L) {
+  while (fd < 3L) {
     long fromSlot = slotOf(fromTask, fd);
     if (fileAt(fromSlot).used == 1L) {
       shareFd(fromSlot, slotOf(toTask, fd));
@@ -1310,8 +1476,12 @@ deRfun doRead(long caller, long home, long writing): long {
   /* 1 号的第一行不依赖打开。描述符还没挂上时，写就直接画到控制台。 */
   if (file.used == 0L) {
     if (writing == 1L && taskIndex >= 0L && taskAt(taskIndex).pid == 1L) {
-      conEmit(home);
-      return 0L;
+      long glass = conDevice();
+      if (glass < 0L) {
+        memory::store64(0L, home + 320L);
+        return 0L;
+      }
+      return devMove(glass, home, 1L, 1L, caller, 2L);
     }
     return 5L;
   }
@@ -1331,18 +1501,13 @@ deRfun doRead(long caller, long home, long writing): long {
     if (writing == 1L && file.flags == 0L) {
       return -1L;
     }
-    /* 监督核上的控制台。写进格子，读不到字节就睡到键盘送来。 */
-    if (devAt(file.handle).core == 2L) {
-      if (writing == 0L) {
-        long pulled = conPull(caller, home);
-        if (pulled == -2L) {
-          schedSleep(caller);
-        }
-        return pulled;
+    /* 监督核上的控制台。读不到字节就睡到键盘送来。写出的字节只进环，格子由显示程序来收。 */
+    if (devAt(file.handle).core == 2L && writing == 0L) {
+      long pulled = conPull(caller, home);
+      if (pulled == -2L) {
+        schedSleep(caller);
       }
-      conEmit(home);
-      stampWrite(inodeAt(file.ino));
-      return 0L;
+      return pulled;
     }
     if (writing == 0L) {
       return devMove(file.handle, home, 0L, 0L, caller, 1L);
@@ -1520,12 +1685,8 @@ deRfun doUnlink(long caller, long home): long {
     return 3L;
   }
   if (inodeAt(dentryAt(dent).ino).kind == 6L) {
-    long child = 1L;
-    while (child < dentryCount()) {
-      if (dentryAt(child).used == 1L && dentryAt(child).parent == dent) {
-        return 11L;
-      }
-      child = child + 1L;
+    if (dentryAt(dent).child > 0L) {
+      return 11L;
     }
     dropDent(dent);
     return 0L;
@@ -1725,14 +1886,19 @@ deRfun doList(long caller, long home): long {
   long used = 0L;
   long produced = 0L;
   if (node.kind == 4L || node.kind == 6L) {
+    long base = dentryBase();
+    long span = dentryStride();
     long seen = 0L;
-    long slot = 1L;
+    Dentry* owner = (Dentry*)(base + dent * span);
+    long slot = owner.child;
     long reading = 1L;
     long guard = 0L;
-    while (reading == 1L && slot < dentryCount() && guard < 8192L) {
+    long limit = dentryCount();
+    while (reading == 1L && slot > 0L && guard < limit) {
       guard = guard + 1L;
-      Dentry* entry = dentryAt(slot);
-      if (entry.used == 1L && entry.parent == dent && entry.nameLen >= 0L && entry.nameLen <= 512L) {
+      Dentry* entry = (Dentry*)(base + slot * span);
+      long next = entry.next;
+      if (entry.used == 1L && entry.nameLen >= 0L && entry.nameLen <= 512L) {
         if (seen >= index) {
           long need = 72L + entry.nameLen;
           if (used / 8L + need > cap) {
@@ -1753,7 +1919,7 @@ deRfun doList(long caller, long home): long {
         seen = seen + 1L;
       }
       if (reading == 1L) {
-        slot = slot + 1L;
+        slot = next;
       }
     }
   } else {

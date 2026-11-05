@@ -1,4 +1,4 @@
-# 覆盖快照（当前实现）
+# ZTrace 覆盖快照（v1.1 当前实现）
 
 > 这是 `Implementation/` 层的当前快照，不是覆盖目标，也不是调试标准。
 > 命令和批次只是验证载荷。覆盖按层、边界和因果能力判断。
@@ -13,12 +13,12 @@
 |----|--------------|------|------|
 | CPU 系统调用 | `svc`、`svc-reply`、服务号 | 已覆盖 | 同一核按 span 配对 |
 | CPU 命令 | `command`、`command-end`、`prompt` | 已覆盖 | 服务 36 开，35 关 |
-| CPU 调度 | `dispatch`、`queue`、`task-sleep`、`task-wake` | 已覆盖 | 任务级睡眠和唤醒按 pid 配对。进程 wait/exit 另有 `task waits`。诊断字在 4416 |
+| CPU 调度 | `dispatch`、`queue`、`task-sleep`、`task-wake`、`process-exit` | 已覆盖 | 任务级睡眠和唤醒按 pid 配对。进程退出由宿主在服务 28 直接读 `home+128`，不再依赖 4416 诊断字 |
 | CPU 安装 | `install`、目标核、长度 | 已覆盖 | 启动期无父的安装不记 |
 | CPU 核心停机 | `core-stop`、原因、`stops` 快照 | 已覆盖 | 原生核记录寄存器、PC、栈指针和栈窗口；解释器路径只记录指令索引，栈范围是 `0x0` |
 | CPU 执行量与采样 | 命令级 `exec=N`、`instruction samples` | 部分 | 有各核条数、采样范围和 core 2/6 源行。没有完整指令环 |
 | 源行映射 | `obr-debug 1/2` 到文件、行、函数 | 部分 | core 2/6 有表。core 7 外部命令没有 |
-| 失败 | `HostEvent fault`、`core-stop`、`latest stops` | 已覆盖 | 计数、原因和最近一次现场快照。没有跨核统一任务表 |
+| 失败 | `HostEvent fault`、`core-stop`、`latest stops` | 部分 | fault/stop 带 `At` 和作用域；命令报告只留本次现场。解释器有 8 个寄存器、栈指针，fault 有 `HostStack`/`GuestStack` 摘要，失败 stop 有 `StackBytes` 通道；但 `StackBytes` 尚无真实命令 fault 样本，逐帧栈和全核符号仍未完成 |
 | 扩展口 | `exchange`、`exchange-reply`、端口、方向、`protocol ports` | 部分 | 页面发起的交换没有父 span。设备 opcode 语义仍缺 |
 | NAS | `offer`、`carry`、`fill`、`xchg`、端口、字节数、父 span | 已覆盖 | 只覆盖数据面，不解释文件语义 |
 | GPU | `gpu stages`、`phases`、`gpu.compose`、`gpu.present cmds=N` | 已覆盖 | 每次 present 记 scene/accel 命令数，并分 capture/compose/accel 记耗时。`accel` 仍按批计数，不逐条 span |
@@ -33,7 +33,7 @@
 | 指令环 | `Insn` 采样、core 2/6 源行 | 部分 | 无完整指令环。core 7 无源行表 |
 | 等待与唤醒 | `wait spans`、`task waits`、`task sleeps` | 已覆盖 | 三层都有事件。短时钟等待仍未逐次记 |
 | 因果边 | `task waits`、`task sleeps`、`input spans` | 部分 | 任务级和键盘关联号已接。通用请求和回复边仍未接 |
-| 全命令语料 | `Tools/ztrace-corpus.json`、`ztrace-corpus.mjs` | 已覆盖 | 54 条 `/bin` 命令各有有界调用；只验证回到提示符，不比较输出文本。最近一次全量批次 53/54：`yes` 的旧管道写法会挂起，改成 `yes --help` 后单条通过；还没有用同一批次复跑全量 |
+| 全命令语料 | `Tools/ztrace-corpus.json`、`ztrace-corpus.mjs` | 已覆盖 | 54 条 `/bin` 命令各有有界调用；只验证回到提示符和退出码，不比较输出文本。最近一次全量 **54/54**，退出码全匹配，`dropped=0` |
 | 结构门禁 | `ztrace-check`、`ztrace-diff`、`ztrace-gate` | 已覆盖 | schema、字段、结构差异、特性段和语料覆盖可自动检查 |
 
 ## 2. 不能写成已确认根因的内容

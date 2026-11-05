@@ -2,18 +2,15 @@
    下标 0 是程序名，不打印。操作数从 1 起，按八位组原样写出。
    操作数之间隔一个空格（字节 32），最后写换行（字节 10）到描述符 1。
    -n 不是开关，反斜杠不转义。没有操作数时只写换行。成功退出 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 /* 读写区里已经放好的一段写到标准输出。一次的个数由调用方限制，这里不再拆。 */

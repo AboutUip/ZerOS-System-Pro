@@ -2,7 +2,7 @@
 	"name": "objective-r-file-support",
 	"displayName": "ObjectiveR File Support",
 	"description": "Obr / ModuleR / ZAP：着色、补全、悬停、键入检查，并用 obrc 做动态诊断。ZPB1 与 ZNB1 程序映像预览。",
-	"version": "0.6.2",
+	"version": "0.7.1",
 	"activationEvents": [
 		"onStartupFinished",
 		"onCommand:objectiveR.openZapBinary"

@@ -35,18 +35,15 @@
    别的非 0，或长度不在 1 到 512，写 du: 路径: cannot read，这一层到此为止。
    标准输出的偏移从 0 累加，一次最多 4096。写失败写 du: write error，马上退出 1。
    诊断写描述符 2，偏移每次从 0。alloc 的单位是位。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。负值加上 256 才是 0 到 255 的八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

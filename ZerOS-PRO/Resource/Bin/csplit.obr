@@ -1,0 +1,687 @@
+/* POSIX.1-2017 csplit（utilities/csplit.html）。形式是 csplit [-ks] [-f prefix] [-n number] file pattern...
+   基本正则，不做 GNU 扩展。行号 n 表示在第 n 行之后切开。
+   /regexp/ 在匹配行之前切；%regexp% 跳过直到匹配，在该行之后切。{重复} 重复前一个模式。
+   -k 失败时保留已写出的段；-s 不向描述符 2 写每段字节数。
+   -f 改前缀，缺省 xx；-n 改序号宽度，缺省 2。
+   拆不开或模式非法写 csplit: 原因 到描述符 2；没有 -k 时删掉已写段。成功退出 0，失败 1。
+   文件只能有一个。-- 结束选项。结束用服务 28。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import obr.text;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun positive(long at, long len, long* out): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long value = 0L;
+  long cursor = 0L;
+  while (cursor < len) {
+    long bit = u8(at + cursor * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    value = value * 10L + bit - 48L;
+    cursor = cursor + 1L;
+  }
+  if (value < 1L) {
+    return 0L;
+  }
+  *out = value;
+  return 1L;
+}
+
+deRfun parseRepeat(long at, long len, long* bodyLen, long* reps): long {
+  *bodyLen = len;
+  *reps = 1L;
+  if (len < 3L || u8(at + (len - 1L) * 8L) != 125L) {
+    return 1L;
+  }
+  long close = len - 1L;
+  long open = close - 1L;
+  while (open > 0L && u8(at + open * 8L) != 123L) {
+    open = open - 1L;
+  }
+  if (open < 1L) {
+    return 1L;
+  }
+  long num = 0L;
+  if (positive(at + (open + 1L) * 8L, close - open - 1L, &num) == 0L) {
+    return 0L;
+  }
+  *bodyLen = open;
+  *reps = num;
+  return 1L;
+}
+
+deRfun matchHere(long line, long len, long pos, long pat, long plen): long {
+  if (pos >= plen) {
+    return 1L;
+  }
+  long bit = u8(pat + pos * 8L);
+  if (bit == 92L) {
+    if (pos + 1L >= plen) {
+      return 0L;
+    }
+    long lit = u8(pat + (pos + 1L) * 8L);
+    if (len < 1L || u8(line) != lit) {
+      return 0L;
+    }
+    if (matchHere(line + 8L, len - 1L, pos + 2L, pat, plen) == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (bit == 46L) {
+    if (len < 1L) {
+      return 0L;
+    }
+    if (matchHere(line + 8L, len - 1L, pos + 1L, pat, plen) == 1L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (bit == 91L) {
+    long cursor = pos + 1L;
+    long neg = 0L;
+    if (cursor < plen && u8(pat + cursor * 8L) == 94L) {
+      neg = 1L;
+      cursor = cursor + 1L;
+    }
+    long found = 0L;
+    if (len < 1L) {
+      return 0L;
+    }
+    long ch = u8(line);
+    while (cursor < plen && u8(pat + cursor * 8L) != 93L) {
+      long lo = u8(pat + cursor * 8L);
+      cursor = cursor + 1L;
+      if (cursor < plen && u8(pat + cursor * 8L) == 45L && cursor + 1L < plen && u8(pat + (cursor + 1L) * 8L) != 93L) {
+        long hi = u8(pat + (cursor + 1L) * 8L);
+        if (ch >= lo && ch <= hi) {
+          found = 1L;
+        }
+        cursor = cursor + 2L;
+      } else {
+        if (ch == lo) {
+          found = 1L;
+        }
+      }
+    }
+    if (cursor >= plen || u8(pat + cursor * 8L) != 93L) {
+      return 0L;
+    }
+    if (neg == 1L) {
+      if (found == 1L) {
+        return 0L;
+      }
+    } else if (found == 0L) {
+      return 0L;
+    }
+    return matchHere(line + 8L, len - 1L, cursor + 1L, pat, plen);
+  }
+  if (bit == 42L) {
+    long star = pos + 1L;
+    long cursor = 0L;
+    while (cursor <= len) {
+      if (matchHere(line + cursor * 8L, len - cursor, star, pat, plen) == 1L) {
+        return 1L;
+      }
+      cursor = cursor + 1L;
+    }
+    return 0L;
+  }
+  if (len < 1L || u8(line) != bit) {
+    return 0L;
+  }
+  return matchHere(line + 8L, len - 1L, pos + 1L, pat, plen);
+}
+
+deRfun lineMatch(long line, long len, long pat, long plen): long {
+  long start = 0L;
+  long end = plen;
+  if (plen > 0L && u8(pat) == 94L) {
+    start = 1L;
+  }
+  if (end > start && u8(pat + (end - 1L) * 8L) == 36L) {
+    end = end - 1L;
+  }
+  if (start >= end) {
+    if (len == 0L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (matchHere(line, len, start, pat, end) == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun readFile(long home, long fd, long buf, long max, long* size): long {
+  long total = 0L;
+  long offset = 0L;
+  while (total < max) {
+    long room = max - total;
+    if (room > 4096L) {
+      room = 4096L;
+    }
+    if (obr::proc::read(home, fd, offset, room) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      return 1L;
+    }
+    if (n == 0L) {
+      break;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, n);
+    total = total + n;
+    offset = offset + n;
+  }
+  *size = total;
+  return 0L;
+}
+
+deRfun lineStart(long data, long size, long lineNum, long* at, long* len): long {
+  long line = 1L;
+  long index = 0L;
+  long start = 0L;
+  while (index <= size) {
+    if (line == lineNum) {
+      *at = data + start * 8L;
+      *len = index - start;
+      return 1L;
+    }
+    if (index == size) {
+      break;
+    }
+    if (u8(data + index * 8L) == 10L) {
+      line = line + 1L;
+      start = index + 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun offsetAfterLine(long data, long size, long lineNum): long {
+  long line = 0L;
+  long index = 0L;
+  while (index <= size) {
+    if (index == size) {
+      if (line == lineNum) {
+        return size;
+      }
+      return -1L;
+    }
+    if (u8(data + index * 8L) == 10L) {
+      line = line + 1L;
+      if (line == lineNum) {
+        return index + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun findLineMatch(long data, long size, long pat, long plen, long fromLine, long* lineOut): long {
+  long line = 1L;
+  long index = 0L;
+  long start = 0L;
+  while (index <= size) {
+    if (line >= fromLine) {
+      long len = index - start;
+      if (lineMatch(data + start * 8L, len, pat, plen) == 1L) {
+        *lineOut = line;
+        return 1L;
+      }
+    }
+    if (index == size) {
+      break;
+    }
+    if (u8(data + index * 8L) == 10L) {
+      line = line + 1L;
+      start = index + 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun addCut(long base, long* ncut, long max, long off): long {
+  long index = 0L;
+  while (index < *ncut) {
+    if (memory::load64(base + index * 64L) == off) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  if (*ncut >= max) {
+    return 1L;
+  }
+  memory::store64(off, base + (*ncut) * 64L);
+  *ncut = *ncut + 1L;
+  return 0L;
+}
+
+deRfun sortCuts(long base, long ncut): void {
+  long outer = 0L;
+  while (outer < ncut) {
+    long inner = outer + 1L;
+    while (inner < ncut) {
+      long a = memory::load64(base + outer * 64L);
+      long b = memory::load64(base + inner * 64L);
+      if (b < a) {
+        memory::store64(b, base + outer * 64L);
+        memory::store64(a, base + inner * 64L);
+      }
+      inner = inner + 1L;
+    }
+    outer = outer + 1L;
+  }
+}
+
+deRfun lineOffset(long data, long size, long wantLine): long {
+  long line = 1L;
+  long index = 0L;
+  long start = 0L;
+  while (index <= size) {
+    if (line == wantLine) {
+      return start;
+    }
+    if (index == size) {
+      break;
+    }
+    if (u8(data + index * 8L) == 10L) {
+      line = line + 1L;
+      start = index + 1L;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun writeSeg(long home, long prefixBlock, long width, long seq, long data, long start, long end, long silent): long {
+  long nameBuf = prefixBlock + 512L;
+  long pos = 0L;
+  long pLen = obr::text::len(prefixBlock);
+  long step = 0L;
+  while (step < pLen && pos < 8000L) {
+    memory::storeOctet(obr::text::at(prefixBlock, step), nameBuf + 64L + pos * 8L);
+    pos = pos + 1L;
+    step = step + 1L;
+  }
+  long digits = width;
+  if (digits < 1L) {
+    digits = 2L;
+  }
+  long temp = seq;
+  long dCount = 0L;
+  while (dCount < digits) {
+    memory::storeOctet(48L + (temp % 10L), nameBuf + 64L + (pos + digits - 1L - dCount) * 8L);
+    temp = temp / 10L;
+    dCount = dCount + 1L;
+  }
+  pos = pos + digits;
+  memory::store64(pos, obr::proc::path(home));
+  copySpan(nameBuf + 64L, obr::proc::path(home) + 64L, pos);
+  if (obr::proc::open(home, 1L) != 0L) {
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long todo = end - start;
+  long done = 0L;
+  while (done < todo) {
+    long chunk = todo - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(data + (start + done) * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, 0L, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < chunk) {
+      return 1L;
+    }
+    done = done + wrote;
+  }
+  if (silent == 0L) {
+    writeErr(home, " ");
+    writeSpan(home, obr::proc::path(home) + 64L, pos);
+  }
+  return 0L;
+}
+
+deRfun unlinkSeg(long home, long prefixBlock, long width, long seq): void {
+  long nameBuf = prefixBlock + 512L;
+  long pos = 0L;
+  long pLen = obr::text::len(prefixBlock);
+  long step = 0L;
+  while (step < pLen && pos < 8000L) {
+    memory::storeOctet(obr::text::at(prefixBlock, step), nameBuf + 64L + pos * 8L);
+    pos = pos + 1L;
+    step = step + 1L;
+  }
+  long digits = width;
+  if (digits < 1L) {
+    digits = 2L;
+  }
+  long temp = seq;
+  long dCount = 0L;
+  while (dCount < digits) {
+    memory::storeOctet(48L + (temp % 10L), nameBuf + 64L + (pos + digits - 1L - dCount) * 8L);
+    temp = temp / 10L;
+    dCount = dCount + 1L;
+  }
+  pos = pos + digits;
+  memory::store64(pos, nameBuf);
+  memory::store64(pos, obr::proc::path(home));
+  copySpan(nameBuf + 64L, obr::proc::path(home) + 64L, pos);
+  obr::proc::unlink(home);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long keep = 0L;
+  long silent = 0L;
+  long width = 2L;
+  long prefixBlock = obr::proc::alloc(home, 8192L);
+  if (prefixBlock == 0L) {
+    writeErr(home, "csplit: out of memory\n");
+    return finish(home, 1L);
+  }
+  if (obr::text::put(prefixBlock, "xx") != 0L) {
+    writeErr(home, "csplit: out of memory\n");
+    obr::proc::free(home, prefixBlock, 8192L);
+    return finish(home, 1L);
+  }
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 107L) {
+          keep = 1L;
+        } else if (bit == 115L) {
+          silent = 1L;
+        } else if (bit == 102L) {
+          long pAt = 0L;
+          long pLen = 0L;
+          if (cursor + 1L < len) {
+            pAt = at + (cursor + 1L) * 8L;
+            pLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "csplit: option requires an argument\n");
+              return finish(home, 1L);
+            }
+            pAt = argPtr(home, index);
+            pLen = argLen(home, index);
+            cursor = len;
+          }
+          memory::store64(pLen, prefixBlock);
+          copySpan(pAt, prefixBlock + 64L, pLen);
+        } else if (bit == 110L) {
+          long num = 0L;
+          if (cursor + 1L < len) {
+            if (positive(at + (cursor + 1L) * 8L, len - (cursor + 1L), &num) == 0L) {
+              writeErr(home, "csplit: invalid number\n");
+              return finish(home, 1L);
+            }
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "csplit: option requires an argument\n");
+              return finish(home, 1L);
+            }
+            if (positive(argPtr(home, index), argLen(home, index), &num) == 0L) {
+              writeErr(home, "csplit: invalid number\n");
+              return finish(home, 1L);
+            }
+            cursor = len;
+          }
+          width = num;
+        } else {
+          writeErr(home, "csplit: invalid option\n");
+          return finish(home, 1L);
+        }
+        if (cursor < len) {
+          cursor = cursor + 1L;
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "csplit: missing operand\n");
+    return finish(home, 1L);
+  }
+  long fileAt = argPtr(home, index);
+  long fileLen = argLen(home, index);
+  index = index + 1L;
+  if (index >= count) {
+    writeErr(home, "csplit: missing pattern\n");
+    return finish(home, 1L);
+  }
+  long mem = obr::proc::alloc(home, 524288L);
+  if (mem == 0L) {
+    writeErr(home, "csplit: out of memory\n");
+    return finish(home, 1L);
+  }
+  plant(home, fileAt, fileLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "csplit: cannot open input\n");
+    obr::proc::free(home, mem, 524288L);
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long fSize = 0L;
+  if (readFile(home, fd, mem, 262144L, &fSize) != 0L) {
+    writeErr(home, "csplit: read error\n");
+    obr::proc::free(home, mem, 524288L);
+    return finish(home, 1L);
+  }
+  long cutBase = mem + 262144L;
+  long ncut = 0L;
+  addCut(cutBase, &ncut, 64L, 0L);
+  long failed = 0L;
+  while (index < count && failed == 0L) {
+    long patAt = argPtr(home, index);
+    long patLen = argLen(home, index);
+    long bodyLen = patLen;
+    long reps = 1L;
+    if (parseRepeat(patAt, patLen, &bodyLen, &reps) == 0L) {
+      writeErr(home, "csplit: invalid pattern\n");
+      failed = 1L;
+    } else {
+      long rep = 0L;
+      while (rep < reps && failed == 0L) {
+        if (bodyLen > 0L && u8(patAt) >= 48L && u8(patAt) <= 57L) {
+          long num = 0L;
+          if (positive(patAt, bodyLen, &num) == 0L) {
+            writeErr(home, "csplit: invalid pattern\n");
+            failed = 1L;
+          } else {
+            long off = offsetAfterLine(mem, fSize, num);
+            if (off < 0L) {
+              writeErr(home, "csplit: line number out of range\n");
+              failed = 1L;
+            } else if (addCut(cutBase, &ncut, 64L, off) != 0L) {
+              writeErr(home, "csplit: too many splits\n");
+              failed = 1L;
+            }
+          }
+        } else if (bodyLen > 1L && u8(patAt) == 47L) {
+          long close = 1L;
+          while (close < bodyLen && u8(patAt + close * 8L) != 47L) {
+            close = close + 1L;
+          }
+          if (close >= bodyLen) {
+            writeErr(home, "csplit: invalid pattern\n");
+            failed = 1L;
+          } else {
+            long line = 0L;
+            if (findLineMatch(mem, fSize, patAt + 8L, close - 1L, 1L, &line) == 0L) {
+              writeErr(home, "csplit: no match\n");
+              failed = 1L;
+            } else {
+              long off = lineOffset(mem, fSize, line);
+              if (off < 0L) {
+                off = 0L;
+              }
+              if (addCut(cutBase, &ncut, 64L, off) != 0L) {
+                failed = 1L;
+              }
+            }
+          }
+        } else if (bodyLen > 1L && u8(patAt) == 37L) {
+          long close = 1L;
+          while (close < bodyLen && u8(patAt + close * 8L) != 37L) {
+            close = close + 1L;
+          }
+          if (close >= bodyLen) {
+            writeErr(home, "csplit: invalid pattern\n");
+            failed = 1L;
+          } else {
+            long line = 0L;
+            if (findLineMatch(mem, fSize, patAt + 8L, close - 1L, 1L, &line) == 0L) {
+              writeErr(home, "csplit: no match\n");
+              failed = 1L;
+            } else {
+              long off = offsetAfterLine(mem, fSize, line);
+              if (off < 0L) {
+                off = fSize;
+              }
+              if (addCut(cutBase, &ncut, 64L, off) != 0L) {
+                failed = 1L;
+              }
+            }
+          }
+        } else {
+          writeErr(home, "csplit: invalid pattern\n");
+          failed = 1L;
+        }
+        rep = rep + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (failed == 1L) {
+    if (keep == 0L) {
+      long seq = 0L;
+      while (seq < ncut) {
+        unlinkSeg(home, prefixBlock, width, seq);
+        seq = seq + 1L;
+      }
+    }
+    obr::proc::free(home, mem, 524288L);
+    obr::proc::free(home, prefixBlock, 8192L);
+    return finish(home, 1L);
+  }
+  if (addCut(cutBase, &ncut, 64L, fSize) != 0L) {
+    obr::proc::free(home, mem, 524288L);
+    writeErr(home, "csplit: too many splits\n");
+    return finish(home, 1L);
+  }
+  sortCuts(cutBase, ncut);
+  long seq = 0L;
+  long c = 0L;
+  while (c + 1L < ncut) {
+    long start = memory::load64(cutBase + c * 64L);
+    long end = memory::load64(cutBase + (c + 1L) * 64L);
+    if (writeSeg(home, prefixBlock, width, seq, mem, start, end, silent) != 0L) {
+      writeErr(home, "csplit: write error\n");
+      if (keep == 0L) {
+        long rm = 0L;
+        while (rm < seq) {
+          unlinkSeg(home, prefixBlock, width, rm);
+          rm = rm + 1L;
+        }
+      }
+      obr::proc::free(home, mem, 524288L);
+      return finish(home, 1L);
+    }
+    seq = seq + 1L;
+    c = c + 1L;
+  }
+  if (silent == 0L) {
+    writeErr(home, "\n");
+  }
+  obr::proc::free(home, mem, 524288L);
+  obr::proc::free(home, prefixBlock, 8192L);
+  return finish(home, 0L);
+}

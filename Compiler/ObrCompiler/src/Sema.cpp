@@ -1,10 +1,16 @@
 #include "Sema.hpp"
 
 #include "Diagnostic.hpp"
+#include "Utf8.hpp"
 #include "intrinsic/Intrinsic.hpp"
 #include "type/Type.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -19,6 +25,8 @@ struct Slot {
   int words = 1;
   std::string typeName;
   std::string altName;
+  bool isConst = false;
+  Expr constant;
 };
 
 class Checker {
@@ -28,10 +36,23 @@ class Checker {
     classes_ = &unit.classes;
     structs_ = &unit.structs;
     enums_ = &unit.enums;
+    interfaces_ = &unit.interfaces;
+    unitStrings_ = &unit.strings;
+    unitStructs_ = &unit.structConstants;
+    unitClasses_ = &unit.classConstants;
+    shared_ = unit.shared;
+    version_ = unit.version;
+    if (!unit.interfaces.empty() && version_ < 2) fail("interface 需要 #VERSION 2");
     layoutEnums(unit.enums);
+    loadConstants(unit.consts);
     layoutStructs(unit.structs);
+    layoutInterfaces(unit.interfaces);
     resolveClassFields(unit.classes);
     layoutClasses(unit.classes);
+    validateInterfaces(unit.classes);
+    for (std::size_t index = 0; index < unit.classes.size(); index += 1) {
+      unit.classes[index].id = unit.classes[index].headerWords > 0 ? static_cast<int>(index) + 1 : 0;
+    }
     resolveSignatures();
     for (std::size_t index = 0; index < unit.functions.size(); index += 1) {
       if (!unit.functions[index].opcode.empty()) continue;
@@ -43,12 +64,20 @@ class Checker {
  private:
   std::vector<Function>* functions_ = nullptr;
   const std::vector<ClassDecl>* classes_ = nullptr;
+  const std::vector<InterfaceDecl>* interfaces_ = nullptr;
+  std::vector<std::string>* unitStrings_ = nullptr;
+  std::vector<ConstStruct>* unitStructs_ = nullptr;
+  std::vector<ConstClass>* unitClasses_ = nullptr;
+  bool shared_ = false;
   const std::vector<StructDecl>* structs_ = nullptr;
   const std::vector<EnumDecl>* enums_ = nullptr;
   std::string retName_;
   TypeKind retAlt_ = TypeKind::None;
   std::string retAltName_;
   std::vector<std::map<std::string, Slot>> scopes_;
+  std::map<std::string, Expr> moduleConsts_;
+  int switchDepth_ = 0;
+  int version_ = 1;
   int words_ = 0;
   int staticNext_ = 0;
   int loops_ = 0;
@@ -91,6 +120,440 @@ class Checker {
     saved.index = slot;
     scopes_.back()[name] = saved;
     return slot;
+  }
+
+  void allocConst(const std::string& name, TypeKind type, TypeKind pointee, TypeKind alt, const std::string& typeName, const std::string& altName, Expr value) {
+    if (scopes_.back().contains(name)) fail("名字重复 " + name);
+    Slot saved;
+    saved.type = type;
+    saved.pointee = pointee;
+    saved.alt = alt;
+    saved.typeName = typeName;
+    saved.altName = altName;
+    saved.index = -1;
+    saved.words = 0;
+    saved.isConst = true;
+    saved.constant = std::move(value);
+    scopes_.back()[name] = std::move(saved);
+  }
+
+  bool constScalar(TypeKind type) const {
+    return type == TypeKind::Byte || type == TypeKind::Short || type == TypeKind::Int || type == TypeKind::Long
+      || type == TypeKind::Float || type == TypeKind::Double || type == TypeKind::Boolean || type == TypeKind::Char
+      || type == TypeKind::String || type == TypeKind::Struct || type == TypeKind::Ptr;
+  }
+
+  Expr makeIntConstant(long long value, TypeKind type) {
+    Expr expr;
+    expr.kind = Expr::Kind::LitInt;
+    expr.integer = value;
+    expr.type = type;
+    return expr;
+  }
+
+  Expr makeFloatConstant(double value, TypeKind type) {
+    Expr expr;
+    expr.kind = Expr::Kind::LitFloat;
+    expr.number = value;
+    expr.type = type;
+    return expr;
+  }
+
+  Expr makeBoolConstant(bool value) {
+    Expr expr;
+    expr.kind = Expr::Kind::LitBool;
+    expr.integer = value ? 1 : 0;
+    expr.type = TypeKind::Boolean;
+    return expr;
+  }
+
+  bool constantTrue(const Expr& expr) {
+    if (expr.kind == Expr::Kind::LitBool) return expr.integer != 0;
+    if (expr.kind == Expr::Kind::LitInt || expr.kind == Expr::Kind::LitChar) return expr.integer != 0;
+    if (expr.kind == Expr::Kind::LitFloat) return expr.number != 0.0;
+    fail("常量条件必须是标量");
+  }
+
+  long long constantInteger(const Expr& expr) {
+    if (expr.kind == Expr::Kind::LitInt || expr.kind == Expr::Kind::LitChar) return expr.integer;
+    fail("常量这里需要整数");
+  }
+
+  double constantDouble(const Expr& expr) {
+    if (expr.kind == Expr::Kind::LitFloat) return expr.number;
+    if (expr.kind == Expr::Kind::LitInt || expr.kind == Expr::Kind::LitChar) return static_cast<double>(expr.integer);
+    fail("常量这里需要数值");
+  }
+
+  long long wrapBits(long long value, int bits, bool signedType) {
+    const unsigned long long mask = (1ULL << bits) - 1;
+    const unsigned long long raw = static_cast<unsigned long long>(value) & mask;
+    if (signedType && (raw & (1ULL << (bits - 1))) != 0) {
+      return static_cast<long long>(raw | ~mask);
+    }
+    return static_cast<long long>(raw);
+  }
+
+  long long constantAsInteger(const Expr& expr) {
+    if (expr.kind == Expr::Kind::LitFloat) {
+      if (!std::isfinite(expr.number)) fail("浮点常量不是有限数");
+      const double truncated = std::trunc(expr.number);
+      if (truncated < -9223372036854775808.0 || truncated >= 9223372036854775808.0) {
+        fail("浮点常量超出 64 位整数范围");
+      }
+      return static_cast<long long>(truncated);
+    }
+    return constantInteger(expr);
+  }
+
+  Expr castConstant(Expr value, TypeKind target) {
+    if (target == TypeKind::Boolean) return makeBoolConstant(constantTrue(value));
+    if (target == TypeKind::Float || target == TypeKind::Double) {
+      return makeFloatConstant(constantDouble(value), target);
+    }
+    if (target == TypeKind::Long) return makeIntConstant(constantAsInteger(value), target);
+    if (target == TypeKind::Int) return makeIntConstant(wrapBits(constantAsInteger(value), 32, true), target);
+    if (target == TypeKind::Short) return makeIntConstant(wrapBits(constantAsInteger(value), 16, true), target);
+    if (target == TypeKind::Byte) return makeIntConstant(wrapBits(constantAsInteger(value), 8, false), target);
+    if (target == TypeKind::Char) {
+      const long long number = wrapBits(constantAsInteger(value), 21, false);
+      if (number > 0x10FFFF) fail("char 常量超出 Unicode 范围");
+      return makeIntConstant(number, target);
+    }
+    fail("常量不支持这个转换目标");
+  }
+
+  Expr foldBinary(Tok op, const Expr& left, const Expr& right) {
+    if (op == Tok::And || op == Tok::Or) {
+      const bool l = constantTrue(left);
+      const bool r = constantTrue(right);
+      return makeBoolConstant(op == Tok::And ? (l && r) : (l || r));
+    }
+    if (op == Tok::Eq || op == Tok::Ne || op == Tok::Lt || op == Tok::Le || op == Tok::Gt || op == Tok::Ge) {
+      if (left.type != right.type) fail("常量比较两侧类型必须相同");
+      bool result = false;
+      if (left.type == TypeKind::Float || left.type == TypeKind::Double) {
+        const double l = constantDouble(left);
+        const double r = constantDouble(right);
+        if (op == Tok::Eq) result = l == r;
+        else if (op == Tok::Ne) result = l != r;
+        else if (op == Tok::Lt) result = l < r;
+        else if (op == Tok::Le) result = l <= r;
+        else if (op == Tok::Gt) result = l > r;
+        else result = l >= r;
+      } else if (integral(left.type) || left.type == TypeKind::Char || left.type == TypeKind::Boolean) {
+        const long long l = constantInteger(left);
+        const long long r = constantInteger(right);
+        if (op == Tok::Eq) result = l == r;
+        else if (op == Tok::Ne) result = l != r;
+        else if (op == Tok::Lt) result = l < r;
+        else if (op == Tok::Le) result = l <= r;
+        else if (op == Tok::Gt) result = l > r;
+        else result = l >= r;
+      } else {
+        fail("常量比较只支持数值、char 和 boolean");
+      }
+      return makeBoolConstant(result);
+    }
+    if (op == Tok::Plus && (left.type == TypeKind::String || right.type == TypeKind::String
+      || left.type == TypeKind::Char || right.type == TypeKind::Char)) {
+      auto textOf = [&](const Expr& value) -> std::string {
+        if (value.kind == Expr::Kind::LitString) return value.text;
+        if (value.kind == Expr::Kind::LitStringStatic) {
+          if (value.integer < 0 || value.integer >= static_cast<long long>(unitStrings_->size())) fail("字符串常量编号越界");
+          return (*unitStrings_)[static_cast<std::size_t>(value.integer)];
+        }
+        if (value.kind == Expr::Kind::LitChar) {
+          std::string text;
+          appendUtf8(text, static_cast<std::uint32_t>(value.integer));
+          return text;
+        }
+        fail("常量字符串拼接只支持 string 和 char");
+      };
+      Expr out;
+      out.kind = Expr::Kind::LitString;
+      out.type = TypeKind::String;
+      out.text = textOf(left) + textOf(right);
+      return out;
+    }
+    if (op == Tok::BitAnd || op == Tok::BitOr || op == Tok::BitXor
+      || op == Tok::Shl || op == Tok::Shr || op == Tok::UShr) {
+      if (!integral(left.type) || !integral(right.type)) fail("常量位运算只能用于整数");
+      const long long l = constantInteger(left);
+      long long r = constantInteger(right);
+      __int128 out = 0;
+      if (op == Tok::Shl || op == Tok::Shr || op == Tok::UShr) {
+        if (r < 0) fail("常量移位计数不能是负数");
+        r %= 32;
+        if (op == Tok::Shl) out = static_cast<__int128>(l) << r;
+        else if (op == Tok::Shr) out = static_cast<__int128>(l) >> r;
+        else out = static_cast<__int128>(static_cast<unsigned long long>(l) & 4294967295ULL) >> r;
+      } else if (op == Tok::BitAnd) {
+        out = l & r;
+      } else if (op == Tok::BitOr) {
+        out = l | r;
+      } else {
+        out = l ^ r;
+      }
+      if (out < std::numeric_limits<long long>::min() || out > std::numeric_limits<long long>::max()) {
+        fail("常量位运算超出 64 位");
+      }
+      return makeIntConstant(static_cast<long long>(out), TypeKind::Int);
+    }
+    if (!numeric(left.type) || !numeric(right.type)) fail("常量算术只能用于数值");
+    const TypeKind result = promote(left.type, right.type);
+    if (op == Tok::Pow || result == TypeKind::Float || result == TypeKind::Double) {
+      const double l = constantDouble(left);
+      const double r = constantDouble(right);
+      double out = 0;
+      if (op == Tok::Plus) out = l + r;
+      else if (op == Tok::Minus) out = l - r;
+      else if (op == Tok::Star) out = l * r;
+      else if (op == Tok::Slash) {
+        if (r == 0.0) fail("常量除以 0");
+        out = l / r;
+      } else if (op == Tok::Percent) {
+        if (r == 0.0) fail("常量除以 0");
+        out = std::fmod(l, r);
+      } else if (op == Tok::Pow) {
+        out = std::pow(l, r);
+      } else {
+        fail("常量还不支持这个运算符");
+      }
+      if (!std::isfinite(out)) fail("常量浮点结果不是有限数");
+      const TypeKind type = result == TypeKind::Float ? TypeKind::Float : TypeKind::Double;
+      return makeFloatConstant(out, type);
+    }
+    const __int128 l = constantInteger(left);
+    const __int128 r = constantInteger(right);
+    __int128 out = 0;
+    if (op == Tok::Plus) out = l + r;
+    else if (op == Tok::Minus) out = l - r;
+    else if (op == Tok::Star) out = l * r;
+    else if (op == Tok::Slash) {
+      if (r == 0) fail("常量除以 0");
+      out = l / r;
+    } else if (op == Tok::Percent) {
+      if (r == 0) fail("常量除以 0");
+      out = l % r;
+    } else {
+      fail("常量还不支持这个运算符");
+    }
+    if (out < std::numeric_limits<long long>::min() || out > std::numeric_limits<long long>::max()) {
+      fail("常量整数运算超出 64 位");
+    }
+    long long value = static_cast<long long>(out);
+    if (result == TypeKind::Byte) value = wrapBits(value, 8, false);
+    return makeIntConstant(value, result);
+  }
+
+  Expr constantValue(const Expr& source) {
+    Expr expr = source;
+    if (expr.kind == Expr::Kind::LitInt || expr.kind == Expr::Kind::LitFloat
+      || expr.kind == Expr::Kind::LitBool || expr.kind == Expr::Kind::LitChar
+      || expr.kind == Expr::Kind::LitString || expr.kind == Expr::Kind::LitStringStatic
+      || expr.kind == Expr::Kind::LitNull || expr.kind == Expr::Kind::StructConst
+      || expr.kind == Expr::Kind::ClassConst) {
+      return expr;
+    }
+    if (expr.kind == Expr::Kind::Name) {
+      Slot* slot = find(expr.text);
+      if (slot != nullptr && slot->isConst) {
+        return slot->constant;
+      }
+      const auto found = moduleConsts_.find(expr.text);
+      if (found != moduleConsts_.end()) {
+        return found->second;
+      }
+      if (takeEnum(expr)) return expr;
+      fail("常量只能使用字面量、枚举或已定义常量 " + expr.text);
+    }
+    if (expr.kind == Expr::Kind::StructLiteral) {
+      const StructDecl* structDecl = findStruct(expr.text);
+      const ClassDecl* classDecl = structDecl == nullptr ? findClass(expr.text) : nullptr;
+      if (structDecl == nullptr && classDecl == nullptr) fail("没有结构体或类 " + expr.text);
+      const std::vector<Field>& fields = structDecl != nullptr ? structDecl->fields : classDecl->fields;
+      const std::string kindName = structDecl != nullptr ? "结构体" : "类";
+      if (expr.labels.size() != fields.size()) fail(kindName + "字面量字段不完整 " + expr.text);
+      std::vector<Expr> values(fields.size());
+      std::vector<bool> seen(fields.size(), false);
+      for (std::size_t item = 0; item < expr.labels.size(); item += 1) {
+        std::size_t target = fields.size();
+        for (std::size_t field = 0; field < fields.size(); field += 1) {
+          if (fields[field].name == expr.labels[item]) {
+            target = field;
+            break;
+          }
+        }
+        if (target == fields.size()) fail(kindName + "字面量没有字段 " + expr.labels[item]);
+        if (seen[target]) fail(kindName + "字面量字段重复 " + expr.labels[item]);
+        seen[target] = true;
+        const Field& field = fields[target];
+        if (structDecl != nullptr && field.type == TypeKind::Struct) fail("常量结构体暂不支持嵌套结构体字段 " + field.name);
+        if (classDecl != nullptr && field.type == TypeKind::Struct) fail("类字段不能内嵌结构体");
+        Expr value = constantValue(expr.kids[item]);
+        if (!fits(value, field.type, field.typeName, field.alt, field.altName)) {
+          fail(kindName + "字面量字段类型不匹配 " + field.name);
+        }
+        values[target] = adaptConstant(std::move(value), field.type, field.typeName);
+      }
+      for (std::size_t field = 0; field < seen.size(); field += 1) {
+        if (!seen[field]) fail(kindName + "字面量缺少字段 " + fields[field].name);
+      }
+      if (structDecl != nullptr) {
+        if (unitStructs_ == nullptr) fail("结构体常量表还没有准备");
+        ConstStruct item;
+        item.typeName = structDecl->name;
+        item.values = std::move(values);
+        unitStructs_->push_back(std::move(item));
+        Expr out;
+        out.kind = Expr::Kind::StructConst;
+        out.type = TypeKind::Struct;
+        out.typeName = structDecl->name;
+        out.integer = static_cast<long long>(unitStructs_->size()) - 1;
+        return out;
+      }
+      if (unitClasses_ == nullptr) fail("类常量表还没有准备");
+      ConstClass item;
+      item.typeName = classDecl->name;
+      item.values = std::move(values);
+      unitClasses_->push_back(std::move(item));
+      Expr out;
+      out.kind = Expr::Kind::ClassConst;
+      out.type = TypeKind::Ptr;
+      out.typeName = classDecl->name;
+      out.integer = static_cast<long long>(unitClasses_->size()) - 1;
+      return out;
+    }
+    if (expr.kind == Expr::Kind::Unary && expr.kids.size() == 1) {
+      Expr child = constantValue(expr.kids[0]);
+      if (expr.op == Tok::Plus) {
+        if (!numeric(child.type)) fail("常量一元 + 只能用于数值");
+        return child;
+      }
+      if (expr.op == Tok::Minus) {
+        if (!numeric(child.type)) fail("常量一元 - 只能用于数值");
+        if (child.kind == Expr::Kind::LitFloat) child.number = -child.number;
+        else {
+          if (child.integer == std::numeric_limits<long long>::min()) fail("常量取负超出 64 位");
+          child.integer = -child.integer;
+        }
+        return child;
+      }
+      if (expr.op == Tok::BitNot) {
+        if (!integral(child.type)) fail("常量 ~ 只能用于整数");
+        return makeIntConstant(~constantInteger(child), TypeKind::Int);
+      }
+      if (expr.op == Tok::Not) {
+        return makeBoolConstant(!constantTrue(child));
+      }
+      fail("常量一元运算还不支持");
+    }
+    if (expr.kind == Expr::Kind::Binary && expr.kids.size() == 2) {
+      return foldBinary(expr.op, constantValue(expr.kids[0]), constantValue(expr.kids[1]));
+    }
+    if (expr.kind == Expr::Kind::Ternary && expr.kids.size() == 3) {
+      const Expr condition = constantValue(expr.kids[0]);
+      return constantTrue(condition) ? constantValue(expr.kids[1]) : constantValue(expr.kids[2]);
+    }
+    if (expr.kind == Expr::Kind::Cast && expr.kids.size() == 1) {
+      return castConstant(constantValue(expr.kids[0]), expr.type);
+    }
+    fail("常量初始化式只接受字面量、枚举、已定义常量、转换和常量运算");
+  }
+
+  Expr adaptConstant(Expr value, TypeKind type, const std::string& typeName) {
+    if (type == TypeKind::Ptr) {
+      if (shared_) fail("const 类在动态库里还没接");
+      if (value.kind == Expr::Kind::LitNull) {
+        value.type = TypeKind::Ptr;
+        value.typeName = typeName;
+        return value;
+      }
+      if (value.kind != Expr::Kind::ClassConst || value.typeName != typeName) {
+        fail("类常量只能用聚合字面量、已定义类常量或 null");
+      }
+      value.type = TypeKind::Ptr;
+      value.typeName = typeName;
+      return value;
+    }
+    if (type == TypeKind::Struct) {
+      if (shared_) fail("const 结构体在动态库里还没接");
+      if (value.kind != Expr::Kind::StructConst || value.typeName != typeName) {
+        fail("结构体常量只能用聚合字面量或已定义结构体常量");
+      }
+      value.type = TypeKind::Struct;
+      value.typeName = typeName;
+      return value;
+    }
+    if (type == TypeKind::String) {
+      if (shared_) fail("const string 在动态库里还没接");
+      if (value.kind == Expr::Kind::LitStringStatic) {
+        value.type = TypeKind::String;
+        value.typeName.clear();
+        return value;
+      }
+      if (value.kind != Expr::Kind::LitString) fail("字符串常量初值必须是字符串字面量或已定义字符串常量");
+      if (unitStrings_ == nullptr) fail("字符串常量表还没有准备");
+      unitStrings_->push_back(value.text);
+      value.kind = Expr::Kind::LitStringStatic;
+      value.integer = static_cast<long long>(unitStrings_->size()) - 1;
+      value.type = TypeKind::String;
+      value.typeName.clear();
+      return value;
+    }
+    if (type == TypeKind::Float || type == TypeKind::Double) {
+      if (!numeric(value.type) && value.type != TypeKind::Char && value.type != TypeKind::Boolean) {
+        fail("常量不能转成浮点");
+      }
+      const double number = constantDouble(value);
+      if (!std::isfinite(number)) fail("浮点常量不是有限数");
+      value = makeFloatConstant(number, type);
+    } else if (type == TypeKind::Long) {
+      value = makeIntConstant(constantInteger(value), type);
+    } else if (type == TypeKind::Int) {
+      const long long number = constantInteger(value);
+      if (number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max()) {
+        fail("常量超出 int 范围；需要截断请显式转换");
+      }
+      value = makeIntConstant(number, type);
+    } else if (type == TypeKind::Short) {
+      const long long number = constantInteger(value);
+      if (number < std::numeric_limits<short>::min() || number > std::numeric_limits<short>::max()) {
+        fail("常量超出 short 范围；需要截断请显式转换");
+      }
+      value = makeIntConstant(number, type);
+    } else if (type == TypeKind::Byte) {
+      const long long number = constantInteger(value);
+      if (number < 0 || number > 255) fail("常量超出 byte 范围；需要截断请显式转换");
+      value = makeIntConstant(number, type);
+    } else if (type == TypeKind::Char) {
+      const long long number = constantInteger(value);
+      if (number < 0 || number > 0x10FFFF) fail("常量超出 Unicode 范围；需要截断请显式转换");
+      value = makeIntConstant(number, type);
+    } else if (type == TypeKind::Boolean) {
+      value = makeBoolConstant(constantTrue(value));
+    } else {
+      fail("常量类型不支持");
+    }
+    if (!typeName.empty()) value.typeName = typeName;
+    return value;
+  }
+
+  void loadConstants(const std::vector<ConstDecl>& decls) {
+    for (const ConstDecl& original : decls) {
+      ConstDecl decl = original;
+      resolveType(decl.type, decl.pointee, decl.typeName);
+      repair(decl.type, decl.pointee, decl.alt, decl.typeName, decl.altName);
+      if (!constScalar(decl.type)) fail("const 只支持标量或 string " + decl.name);
+      Expr value = constantValue(decl.expr);
+      if (!fits(value, decl.type, decl.typeName, decl.alt, decl.altName)) {
+        fail("常量 " + decl.name + " 的初值类型不匹配");
+      }
+      rejectForeignEnum(decl.typeName, decl.type, value.typeName, value.type);
+      value = adaptConstant(std::move(value), decl.type, decl.typeName);
+      moduleConsts_[decl.name] = std::move(value);
+    }
   }
 
   void resolveSignatures() {
@@ -146,7 +609,7 @@ class Checker {
         if (stmt.name.empty() || !labelText(stmt.name)) fail("标号只能由字母和数字组成 " + stmt.name);
         if (!labels_.insert({stmt.name, 1}).second) fail("标号重复 " + stmt.name);
       }
-      if (stmt.kind == Stmt::Kind::Block || stmt.kind == Stmt::Kind::While || stmt.kind == Stmt::Kind::For) collectLabels(stmt.body);
+      if (stmt.kind == Stmt::Kind::Block || stmt.kind == Stmt::Kind::While || stmt.kind == Stmt::Kind::For || stmt.kind == Stmt::Kind::ForIn) collectLabels(stmt.body);
       if (stmt.kind == Stmt::Kind::For) collectLabels(stmt.other);
       if (stmt.kind == Stmt::Kind::If) {
         collectLabels(stmt.body);
@@ -162,6 +625,7 @@ class Checker {
       if (mark == 2) return;
       if (mark == 1) fail("继承成环 " + decl.name);
       state[decl.name] = 1;
+      decl.headerWords = version_ >= 2 ? 1 : 0;
       std::vector<Field> parentFields;
       if (!decl.base.empty()) {
         ClassDecl* parent = nullptr;
@@ -171,13 +635,18 @@ class Checker {
         if (parent == nullptr) fail("没有基类 " + decl.base);
         self(self, *parent);
         parentFields = parent->fields;
+        for (const std::string& name : parent->interfaces) {
+          if (std::find(decl.interfaces.begin(), decl.interfaces.end(), name) == decl.interfaces.end()) {
+            decl.interfaces.push_back(name);
+          }
+        }
       }
       std::vector<Field> merged = parentFields;
       for (Field& field : decl.fields) {
         for (const Field& earlier : merged) {
           if (earlier.name == field.name) fail("字段重复 " + field.name);
         }
-        field.offset = static_cast<int>(merged.size()) * 64;
+        field.offset = (decl.headerWords + static_cast<int>(merged.size())) * 64;
         merged.push_back(field);
       }
       decl.fields = std::move(merged);
@@ -192,6 +661,101 @@ class Checker {
       if (decl.name == name) return &decl;
     }
     return nullptr;
+  }
+
+  const InterfaceDecl* findInterface(const std::string& name) const {
+    if (interfaces_ == nullptr) return nullptr;
+    for (const InterfaceDecl& decl : *interfaces_) {
+      if (decl.name == name) return &decl;
+    }
+    return nullptr;
+  }
+
+  bool classImplements(const std::string& className, const std::string& interfaceName) const {
+    const ClassDecl* decl = findClass(className);
+    while (decl != nullptr) {
+      for (const std::string& item : decl->interfaces) {
+        if (item == interfaceName) return true;
+      }
+      decl = decl->base.empty() ? nullptr : findClass(decl->base);
+    }
+    return false;
+  }
+
+  /* 类引用可以当基类引用用：沿基类链向上找。派生类的 this 传给基类方法的
+     隐式 this 参数就是这条转换；没有它，派生类里调用继承方法会解析失败。 */
+  bool classDerivesFrom(const std::string& child, const std::string& parent) const {
+    if (child.empty() || parent.empty() || child == parent) return false;
+    const ClassDecl* decl = findClass(child);
+    while (decl != nullptr) {
+      if (decl->base == parent) return true;
+      decl = decl->base.empty() ? nullptr : findClass(decl->base);
+    }
+    return false;
+  }
+
+  bool sameMethodSignature(const Function& impl, const Function& iface) const {
+    if (impl.params.size() != iface.params.size() + 1) return false;
+    if (impl.ret != iface.ret || impl.retName != iface.retName) return false;
+    for (std::size_t index = 0; index < iface.params.size(); index += 1) {
+      const Param& left = impl.params[index + 1];
+      const Param& right = iface.params[index];
+      if (left.type != right.type || left.typeName != right.typeName) return false;
+    }
+    return true;
+  }
+
+  bool findImplementation(const std::string& className, const Function& method) const {
+    const ClassDecl* decl = findClass(className);
+    while (decl != nullptr) {
+      for (const Function& function : *functions_) {
+        if (function.owner != decl->name) continue;
+        if (shortFunctionName(function.name) != shortFunctionName(method.name)) continue;
+        if (sameMethodSignature(function, method)) return true;
+      }
+      decl = decl->base.empty() ? nullptr : findClass(decl->base);
+    }
+    return false;
+  }
+
+  void layoutInterfaces(std::vector<InterfaceDecl>& interfaces) {
+    for (InterfaceDecl& decl : interfaces) {
+      std::set<std::string> names;
+      for (Function& method : decl.methods) {
+        const std::string name = shortFunctionName(method.name);
+        resolveType(method.ret, method.retPointee, method.retName);
+        repair(method.ret, method.retPointee, method.retAlt, method.retName, method.retAltName);
+        if (method.ret == TypeKind::Struct) fail("接口方法不能返回结构体 " + decl.name + "::" + name);
+        std::string key = name + "(";
+        for (Param& param : method.params) {
+          resolveType(param.type, param.pointee, param.typeName);
+          repair(param.type, param.pointee, param.alt, param.typeName, param.altName);
+          if (param.type == TypeKind::Void || param.type == TypeKind::Struct) fail("接口方法参数类型不对 " + decl.name + "::" + name);
+          if (key.back() != '(') key += ",";
+          key += typeText(param.type, param.typeName, param.alt, param.altName);
+        }
+        key += ")";
+        /* 返回类型不参与区分。参数相同就是同一个方法，不能靠返回类型再写一份。 */
+        if (!names.insert(key).second) fail("接口方法重复 " + decl.name + "::" + name);
+      }
+    }
+  }
+
+  void validateInterfaces(const std::vector<ClassDecl>& classes) {
+    for (const ClassDecl& decl : classes) {
+      if (decl.interfaces.empty()) continue;
+      if (decl.headerWords == 0) fail("实现接口的类需要 #VERSION 2");
+      std::set<std::string> seen;
+      for (const std::string& name : decl.interfaces) {
+        if (!seen.insert(name).second) fail("接口重复 " + decl.name + " implements " + name);
+        const InterfaceDecl* iface = findInterface(name);
+        if (iface == nullptr) fail("没有接口 " + name);
+        for (const Function& method : iface->methods) {
+          if (findImplementation(decl.name, method)) continue;
+          fail("类 " + decl.name + " 没有实现接口方法 " + name + "::" + shortFunctionName(method.name));
+        }
+      }
+    }
   }
 
   const StructDecl* findStruct(const std::string& name) const {
@@ -233,6 +797,12 @@ class Checker {
     if (kind != TypeKind::None && kind != TypeKind::Ptr) return;
     if (kind == TypeKind::Ptr && pointee != TypeKind::Void && pointee != TypeKind::None) return;
     const bool wroteStar = kind == TypeKind::Ptr && pointee == TypeKind::Void;
+    if (findInterface(typeName) != nullptr) {
+      if (wroteStar) fail("接口本身就是引用，不能再写 *");
+      kind = TypeKind::Interface;
+      pointee = TypeKind::None;
+      return;
+    }
     if (const EnumDecl* decl = findEnum(typeName)) {
       if (wroteStar) {
         pointee = decl->underlying;
@@ -279,6 +849,7 @@ class Checker {
     if (const EnumDecl* decl = findEnum(name)) return decl->underlying;
     if (findStruct(name) != nullptr) fail("结构体不能放进集合");
     if (findClass(name) != nullptr) return TypeKind::Ptr;
+    if (findInterface(name) != nullptr) return TypeKind::Interface;
     fail("集合里没有类型 " + name);
   }
 
@@ -350,6 +921,11 @@ class Checker {
     expr.alt = TypeKind::None;
     expr.altName.clear();
     expr.pointee = TypeKind::None;
+    if (findInterface(desc) != nullptr) {
+      expr.type = TypeKind::Interface;
+      expr.typeName = desc;
+      return;
+    }
     expr.type = kindOfName(desc);
     expr.typeName.clear();
     if (findEnum(desc) != nullptr || findClass(desc) != nullptr) expr.typeName = desc;
@@ -362,11 +938,58 @@ class Checker {
 
   bool fits(const Expr& expr, TypeKind kind, const std::string& typeName, TypeKind alt, const std::string& altName) const {
     (void)alt;
+    if (kind == TypeKind::Struct) return expr.type == TypeKind::Struct && expr.typeName == typeName;
+    if (kind == TypeKind::Ptr) {
+      if (expr.kind == Expr::Kind::LitNull) return true;
+      if (expr.type != TypeKind::Ptr) return false;
+      if (typeName.empty() || expr.typeName == typeName) return true;
+      /* 类引用（Ptr + 类名）可以传给基类参数；裸指针没有类名，不放宽。 */
+      return classDerivesFrom(expr.typeName, typeName);
+    }
     if (collection(kind)) {
       if (expr.kind == Expr::Kind::LitNull) return true;
       return sameCollection(expr, kind, typeName, altName);
     }
+    if (kind == TypeKind::Interface) {
+      if (expr.kind == Expr::Kind::LitNull) return true;
+      if (expr.type == TypeKind::Interface) return expr.typeName == typeName;
+      if (expr.type == TypeKind::Ptr) return classImplements(expr.typeName, typeName);
+      return false;
+    }
     return expr.type == kind || canWiden(expr.type, kind);
+  }
+
+  /* 完全匹配看类型名，不看返回类型。Foo* 和 Bar* 都是指针，不能算成同一个候选。 */
+  bool identicalArg(const Expr& expr, const Param& param) const {
+    return expr.type == param.type && expr.typeName == param.typeName && expr.pointee == param.pointee && expr.alt == param.alt && expr.altName == param.altName;
+  }
+
+  /* 完全匹配优先。没有完全匹配时，只有一个可加宽的候选才选用。多个可加宽由调用方报歧义。 */
+  int pickOverload(const Function& self, const std::string& name, const std::vector<Expr>& args, int& widenedCount) const {
+    int exact = -1;
+    int widened = -1;
+    widenedCount = 0;
+    for (const int index : self.visible) {
+      const Function& function = (*functions_)[static_cast<std::size_t>(index)];
+      if (function.name != name || function.params.size() != args.size()) continue;
+      bool same = true;
+      bool fit = true;
+      for (std::size_t param = 0; param < function.params.size(); param += 1) {
+        const Param& want = function.params[param];
+        if (!identicalArg(args[param], want)) same = false;
+        if (!fits(args[param], want.type, want.typeName, want.alt, want.altName)) fit = false;
+      }
+      if (same) {
+        if (exact >= 0) fail("调用 " + name + " 有多个完全匹配");
+        exact = index;
+      } else if (fit) {
+        widened = index;
+        widenedCount += 1;
+      }
+    }
+    if (exact >= 0) return exact;
+    if (widenedCount == 1) return widened;
+    return -1;
   }
 
   void layoutEnums(const std::vector<EnumDecl>& enums) {
@@ -450,6 +1073,122 @@ class Checker {
       pop();
       return;
     }
+    if (stmt.kind == Stmt::Kind::Const) {
+      resolveType(stmt.type, stmt.pointee, stmt.typeName);
+      repair(stmt.type, stmt.pointee, stmt.alt, stmt.typeName, stmt.altName);
+      if (!constScalar(stmt.type)) fail("Plan 1 首批 const 只支持标量 " + stmt.name);
+      Expr value = constantValue(stmt.expr);
+      if (!fits(value, stmt.type, stmt.typeName, stmt.alt, stmt.altName)) {
+        fail("常量 " + stmt.name + " 的初值类型不匹配");
+      }
+      rejectForeignEnum(stmt.typeName, stmt.type, value.typeName, value.type);
+      value = adaptConstant(std::move(value), stmt.type, stmt.typeName);
+      stmt.expr = value;
+      stmt.words = 0;
+      allocConst(stmt.name, stmt.type, stmt.pointee, stmt.alt, stmt.typeName, stmt.altName, std::move(value));
+      return;
+    }
+    if (stmt.kind == Stmt::Kind::ForIn) {
+      checkExpr(stmt.expr);
+      Expr element;
+      if (stmt.expr.type == TypeKind::Array || stmt.expr.type == TypeKind::List) {
+        if (stmt.expr.typeName.empty()) fail("for-in 的集合缺少元素类型");
+        fillDesc(element, stmt.expr.typeName);
+      } else {
+        const InterfaceDecl* iterable = findInterface("Iterable");
+        if (iterable == nullptr) fail("for-in 目前只支持 array/list 或实现了 Iterable 的类");
+        if (stmt.expr.type == TypeKind::Ptr) {
+          if (!classImplements(stmt.expr.typeName, "Iterable")) fail("for-in 的类没有实现 Iterable");
+        } else if (stmt.expr.type != TypeKind::Interface || stmt.expr.typeName != "Iterable") {
+          fail("for-in 目前只支持 array/list 或实现了 Iterable 的类");
+        }
+        const Function* hasNext = nullptr;
+        const Function* next = nullptr;
+        for (const Function& method : iterable->methods) {
+          const std::string name = shortFunctionName(method.name);
+          if (name == "hasNext") hasNext = &method;
+          if (name == "next") next = &method;
+        }
+        if (hasNext == nullptr || next == nullptr) fail("Iterable 接口需要 hasNext() 和 next()");
+        if (!hasNext->params.empty() || hasNext->ret != TypeKind::Boolean) fail("Iterable.hasNext 必须返回 boolean 且没有参数");
+        if (!next->params.empty()) fail("Iterable.next 不能有参数");
+        element.type = next->ret;
+        element.typeName = next->retName;
+        element.pointee = next->retPointee;
+        element.alt = next->retAlt;
+        element.altName = next->retAltName;
+      }
+      if (stmt.declares) {
+        resolveType(stmt.type, stmt.pointee, stmt.typeName);
+        repair(stmt.type, stmt.pointee, stmt.alt, stmt.typeName, stmt.altName);
+        if (stmt.type == TypeKind::Void || stmt.type == TypeKind::None) fail("for-in 变量类型不对");
+      } else {
+        Slot* slot = find(stmt.name);
+        if (slot == nullptr) fail("没有变量 " + stmt.name);
+        stmt.slot = slot->index;
+        stmt.type = slot->type;
+        stmt.pointee = slot->pointee;
+        stmt.alt = slot->alt;
+        stmt.typeName = slot->typeName;
+        stmt.altName = slot->altName;
+      }
+      const bool same = element.type == stmt.type
+        && ((stmt.type != TypeKind::Ptr && stmt.type != TypeKind::Interface) || element.typeName == stmt.typeName);
+      if (!same) fail("for-in 变量类型和集合元素类型不一致");
+      push();
+      if (stmt.declares) {
+        stmt.slot = alloc(stmt.name, stmt.type, stmt.pointee, 1);
+        if (Slot* saved = find(stmt.name)) {
+          saved->typeName = stmt.typeName;
+          saved->alt = stmt.alt;
+          saved->altName = stmt.altName;
+        }
+      }
+      loops_ += 1;
+      for (Stmt& inner : stmt.body) checkStmt(inner);
+      loops_ -= 1;
+      pop();
+      return;
+    }
+    if (stmt.kind == Stmt::Kind::Switch) {
+      checkExpr(stmt.expr);
+      const TypeKind selector = stmt.expr.type;
+      if (!integral(selector)) fail("switch 的选择子必须是整数或枚举");
+      push();
+      std::set<long long> seen;
+      bool hasDefault = false;
+      for (Stmt& arm : stmt.body) {
+        if (arm.kind == Stmt::Kind::Default) {
+          if (hasDefault) fail("switch 只能有一个 default");
+          hasDefault = true;
+          switchDepth_ += 1;
+          for (Stmt& inner : arm.body) checkStmt(inner);
+          switchDepth_ -= 1;
+          continue;
+        }
+        if (arm.kind != Stmt::Kind::Case) fail("switch 里只能写 case 或 default");
+        Expr value = constantValue(arm.expr);
+        if (value.kind != Expr::Kind::LitInt && value.kind != Expr::Kind::LitChar) {
+          fail("case 值必须是整数常量");
+        }
+        const long long number = value.integer;
+        if (selector == TypeKind::Byte && (number < 0 || number > 255)) fail("case 值超出 byte 范围");
+        if (selector == TypeKind::Short && (number < std::numeric_limits<short>::min() || number > std::numeric_limits<short>::max())) fail("case 值超出 short 范围");
+        if (selector == TypeKind::Int && (number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max())) fail("case 值超出 int 范围");
+        if (!seen.insert(number).second) fail("case 值重复");
+        arm.expr = makeIntConstant(number, selector);
+        arm.type = selector;
+        switchDepth_ += 1;
+        for (Stmt& inner : arm.body) checkStmt(inner);
+        switchDepth_ -= 1;
+      }
+      pop();
+      return;
+    }
+    if (stmt.kind == Stmt::Kind::Fallthrough) {
+      if (switchDepth_ == 0) fail("fallthrough 只能写在 switch 的 case 里");
+      return;
+    }
     if (stmt.kind == Stmt::Kind::Decl) {
       if (stmt.expr.kind != Expr::Kind::LitInt || stmt.expr.type != TypeKind::None) {
         if (stmt.expr.kind != Expr::Kind::LitInt || !stmt.expr.text.empty() || stmt.expr.kids.size() > 0 || stmt.name.empty()) {
@@ -509,8 +1248,12 @@ class Checker {
       pop();
       return;
     }
-    if (stmt.kind == Stmt::Kind::Break || stmt.kind == Stmt::Kind::Continue) {
-      if (loops_ < 1) fail("break 和 continue 只能写在循环里");
+    if (stmt.kind == Stmt::Kind::Break) {
+      if (loops_ < 1 && switchDepth_ < 1) fail("break 只能写在循环或 switch 里");
+      return;
+    }
+    if (stmt.kind == Stmt::Kind::Continue) {
+      if (loops_ < 1) fail("continue 只能写在循环里");
       return;
     }
     if (stmt.kind == Stmt::Kind::Goto) {
@@ -536,9 +1279,22 @@ class Checker {
   }
 
   void checkExpr(Expr& expr) {
+    if (expr.kind == Expr::Kind::StructLiteral) fail("结构体/类字面量只能用于 const");
+    if (expr.kind == Expr::Kind::StructConst || expr.kind == Expr::Kind::ClassConst) return;
     if (expr.kind == Expr::Kind::LitInt || expr.kind == Expr::Kind::LitFloat || expr.kind == Expr::Kind::LitBool || expr.kind == Expr::Kind::LitChar || expr.kind == Expr::Kind::LitString || expr.kind == Expr::Kind::LitNull || expr.kind == Expr::Kind::LitUndefined) return;
     if (expr.kind == Expr::Kind::Name) {
       Slot* slot = find(expr.text);
+      if (slot != nullptr && slot->isConst) {
+        expr = slot->constant;
+        return;
+      }
+      if (slot == nullptr) {
+        const auto found = moduleConsts_.find(expr.text);
+        if (found != moduleConsts_.end()) {
+          expr = found->second;
+          return;
+        }
+      }
       if (slot == nullptr && takeEnum(expr)) return;
       if (slot == nullptr) {
         const Function& self = (*functions_)[static_cast<std::size_t>(self_)];
@@ -612,13 +1368,14 @@ class Checker {
         bool same = true;
         bool fit = true;
         for (std::size_t param = 0; param < expr.kids.size(); param += 1) {
-          const TypeKind want = function.params[param + 1].type;
-          const TypeKind have = expr.kids[param].type;
-          if (have != want) same = false;
-          if (have != want && !canWiden(have, want)) fit = false;
+          const Param& want = function.params[param + 1];
+          if (!identicalArg(expr.kids[param], want)) same = false;
+          if (!fits(expr.kids[param], want.type, want.typeName, want.alt, want.altName)) fit = false;
         }
-        if (same) exact = static_cast<int>(index);
-        else if (fit) {
+        if (same) {
+          if (exact >= 0) fail("调用 " + ctorName + " 有多个完全匹配");
+          exact = static_cast<int>(index);
+        } else if (fit) {
           widened = static_cast<int>(index);
           widenedCount += 1;
         }
@@ -748,34 +1505,51 @@ class Checker {
         }
         fail("没有这种集合操作 " + method);
       }
+      if (expr.integer == -4 && !expr.kids.empty() && expr.kids[0].type == TypeKind::Interface) {
+        const InterfaceDecl* iface = findInterface(expr.kids[0].typeName);
+        if (iface == nullptr) fail("没有接口 " + expr.kids[0].typeName);
+        int methodIndex = -1;
+        int widenedIndex = -1;
+        int widenedCount = 0;
+        for (std::size_t index = 0; index < iface->methods.size(); index += 1) {
+          const Function& method = iface->methods[index];
+          if (shortFunctionName(method.name) != expr.text) continue;
+          if (method.params.size() + 1 != expr.kids.size()) continue;
+          bool same = true;
+          bool fit = true;
+          for (std::size_t param = 0; param < method.params.size(); param += 1) {
+            const Param& want = method.params[param];
+            if (!identicalArg(expr.kids[param + 1], want)) same = false;
+            if (!fits(expr.kids[param + 1], want.type, want.typeName, want.alt, want.altName)) fit = false;
+          }
+          if (same) {
+            if (methodIndex >= 0) fail("接口方法有多个匹配 " + expr.text);
+            methodIndex = static_cast<int>(index);
+          } else if (fit) {
+            widenedIndex = static_cast<int>(index);
+            widenedCount += 1;
+          }
+        }
+        if (methodIndex < 0 && widenedCount == 1) methodIndex = widenedIndex;
+        if (methodIndex < 0) fail(widenedCount > 1 ? "接口方法有多个匹配 " + expr.text : "接口 " + iface->name + " 没有匹配的方法 " + expr.text);
+        const Function& method = iface->methods[static_cast<std::size_t>(methodIndex)];
+        expr.kind = Expr::Kind::Dispatch;
+        expr.text = iface->name;
+        expr.integer = methodIndex;
+        expr.type = method.ret;
+        expr.typeName = method.retName;
+        expr.pointee = method.retPointee;
+        expr.alt = method.retAlt;
+        expr.altName = method.retAltName;
+        return;
+      }
       if (expr.integer == -4) {
         if (expr.kids.empty() || expr.kids[0].typeName.empty()) fail("成员调用的对象没有类");
         expr.text = expr.kids[0].typeName + "::" + expr.text;
       }
       const Function& self = (*functions_)[static_cast<std::size_t>(self_)];
-      int exact = -1;
-      int widened = -1;
       int widenedCount = 0;
-      for (const int index : self.visible) {
-        const Function& function = (*functions_)[static_cast<std::size_t>(index)];
-        if (function.name != expr.text || function.params.size() != expr.kids.size()) continue;
-        bool same = true;
-        bool fit = true;
-        for (std::size_t param = 0; param < function.params.size(); param += 1) {
-          const TypeKind want = function.params[param].type;
-          const TypeKind have = expr.kids[param].type;
-          if (have != want) same = false;
-          if (have != want && !canWiden(have, want)) fit = false;
-        }
-        if (same) {
-          if (exact >= 0) fail("调用 " + expr.text + " 有多个完全匹配");
-          exact = index;
-        } else if (fit) {
-          widened = index;
-          widenedCount += 1;
-        }
-      }
-      int chosen = exact >= 0 ? exact : widenedCount == 1 ? widened : -1;
+      int chosen = pickOverload(self, expr.text, expr.kids, widenedCount);
       if (chosen < 0 && !self.owner.empty() && expr.text.find("::") == std::string::npos && expr.integer != -4) {
         Expr object;
         object.kind = Expr::Kind::Name;
@@ -783,27 +1557,7 @@ class Checker {
         checkExpr(object);
         expr.kids.insert(expr.kids.begin(), std::move(object));
         expr.text = self.owner + "::" + expr.text;
-        exact = -1;
-        widened = -1;
-        widenedCount = 0;
-        for (const int index : self.visible) {
-          const Function& function = (*functions_)[static_cast<std::size_t>(index)];
-          if (function.name != expr.text || function.params.size() != expr.kids.size()) continue;
-          bool same = true;
-          bool fit = true;
-          for (std::size_t param = 0; param < function.params.size(); param += 1) {
-            const TypeKind want = function.params[param].type;
-            const TypeKind have = expr.kids[param].type;
-            if (have != want) same = false;
-            if (have != want && !canWiden(have, want)) fit = false;
-          }
-          if (same) exact = index;
-          else if (fit) {
-            widened = index;
-            widenedCount += 1;
-          }
-        }
-        chosen = exact >= 0 ? exact : widenedCount == 1 ? widened : -1;
+        chosen = pickOverload(self, expr.text, expr.kids, widenedCount);
       }
       if (chosen < 0) {
         const std::size_t scope = expr.text.rfind("::");
@@ -814,27 +1568,7 @@ class Checker {
           cursor = start == nullptr ? std::string() : start->base;
           while (chosen < 0 && !cursor.empty()) {
             expr.text = cursor + "::" + shortName;
-            exact = -1;
-            widened = -1;
-            widenedCount = 0;
-            for (const int index : self.visible) {
-              const Function& function = (*functions_)[static_cast<std::size_t>(index)];
-              if (function.name != expr.text || function.params.size() != expr.kids.size()) continue;
-              bool same = true;
-              bool fit = true;
-              for (std::size_t param = 0; param < function.params.size(); param += 1) {
-                const TypeKind want = function.params[param].type;
-                const TypeKind have = expr.kids[param].type;
-                if (have != want) same = false;
-                if (have != want && !canWiden(have, want)) fit = false;
-              }
-              if (same) exact = index;
-              else if (fit) {
-                widened = index;
-                widenedCount += 1;
-              }
-            }
-            chosen = exact >= 0 ? exact : widenedCount == 1 ? widened : -1;
+            chosen = pickOverload(self, expr.text, expr.kids, widenedCount);
             const ClassDecl* next = findClass(cursor);
             cursor = next == nullptr ? std::string() : next->base;
           }
@@ -869,8 +1603,30 @@ class Checker {
     if (expr.kind == Expr::Kind::Cast) {
       checkExpr(expr.kids[0]);
       resolveType(expr.type, expr.pointee, expr.typeName);
-      if (expr.type != TypeKind::Ptr) fail("这一版只把整数转成指针");
-      if (!integral(expr.kids[0].type) && expr.kids[0].type != TypeKind::Long) fail("指针转换的来源必须是整数");
+      const TypeKind source = expr.kids[0].type;
+      const TypeKind target = expr.type;
+      if (target == TypeKind::Ptr) {
+        if (source != TypeKind::Ptr && !integral(source)) fail("指针转换的来源必须是整数或指针");
+        return;
+      }
+      const bool sourceInteger = integral(source) || source == TypeKind::Char || source == TypeKind::Boolean;
+      const bool sourceFloat = source == TypeKind::Float || source == TypeKind::Double;
+      const bool sourcePtr = source == TypeKind::Ptr;
+      if (target == TypeKind::Float || target == TypeKind::Double) {
+        if (!sourceInteger && !sourceFloat) fail("转成浮点的来源必须是数值、char 或 boolean");
+      } else if (target == TypeKind::Boolean) {
+        if (!sourceInteger && !sourceFloat && !sourcePtr) fail("转成 boolean 的来源必须是数值、char、boolean 或指针");
+      } else if (target == TypeKind::Byte || target == TypeKind::Short || target == TypeKind::Int
+        || target == TypeKind::Long || target == TypeKind::Char) {
+        if (!sourceInteger && !sourceFloat && !sourcePtr) fail("转成整数或 char 的来源必须是数值、char、boolean 或指针");
+      } else {
+        fail(std::string("不支持转到 ") + nameOf(target));
+      }
+      expr.type = target;
+      expr.pointee = TypeKind::None;
+      expr.alt = TypeKind::None;
+      expr.typeName.clear();
+      expr.altName.clear();
       return;
     }
     if (expr.kind == Expr::Kind::Unary) {
@@ -1007,16 +1763,19 @@ class Checker {
 
 void check(Unit& unit) { Checker{}.run(unit); }
 
-std::string signatureOf(const Function& function) {
+std::string paramSignature(const Function& function) {
   std::string text = function.name + "(";
   for (std::size_t index = 0; index < function.params.size(); index += 1) {
     if (index > 0) text += ",";
     const Param& param = function.params[index];
     text += typeText(param.type, param.typeName, param.alt, param.altName);
   }
-  text += "):";
-  text += typeText(function.ret, function.retName, function.retAlt, function.retAltName);
+  text += ")";
   return text;
+}
+
+std::string signatureOf(const Function& function) {
+  return paramSignature(function) + ":" + typeText(function.ret, function.retName, function.retAlt, function.retAltName);
 }
 
 bool sameSignature(const Function& left, const Function& right) { return signatureOf(left) == signatureOf(right); }
@@ -1062,13 +1821,42 @@ bool findEnumName(const Unit& unit, const std::string& name) {
   return false;
 }
 
+bool findInterfaceName(const Unit& unit, const std::string& name) {
+  for (const InterfaceDecl& decl : unit.interfaces) {
+    if (decl.name == name) return true;
+  }
+  return false;
+}
+
 bool typeTaken(const Unit& unit, const std::string& name) {
-  return findClassName(unit, name) || findStructName(unit, name) || findEnumName(unit, name);
+  return findClassName(unit, name) || findStructName(unit, name) || findEnumName(unit, name) || findInterfaceName(unit, name);
 }
 
 Unit combine(std::vector<SourceFile> sources, const std::vector<HeaderFile>& headers) {
   Unit unit;
+  bool sawVersion1 = false;
+  bool sawVersion2 = false;
   for (const SourceFile& source : sources) {
+    if (source.version == 1) sawVersion1 = true;
+    else if (source.version == 2) sawVersion2 = true;
+    else fail("#VERSION 只接受语言版本 1 或 2");
+  }
+  if (sawVersion1 && sawVersion2) fail("同一个编译单元不能混用 #VERSION 1 和 #VERSION 2");
+  unit.version = sawVersion2 ? 2 : 1;
+  auto addConstant = [&](const ConstDecl& decl) {
+    for (const ConstDecl& earlier : unit.consts) {
+      if (earlier.name == decl.name) fail("常量重复 " + decl.name);
+    }
+    unit.consts.push_back(decl);
+  };
+  for (const HeaderFile& header : headers) {
+    for (const ConstDecl& decl : header.consts) addConstant(decl);
+  }
+  for (const SourceFile& source : sources) {
+    for (const InterfaceDecl& decl : source.interfaces) {
+      if (typeTaken(unit, decl.name)) fail("类型重复 " + decl.name);
+      unit.interfaces.push_back(decl);
+    }
     for (const ClassDecl& decl : source.classes) {
       if (typeTaken(unit, decl.name)) fail("类型重复 " + decl.name);
       unit.classes.push_back(decl);
@@ -1081,6 +1869,7 @@ Unit combine(std::vector<SourceFile> sources, const std::vector<HeaderFile>& hea
       if (typeTaken(unit, decl.name)) fail("类型重复 " + decl.name);
       unit.enums.push_back(decl);
     }
+    for (const ConstDecl& decl : source.consts) addConstant(decl);
   }
   for (const HeaderFile& header : headers) {
     for (const StructDecl& decl : header.structs) {
@@ -1096,14 +1885,10 @@ Unit combine(std::vector<SourceFile> sources, const std::vector<HeaderFile>& hea
     std::map<std::string, int> seen;
     for (Function& function : source.functions) {
       function.origin = source.path;
-      if (function.exported) {
-        for (const char unit : function.name) {
-          if (unit == ':') fail("导出的函数名不能带 ::");
-        }
-      }
       function.links = source.links;
       bindOpcode(function);
-      const std::string key = signatureOf(function);
+      /* 返回类型不参与重载。参数类型或个数不同才是另一份函数。 */
+      const std::string key = paramSignature(function);
       if (!seen.insert({key, 1}).second) fail("函数重复 " + function.name);
       if (!source.imports.empty()) {
         int matches = 0;

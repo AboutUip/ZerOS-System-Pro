@@ -1,4 +1,4 @@
-# 检测点清单（当前实现）
+# ZTrace 检测点清单（v1.1 当前实现）
 
 > 这是 `Implementation/` 层的写入点清单，不是标准。
 > 设计要求和覆盖方法见 `../Standard/Instrumentation.md`。
@@ -9,7 +9,7 @@
 | # | 点 | 位置 | 触发 | 记录 | 频率 |
 |---|----|------|------|------|------|
 | 1 | 启动阶段 | `BoardDispatch` / `__zerosBoot` | 固件打点 | 启动标记 | 一次启动 |
-| 2 | 核心停机 | `CpuSeat.forwardCoreStop` | 核心停下 | `CoreStop`；`PageCoreStop` 保存 `Snapshot` | 每次停机 |
+| 2 | 核心停机 | `CpuSeat.forwardCoreStop` | 核心停下 | `CoreStop`（`At`、`Mode`、`Snapshot`）；`PageCoreStop` 保存最近一条 | 每次停机 |
 | 3 | svc 进入 | `CpuRuntime.nativeSvc` / 解释器 svc | 客程序发系统调用 | `Svc` | 每次 svc |
 | 4 | svc 回复 | `CpuRuntime.acceptNativeReply` / 解释器回复 | 监督核回复 | `SvcReply` | 每次回复 |
 | 5 | 命令开始 | `CpuRuntime.beginSvcSpan`，服务 36 | 壳 `runParsed` | `Command` + `Svc` | 每条命令 |
@@ -25,7 +25,7 @@
 | 15 | 键盘事件 | `KeyboardRuntime.acceptHost` | 收满 6 个字 | `HostEvent keyboard` | 每次按键事件 |
 | 16 | 鼠标事件 | `PointerRuntime.acceptHost` | 收满 6 个字 | `HostEvent pointer-dev` | 每次指针事件 |
 | 17 | 页面交换 | `BoardDispatch.onExchange` | 页面发起扩展口交换 | `Exchange` | 每次交换 |
-| 18 | 失败记录 | `CpuRuntime.reportInstalledFault` | 客程序/核心失败 | `HostEvent fault` | 每次失败 |
+| 18 | 失败记录 | `CpuRuntime.reportInstalledFault` | 客程序/核心失败 | `HostEvent fault`；记录带 `At`，采集侧标 `Scope=boot/command` | 每次失败 |
 | 19 | 指令采样 | `NativeCore.noteNativeInsn`、`CoreDispatch.runBurst` | 原生核 1/1024 条；局部每拍 | `Insn` | 采样，非全量 |
 | 20 | 源行表 | `PageHost.loadTraceMaps` → `DebugMap.parseDebugText` | 调试开关打开且存在 `--debug-maps` 产物 | 页面全局 `__zerosDebugMaps` | 一次加载 |
 | 21 | 时钟长等待 | `HostClock.waitSpan` | 等待 ≥2ms | `HostEvent clock` | 低频 |
@@ -44,11 +44,12 @@
 | 34 | 调度睡眠/唤醒 | `sched.obr` `schedSleep`/`schedWake`、`start.obr` `reply` | 任务状态切换 | 诊断字 4416，`TaskSleep` / `TaskWake` | 每次状态切换 |
 | 35 | 键盘环写栅栏 | `Keys.obr` `keyOffer` | 写 key ring 次数之前 | 共享字 6592 写 0 | 每次按键消费 |
 | 36 | 客侧键盘消费 | `CpuSeat.noteKeyRingCount` | 6528 次数增加 | `KeyConsumed`（A0 是 ZKP1 关联号，A1 是键值） | 每次按键消费 |
-| 37 | 故障快照 | `DebugSurface` / `ztrace` | 采集启动和每条命令 | `capture.json` 的 `faults` | 每次采集 |
-| 38 | 停机现场 | `CpuRuntime.coreSnapshot` → `CpuSeat.forwardCoreStop` → `PageCoreStop` | 核心停下 | `CoreStop.Snapshot`：寄存器、PC、栈指针、栈窗口 | 每次停机 |
+| 37 | 故障快照 | `DebugSurface` / `ztrace` | 采集启动和每条命令 | `capture.json` 的 `faults`；boot/command 分开；含 `At`、`HostStack`、`GuestStack` | 每次采集 |
+| 38 | 停机现场 | `CpuRuntime.coreSnapshot` → `CpuSeat.forwardCoreStop` → `PageCoreStop` | 核心停下 | `CoreStop.Snapshot`：`Mode`、解释器/原生寄存器、PC、栈指针、栈窗口；失败时补 `StackBytes` | 每次停机 |
 | 39 | GPU 分阶段 | `GpuDispatch.onPresent` | 每次 present 前结算 | `GpuStage`（scene/accel 命令数）、`GpuPhase`（capture/compose/accel 微秒） | 每 present |
 | 40 | 服务内存归因 | `CpuRuntime.attributeSvcMemory` | svc 进入、回复 | `MemServiceCount/Total/Max` 槽位 | 每个服务边界 |
 | 41 | 54 条语料 | `ztrace-corpus.mjs` / `ztrace-corpus.json` | 按 `/bin` 全覆盖调用 | `corpus-summary.json`、`capture.json` | 每次语料运行 |
+| 42 | 进程退出 | `CpuRuntime` / `NativeCore` 服务 28 调用点 | 宿主直接读 `home+128`，不等 guest 诊断字 | `ProcessExit`（`A0` 是退出码，`Core` 是核号） | 每次服务 28 |
 
 ## 2. 报告检查点
 
@@ -65,7 +66,10 @@
 | `memory batches` | `MemCount/Total/Max`、每核槽、每服务槽 | 访存批次总量；`core N` 和 `by service` 分开看 |
 | `gpu stages` | `GpuStage` 聚合 | present 次数与 scene/accel 命令数 |
 | `gpu phases` | `GpuPhase` 聚合 | capture/compose/accel 的次数、总耗时、最大耗时 |
-| `latest stops` | `PageCoreStop.readCoreStop` | 最近一次停机的核、原因、PC、栈和寄存器 |
+| `task exits` | `TaskExit` 的 `A0`/`A1` | 子 pid、父 pid、退出码和时刻 |
+| `process exits` | `ProcessExit` 的 `A0`/`Core` | 服务 28 调用点直接读到的退出码；`ztrace` 优先用它 |
+| `latest stops` | `PageCoreStop.readCoreStop` | 最近一次停机的核、原因、`At`、`Mode`、PC、栈和寄存器；命令报告只留本次窗口 |
+| `faults` | `DebugLog.readFaults` | 本次窗口内的 fault、`At`、core/code/index/op/site、host 栈帧数和 Window |
 | `host events` | `HostEvent` 计数 | 页面/设备事件数 |
 | `host messages` | `HostMessage` 计数 | 板级生命周期消息数 |
 | `host rejects` | `HostReject` 按来源/原因计数 | 拒绝路径；含页面同步发送和 Worker 错误 |

@@ -1,0 +1,541 @@
+/* POSIX.1-2017 ctags（utilities/ctags.html）。形式是 ctags [-a] [-f file] file...
+   -a 追加，-f 指定输出文件，默认 tags。
+   只认 C：一行里出现标识符后面紧接 (，且不是 if、while、for、switch、return，就记一条。
+   不认 Fortran，也不做完整 C 语法。
+   输出行是 name、制表符、文件名、制表符、/^ 加该行正文加 $/。
+   按名字排序，-a 时先读旧文件再合并排序。
+   没有文件操作数写 ctags: missing operand，退出 1。
+   打开失败写 ctags: 路径: No such file or directory，退出 1。
+   诊断英文 ASCII，以 ctags: 开头。结束用 obr::proc::exit。
+   大于等于 1048576 的立即数会被 -pie 当成数据地址重定位，位数用 65536 乘出来。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeSpan(long home, long fd, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, fd, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "ctags: ");
+  writeSpan(home, 2L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun tagMax(): long {
+  return 256L;
+}
+
+deRfun tagStride(): long {
+  return 4096L;
+}
+
+deRfun bodyMax(): long {
+  return 131072L;
+}
+
+deRfun identStart(long bit): long {
+  if (bit >= 97L && bit <= 122L) {
+    return 1L;
+  }
+  if (bit >= 65L && bit <= 90L) {
+    return 1L;
+  }
+  if (bit == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun identChar(long bit): long {
+  if (identStart(bit) == 1L) {
+    return 1L;
+  }
+  if (bit >= 48L && bit <= 57L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun sameName(long at, long len, string word): long {
+  int raw = length(word);
+  long wlen = raw;
+  if (len != wlen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < len) {
+    if (u8(at + index * 8L) != (long)word[index]) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun badKw(long at, long len): long {
+  if (sameName(at, len, "if") == 1L) {
+    return 1L;
+  }
+  if (sameName(at, len, "while") == 1L) {
+    return 1L;
+  }
+  if (sameName(at, len, "for") == 1L) {
+    return 1L;
+  }
+  if (sameName(at, len, "switch") == 1L) {
+    return 1L;
+  }
+  if (sameName(at, len, "return") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun tagName(long row): long {
+  return row + 256L;
+}
+
+deRfun tagFile(long row): long {
+  return row + 768L;
+}
+
+deRfun tagLine(long row): long {
+  return row + 1280L;
+}
+
+deRfun cmpRow(long a, long b): long {
+  long alen = memory::load64(a);
+  long blen = memory::load64(b);
+  long max = alen;
+  if (blen > max) {
+    max = blen;
+  }
+  long index = 0L;
+  while (index < max) {
+    long ab = 0L;
+    long bb = 0L;
+    if (index < alen) {
+      ab = u8(tagName(a) + index * 8L);
+    }
+    if (index < blen) {
+      bb = u8(tagName(b) + index * 8L);
+    }
+    if (ab < bb) {
+      return -1L;
+    }
+    if (ab > bb) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun sortTags(long table, long count): void {
+  long pass = 1L;
+  while (pass == 1L) {
+    pass = 0L;
+    long index = 0L;
+    while (index + 1L < count) {
+      long a = table + index * tagStride();
+      long b = table + (index + 1L) * tagStride();
+      if (cmpRow(a, b) > 0L) {
+        long word = 0L;
+        while (word < tagStride() / 64L) {
+          long tmp = memory::load64(a + word * 64L);
+          memory::store64(memory::load64(b + word * 64L), a + word * 64L);
+          memory::store64(tmp, b + word * 64L);
+          word = word + 1L;
+        }
+        pass = 1L;
+      }
+      index = index + 1L;
+    }
+  }
+}
+
+deRfun addTag(long* tagCount, long table, long nameAt, long nameLen, long fileAt, long fileLen, long lineAt, long lineLen): long {
+  if (*tagCount >= tagMax()) {
+    return 0L;
+  }
+  if (nameLen < 1L || nameLen > 64L) {
+    return 0L;
+  }
+  if (fileLen < 1L || fileLen > 512L) {
+    return 0L;
+  }
+  if (lineLen < 0L || lineLen > 512L) {
+    return 0L;
+  }
+  long row = table + *tagCount * tagStride();
+  memory::store64(nameLen, row);
+  memory::store64(fileLen, row + 64L);
+  memory::store64(lineLen, row + 128L);
+  copySpan(nameAt, tagName(row), nameLen);
+  copySpan(fileAt, tagFile(row), fileLen);
+  copySpan(lineAt, tagLine(row), lineLen);
+  *tagCount = *tagCount + 1L;
+  return 1L;
+}
+
+deRfun scanLine(long lineAt, long lineLen, long fileAt, long fileLen, long table, long* tagCount): void {
+  long index = 0L;
+  while (index < lineLen) {
+    long bit = u8(lineAt + index * 8L);
+    if (identStart(bit) == 0L) {
+      index = index + 1L;
+      continue;
+    }
+    long start = index;
+    index = index + 1L;
+    while (index < lineLen && identChar(u8(lineAt + index * 8L)) == 1L) {
+      index = index + 1L;
+    }
+    long nlen = index - start;
+    if (index >= lineLen || u8(lineAt + index * 8L) != 40L) {
+      continue;
+    }
+    if (badKw(lineAt + start * 8L, nlen) == 1L) {
+      continue;
+    }
+    addTag(tagCount, table, lineAt + start * 8L, nlen, fileAt, fileLen, lineAt, lineLen);
+    break;
+  }
+}
+
+deRfun readAll(long home, long fd, long buf, long limit, long* got): long {
+  long total = 0L;
+  long offset = 0L;
+  while (total < limit) {
+    long room = limit - total;
+    if (room > 4096L) {
+      room = 4096L;
+    }
+    if (obr::proc::read(home, fd, offset, room) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      break;
+    }
+    if (n > room) {
+      n = room;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, n);
+    total = total + n;
+    offset = offset + n;
+  }
+  *got = total;
+  return 0L;
+}
+
+deRfun scanFile(long home, long fileAt, long fileLen, long table, long* tagCount): long {
+  if (fileLen < 1L || fileLen > 8192L) {
+    miss(home, fileAt, fileLen);
+    return 1L;
+  }
+  plant(home, fileAt, fileLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    miss(home, fileAt, fileLen);
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long data = obr::proc::alloc(home, 65536L * 16L);
+  if (data == 0L) {
+    return 1L;
+  }
+  long got = 0L;
+  if (readAll(home, fd, data, bodyMax(), &got) != 0L) {
+    obr::proc::free(home, data, 65536L * 16L);
+    return 1L;
+  }
+  obr::proc::close(home, fd);
+  long pos = 0L;
+  while (pos < got) {
+    long lineStart = pos;
+    while (pos < got && u8(data + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    long lineLen = pos - lineStart;
+    if (lineLen > 0L) {
+      scanLine(data + lineStart * 8L, lineLen, fileAt, fileLen, table, tagCount);
+    }
+    if (pos < got) {
+      pos = pos + 1L;
+    }
+  }
+  obr::proc::free(home, data, 65536L * 16L);
+  return 0L;
+}
+
+deRfun loadOld(long home, long pathAt, long pathLen, long table, long* tagCount): long {
+  if (pathLen < 1L || pathLen > 8192L) {
+    return 0L;
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::stat(home) != 0L) {
+    return 0L;
+  }
+  if (obr::proc::open(home, 0L) != 0L) {
+    return 0L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long data = obr::proc::alloc(home, 524288L);
+  if (data == 0L) {
+    return 0L;
+  }
+  long got = 0L;
+  if (readAll(home, fd, data, bodyMax(), &got) != 0L) {
+    obr::proc::free(home, data, 524288L);
+    return 0L;
+  }
+  obr::proc::close(home, fd);
+  long pos = 0L;
+  while (pos < got) {
+    long lineStart = pos;
+    while (pos < got && u8(data + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    long lineLen = pos - lineStart;
+    if (lineLen > 0L) {
+      long tab1 = -1L;
+      long tab2 = -1L;
+      long scan = 0L;
+      while (scan < lineLen) {
+        if (u8(data + (lineStart + scan) * 8L) == 9L) {
+          if (tab1 < 0L) {
+            tab1 = scan;
+          } else if (tab2 < 0L) {
+            tab2 = scan;
+            break;
+          }
+        }
+        scan = scan + 1L;
+      }
+      if (tab1 > 0L && tab2 > tab1) {
+        long nameLen = tab1;
+        long fileLen = tab2 - tab1 - 1L;
+        long patStart = lineStart + tab2 + 1L;
+        long patLen = lineLen - tab2 - 1L;
+        long lineAt = patStart;
+        long lineLen2 = patLen;
+        if (patLen > 3L && u8(data + patStart * 8L) == 47L && u8(data + (patStart + 1L) * 8L) == 94L) {
+          lineAt = patStart + 2L;
+          lineLen2 = patLen - 3L;
+          if (lineLen2 > 1L && u8(data + (patStart + patLen - 2L) * 8L) == 36L && u8(data + (patStart + patLen - 1L) * 8L) == 47L) {
+            lineLen2 = patLen - 4L;
+          }
+        }
+        addTag(tagCount, table, data + lineStart * 8L, nameLen, data + (lineStart + tab1 + 1L) * 8L, fileLen, data + lineAt * 8L, lineLen2);
+      }
+    }
+    if (pos < got) {
+      pos = pos + 1L;
+    }
+  }
+  obr::proc::free(home, data, 524288L);
+  return 0L;
+}
+
+deRfun putByte(long home, long fd, long* off, long* filled, long bit): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    obr::proc::write(home, fd, *off, count);
+    *off = *off + count;
+    count = 0L;
+  }
+  memory::storeOctet(bit, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun putSpan(long home, long fd, long* off, long* filled, long addr, long count): void {
+  long index = 0L;
+  while (index < count) {
+    putByte(home, fd, off, filled, u8(addr + index * 8L));
+    index = index + 1L;
+  }
+}
+
+deRfun flushOut(long home, long fd, long* off, long filled): void {
+  if (filled > 0L) {
+    obr::proc::write(home, fd, *off, filled);
+    *off = *off + filled;
+  }
+}
+
+deRfun writeTags(long home, long fd, long table, long count): long {
+  long off = 0L;
+  long filled = 0L;
+  long index = 0L;
+  while (index < count) {
+    long row = table + index * tagStride();
+    long nlen = memory::load64(row);
+    long flen = memory::load64(row + 64L);
+    long llen = memory::load64(row + 128L);
+    putSpan(home, fd, &off, &filled, tagName(row), nlen);
+    putByte(home, fd, &off, &filled, 9L);
+    putSpan(home, fd, &off, &filled, tagFile(row), flen);
+    putByte(home, fd, &off, &filled, 9L);
+    putByte(home, fd, &off, &filled, 47L);
+    putByte(home, fd, &off, &filled, 94L);
+    putSpan(home, fd, &off, &filled, tagLine(row), llen);
+    putByte(home, fd, &off, &filled, 36L);
+    putByte(home, fd, &off, &filled, 47L);
+    putByte(home, fd, &off, &filled, 10L);
+    index = index + 1L;
+  }
+  flushOut(home, fd, &off, filled);
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long append = 0L;
+  long outAt = 0L;
+  long outLen = 0L;
+  long hasOut = 0L;
+  long index = 1L;
+  long count = argc(home);
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len < 1L || u8(at) != 45L) {
+      ended = 1L;
+    } else if (len == 2L && u8(at + 8L) == 45L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 1L) {
+      ended = 1L;
+    } else {
+      long cursor = 1L;
+      while (cursor < len) {
+        long bit = u8(at + cursor * 8L);
+        if (bit == 97L) {
+          append = 1L;
+          cursor = cursor + 1L;
+        } else if (bit == 102L) {
+          if (cursor + 1L < len) {
+            outAt = at + (cursor + 1L) * 8L;
+            outLen = len - (cursor + 1L);
+            cursor = len;
+          } else {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "ctags: missing operand\n");
+              return finish(home, 1L);
+            }
+            outAt = argPtr(home, index);
+            outLen = argLen(home, index);
+            cursor = len;
+          }
+          hasOut = 1L;
+        } else {
+          ended = 1L;
+          cursor = len;
+        }
+      }
+      index = index + 1L;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "ctags: missing operand\n");
+    return finish(home, 1L);
+  }
+  long hold = obr::proc::alloc(home, 65536L * 16L);
+  long defAt = obr::proc::alloc(home, 8L * 8L);
+  if (hold == 0L || defAt == 0L) {
+    return finish(home, 1L);
+  }
+  long table = hold;
+  long tagCount = 0L;
+  long defLen = 4L;
+  memory::storeOctet(116L, defAt);
+  memory::storeOctet(97L, defAt + 8L);
+  memory::storeOctet(103L, defAt + 16L);
+  memory::storeOctet(115L, defAt + 24L);
+  long useAt = defAt;
+  long useLen = defLen;
+  if (hasOut == 1L) {
+    useAt = outAt;
+    useLen = outLen;
+  }
+  if (append == 1L) {
+    loadOld(home, useAt, useLen, table, &tagCount);
+  }
+  long failed = 0L;
+  while (index < count) {
+    long fileAt = argPtr(home, index);
+    long fileLen = argLen(home, index);
+    if (scanFile(home, fileAt, fileLen, table, &tagCount) != 0L) {
+      failed = 1L;
+    }
+    index = index + 1L;
+  }
+  sortTags(table, tagCount);
+  plant(home, useAt, useLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    miss(home, useAt, useLen);
+    obr::proc::free(home, hold, 65536L * 16L);
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  writeTags(home, fd, table, tagCount);
+  obr::proc::free(home, hold, 65536L * 16L);
+  if (failed == 1L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

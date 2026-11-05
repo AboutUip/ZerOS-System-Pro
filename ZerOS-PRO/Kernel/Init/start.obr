@@ -1,5 +1,5 @@
 /* 入口。引导、系统调用分发和回复。回复只给进程层和文件层。 */
-#LINK /task.obr, /vfs.obr, /pipe.obr, /dev.obr, /console.obr, /sig.obr
+#LINK /task.obr, /vfs.obr, /pipe.obr, /dev.obr, /console.obr, /frame.obr, /sig.obr
 import proc;
 import mm;
 import sched;
@@ -12,7 +12,7 @@ import board;
 import memory;
 import obr.os;
 
-/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd  30 clock  31 utime  32 ident  33 task */
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd  30 clock  31 utime  32 ident  33 task  34 list  35 prompt  36 command  37 frame  38 frameWait  39 present  40 feed */
 
 deRfun pack(): long {
   return 4294967296L;
@@ -22,18 +22,33 @@ deRfun word(long address): long {
   return memory::load64(address);
 }
 
-deRfun reply(long caller, long value): void {
-  /* 先标成正在跑，再调度。调度会把监督核停住，客程序马上接着取指。
-     状态若留在调度之后，客程序看见的仍是上一次的停住。 */
+deRfun markRunning(long caller): void {
   long index = taskFind(caller);
   if (index >= 0L) {
     /* 4 = 调度唤醒；只有确实在睡的任务才是一条唤醒边。 */
     if (taskAt(index).state == TaskState::Sleeping) {
       diagTask(4L, taskAt(index).pid, caller, 0L);
     }
+    taskAccount(index, TaskState::Running);
     taskAt(index).state = TaskState::Running;
   }
+}
+
+deRfun reply(long caller, long value): void {
+  /* 先标成正在跑，再调度。调度会把监督核停住，客程序马上接着取指。
+     状态若留在调度之后，客程序看见的仍是上一次的停住。
+     格子已经脏了就先把显示程序叫醒。环里还没画的字节不在这里叫：
+     这次回复还没返回，再调度显示会套进同一次调用。主循环看见字节再叫。 */
+  markRunning(caller);
   obr::os::pass(caller, value);
+  if (rowsDirty() == 1L) {
+    long woke = frameRelease(1L);
+    if (woke >= 0L && woke != caller) {
+      markRunning(woke);
+      obr::os::pass(woke, frameEpoch());
+      obr::os::schedule(woke);
+    }
+  }
   obr::os::schedule(caller);
 }
 
@@ -199,7 +214,12 @@ deRfun dispatch(long caller, long service): void {
     return;
   }
   if (service == 17L) {
-    reply(caller, execSpawn(caller, home));
+    /* 同核共享时 execSpawn 返回 -1：父任务的上下文已经抄进槽，
+       回复由恢复父任务的那一次调度带回去。此处不能再 pass，否则会落到子任务身上。 */
+    long spawned = execSpawn(caller, home);
+    if (spawned >= 0L) {
+      reply(caller, spawned);
+    }
     return;
   }
   if (service == 18L) {
@@ -250,13 +270,38 @@ deRfun dispatch(long caller, long service): void {
     reply(caller, doTask(caller, home));
     return;
   }
-  /* 壳在提示符画完后调用；只回 0。宿主在 svc 边界记 prompt 事件。 */
+  /* 客程序画完一行后调用；只回 0。宿主在 svc 边界记下这一次，不改变任务状态。 */
   if (service == 35L) {
     reply(caller, 0L);
     return;
   }
-  /* 壳开始解析一行命令；只回 0。宿主在 svc 边界开命令 span。 */
+  /* 客程序开始处理一行输入；只回 0。宿主在 svc 边界开一段 span。 */
   if (service == 36L) {
+    reply(caller, 0L);
+    return;
+  }
+  /* 显示器已经走完的拍。任何客程序都可以读。还没发布时是 0。 */
+  if (service == 37L) {
+    reply(caller, frameEpoch());
+    return;
+  }
+  /* 睡到下一拍。只有一份能等。返回 -2 时先不要应答。 */
+  if (service == 38L) {
+    long waited = frameWait(caller);
+    if (waited != -2L) {
+      reply(caller, waited);
+    }
+    return;
+  }
+  /* 呈现已经画进格子的那一帧。没有脏行时什么都不交出去。 */
+  if (service == 39L) {
+    conPresent();
+    reply(caller, 0L);
+    return;
+  }
+  /* 把控制台环里的字节收成格子。不呈现。任何客程序都能调用，换一块玻璃可以不调用。 */
+  if (service == 40L) {
+    conFeed();
     reply(caller, 0L);
     return;
   }
@@ -270,7 +315,7 @@ deRfun dispatch(long caller, long service): void {
   reply(caller, 0L);
 }
 
-/* 1 号进入等待，说明它已经把 shell 留下并开始等。6208 写成 1，驱动这才放行。
+/* 1 号进入等待，说明它已经派生子任务并开始等。6208 写成 1，驱动这才放行。
    这一字和 4096、5952 一样走共享内存。固件不靠它换画面。 */
 deRfun noteInstall(): void {
   long* flag = (long*)6208;
@@ -309,7 +354,7 @@ deRfun termBring(): void {
     bootMark(37L);
     return;
   }
-  if (termShell() == 0L) {
+  if (termChild() == 0L) {
     return;
   }
   bootMark(35L);
@@ -323,10 +368,21 @@ deRfun termBring(): void {
   termSet(1L);
 }
 
+/* 面板快于 30 Hz 时，抢占仍大约 33 毫秒一次。时钟往回走就再等一轮。 */
+deRfun schedDue(): long {
+  static long last = 0L;
+  long now = query(0L, 3L, 0L);
+  if (now - last < 33L) {
+    return 0L;
+  }
+  last = now;
+  return 1L;
+}
+
 deRfun main(): int {
   /* 地址缓存紧挨任务上界。窗口里原来的数不是 0，不先清掉就会把垃圾当成文件系统末址。 */
-  memory::store64(0L, kArena(2L) + 13312L);
-  memory::store64(0L, kArena(2L) + 13376L);
+  memory::store64(0L, kSupervisor() + 13312L);
+  memory::store64(0L, kSupervisor() + 13376L);
   boot();
   while (1) {
     /* 没有前台在跑或就绪时收回 16MB。有前台时写成 256MB，调度前还会再写一次。 */
@@ -338,20 +394,63 @@ deRfun main(): int {
     long found = obr::os::take(&value);
     if (found == 1L) {
       dispatch(value / pack(), value % pack());
-    } else if (schedIdle() == 0L) {
+      /* 回复之后客程序往往已经把下一次调用放进保持位。
+         先取走再做扫表和节拍，写出和呈现不必等这一圈的尾部。 */
+      long burst = 0L;
+      while (burst < 4L) {
+        long next = 0L;
+        long more = obr::os::take(&next);
+        if (more != 1L) {
+          break;
+        }
+        dispatch(next / pack(), next % pack());
+        burst = burst + 1L;
+      }
+    } else if (schedWork() == 1L) {
       schedSweep();
     }
-    /* 537931776 为 1 时刚放行了驱动，先回去取调用。没调用时按 30 Hz 空转，核心保持执行中。
-       有任务在跑时也要这一拍。去掉之后监督核占住宿主线程，固件停在 Starting，字体的网络读也完不成。
-       宿主按降频前的频率结算已经跑完的指令。降频后的取数和其它 30 Hz 核心合睡一次，不逐条各睡一拍。 */
+    /* 537931776 为 1 时刚放行了驱动，先回去取调用。没人等节拍时按 30 Hz 空转，核心保持执行中。
+       有显示程序在等时，按面板刷新率醒来，只叫醒那一份。抢占仍大约 33 毫秒一次。
+       去掉空转之后监督核占住宿主线程，固件停在 Starting，字体的网络读也完不成。
+       宿主按降频前的频率结算已经跑完的指令。降频后的取数和其它慢核心合睡一次，不逐条各睡一拍。 */
     bootPump();
     noteInstall();
     termBring();
     if (memory::load64(537931776L) == 0L) {
-      if (found == 0L && schedIdle() == 0L) {
-        schedTick();
+      long pace = 30L;
+      if (frameWaiting() == 1L) {
+        long panel = query(4L, 2L, 0L);
+        if (panel >= 1L && panel <= 1000L) {
+          pace = panel;
+        }
       }
-      obr::os::hertz(obr::os::core(), 30L);
+      long due = 0L;
+      if (pace == 30L || schedDue() == 1L) {
+        due = 1L;
+      }
+      if (found == 0L && due == 1L) {
+        if (schedIdle() == 0L) {
+          schedTick();
+        }
+        /* 没有就绪任务时，停机的核心最多晚一个时间片才收掉。按键那一圈不再扫表。 */
+        if (schedWork() == 0L) {
+          schedSweep();
+        }
+      }
+      obr::os::hertz(obr::os::core(), pace);
+      /* 没有脏行、环里也没有字节时，不要为了节拍去呈现。空呈现仍要占住监督核好几毫秒，按键会排在它后面。
+         字节还在环里时不能 frameHold：那会把这一拍记成已经看过，显示程序就再也醒不过来。 */
+      if (rowsDirty() == 1L || conPending() == 1L) {
+        long woke = frameWake();
+        if (woke < 0L && conPending() == 1L) {
+          woke = frameRelease(1L);
+        }
+        if (woke >= 0L) {
+          reply(woke, frameEpoch());
+        }
+      } else {
+        frameHold();
+      }
       obr::os::core();
       obr::os::hertz(obr::os::core(), 100000000L);
     }

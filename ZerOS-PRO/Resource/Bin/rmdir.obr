@@ -15,18 +15,15 @@
    不删除 /。中间某一层失败就停，已经删掉的不恢复。
    失败写到描述符 2，形式是 rmdir: 路径: 原因，然后继续后面的操作数。
    有失败最终退出 1，全部成功退出 0。结束用服务 28，main 仍返回 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

@@ -1,28 +1,191 @@
-/* 计数字符串的实现。和内核路径、系统调用窗口用的是同一种排法。 */
+/* 计数字符串和 UTF-8。string 是标量，写到字节区时编成 UTF-8。
+   不读文件，也不认路径分隔符。 */
 import memory;
+import obr.text;
 
-deRfun obr::text::put(long address, string text): long {
-  int raw = length(text);
-  if (raw < 0 || raw > 8192) {
-    return 7L;
+/* loadOctet 是补码。大于 127 的字节要加 256，才是 0 到 255。 */
+deRfun takeUnit(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
   }
-  long count = raw;
-  memory::store64(count, address);
+  return value;
+}
+
+
+deRfun putUnit(long addr, long at, long value): void {
+  memory::storeOctet(value, addr + at * 8L);
+}
+
+
+/* 一个标量的 UTF-8 长度。代理项和超出 U+10FFFF 的值返回 -1。 */
+deRfun scalarBytes(long scalar): long {
+  if (scalar < 0L || scalar > 1114111L) {
+    return -1L;
+  }
+  if (scalar >= 55296L && scalar <= 57343L) {
+    return -1L;
+  }
+  if (scalar < 128L) {
+    return 1L;
+  }
+  if (scalar < 2048L) {
+    return 2L;
+  }
+  if (scalar < 65536L) {
+    return 3L;
+  }
+  return 4L;
+}
+
+
+deRfun obr::text::span(string text): long {
+  long count = length(text);
   long index = 0L;
+  long total = 0L;
   while (index < count) {
-    memory::storeOctet(text[index], address + 64L + index * 8L);
+    long need = scalarBytes(text[index]);
+    if (need < 1L) {
+      return -1L;
+    }
+    total = total + need;
     index = index + 1L;
   }
+  return total;
+}
+
+
+deRfun obr::text::encode(long addr, long room, string text): long {
+  long count = length(text);
+  long index = 0L;
+  long at = 0L;
+  while (index < count) {
+    long scalar = text[index];
+    long need = scalarBytes(scalar);
+    if (need < 1L || at + need > room) {
+      return -1L;
+    }
+    if (need == 1L) {
+      putUnit(addr, at, scalar);
+    }
+    if (need == 2L) {
+      putUnit(addr, at, scalar / 64L + 192L);
+      putUnit(addr, at + 1L, scalar % 64L + 128L);
+    }
+    if (need == 3L) {
+      putUnit(addr, at, scalar / 4096L + 224L);
+      putUnit(addr, at + 1L, (scalar / 64L) % 64L + 128L);
+      putUnit(addr, at + 2L, scalar % 64L + 128L);
+    }
+    if (need == 4L) {
+      putUnit(addr, at, scalar / 262144L + 240L);
+      putUnit(addr, at + 1L, (scalar / 4096L) % 64L + 128L);
+      putUnit(addr, at + 2L, (scalar / 64L) % 64L + 128L);
+      putUnit(addr, at + 3L, scalar % 64L + 128L);
+    }
+    at = at + need;
+    index = index + 1L;
+  }
+  return at;
+}
+
+
+deRfun obr::text::next(long addr, long count, long index, long* scalar): long {
+  if (index < 0L || index >= count) {
+    return -1L;
+  }
+  long lead = takeUnit(addr + index * 8L);
+  if (lead < 128L) {
+    *scalar = lead;
+    return index + 1L;
+  }
+  long need = 0L;
+  long value = 0L;
+  long minimum = 0L;
+  if (lead >= 192L && lead < 224L) {
+    need = 1L;
+    value = lead - 192L;
+    minimum = 128L;
+  }
+  if (lead >= 224L && lead < 240L) {
+    need = 2L;
+    value = lead - 224L;
+    minimum = 2048L;
+  }
+  if (lead >= 240L && lead < 248L) {
+    need = 3L;
+    value = lead - 240L;
+    minimum = 65536L;
+  }
+  if (need == 0L || index + need >= count) {
+    return -1L;
+  }
+  long extra = 0L;
+  while (extra < need) {
+    long byte = takeUnit(addr + (index + 1L + extra) * 8L);
+    if (byte < 128L || byte >= 192L) {
+      return -1L;
+    }
+    value = value * 64L + (byte - 128L);
+    extra = extra + 1L;
+  }
+  if (value < minimum || value > 1114111L) {
+    return -1L;
+  }
+  if (value >= 55296L && value <= 57343L) {
+    return -1L;
+  }
+  *scalar = value;
+  return index + 1L + need;
+}
+
+
+deRfun obr::text::decode(long addr, long count, long* ok): string {
+  if (count < 0L) {
+    *ok = 0L;
+    return "";
+  }
+  array[long] scalars = new array[long](count);
+  long filled = 0L;
+  long index = 0L;
+  while (index < count) {
+    long scalar = 0L;
+    long next = obr::text::next(addr, count, index, &scalar);
+    if (next < 0L) {
+      *ok = 0L;
+      return "";
+    }
+    scalars[filled] = scalar;
+    filled = filled + 1L;
+    index = next;
+  }
+  *ok = 1L;
+  return obr::text::from(scalars, filled);
+}
+
+
+deRfun obr::text::put(long address, string text): long {
+  long count = obr::text::span(text);
+  if (count < 0L || count > 8192L) {
+    return 7L;
+  }
+  if (obr::text::encode(address + 64L, count, text) != count) {
+    return 7L;
+  }
+  memory::store64(count, address);
   return 0L;
 }
+
 
 deRfun obr::text::len(long address): long {
   return memory::load64(address);
 }
 
+
 deRfun obr::text::at(long address, long index): long {
   return memory::loadOctet(address + 64L + index * 8L);
 }
+
 
 deRfun obr::text::same(string left, string right): long {
   int count = length(left);

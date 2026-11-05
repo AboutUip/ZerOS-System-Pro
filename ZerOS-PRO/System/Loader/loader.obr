@@ -1,0 +1,336 @@
+/* 操作系统的库搜索。派生在进入 main 之前调用，因为这时子核心还停着。
+   路径规则只写在这里：/lib/模块名.zdll。模块名是 import 的名字。同一个模块只装一次。
+   导入项是符号名、模块名、指令编号。符号名留给 attach，这里只按模块名去拉。
+   loadlib 仍只按调用者给出的整条路径装入，不解释后缀。
+   不画画面，不决定缓冲。 */
+#LINK /exec.obr, /spawn.obr
+import exec;
+import memory;
+import obr.os;
+
+deRfun imgOctet(long base, long index): long {
+  long value = memory::loadOctet(base + index * 8L);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun img16(long base, long index): long {
+  return imgOctet(base, index) + imgOctet(base, index + 1L) * 256L;
+}
+
+deRfun img32(long base, long index): long {
+  return img16(base, index) + img16(base, index + 2L) * 65536L;
+}
+
+/* 版本 2 映像一条指令的八位组数。版本 3 的文件头里已有指令区字节数，不再走这里。
+   对不上编码就返回 -1，调用方停止装入。 */
+deRfun zapWidth(long op): long {
+  if (op >= 56L && op <= 59L) {
+    return 7L;
+  }
+  if (op == 60L) {
+    return 12L;
+  }
+  if (op == 61L || op == 62L) {
+    return 13L;
+  }
+  if (op == 63L || op == 64L) {
+    return 5L;
+  }
+  if (op >= 1L && op <= 3L) {
+    return 2L;
+  }
+  if (op >= 4L && op <= 9L) {
+    return 3L;
+  }
+  if (op >= 10L && op <= 19L) {
+    return 4L;
+  }
+  if (op >= 20L && op <= 48L) {
+    return 5L;
+  }
+  if (op >= 49L && op <= 51L) {
+    return 6L;
+  }
+  if (op == 52L) {
+    return 7L;
+  }
+  if (op == 53L || op == 54L) {
+    return 8L;
+  }
+  if (op == 55L) {
+    return 9L;
+  }
+  if (op == 65L || op == 84L || op == 71L) {
+    return 5L;
+  }
+  if (op == 66L || op == 67L || op == 73L || op == 81L || op == 75L) {
+    return 3L;
+  }
+  if (op == 68L || op == 69L || op == 70L || op == 83L || op == 78L || op == 79L) {
+    return 4L;
+  }
+  if (op == 72L || op == 74L) {
+    return 2L;
+  }
+  if (op == 82L || op == 80L || op == 76L) {
+    return 6L;
+  }
+  if (op == 77L || op == 85L) {
+    return 8L;
+  }
+  return -1L;
+}
+
+/* 5A 50 42 31 才是带链接目录的程序映像。原生映像和 ELF 返回 0。 */
+deRfun zapMagic(long base): long {
+  if (imgOctet(base, 0L) != 90L) {
+    return 0L;
+  }
+  if (imgOctet(base, 1L) != 80L) {
+    return 0L;
+  }
+  if (imgOctet(base, 2L) != 66L) {
+    return 0L;
+  }
+  if (imgOctet(base, 3L) != 49L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun stashAt(long home): long {
+  return home + 131072L;
+}
+
+/* 跳过一个名字和它后面的 32 位编号。名字本身留在映像里。 */
+deRfun skipName(long base, long at, long end, long* next): long {
+  if (at < 0L || at >= end) {
+    return 1L;
+  }
+  long len = imgOctet(base, at);
+  if (len < 1L || len > 64L) {
+    return 1L;
+  }
+  long after = at + 1L + len + 4L;
+  if (after > end) {
+    return 1L;
+  }
+  *next = after;
+  return 0L;
+}
+
+/* 把模块名抄进调用者的字节区。每项 576 位：长度一个字，名字最多 64 个八位组。 */
+deRfun keepName(long home, long slot, long base, long at, long len): void {
+  long item = stashAt(home) + 64L + slot * 576L;
+  memory::store64(len, item);
+  long index = 0L;
+  while (index < len) {
+    memory::storeOctet(imgOctet(base, at + 1L + index), item + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putOctet(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+/* /lib/ 加上模块名，再加 .zdll。长度字在 path，八位组从 +64 起。 */
+deRfun plantLib(long path, long name, long len): void {
+  memory::store64(len + 10L, path);
+  putOctet(path + 64L, 0L, 47L);
+  putOctet(path + 64L, 1L, 108L);
+  putOctet(path + 64L, 2L, 105L);
+  putOctet(path + 64L, 3L, 98L);
+  putOctet(path + 64L, 4L, 47L);
+  long index = 0L;
+  while (index < len) {
+    long value = memory::loadOctet(name + index * 8L);
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    putOctet(path + 64L, 5L + index, value);
+    index = index + 1L;
+  }
+  putOctet(path + 64L, 5L + len, 46L);
+  putOctet(path + 64L, 6L + len, 122L);
+  putOctet(path + 64L, 7L + len, 100L);
+  putOctet(path + 64L, 8L + len, 108L);
+  putOctet(path + 64L, 9L + len, 108L);
+}
+
+deRfun bindOne(long core, long home, long slot): long {
+  long item = stashAt(home) + 64L + slot * 576L;
+  long len = memory::load64(item);
+  /* 名字表在字节区开头。路径放在它后面，不盖住派生用的请求路径。 */
+  long path = stashAt(home) + 262144L;
+  plantLib(path, item + 64L, len);
+  long size = 0L;
+  long status = pullAt(path, &size);
+  if (status != 0L) {
+    return status;
+  }
+  obr::os::attach(core, imageAt(), size);
+  return 0L;
+}
+
+/* 跳过符号名，读出模块名的起点。后面是模块名和 32 位指令编号。 */
+deRfun takeImport(long base, long at, long end, long* next, long* modAt): long {
+  if (at < 0L || at >= end) {
+    return 1L;
+  }
+  long symLen = imgOctet(base, at);
+  if (symLen < 1L || symLen > 64L) {
+    return 1L;
+  }
+  long modPos = at + 1L + symLen;
+  if (modPos >= end) {
+    return 1L;
+  }
+  long modLen = imgOctet(base, modPos);
+  if (modLen < 1L || modLen > 64L) {
+    return 1L;
+  }
+  long after = modPos + 1L + modLen + 4L;
+  if (after > end) {
+    return 1L;
+  }
+  *modAt = modPos;
+  *next = after;
+  return 0L;
+}
+
+deRfun normAt(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+/* 两个槽里的模块名是否相同。相同就不再拉第二次。 */
+deRfun sameSlot(long home, long left, long right): long {
+  long a = stashAt(home) + 64L + left * 576L;
+  long b = stashAt(home) + 64L + right * 576L;
+  long len = memory::load64(a);
+  if (len != memory::load64(b)) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < len) {
+    if (normAt(a + 64L + index * 8L) != normAt(b + 64L + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 编译器的 static 旗标和值在窗口里的固定一段。起点对齐
+   Compiler/ObrCompiler/src/codegen/Layout.hpp 的 kStatic（71319552），
+   减去 0 号窗口起点 1048576，得到 70270976。
+   主程序和现在的动态库都从这一段的起点排，一段 65536 位。
+   再多清一段，是给下一块 static 留的空位。
+   新程序若看见上一个程序留下的旗标，就会跳过初始化，把残留的 1 当成指针。 */
+deRfun wipeStatics(long origin): void {
+  long at = origin + 70270976L;
+  long end = at + 131072L;
+  while (at < end) {
+    memory::store64(0L, at);
+    at = at + 64L;
+  }
+}
+
+/* 读已经装上的那份映像。没有导入就返回 0。模块名先抄走，再按名去拉库，避免拉取盖住映像。 */
+deRfun bindLibs(long core, long home, long bytes): long {
+  long base = imageAt();
+  if (bytes < 12L || zapMagic(base) == 0L) {
+    return 0L;
+  }
+  long version = img16(base, 4L);
+  if (img16(base, 6L) != 1L || (version != 2L && version != 3L)) {
+    return 0L;
+  }
+  long cursor = 12L;
+  long index = 0L;
+  if (version == 3L) {
+    /* 指令区字节数在文件头里。目录紧跟指令，不必再逐条量宽度。 */
+    if (bytes < 16L) {
+      return 1L;
+    }
+    long span = img32(base, 12L);
+    if (span < 0L || span > bytes - 16L) {
+      return 1L;
+    }
+    cursor = 16L + span;
+  } else {
+    long count = img32(base, 8L);
+    while (index < count) {
+      if (cursor + 2L > bytes) {
+        return 1L;
+      }
+      long width = zapWidth(img16(base, cursor));
+      if (width < 1L || cursor + width > bytes) {
+        return 1L;
+      }
+      cursor = cursor + width;
+      index = index + 1L;
+    }
+  }
+  index = 0L;
+  if (cursor + 16L > bytes) {
+    return 1L;
+  }
+  if (img16(base, cursor) != 1L || img16(base, cursor + 2L) != 0L) {
+    return 1L;
+  }
+  long exports = img32(base, cursor + 4L);
+  long imports = img32(base, cursor + 8L);
+  if (exports > 256L || imports > 256L) {
+    return 1L;
+  }
+  cursor = cursor + 16L;
+  index = 0L;
+  while (index < exports) {
+    long next = 0L;
+    if (skipName(base, cursor, bytes, &next) != 0L) {
+      return 1L;
+    }
+    cursor = next;
+    index = index + 1L;
+  }
+  memory::store64(imports, stashAt(home));
+  index = 0L;
+  while (index < imports) {
+    long next = 0L;
+    long modAt = 0L;
+    if (takeImport(base, cursor, bytes, &next, &modAt) != 0L) {
+      return 1L;
+    }
+    keepName(home, index, base, modAt, imgOctet(base, modAt));
+    cursor = next;
+    index = index + 1L;
+  }
+  index = 0L;
+  while (index < imports) {
+    long prev = 0L;
+    long seen = 0L;
+    /* 已经见过同名模块就停。33 个相同导入不必两两比到完。 */
+    while (prev < index && seen == 0L) {
+      if (sameSlot(home, prev, index) == 1L) {
+        seen = 1L;
+      }
+      prev = prev + 1L;
+    }
+    if (seen == 0L) {
+      long status = bindOne(core, home, index);
+      if (status != 0L) {
+        return status;
+      }
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}

@@ -55,6 +55,25 @@ inline Utf8Step takeUtf8(const std::string& text, std::size_t index) {
   return step;
 }
 
+/** 把一个 Unicode 标量按 UTF-8 追加到 text。 */
+inline void appendUtf8(std::string& text, std::uint32_t scalar) {
+  if (scalar <= 0x7F) {
+    text.push_back(static_cast<char>(scalar));
+  } else if (scalar <= 0x7FF) {
+    text.push_back(static_cast<char>(0xC0 | (scalar >> 6)));
+    text.push_back(static_cast<char>(0x80 | (scalar & 0x3F)));
+  } else if (scalar <= 0xFFFF) {
+    text.push_back(static_cast<char>(0xE0 | (scalar >> 12)));
+    text.push_back(static_cast<char>(0x80 | ((scalar >> 6) & 0x3F)));
+    text.push_back(static_cast<char>(0x80 | (scalar & 0x3F)));
+  } else {
+    text.push_back(static_cast<char>(0xF0 | (scalar >> 18)));
+    text.push_back(static_cast<char>(0x80 | ((scalar >> 12) & 0x3F)));
+    text.push_back(static_cast<char>(0x80 | ((scalar >> 6) & 0x3F)));
+    text.push_back(static_cast<char>(0x80 | (scalar & 0x3F)));
+  }
+}
+
 /** 整段解开。有一处不合法就失败，out 清空。 */
 inline bool utf8Scalars(const std::string& text, std::vector<std::uint32_t>& out) {
   out.clear();

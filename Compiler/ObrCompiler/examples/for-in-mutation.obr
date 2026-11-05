@@ -1,0 +1,79 @@
+/* Plan 1 M4：for-in 迭代失效/越界规则。结果 0。 */
+#VERSION 2
+
+interface Iterable {
+  deRfun hasNext(): boolean;
+  deRfun next(): long;
+}
+
+class Range implements Iterable {
+  long current;
+  long limit;
+  deRfun Range(long limit): void {
+    current = 0L;
+    this.limit = limit;
+  }
+  deRfun hasNext(): boolean {
+    return current < limit;
+  }
+  deRfun next(): long {
+    long value = current;
+    current = current + 1L;
+    return value;
+  }
+}
+
+deRfun main(): int {
+  array[long] values = new array[long](3);
+  values[0] = 1L;
+  values[1] = 2L;
+  values[2] = 3L;
+  var[long] count = 0L;
+  var[long] sum = 0L;
+  for (var[long] value in values) {
+    count = count + 1L;
+    sum = sum + value;
+    if (value == 1L) values[2] = 30L;
+  }
+  if (count != 3L) return 1;
+  if (sum != 33L) return 2;
+
+  list[long] growing = new list[long]();
+  growing.push(1L);
+  growing.push(2L);
+  count = 0L;
+  sum = 0L;
+  for (var[long] value in growing) {
+    count = count + 1L;
+    sum = sum + value;
+    if (value == 1L) growing.push(3L);
+  }
+  if (count != 2L) return 3;
+  if (sum != 3L) return 4;
+
+  list[long] shrinking = new list[long]();
+  shrinking.push(10L);
+  shrinking.push(20L);
+  shrinking.push(30L);
+  count = 0L;
+  sum = 0L;
+  for (var[long] value in shrinking) {
+    count = count + 1L;
+    sum = sum + value;
+    shrinking.pop();
+  }
+  if (count != 2L) return 5;
+  if (sum != 30L) return 6;
+
+  Range range = new Range(5L);
+  count = 0L;
+  sum = 0L;
+  for (var[long] value in range) {
+    count = count + 1L;
+    if (value == 1L) range.next();
+    sum = sum + value;
+  }
+  if (count != 4L) return 7;
+  if (sum != 8L) return 8;
+  return 0;
+}

@@ -43,7 +43,9 @@
    打开失败写 od: 路径: No such file or directory，继续后面的文件，最终退出 1。
    读失败写 od: read error，立刻退出 1。写失败写 od: write error，立刻退出 1。
    状态经 obr::proc::exit 交出，main 仍返回 0。诊断是英文 ASCII。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -98,13 +100,8 @@ struct In {
   long failed;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

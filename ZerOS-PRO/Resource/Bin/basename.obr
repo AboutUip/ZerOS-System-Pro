@@ -3,18 +3,15 @@
    以 - 开头的词是路径字符串，-- 同样是一条路径，不当成结束选项。
    零个操作数写 basename: missing operand，多于两个写 basename: too many arguments。
    诊断在描述符 2。结果在描述符 1，末尾一个换行。成功退出 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是无符号八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 /* 八位组先搬进读写字节区再 write。一次最多 4096。相邻八位组隔 8 位。 */

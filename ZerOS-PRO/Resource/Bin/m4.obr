@@ -1,0 +1,681 @@
+/* POSIX.1-2017 m4（utilities/m4.html）。
+   文件操作数，无文件读描述符 0。-D/-U 写 m4: option not supported 并退出 1。
+   实现 define、dnl、ifdef、ifelse、incr、decr、eval、len、index、substr、changequote。
+   默认引用符 96 和 39。未列出的宏名按字面输出。打不开文件写 m4: path: No such file or directory。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+struct M4 {
+  long home;
+  map[string, string] defs;
+  long exitCode;
+  long qleft;
+  long qright;
+}
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  int cursor = 0;
+  while (index < count) {
+    memory::storeOctet(text[cursor], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+    cursor = cursor + 1;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun writeOut(long home, long addr, long count): void {
+  long off = 0L;
+  while (off < count) {
+    long chunk = count - off;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + off * 8L, obr::proc::bytes(home), chunk);
+    obr::proc::write(home, 1L, 0L, chunk);
+    off = off + chunk;
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun plantPath(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun miss(long home, long addr, long count): void {
+  writeErr(home, "m4: ");
+  writeOut(home, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun isNameChar(long c): long {
+  if (c >= 97L && c <= 122L) {
+    return 1L;
+  }
+  if (c >= 65L && c <= 90L) {
+    return 1L;
+  }
+  if (c >= 48L && c <= 57L) {
+    return 1L;
+  }
+  if (c == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun sameBytes(long a, long alen, string s): long {
+  int raw = length(s);
+  long expect = raw;
+  if (alen != expect) {
+    return 0L;
+  }
+  int cursor = 0;
+  while (cursor < raw) {
+    long bit = u8(a + cursor * 8L);
+    char ch = s[cursor];
+    long sc = ch;
+    if (bit != sc) {
+      return 0L;
+    }
+    cursor = cursor + 1;
+  }
+  return 1L;
+}
+
+deRfun bytesToStr(long addr, long count): string {
+  string out = "";
+  long k = 0L;
+  while (k < count) {
+    long b = u8(addr + k * 8L);
+    out = out + (char)b;
+    k = k + 1L;
+  }
+  return out;
+}
+
+deRfun strToLong(string s): long {
+  int raw = length(s);
+  long val = 0L;
+  long sign = 1L;
+  long k = 0L;
+  int cursor = 0;
+  if (k < (long)raw) {
+    char ch0 = s[cursor];
+    long c0 = ch0;
+    if (c0 == 45L) {
+      sign = -1L;
+      k = k + 1L;
+      cursor = cursor + 1;
+    }
+  }
+  while (k < (long)raw) {
+    char ch = s[cursor];
+    long c = ch;
+    if (c < 48L || c > 57L) {
+      break;
+    }
+    val = val * 10L + (c - 48L);
+    k = k + 1L;
+    cursor = cursor + 1;
+  }
+  return val * sign;
+}
+
+deRfun longToStr(long val): string {
+  if (val == 0L) {
+    return "0";
+  }
+  string digits = "0123456789";
+  string out = "";
+  long tmp = val;
+  if (tmp < 0L) {
+    out = "-";
+    tmp = 0L - tmp;
+  }
+  string core = "";
+  while (tmp > 0L) {
+    long d = tmp % 10L;
+    char dig = digits[(int)d];
+    core = dig + core;
+    tmp = tmp / 10L;
+  }
+  return out + core;
+}
+
+deRfun getDef(M4* m4, string name): string {
+  if (m4.defs.has(name)) {
+    return m4.defs.get(name);
+  }
+  return "";
+}
+
+deRfun putOut(long out, long* olen, long c): void {
+  memory::storeOctet(c, out + *olen * 8L);
+  *olen = *olen + 1L;
+}
+
+deRfun emitStr(long out, long* olen, string s): void {
+  int raw = length(s);
+  long k = 0L;
+  int cursor = 0;
+  while (k < (long)raw) {
+    char ch = s[cursor];
+    long c = ch;
+    putOut(out, olen, c);
+    k = k + 1L;
+    cursor = cursor + 1;
+  }
+}
+
+deRfun skipWs(M4* m4, long text, long len, long* pos): void {
+  while (*pos < len) {
+    long c = u8(text + *pos * 8L);
+    if (c != 32L && c != 9L && c != 10L && c != 13L) {
+      return;
+    }
+    *pos = *pos + 1L;
+  }
+}
+
+deRfun readArg(M4* m4, long text, long len, long* pos, long buf, long* blen): long {
+  skipWs(m4, text, len, pos);
+  if (*pos >= len) {
+    return 0L;
+  }
+  long c = u8(text + *pos * 8L);
+  if (c == m4.qleft) {
+    *pos = *pos + 1L;
+    long start = *pos;
+    while (*pos < len && u8(text + *pos * 8L) != m4.qright) {
+      *pos = *pos + 1L;
+    }
+    if (*pos >= len) {
+      return 0L;
+    }
+    *blen = *pos - start;
+    copySpan(text + start * 8L, buf, *blen);
+    *pos = *pos + 1L;
+    return 1L;
+  }
+  long start = *pos;
+  while (*pos < len && isNameChar(u8(text + *pos * 8L)) == 1L) {
+    *pos = *pos + 1L;
+  }
+  *blen = *pos - start;
+  if (*blen < 1L) {
+    return 0L;
+  }
+  copySpan(text + start * 8L, buf, *blen);
+  return 1L;
+}
+
+deRfun expandQuotedSimple(M4* m4, long text, long len, long out, long* olen): void {
+  long pos = 0L;
+  while (pos < len) {
+    long c = u8(text + pos * 8L);
+    if (c == m4.qleft) {
+      pos = pos + 1L;
+      long start = pos;
+      while (pos < len && u8(text + pos * 8L) != m4.qright) {
+        pos = pos + 1L;
+      }
+      if (pos < len) {
+        expandQuotedSimple(m4, text + start * 8L, pos - start, out, olen);
+        pos = pos + 1L;
+      }
+      continue;
+    }
+    putOut(out, olen, c);
+    pos = pos + 1L;
+  }
+}
+
+deRfun callBuiltin(M4* m4, long nameStart, long nlen, long text, long len, long* pos, long out, long* olen): long {
+  long arg1 = obr::proc::alloc(m4.home, 512L * 8L);
+  long a1len = 0L;
+  long arg2 = obr::proc::alloc(m4.home, 8192L * 8L);
+  long a2len = 0L;
+  long save = *pos;
+  skipWs(m4, text, len, pos);
+  if (*pos >= len || u8(text + *pos * 8L) != 40L) {
+    *pos = save;
+    return 0L;
+  }
+  *pos = *pos + 1L;
+  if (sameBytes(text + nameStart * 8L, nlen, "define") == 1L) {
+    if (readArg(m4, text, len, pos, arg1, &a1len) != 1L) {
+      return 0L;
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 44L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    if (readArg(m4, text, len, pos, arg2, &a2len) != 1L) {
+      return 0L;
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 41L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    long bout = obr::proc::alloc(m4.home, 8192L * 8L);
+    long blout = 0L;
+    expandQuotedSimple(m4, arg2, a2len, bout, &blout);
+    string key = bytesToStr(arg1, a1len);
+    string val = bytesToStr(bout, blout);
+    m4.defs.put(key, val);
+    return 1L;
+  }
+  if (sameBytes(text + nameStart * 8L, nlen, "changequote") == 1L) {
+    if (readArg(m4, text, len, pos, arg1, &a1len) != 1L) {
+      return 0L;
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos < len && u8(text + *pos * 8L) == 44L) {
+      *pos = *pos + 1L;
+      readArg(m4, text, len, pos, arg2, &a2len);
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 41L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    if (a1len == 1L) {
+      m4.qleft = u8(arg1);
+    }
+    if (a2len == 1L) {
+      m4.qright = u8(arg2);
+    }
+    return 1L;
+  }
+  if (sameBytes(text + nameStart * 8L, nlen, "ifdef") == 1L) {
+    if (readArg(m4, text, len, pos, arg1, &a1len) != 1L) {
+      return 0L;
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 44L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    if (readArg(m4, text, len, pos, arg2, &a2len) != 1L) {
+      return 0L;
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 41L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    string key = bytesToStr(arg1, a1len);
+    if (length(getDef(m4, key)) > 0) {
+      expandBuf(m4, arg2, a2len, out, olen);
+    }
+    return 1L;
+  }
+  if (sameBytes(text + nameStart * 8L, nlen, "ifelse") == 1L) {
+    long parts = obr::proc::alloc(m4.home, 4L * 512L * 8L);
+    long plens = obr::proc::alloc(m4.home, 4L * 64L);
+    long pi = 0L;
+    while (pi < 4L) {
+      long pb = parts + pi * 512L * 8L;
+      long pl = 0L;
+      if (readArg(m4, text, len, pos, pb, &pl) != 1L) {
+        break;
+      }
+      memory::store64(pl, plens + pi * 64L);
+      pi = pi + 1L;
+      skipWs(m4, text, len, pos);
+      if (pi < 4L && *pos < len && u8(text + *pos * 8L) == 44L) {
+        *pos = *pos + 1L;
+      }
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 41L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    if (pi >= 3L) {
+      long l0 = memory::load64(plens);
+      long l1 = memory::load64(plens + 64L);
+      long l2 = memory::load64(plens + 128L);
+      string s0 = bytesToStr(parts, l0);
+      string s1 = bytesToStr(parts + 512L * 8L, l1);
+      if (s0 == s1) {
+        expandBuf(m4, parts + 1024L * 8L, l2, out, olen);
+      } else if (pi >= 4L) {
+        long l3 = memory::load64(plens + 192L);
+        expandBuf(m4, parts + 1536L * 8L, l3, out, olen);
+      }
+    }
+    return 1L;
+  }
+  if (sameBytes(text + nameStart * 8L, nlen, "index") == 1L) {
+    if (readArg(m4, text, len, pos, arg1, &a1len) != 1L) {
+      return 0L;
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 44L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    if (readArg(m4, text, len, pos, arg2, &a2len) != 1L) {
+      return 0L;
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 41L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    long b1 = obr::proc::alloc(m4.home, 8192L * 8L);
+    long bl1 = 0L;
+    long b2 = obr::proc::alloc(m4.home, 512L * 8L);
+    long bl2 = 0L;
+    expandBuf(m4, arg1, a1len, b1, &bl1);
+    expandBuf(m4, arg2, a2len, b2, &bl2);
+    string hay = bytesToStr(b1, bl1);
+    string nd = bytesToStr(b2, bl2);
+    int hraw = length(hay);
+    int nraw = length(nd);
+    long found = -1L;
+    long i = 0L;
+    while (i + (long)nraw <= (long)hraw) {
+      long ok = 1L;
+      long k = 0L;
+      while (k < (long)nraw) {
+        int hi = (int)i;
+        int hk = (int)k;
+        if (hay[hi + hk] != nd[hk]) {
+          ok = 0L;
+        }
+        k = k + 1L;
+      }
+      if (ok == 1L) {
+        found = i;
+        break;
+      }
+      i = i + 1L;
+    }
+    emitStr(out, olen, longToStr(found));
+    return 1L;
+  }
+  if (sameBytes(text + nameStart * 8L, nlen, "substr") == 1L) {
+    long parts = obr::proc::alloc(m4.home, 3L * 512L * 8L);
+    long plens = obr::proc::alloc(m4.home, 3L * 64L);
+    long pi = 0L;
+    while (pi < 3L) {
+      long pb = parts + pi * 512L * 8L;
+      long pl = 0L;
+      if (readArg(m4, text, len, pos, pb, &pl) != 1L) {
+        break;
+      }
+      memory::store64(pl, plens + pi * 64L);
+      pi = pi + 1L;
+      skipWs(m4, text, len, pos);
+      if (pi < 3L && *pos < len && u8(text + *pos * 8L) == 44L) {
+        *pos = *pos + 1L;
+      }
+    }
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 41L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    if (pi >= 2L) {
+      long l0 = memory::load64(plens);
+      long l1 = memory::load64(plens + 64L);
+      long bout = obr::proc::alloc(m4.home, 8192L * 8L);
+      long bl = 0L;
+      expandBuf(m4, parts, l0, bout, &bl);
+      string s = bytesToStr(bout, bl);
+      long startAt = strToLong(bytesToStr(parts + 512L * 8L, l1));
+      long take = (long)length(s) - startAt;
+      if (pi >= 3L) {
+        long l2 = memory::load64(plens + 128L);
+        take = strToLong(bytesToStr(parts + 1024L * 8L, l2));
+      }
+      if (startAt < 0L) {
+        startAt = 0L;
+      }
+      int sraw = length(s);
+      long k = 0L;
+      while (k < take && startAt + k < (long)sraw) {
+        char ch = s[startAt + k];
+        long c = ch;
+        putOut(out, olen, c);
+        k = k + 1L;
+      }
+    }
+    return 1L;
+  }
+  if (readArg(m4, text, len, pos, arg1, &a1len) == 1L) {
+    skipWs(m4, text, len, pos);
+    if (*pos >= len || u8(text + *pos * 8L) != 41L) {
+      return 0L;
+    }
+    *pos = *pos + 1L;
+    long bout = obr::proc::alloc(m4.home, 8192L * 8L);
+    long blout = 0L;
+    expandBuf(m4, arg1, a1len, bout, &blout);
+    string arg = bytesToStr(bout, blout);
+    if (sameBytes(text + nameStart * 8L, nlen, "len") == 1L) {
+      emitStr(out, olen, longToStr(length(arg)));
+      return 1L;
+    }
+    long num = strToLong(arg);
+    if (sameBytes(text + nameStart * 8L, nlen, "incr") == 1L) {
+      num = num + 1L;
+    }
+    if (sameBytes(text + nameStart * 8L, nlen, "decr") == 1L) {
+      num = num - 1L;
+    }
+    emitStr(out, olen, longToStr(num));
+    return 1L;
+  }
+  *pos = save;
+  return 0L;
+}
+
+deRfun expandBuf(M4* m4, long text, long len, long out, long* olen): void {
+  long pos = 0L;
+  while (pos < len) {
+    long c = u8(text + pos * 8L);
+    if (c == m4.qleft) {
+      pos = pos + 1L;
+      long start = pos;
+      while (pos < len && u8(text + pos * 8L) != m4.qright) {
+        pos = pos + 1L;
+      }
+      if (pos < len) {
+        expandBuf(m4, text + start * 8L, pos - start, out, olen);
+        pos = pos + 1L;
+      }
+      continue;
+    }
+    if (isNameChar(c) == 1L) {
+      long start = pos;
+      while (pos < len && isNameChar(u8(text + pos * 8L)) == 1L) {
+        pos = pos + 1L;
+      }
+      long nlen = pos - start;
+      if (sameBytes(text + start * 8L, nlen, "dnl") == 1L) {
+        return;
+      }
+      long savePos = pos;
+      if (callBuiltin(m4, start, nlen, text, len, &pos, out, olen) == 1L) {
+        continue;
+      }
+      pos = savePos;
+      string name = bytesToStr(text + start * 8L, nlen);
+      string val = getDef(m4, name);
+      if (length(val) > 0) {
+        int vraw = length(val);
+        long vb = obr::proc::alloc(m4.home, vraw * 8L);
+        long vk = 0L;
+        int vc = 0;
+        while (vk < (long)vraw) {
+          char ch = val[vc];
+          memory::storeOctet(ch, vb + vk * 8L);
+          vk = vk + 1L;
+          vc = vc + 1;
+        }
+        expandBuf(m4, vb, vraw, out, olen);
+      } else {
+        long k = 0L;
+        while (k < nlen) {
+          putOut(out, olen, u8(text + (start + k) * 8L));
+          k = k + 1L;
+        }
+      }
+      continue;
+    }
+    putOut(out, olen, c);
+    pos = pos + 1L;
+  }
+}
+
+deRfun expandQuoted(M4* m4, long text, long len, long out, long* olen): void {
+  long pos = 0L;
+  while (pos < len) {
+    long c = u8(text + pos * 8L);
+    if (c == m4.qleft) {
+      pos = pos + 1L;
+      long start = pos;
+      while (pos < len && u8(text + pos * 8L) != m4.qright) {
+        pos = pos + 1L;
+      }
+      if (pos < len) {
+        expandBuf(m4, text + start * 8L, pos - start, out, olen);
+        pos = pos + 1L;
+      }
+      continue;
+    }
+    putOut(out, olen, c);
+    pos = pos + 1L;
+  }
+}
+
+deRfun expandBytes(M4* m4, long text, long len, long out, long* olen): void {
+  expandBuf(m4, text, len, out, olen);
+}
+
+deRfun runStream(M4* m4, long fd): void {
+  long buf = obr::proc::alloc(m4.home, 8192L * 8L);
+  long filled = 0L;
+  long fileOff = 0L;
+  long more = 1L;
+  while (more == 1L) {
+    if (obr::proc::read(m4.home, fd, fileOff, 4096L) != 0L) {
+      more = 0L;
+      break;
+    }
+    long n = obr::proc::slot(m4.home, 320L);
+    if (n < 1L) {
+      more = 0L;
+      break;
+    }
+    fileOff = fileOff + n;
+    long index = 0L;
+    while (index < n) {
+      long bit = u8(obr::proc::bytes(m4.home) + index * 8L);
+      if (bit == 10L) {
+        long out = obr::proc::alloc(m4.home, 8192L * 8L);
+        long olen = 0L;
+        expandBytes(m4, buf, filled, out, &olen);
+        if (olen > 0L) {
+          writeOut(m4.home, out, olen);
+        }
+        filled = 0L;
+      } else if (filled < 8192L) {
+        memory::storeOctet(bit, buf + filled * 8L);
+        filled = filled + 1L;
+      }
+      index = index + 1L;
+    }
+  }
+  if (filled > 0L) {
+    long out = obr::proc::alloc(m4.home, 8192L * 8L);
+    long olen = 0L;
+    expandBytes(m4, buf, filled, out, &olen);
+    if (olen > 0L) {
+      writeOut(m4.home, out, olen);
+    }
+  }
+}
+
+deRfun runFile(M4* m4, long addr, long count): void {
+  plantPath(m4.home, addr, count);
+  if (obr::proc::open(m4.home, 0L) != 0L) {
+    miss(m4.home, addr, count);
+    m4.exitCode = 1L;
+    return;
+  }
+  long fd = obr::proc::slot(m4.home, 192L);
+  runStream(m4, fd);
+  if (fd != 0L) {
+    obr::proc::close(m4.home, fd);
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  M4 m4;
+  m4.home = home;
+  m4.defs = new map[string, string]();
+  m4.exitCode = 0L;
+  m4.qleft = 96L;
+  m4.qright = 39L;
+  long index = 1L;
+  while (index < argc(home)) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len >= 2L && u8(at) == 45L) {
+      if (u8(at + 8L) == 68L || u8(at + 8L) == 85L) {
+        writeErr(home, "m4: option not supported\n");
+        return finish(home, 1L);
+      }
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (index >= argc(home)) {
+    runStream(&m4, 0L);
+  }
+  while (index < argc(home)) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 1L && u8(at) == 45L) {
+      runStream(&m4, 0L);
+    } else {
+      runFile(&m4, at, len);
+    }
+    index = index + 1L;
+  }
+  return finish(home, m4.exitCode);
+}

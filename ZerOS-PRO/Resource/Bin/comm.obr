@@ -22,7 +22,9 @@
    打开失败写 comm: 路径: No such file or directory，退出 1，不写结果。
    两个文件都打开之后才开始比。读失败写 comm: read error，写失败写 comm: write error，都立刻退出 1。
    两边都没有行：什么都不写，退出 0。结束用服务 28，main 仍返回 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
@@ -37,13 +39,8 @@ deRfun chunkMax(): long {
   return 4096L;
 }
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是 0 到 255。不用移位。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

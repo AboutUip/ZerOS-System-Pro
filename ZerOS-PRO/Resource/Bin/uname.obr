@@ -8,18 +8,15 @@
    不认识的字母写 uname: invalid option，退出 1。
    有多余操作数写 uname: too many arguments，退出 1。
    成功退出 0。诊断在描述符 2，每条以换行结束。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 是补码。最高位为 1 时读出来是负数，加 256 才是八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun writeErr(long home, string text): void {

@@ -24,17 +24,15 @@
    status=none 和 status=noxfer 都不写这两行，也不写字节数。别的 status 是非法操作数。
    读失败写 dd: read error，写失败写 dd: write error，立刻退出 1，不写汇总。
    不调用 close，因此不会关掉描述符 0。结束用服务 28。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

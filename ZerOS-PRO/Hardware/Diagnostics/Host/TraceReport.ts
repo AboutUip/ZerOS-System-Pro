@@ -29,6 +29,7 @@ import { ZerOS as PageRoot } from "./TracePage";
 import { ZerOS as OpRoot } from "../Enum/TraceOp";
 import { ZerOS as DebugMapRoot } from "../../Debug/Host/DebugMap";
 import { ZerOS as CoreStopRoot } from "../../Cpu/Host/PageCoreStop";
+import { ZerOS as DebugLogRoot } from "../../Debug/Host/DebugLog";
 import { type ZerOS as EntryRoot } from "../Structure/TraceEntry";
 
 export namespace ZerOS {
@@ -40,6 +41,7 @@ export namespace ZerOS {
       const traceStatus = PageRoot.Hardware.Diagnostics.traceStatus;
       const traceMemStatus = PageRoot.Hardware.Diagnostics.traceMemStatus;
       const readCoreStop = CoreStopRoot.Hardware.Cpu.readCoreStop;
+      const readFaults = DebugLogRoot.Hardware.Debug.readFaults;
       const traceOpName = OpRoot.Hardware.Diagnostics.traceOpName;
       const traceServiceName = OpRoot.Hardware.Diagnostics.traceServiceName;
       const gpuPhaseName = OpRoot.Hardware.Diagnostics.gpuPhaseName;
@@ -825,6 +827,24 @@ export namespace ZerOS {
         if (tree.length > 0) {
           lines.push(...tree);
         }
+        const commandStart = entries.find((entry): boolean => entry.Op === TraceOp.Command)?.At;
+        const commandEnd = entries.find((entry): boolean => entry.Op === TraceOp.CommandEnd)?.At
+          ?? entries.find((entry): boolean => entry.Op === TraceOp.Prompt)?.At;
+        const faults = readFaults().filter((fault): boolean => {
+          if (commandStart === undefined) {
+            return true;
+          }
+          return fault.At >= commandStart && (commandEnd === undefined || fault.At <= commandEnd);
+        });
+        if (faults.length > 0) {
+          lines.push("");
+          lines.push("faults:");
+          for (const fault of faults.slice(-8)) {
+            const site = fault.Site.length > 0 ? fault.Site : "-";
+            const guest = fault.GuestStack.length > 0 ? fault.GuestStack.join(" | ") : "-";
+            lines.push(`  at=${millis(fault.At)} core=${String(fault.Core)} code=${String(fault.Code)} index=${String(fault.Index)} op=${fault.Op.length > 0 ? fault.Op : "-"} site=${site} hostFrames=${String(fault.HostStack.length)} guest=${guest} window=${fault.Window ? "yes" : "no"}`);
+          }
+        }
         const mem = traceMemStatus();
         if (mem.Count > 0) {
           lines.push("");
@@ -1081,27 +1101,35 @@ export namespace ZerOS {
             lines.push(`  ${stopName(stop.Reason).padEnd(8)} ${String(stop.Count)}`);
           }
         }
-        const latest: { Core: number; Reason: number; Index: number; Op: string; Snapshot: { Registers: readonly string[]; Pc: string; StackPointer: string; StackStart: string; StackEnd: string } | null }[] = [];
+        const latest: { Core: number; Reason: number; Index: number; Op: string; At: number; Snapshot: { Mode: string; Registers: readonly string[]; Pc: string; StackPointer: string; StackStart: string; StackEnd: string; StackBytes?: string } | null }[] = [];
         for (let core = 0; core < 8; core += 1) {
           const stop = readCoreStop(core);
-          if (stop !== null) {
-            latest.push(stop);
+          if (stop === null) {
+            continue;
           }
+          /* 命令报告只留这次命令窗口内的停机；启动自检的旧现场留在 boot 报告。 */
+          if (commandStart !== undefined && (stop.At < commandStart || (commandEnd !== undefined && stop.At > commandEnd))) {
+            continue;
+          }
+          latest.push(stop);
         }
         if (latest.length > 0) {
           lines.push("");
           lines.push("latest stops:");
           for (const stop of latest) {
             lines.push(
-              `  core ${String(stop.Core)}  ${stopName(stop.Reason)}  index=${String(stop.Index)}  op=${stop.Op.length > 0 ? stop.Op : "-"}`,
+              `  core ${String(stop.Core)}  ${stopName(stop.Reason)}  at=${millis(stop.At)}  index=${String(stop.Index)}  op=${stop.Op.length > 0 ? stop.Op : "-"}`,
             );
             if (stop.Snapshot !== null) {
               const snapshot = stop.Snapshot;
               lines.push(
-                `    pc=${snapshot.Pc}  sp=${snapshot.StackPointer}  stack=${snapshot.StackStart}..${snapshot.StackEnd}`,
+                `    mode=${snapshot.Mode}  pc=${snapshot.Pc}  sp=${snapshot.StackPointer}  stack=${snapshot.StackStart}..${snapshot.StackEnd}`,
               );
               if (snapshot.Registers.length > 0) {
                 lines.push(`    registers: ${snapshot.Registers.join(" ")}`);
+              }
+              if (typeof snapshot.StackBytes === "string" && snapshot.StackBytes.length > 0) {
+                lines.push(`    stack bytes: ${String(snapshot.StackBytes.length / 2)} (${snapshot.StackBytes.slice(0, 32)}${snapshot.StackBytes.length > 32 ? "..." : ""})`);
               }
             }
           }
@@ -1130,6 +1158,24 @@ export namespace ZerOS {
           lines.push("task sleeps:");
           for (const edge of sleeps.slice(0, 10)) {
             lines.push(`  pid=${String(edge.Pid)} core=${String(edge.Core)}  ${millis(edge.Duration)}`);
+          }
+        }
+        const exits = entries.filter((entry): boolean => entry.Op === TraceOp.TaskExit);
+        if (exits.length > 0) {
+          lines.push("");
+          lines.push("task exits:");
+          for (const exit of exits.slice(0, 10)) {
+            const child = Math.floor(exit.A0 / 65536);
+            const code = exit.A0 % 65536;
+            lines.push(`  child=${String(child)} parent=${String(exit.A1)} code=${String(code)} at=${millis(exit.At)}`);
+          }
+        }
+        const hostExits = entries.filter((entry): boolean => entry.Op === TraceOp.ProcessExit);
+        if (hostExits.length > 0) {
+          lines.push("");
+          lines.push("process exits:");
+          for (const exit of hostExits.slice(0, 10)) {
+            lines.push(`  core=${String(exit.Core)} code=${String(exit.A0)} at=${millis(exit.At)}`);
           }
         }
         const inputs = inputEdges(entries);

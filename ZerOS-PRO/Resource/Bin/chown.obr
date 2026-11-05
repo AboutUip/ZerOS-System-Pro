@@ -25,18 +25,15 @@
    某一项失败就记下来，继续后面的文件，最后退出 1。
    诊断写描述符 2，以 chown: 开头。
    结束用服务 28。main 的返回值仍是 0。 */
+#DYN
 import memory;
+import obr.oct;
 import obr.os;
 import obr.proc;
 import arg;
 
-/* loadOctet 的负数是补码，加 256 才是八位组。 */
 deRfun u8(long addr): long {
-  long value = memory::loadOctet(addr);
-  if (value < 0L) {
-    value = value + 256L;
-  }
-  return value;
+  return obr::oct::get(addr);
 }
 
 deRfun copySpan(long from, long to, long count): void {

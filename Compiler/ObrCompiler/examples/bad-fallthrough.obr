@@ -1,0 +1,5 @@
+/* switch 外的 fallthrough 编译应当失败。 */
+deRfun main(): int {
+  fallthrough;
+  return 0;
+}

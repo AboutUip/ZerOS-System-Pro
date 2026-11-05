@@ -1,0 +1,292 @@
+/* POSIX.1-2017 uuencode（utilities/uuencode.html）的本系统选定。
+   形式是 uuencode [-m] [file] decode_pathname。
+   -m 输出 base64（begin-base64 … ====）；缺省是历史性 uuencode（begin … end）。
+   缺 file 时读标准输入，不关闭描述符 0。decode_pathname 写入 begin 行里的名字。
+   默认权限字 666。成功退出 0。诊断英文，描述符 2。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+deRfun putOut(long home, long* filled, long value, long* outAt): void {
+  long count = *filled;
+  if (count >= 4096L) {
+    obr::proc::write(home, 1L, *outAt, count);
+    *outAt = *outAt + count;
+    count = 0L;
+  }
+  memory::storeOctet(value, obr::proc::bytes(home) + count * 8L);
+  *filled = count + 1L;
+}
+
+deRfun flushOut(long home, long* filled, long* outAt): void {
+  long count = *filled;
+  if (count > 0L) {
+    obr::proc::write(home, 1L, *outAt, count);
+    *outAt = *outAt + count;
+    *filled = 0L;
+  }
+}
+
+deRfun writeText(long home, string text, long* filled, long* outAt): void {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    putOut(home, filled, (long)text[index], outAt);
+    index = index + 1;
+  }
+}
+
+deRfun writeSpan(long home, long addr, long count, long* filled, long* outAt): void {
+  long index = 0L;
+  while (index < count) {
+    putOut(home, filled, u8(addr + index * 8L), outAt);
+    index = index + 1L;
+  }
+}
+
+deRfun uuEnc(long value): long {
+  return (value % 64L) + 32L;
+}
+
+deRfun b64Val(long unit): long {
+  if (unit >= 65L && unit <= 90L) {
+    return unit - 65L;
+  }
+  if (unit >= 97L && unit <= 122L) {
+    return unit - 71L;
+  }
+  if (unit >= 48L && unit <= 57L) {
+    return unit + 4L;
+  }
+  if (unit == 43L) {
+    return 62L;
+  }
+  if (unit == 47L) {
+    return 63L;
+  }
+  return -1L;
+}
+
+deRfun b64Char(long value): long {
+  if (value < 26L) {
+    return 65L + value;
+  }
+  if (value < 52L) {
+    return 97L + value - 26L;
+  }
+  if (value < 62L) {
+    return 48L + value - 52L;
+  }
+  if (value == 62L) {
+    return 43L;
+  }
+  return 47L;
+}
+
+deRfun emitUU(long home, long data, long n, long* filled, long* outAt): void {
+  putOut(home, filled, uuEnc(n), outAt);
+  long index = 0L;
+  while (index < n) {
+    long b0 = u8(data + index * 8L);
+    long b1 = 0L;
+    long b2 = 0L;
+    if (index + 1L < n) {
+      b1 = u8(data + (index + 1L) * 8L);
+    }
+    if (index + 2L < n) {
+      b2 = u8(data + (index + 2L) * 8L);
+    }
+    putOut(home, filled, uuEnc(b0 / 4L), outAt);
+    putOut(home, filled, uuEnc((b0 % 4L) * 16L + b1 / 16L), outAt);
+    putOut(home, filled, uuEnc((b1 % 16L) * 4L + b2 / 64L), outAt);
+    putOut(home, filled, uuEnc(b2 % 64L), outAt);
+    index = index + 3L;
+  }
+  putOut(home, filled, 10L, outAt);
+}
+
+deRfun emitB64(long home, long data, long n, long* filled, long* outAt): void {
+  long index = 0L;
+  while (index < n) {
+    long b0 = u8(data + index * 8L);
+    long b1 = 0L;
+    long b2 = 0L;
+    long have = 1L;
+    if (index + 1L < n) {
+      b1 = u8(data + (index + 1L) * 8L);
+      have = 2L;
+    }
+    if (index + 2L < n) {
+      b2 = u8(data + (index + 2L) * 8L);
+      have = 3L;
+    }
+    long v0 = b0 / 4L;
+    long v1 = (b0 % 4L) * 16L + b1 / 16L;
+    long v2 = (b1 % 16L) * 4L + b2 / 64L;
+    long v3 = b2 % 64L;
+    putOut(home, filled, b64Char(v0), outAt);
+    putOut(home, filled, b64Char(v1), outAt);
+    if (have >= 2L) {
+      putOut(home, filled, b64Char(v2), outAt);
+    } else {
+      putOut(home, filled, 61L, outAt);
+    }
+    if (have >= 3L) {
+      putOut(home, filled, b64Char(v3), outAt);
+    } else {
+      putOut(home, filled, 61L, outAt);
+    }
+    index = index + 3L;
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long base64 = 0L;
+  long index = 1L;
+  long count = argc(home);
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && u8(at) == 45L && u8(at + 8L) == 109L) {
+      base64 = 1L;
+      index = index + 1L;
+    } else {
+      break;
+    }
+  }
+  if (index >= count) {
+    writeErr(home, "uuencode: missing operand\n");
+    return finish(home, 1L);
+  }
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long nameAt = 0L;
+  long nameLen = 0L;
+  if (index + 1L >= count) {
+    nameAt = argPtr(home, index);
+    nameLen = argLen(home, index);
+  } else if (index + 2L == count) {
+    fileAt = argPtr(home, index);
+    fileLen = argLen(home, index);
+    nameAt = argPtr(home, index + 1L);
+    nameLen = argLen(home, index + 1L);
+  } else {
+    writeErr(home, "uuencode: too many operands\n");
+    return finish(home, 1L);
+  }
+  long fd = 0L;
+  if (fileLen > 0L) {
+    if (fileLen > 8192L) {
+      writeErr(home, "uuencode: file name too long\n");
+      return finish(home, 1L);
+    }
+    plant(home, fileAt, fileLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "uuencode: cannot open input\n");
+      return finish(home, 1L);
+    }
+    fd = obr::proc::slot(home, 192L);
+  }
+  long filled = 0L;
+  long outAt = 0L;
+  if (base64 == 1L) {
+    writeText(home, "begin-base64 666 ", &filled, &outAt);
+  } else {
+    writeText(home, "begin 666 ", &filled, &outAt);
+  }
+  writeSpan(home, nameAt, nameLen, &filled, &outAt);
+  putOut(home, &filled, 10L, &outAt);
+  /* 读入会覆盖输出窗。begin 行先落盘，后面的编码再往同一窗里写。 */
+  flushOut(home, &filled, &outAt);
+  long chunk = obr::proc::alloc(home, 360L * 8L);
+  if (chunk == 0L) {
+    writeErr(home, "uuencode: out of memory\n");
+    return finish(home, 1L);
+  }
+  long reading = 1L;
+  long offset = 0L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      writeErr(home, "uuencode: read error\n");
+      return finish(home, 1L);
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      writeErr(home, "uuencode: read error\n");
+      return finish(home, 1L);
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      long base = obr::proc::bytes(home);
+      long cursor = 0L;
+      while (cursor < n) {
+        long take = n - cursor;
+        if (base64 == 0L && take > 45L) {
+          take = 45L;
+        }
+        if (base64 == 1L && take > 57L) {
+          take = 57L;
+        }
+        long move = 0L;
+        while (move < take) {
+          memory::storeOctet(u8(base + (cursor + move) * 8L), chunk + move * 8L);
+          move = move + 1L;
+        }
+        if (base64 == 1L) {
+          emitB64(home, chunk, take, &filled, &outAt);
+        } else {
+          emitUU(home, chunk, take, &filled, &outAt);
+        }
+        cursor = cursor + take;
+      }
+      offset = offset + n;
+    }
+  }
+  if (base64 == 1L) {
+    writeText(home, "====\n", &filled, &outAt);
+  } else {
+    writeText(home, "end\n", &filled, &outAt);
+  }
+  flushOut(home, &filled, &outAt);
+  return finish(home, 0L);
+}

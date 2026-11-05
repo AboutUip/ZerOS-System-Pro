@@ -1,0 +1,208 @@
+/* POSIX.1-2017 write（utilities/write.html）。形式是 write user [terminal]。
+   本系统只有控制台这一端；选定只向 /dev/con 追加写入，没有其它 tty。
+   第一个操作数必须是 root，或者是当前 euid 的十进制字符串。
+   第二个操作数若给出，必须是 console 或 /dev/con。
+   然后从描述符 0 读到 EOF，把读到的字节追加写入 /dev/con。
+   缺用户写 write: missing operand，退出 1。
+   未知用户写 write: unknown user，退出 1。
+   终端名不对写 write: invalid terminal，退出 1。
+   打不开 /dev/con 写 write: cannot open terminal，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 write:。结束用 obr::proc::exit。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import obr.text;
+import arg;
+
+deRfun u8(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, 2L, 0L, count);
+  }
+}
+
+deRfun isRoot(long addr, long len): long {
+  if (len != 4L) {
+    return 0L;
+  }
+  if (u8(addr) != 114L) {
+    return 0L;
+  }
+  if (u8(addr + 8L) != 111L) {
+    return 0L;
+  }
+  if (u8(addr + 16L) != 111L) {
+    return 0L;
+  }
+  if (u8(addr + 24L) != 116L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun isConsole(long addr, long len): long {
+  if (len == 7L && u8(addr) == 99L && u8(addr + 8L) == 111L && u8(addr + 16L) == 110L
+      && u8(addr + 24L) == 115L && u8(addr + 32L) == 111L && u8(addr + 40L) == 108L
+      && u8(addr + 48L) == 101L) {
+    return 1L;
+  }
+  if (len == 8L && u8(addr) == 47L && u8(addr + 8L) == 100L && u8(addr + 16L) == 101L
+      && u8(addr + 24L) == 118L && u8(addr + 32L) == 47L && u8(addr + 40L) == 99L
+      && u8(addr + 48L) == 111L && u8(addr + 56L) == 110L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun readDec(long addr, long len, long* value): long {
+  if (len < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  long acc = 0L;
+  while (index < len) {
+    long bit = u8(addr + index * 8L);
+    if (bit < 48L || bit > 57L) {
+      return 0L;
+    }
+    acc = acc * 10L + (bit - 48L);
+    index = index + 1L;
+  }
+  *value = acc;
+  return 1L;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun pour(long home, long fd, long outFd): long {
+  long offset = 0L;
+  long outAt = 0L;
+  long reading = 1L;
+  while (reading == 1L) {
+    if (obr::proc::read(home, fd, offset, 4096L) != 0L) {
+      return 1L;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 0L) {
+      return 1L;
+    }
+    if (n == 0L) {
+      reading = 0L;
+    } else {
+      if (n > 4096L) {
+        n = 4096L;
+      }
+      long pending = n;
+      while (pending > 0L) {
+        long chunk = pending;
+        if (chunk > 4096L) {
+          chunk = 4096L;
+        }
+        if (obr::proc::write(home, outFd, outAt, chunk) != 0L) {
+          return 1L;
+        }
+        long wrote = obr::proc::slot(home, 320L);
+        if (wrote < 1L) {
+          return 1L;
+        }
+        offset = offset + wrote;
+        outAt = outAt + wrote;
+        pending = pending - wrote;
+      }
+    }
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count < 2L) {
+    writeErr(home, "write: missing operand\n");
+    return finish(home, 1L);
+  }
+  long userAt = argPtr(home, 1L);
+  long userLen = argLen(home, 1L);
+  long okUser = 0L;
+  if (isRoot(userAt, userLen) == 1L) {
+    okUser = 1L;
+  } else {
+    if (obr::proc::ident(home) != 0L) {
+      writeErr(home, "write: unknown user\n");
+      return finish(home, 1L);
+    }
+    long euid = obr::proc::slot(home, 256L);
+    long parsed = 0L;
+    if (readDec(userAt, userLen, &parsed) == 1L && parsed == euid) {
+      okUser = 1L;
+    }
+  }
+  if (okUser == 0L) {
+    writeErr(home, "write: unknown user\n");
+    return finish(home, 1L);
+  }
+  if (count > 2L) {
+    if (count > 3L) {
+      writeErr(home, "write: invalid terminal\n");
+      return finish(home, 1L);
+    }
+    long termAt = argPtr(home, 2L);
+    long termLen = argLen(home, 2L);
+    if (isConsole(termAt, termLen) == 0L) {
+      writeErr(home, "write: invalid terminal\n");
+      return finish(home, 1L);
+    }
+  }
+  if (count > 3L) {
+    writeErr(home, "write: invalid terminal\n");
+    return finish(home, 1L);
+  }
+  long pathBlock = obr::proc::alloc(home, 65536L);
+  if (pathBlock == 0L) {
+    writeErr(home, "write: cannot open terminal\n");
+    return finish(home, 1L);
+  }
+  if (obr::text::put(pathBlock, "/dev/con") != 0L) {
+    obr::proc::free(home, pathBlock, 65536L);
+    writeErr(home, "write: cannot open terminal\n");
+    return finish(home, 1L);
+  }
+  memory::store64(obr::text::len(pathBlock), obr::proc::path(home));
+  copySpan(pathBlock + 64L, obr::proc::path(home) + 64L, obr::text::len(pathBlock));
+  if (obr::proc::open(home, 3L) != 0L) {
+    obr::proc::free(home, pathBlock, 65536L);
+    writeErr(home, "write: cannot open terminal\n");
+    return finish(home, 1L);
+  }
+  long conFd = obr::proc::slot(home, 192L);
+  long status = pour(home, 0L, conFd);
+  obr::proc::free(home, pathBlock, 65536L);
+  if (status != 0L) {
+    writeErr(home, "write: write error\n");
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

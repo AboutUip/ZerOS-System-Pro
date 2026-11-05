@@ -1,6 +1,6 @@
 /* 任务表。凭证、名次、槽和任务的生灭。表放在监督核窗口里。
    不管客核堆池，不管信号、退出和等待。 */
-#LINK /start.obr, /sched.obr, /vfs.obr, /exec.obr, /mm.obr, /pipe.obr, /dev.obr, /console.obr, /comm.obr, /pool.obr, /sig.obr, /boot.obr, /spawn.obr
+#LINK /start.obr, /sched.obr, /vfs.obr, /exec.obr, /mm.obr, /pipe.obr, /dev.obr, /console.obr, /comm.obr, /pool.obr, /sig.obr, /boot.obr, /spawn.obr, /frame.obr
 import proc;
 import fs;
 import memory;
@@ -21,6 +21,12 @@ deRfun kArena(long core): long {
   return kFloor() + core * kSlot();
 }
 
+/* 监督核窗口的起点，等于 kFloor + 2 * kSlot。
+   格子和任务表都在这个窗口里。调用处直接用这个数，按键不再把两个大数乘一遍。 */
+deRfun kSupervisor(): long {
+  return 537919488L;
+}
+
 deRfun fsCore(): long {
   return 4L;
 }
@@ -37,7 +43,7 @@ deRfun taskLimit(): long {
    49344 起的一个字是这一轮消息上限。没有前台在跑或就绪时是 16777216，有前台时是 268435456。
    这是上限，不是每次必须送满的长度。宿主满一段再加倍，没有前台就收回默认值。 */
 deRfun rankAt(long index): long {
-  return kArena(2L) + 45056L + index * 8L;
+  return kSupervisor() + 45056L + index * 8L;
 }
 
 deRfun rankGet(long index): long {
@@ -48,18 +54,170 @@ deRfun rankGet(long index): long {
   return value;
 }
 
+/* mode 1 调整正在跑的数量，5 调整就绪数量，2 调整前台可运行数。
+   3 读正在跑的数量，6 读就绪数量，0 读前台数，4 清零。
+   计数放在这一处的静态字里。没有就绪任务时，空转那一圈不再扫表。 */
+deRfun runLedger(long mode, long delta): long {
+  static long running = 0L;
+  static long ready = 0L;
+  static long foreground = 0L;
+  static long zombie = 0L;
+  if (mode == 4L) {
+    running = 0L;
+    ready = 0L;
+    foreground = 0L;
+    zombie = 0L;
+    return 0L;
+  }
+  if (mode == 1L) {
+    running = running + delta;
+    return running;
+  }
+  if (mode == 5L) {
+    ready = ready + delta;
+    return ready;
+  }
+  if (mode == 2L) {
+    foreground = foreground + delta;
+    return foreground;
+  }
+  if (mode == 3L) {
+    return running;
+  }
+  if (mode == 6L) {
+    return ready;
+  }
+  if (mode == 7L) {
+    zombie = zombie + delta;
+    return zombie;
+  }
+  if (mode == 8L) {
+    return zombie;
+  }
+  return foreground;
+}
+
+/* 1 正在跑，2 就绪，0 其它。 */
+deRfun taskClass(long state): long {
+  if (state == TaskState::Running) {
+    return 1L;
+  }
+  if (state == TaskState::Ready) {
+    return 2L;
+  }
+  return 0L;
+}
+
+/* 改状态之前调用。正在跑和就绪互相切换也要改计数。档位用当前 rank。
+   顺手记下这一核上正在跑、以及正在睡的那一格，taskFind 不必再扫表。 */
+deRfun taskAccount(long index, long next): void {
+  long oldState = taskAt(index).state;
+  long core = taskAt(index).core;
+  if (core >= 0L && core < 8L) {
+    if (next == TaskState::Running) {
+      memory::store64(index + 1L, taskRunSlot(core));
+    }
+    if (oldState == TaskState::Running && next != TaskState::Running && memory::load64(taskRunSlot(core)) == index + 1L) {
+      memory::store64(0L, taskRunSlot(core));
+    }
+    if (next == TaskState::Sleeping) {
+      long noted = memory::load64(taskCache(core)) - 1L;
+      if (noted < 0L || noted > index) {
+        memory::store64(index + 1L, taskCache(core));
+      } else {
+        Task* held = taskAt(noted);
+        if (held.pid == 0L || held.core != core || held.state != TaskState::Sleeping) {
+          memory::store64(index + 1L, taskCache(core));
+        }
+      }
+    }
+    if (oldState == TaskState::Sleeping && next != TaskState::Sleeping && memory::load64(taskCache(core)) == index + 1L) {
+      memory::store64(0L, taskCache(core));
+    }
+  }
+  if (oldState == TaskState::Zombie && next != TaskState::Zombie) {
+    runLedger(7L, -1L);
+  }
+  if (oldState != TaskState::Zombie && next == TaskState::Zombie) {
+    runLedger(7L, 1L);
+  }
+  long previous = taskClass(oldState);
+  long now = taskClass(next);
+  if (previous == now) {
+    return;
+  }
+  long rank = rankGet(index);
+  if (previous == 1L) {
+    runLedger(1L, -1L);
+    if (rank >= 2L) {
+      runLedger(2L, -1L);
+    }
+  }
+  if (previous == 2L) {
+    runLedger(5L, -1L);
+    if (rank >= 2L) {
+      runLedger(2L, -1L);
+    }
+  }
+  if (now == 1L) {
+    runLedger(1L, 1L);
+    if (rank >= 2L) {
+      runLedger(2L, 1L);
+    }
+  }
+  if (now == 2L) {
+    runLedger(5L, 1L);
+    if (rank >= 2L) {
+      runLedger(2L, 1L);
+    }
+  }
+}
+
+/* 空槽第一次放上任务。旧状态不在计数里。档先写成 0，随后的 rankSet 再加减前台。 */
+deRfun taskArrive(long index, long state): void {
+  taskAt(index).state = state;
+  memory::storeOctet(0L, rankAt(index));
+  long kind = taskClass(state);
+  if (kind == 1L) {
+    runLedger(1L, 1L);
+  }
+  if (kind == 2L) {
+    runLedger(5L, 1L);
+  }
+}
+
 deRfun rankSet(long index, long rank): void {
   if (index < 0L || index >= taskLimit()) {
     return;
   }
+  long previous = rankGet(index);
   memory::storeOctet(rank, rankAt(index));
+  if (taskClass(taskAt(index).state) == 0L) {
+    return;
+  }
+  if (previous >= 2L && rank < 2L) {
+    runLedger(2L, -1L);
+  }
+  if (previous < 2L && rank >= 2L) {
+    runLedger(2L, 1L);
+  }
 }
 
 /* 已占用下标的上界，不含这一格。放在控制台暂存清零区之后、字体表 +20480 之前。
    调度每一圈都要扫表。空槽一直扫到 512 时，按一个键要等十几秒。
    新任务从低位往上占，扫到这里就够。释放后不把上界往回缩，中间的空槽仍算在里面。 */
 deRfun taskSpan(): long {
-  return kArena(2L) + 13248L;
+  return kSupervisor() + 13248L;
+}
+
+/* 每核两个字，写在文件系统两个暂存字之后。
+   第一个记住正在睡的任务，第二个记住正在跑的。0 表示还没有。存的是下标加 1。 */
+deRfun taskCache(long core): long {
+  return kSupervisor() + 13440L + core * 64L;
+}
+
+deRfun taskRunSlot(long core): long {
+  return kSupervisor() + 13952L + core * 64L;
 }
 
 deRfun taskScanEnd(): long {
@@ -91,13 +249,13 @@ deRfun taskStride(): long {
 
 /* 低地址留给调用帧和引导用的几个字。表从这里排 512 份。 */
 deRfun tableBase(): long {
-  return kArena(2L) + 65536L;
+  return kSupervisor() + 65536L;
 }
 
 /* 12416 是下一个 pid。终端格子改放在内存文件正文之后，这里的两个字不再当光标。
    +20480 起是系统字体表，每份两个字，字体层使用。+32768 起是驱动路径。 */
 deRfun pidWord(): long {
-  return kArena(2L) + 12416L;
+  return kSupervisor() + 12416L;
 }
 
 deRfun taskAt(long index): Task* {
@@ -106,6 +264,25 @@ deRfun taskAt(long index): Task* {
 
 /* 正在跑的优先，其次是堵在系统调用里的，再其次是还没收掉的僵尸。就绪的只在没有这三类时才返回。 */
 deRfun taskFind(long core): long {
+  /* 正在跑的优先。这一格在改状态时已经记下。对不上再看正在睡的那一格。 */
+  if (core >= 0L && core < 8L) {
+    long end = taskScanEnd();
+    long running = memory::load64(taskRunSlot(core)) - 1L;
+    if (running >= 0L && running < end) {
+      Task* live = taskAt(running);
+      if (live.pid != 0L && live.core == core && live.state == TaskState::Running) {
+        return running;
+      }
+      memory::store64(0L, taskRunSlot(core));
+    }
+    long remembered = memory::load64(taskCache(core)) - 1L;
+    if (remembered >= 0L && remembered < end) {
+      Task* hit = taskAt(remembered);
+      if (hit.pid != 0L && hit.core == core && hit.state == TaskState::Sleeping) {
+        return remembered;
+      }
+    }
+  }
   long index = 0L;
   long sleeping = -1L;
   long zombie = -1L;
@@ -115,6 +292,9 @@ deRfun taskFind(long core): long {
     Task* task = taskAt(index);
     if (task.pid != 0L && task.core == core) {
       if (task.state == TaskState::Running) {
+        if (core >= 0L && core < 8L) {
+          memory::store64(index + 1L, taskRunSlot(core));
+        }
         return index;
       }
       if (task.state == TaskState::Sleeping && sleeping < 0L) {
@@ -130,6 +310,9 @@ deRfun taskFind(long core): long {
     index = index + 1L;
   }
   if (sleeping >= 0L) {
+    if (core >= 0L && core < 8L) {
+      memory::store64(sleeping + 1L, taskCache(core));
+    }
     return sleeping;
   }
   if (zombie >= 0L) {
@@ -140,23 +323,12 @@ deRfun taskFind(long core): long {
 
 /* 这一轮允许的消息上限。有前台在跑或就绪时，宿主可以一路加到 256MB。否则停在 16MB。 */
 deRfun spanMark(): long {
-  return kArena(2L) + 49344L;
+  return kSupervisor() + 49344L;
 }
 
 deRfun spanChoose(): long {
-  long index = 0L;
-  long end = taskScanEnd();
-  while (index < end) {
-    Task* task = taskAt(index);
-    if (task.pid != 0L) {
-      long state = task.state;
-      if (state == TaskState::Running || state == TaskState::Ready) {
-        if (rankGet(index) >= 2L) {
-          return 268435456L;
-        }
-      }
-    }
-    index = index + 1L;
+  if (runLedger(0L, 0L) > 0L) {
+    return 268435456L;
   }
   return 16777216L;
 }
@@ -182,7 +354,7 @@ deRfun rankPublish(long core): void {
   if (index >= 0L) {
     rank = rankGet(index);
   }
-  memory::storeOctet(rank, kArena(2L) + 49152L + core * 8L);
+  memory::storeOctet(rank, kSupervisor() + 49152L + core * 8L);
 }
 
 deRfun taskCount(long core): long {
@@ -273,18 +445,21 @@ deRfun taskBestRank(long core, long except): long {
   return best;
 }
 
-/* 壳停在读键盘时，任务都在睡。这时候不必每圈都问宿主谁还在跑。 */
+/* 前台任务停在读键盘时，正在跑的只剩空转驱动，没有就绪任务。
+   正在跑的数量仍可能大于 0，那一圈不必为了他们扫表。 */
 deRfun schedIdle(): long {
-  long index = 0L;
-  long end = taskScanEnd();
-  while (index < end) {
-    long state = taskAt(index).state;
-    if (state == TaskState::Running || state == TaskState::Ready) {
-      return 0L;
-    }
-    index = index + 1L;
+  if (runLedger(3L, 0L) == 0L && runLedger(6L, 0L) == 0L) {
+    return 1L;
   }
-  return 1L;
+  return 0L;
+}
+
+/* 有任务在槽里等着上。这时才每圈扫表。 */
+deRfun schedWork(): long {
+  if (runLedger(6L, 0L) > 0L) {
+    return 1L;
+  }
+  return 0L;
 }
 
 /* 有档就只在最高档里挑。没有分档的旧任务仍走原来的绕圈。 */
@@ -296,10 +471,18 @@ deRfun taskPrefer(long core, long except): long {
   return taskReadyRank(core, except, best);
 }
 
-/* 只在引导调用一次。上电后的内存每个八位组都是 0，Empty、身份、档和命令名不用再写。
-   核心号 0 是一颗真的核，空任务写成 -1，才不会看起来坐在核心 0 上。
+/* 只在引导调用一次。监督核窗口上电不是 0，上界先写成 0，之后只随 taskNote 升高。
+   可运行计数也从 0 起。核心号 0 是一颗真的核，空任务写成 -1，才不会看起来坐在核心 0 上。
    pid 从 1 起。spanPublish 把这一轮的搬运上限交出去。 */
 deRfun taskClear(): void {
+  memory::store64(0L, taskSpan());
+  long core = 0L;
+  while (core < 8L) {
+    memory::store64(0L, taskCache(core));
+    memory::store64(0L, taskRunSlot(core));
+    core = core + 1L;
+  }
+  runLedger(4L, 0L);
   long index = 0L;
   while (index < taskLimit()) {
     Task* task = taskAt(index);
@@ -338,6 +521,10 @@ deRfun taskRelease(long index): void {
   }
   task.pid = 0L;
   task.ppid = 0L;
+  if (task.core >= 3L) {
+    conForget(task.core);
+  }
+  taskAccount(index, TaskState::Empty);
   task.state = TaskState::Empty;
   task.core = -1L;
   task.code = 0L;
@@ -430,8 +617,14 @@ deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state):
   Task* task = taskAt(index);
   task.pid = pid;
   task.ppid = 1L;
-  task.state = state;
+  taskArrive(index, state);
   task.core = core;
+  if (state == TaskState::Running) {
+    memory::store64(index + 1L, taskRunSlot(core));
+  }
+  if (state == TaskState::Sleeping) {
+    memory::store64(index + 1L, taskCache(core));
+  }
   task.cred.uid = uid;
   task.cred.gid = gid;
   task.cred.euid = uid;
@@ -452,7 +645,7 @@ deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state):
   task.code = 0L;
   task.waitFor = 0L;
   task.held = 0L;
-  /* 新任务先当后台。交互壳和它等着的子任务再升到前台。 */
+  /* 新任务先当后台。要到前台的任务以后再升。 */
   rankSet(index, 1L);
   taskNote(index);
   return pid;

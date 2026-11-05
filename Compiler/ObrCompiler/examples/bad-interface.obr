@@ -1,0 +1,18 @@
+/* 类漏实现接口方法，编译应当失败。 */
+#VERSION 2
+
+interface IShape {
+  deRfun area(): int;
+}
+
+class Broken implements IShape {
+  int x;
+  deRfun Broken(): void {
+    x = 0;
+  }
+}
+
+deRfun main(): int {
+  var[IShape] shape = new Broken();
+  return shape.area();
+}
