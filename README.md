@@ -44,7 +44,7 @@ ZerOS-System-Pro/
 - 工具入口：[Compiler/Debugger/Tools](./Compiler/Debugger/Tools/)
 - 运行手册：[Documents/Debug/Implementation/Runbook.md](./Documents/Debug/Implementation/Runbook.md)
 
-v1.1 覆盖全量 54 条 `/bin` 命令、命令退出码、基础 fault/stop 现场和 64 位时间；stdout/stderr 文本、外部命令符号和逐帧 `GuestStack` 仍不在本版本内。v2 的 P4 正在继续。
+v1.1 当时覆盖 54 条 `/bin` 命令、命令退出码、基础 fault/stop 现场和 64 位时间。语料清单现在与 `Resource/Bin` 里除 `arg` 以外的每一条命令对应，少一条或多一条时 `ztrace-corpus --list` 和 `npm test` 都会失败。跑语料前由 runner 在客根种下 `/home`，不依赖已经存在的用户目录。stdout/stderr 文本、外部命令符号和逐帧 `GuestStack` 仍不在本版本内。v2 的 P4 正在继续。
 
 ## 预览
 
@@ -66,7 +66,7 @@ cmake --build Compiler/ObrCompiler/build
 
 | 命令 | 作用 |
 |------|------|
-| `npm test` | 协议页眉、目录索引、技能副本、本机路径、编译器输出路径 |
+| `npm test` | 协议页眉、目录索引、技能链接（没有 `.cursor/` 时跳过）、内核服务表、本机路径、编译器输出路径、语料与命令源一致 |
 | `npm run check` | 类型检查 + Lint |
 | `npm run build` | 校验后产出到 `Toolchain/Dist/` |
 
@@ -127,7 +127,7 @@ NAS 的参考服务不随页面启动。在仓库根目录执行 `node ZerOS-PRO
 | 项目规则 | [Documents/Rules](./Documents/Rules/) | 预览端口、内核语言、引导失败说明 |
 | ZTrace 调试 | [Documents/Debug](./Documents/Debug/README.md) | 性能复现、观测、回归与记录；v1.1 交付 |
 
-Cursor 从 `.cursor/skills/` 和 `.cursor/rules/` 加载。这两处是本地链接，正文只在 `Documents/Skills/` 和 `Documents/Rules/`。克隆后在 `Toolchain` 执行 `npm run skills:sync` 接上链接。`npm test` 确认链接指向这两处。
+Cursor 从 `.cursor/skills/` 和 `.cursor/rules/` 加载。这两处是本地链接，正文只在 `Documents/Skills/` 和 `Documents/Rules/`。克隆后在 `Toolchain` 执行 `npm run skills:sync` 接上链接。`.cursor/` 不在仓库里，没有它时 `npm test` 不算失败；链接已经存在时，`npm test` 确认它们指向这两处。
 
 ## 相关链接
 

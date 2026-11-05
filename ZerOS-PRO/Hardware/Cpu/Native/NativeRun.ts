@@ -260,8 +260,7 @@ export namespace ZerOS {
 
       function writeImm(port: NativeOctetPort, bit: bigint, value: bigint): boolean {
         const bits = wrap(value);
-        const storeNumber = port.storeNumber;
-        if (storeNumber !== undefined) {
+        if (port.storeNumber !== undefined) {
           const cursor = Number(bit);
           if (Number.isSafeInteger(cursor) && cursor >= 0 && (cursor & 7) === 0) {
             /* 先确认八个八位组都在界内，再写。中途失败不能留下半个字。 */
@@ -272,7 +271,7 @@ export namespace ZerOS {
             }
             wordView.setBigUint64(0, bits, true);
             for (let index = 0; index < 8; index += 1) {
-              storeNumber(cursor + index * 8, wordBytes[index] ?? 0);
+              port.storeNumber(cursor + index * 8, wordBytes[index] ?? 0);
             }
             return true;
           }

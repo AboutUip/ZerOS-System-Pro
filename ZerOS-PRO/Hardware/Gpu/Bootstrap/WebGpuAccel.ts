@@ -1885,8 +1885,8 @@ struct Vout {
        * 交位图的画布池。一张还在被拿走时，下一帧用另一张。
        * 池里都忙就再加一张。提交进队列后就可以画下一帧，不必等显卡把上一张读完。
        */
-      const handCanvases: Array<OffscreenCanvas | null> = [];
-      const handContexts: Array<GPUCanvasContext | null> = [];
+      const handCanvases: (OffscreenCanvas | null)[] = [];
+      const handContexts: (GPUCanvasContext | null)[] = [];
       const handBusy: boolean[] = [];
 
       function takeHandCanvas(): number {
@@ -1906,7 +1906,15 @@ struct Vout {
       function ensureHandCanvas(active: GPUDevice, index: number, patchWidth: number, patchHeight: number): OffscreenCanvas {
         const existing = handCanvases[index];
         const context = handContexts[index];
-        if (existing !== null && context !== null && existing.width === patchWidth && existing.height === patchHeight) {
+        /* 下标可能越出数组，existing 和 context 都可能是 undefined。null 与 undefined 都要排除。 */
+        if (
+          existing !== undefined
+          && existing !== null
+          && context !== undefined
+          && context !== null
+          && existing.width === patchWidth
+          && existing.height === patchHeight
+        ) {
           return existing;
         }
         const canvas = new OffscreenCanvas(patchWidth, patchHeight);
@@ -1987,7 +1995,7 @@ struct Vout {
             const context = handContexts[index];
             const pipe = viewPipe;
             const originBuffer = viewOriginBuffer;
-            if (context == null || pipe === null || originBuffer === null) {
+            if (context === undefined || context === null || pipe === null || originBuffer === null) {
               fail("画面画布还没有建立");
             }
             const packed = new Uint32Array([originX, originY]);

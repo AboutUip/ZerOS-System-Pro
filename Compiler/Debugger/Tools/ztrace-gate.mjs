@@ -34,7 +34,7 @@ function usage() {
     "  --file <file>        要验收的 capture.json",
     "  --baseline <file>    结构对比基线；给出时调用 ztrace-diff --check",
     "  --require-features   要求报告里出现 v1 新增的内存、GPU、快照段落",
-    "  --require-corpus     要求命令恰好覆盖 54 条语料且无超时",
+    "  --require-corpus     要求命令恰好覆盖语料清单且无超时",
     "  --require-exit-codes 要求语料的退出码符合预期（v2 capture 必需）",
     "  --out <file>         门禁结果 JSON；默认与 capture 同目录 gate.json",
     "  --help               显示本说明",

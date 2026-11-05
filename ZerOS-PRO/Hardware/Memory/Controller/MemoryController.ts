@@ -48,6 +48,7 @@ import { ZerOS as SideChannelRoot } from "../Structure/SideChannel";
 import { ZerOS as Uint64Root } from "../Structure/Uint64";
 import { ZerOS as FloatBitsRoot } from "../Structure/FloatBits";
 import { ZerOS as IntegerWidthRoot } from "../Enum/IntegerWidth";
+import { ZerOS as MemoryClockRoot } from "../Host/MemoryClock";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -820,6 +821,24 @@ export namespace ZerOS {
             block.BlockIndex,
             owner,
           );
+        }
+
+        /**
+         * 改内存频率（ZMP1 §4.27 规范方法名 `SetHertz`）。
+         * 超出 1 至 1000000000 时失败，已记下的 Hz 不动。
+         * 成功时换上新值，重新记下这条频率的时间起点，并记一次已完成访问。
+         */
+        public SetHertz(Hertz: number): void {
+          MemoryClockRoot.Hardware.Memory.setHertz(Hertz);
+        }
+
+        /**
+         * 读内存指标（ZMP1 §4.27 规范方法名 `Metric`）。
+         * Kind 为 0 时返回当前 Hz，为 1 时返回已完成条数。其它 Kind 失败。
+         * 成功时先记一次已完成访问，再返回。
+         */
+        public Metric(Kind: number): number {
+          return MemoryClockRoot.Hardware.Memory.metric(Kind);
         }
 
         /**

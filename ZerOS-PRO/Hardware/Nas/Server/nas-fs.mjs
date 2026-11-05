@@ -137,38 +137,55 @@ export function createStore(root) {
   const base = path.resolve(root);
   fs.mkdirSync(base, { recursive: true });
   const handles = new Map();
-  /** 同一条目录路径的种类、大小和修改时间。改名、删除、创建或写入之后丢掉。 */
+  /** 同一条目录路径的种类、大小和修改时间。服务端写入会丢掉；宿主在外面改目录时，下一次从 0 起列会重读。 */
   let snap = null;
 
   function dropSnap() {
     snap = null;
   }
 
+  function sameNames(left, right) {
+    if (left.length !== right.length) {
+      return false;
+    }
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /**
-   * 这一层的记录。同一路径再次列目录时不再 readdir，也不再对每一项 lstat。
-   * 失败时带 status，成功时带 entries。
+   * 这一层要留下来的名字。符号链接和非常规项跳过，顺序与快照一致。
+   * 只读名字，不 lstat。宿主新增、删除、改名都会改变这份清单。
    */
-  function loadSnap(dirPath) {
-    if (snap !== null && snap.path === dirPath) {
-      return snap;
-    }
-    let names;
-    try {
-      names = fs.readdirSync(dirPath, { withFileTypes: true });
-    } catch (error) {
-      return { status: mapError(error) };
-    }
-    const entries = [];
-    for (const entry of names) {
+  function directoryNames(dirPath) {
+    const found = fs.readdirSync(dirPath, { withFileTypes: true });
+    const names = [];
+    for (const entry of found) {
       if (entry.isSymbolicLink()) {
         continue;
       }
       if (!entry.isFile() && !entry.isDirectory()) {
         continue;
       }
+      names.push(entry.name);
+    }
+    names.sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    return names;
+  }
+
+  /**
+   * 按已经核对过的名字重读种类、大小和修改时间。
+   * 失败时带 status，成功时带 entries。
+   */
+  function readEntries(dirPath, names) {
+    const entries = [];
+    for (const name of names) {
       let seen;
       try {
-        seen = fs.lstatSync(path.join(dirPath, entry.name));
+        seen = fs.lstatSync(path.join(dirPath, name));
       } catch (error) {
         return { status: mapError(error) };
       }
@@ -191,10 +208,38 @@ export function createStore(root) {
       } else {
         return { status: StatusIo };
       }
-      entries.push({ name: entry.name, kind, size, mtime });
+      entries.push({ name, kind, size, mtime });
     }
-    entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
-    snap = { path: dirPath, entries };
+    return { entries };
+  }
+
+  /**
+   * 这一层的记录。
+   * 同一次列举从下标 0 往后取时，目录没变就不再 lstat。
+   * 下一次从 0 起列时，先比目录修改时间和名字清单。对不上就丢掉快照重读。
+   * 这样宿主直接新增、删除、改名，下一次 ls 能看见。
+   * 失败时带 status，成功时带 entries。
+   */
+  function loadSnap(dirPath, index) {
+    if (snap !== null && snap.path === dirPath && index > 0) {
+      return snap;
+    }
+    let stamp;
+    let names;
+    try {
+      stamp = fs.statSync(dirPath).mtimeNs;
+      names = directoryNames(dirPath);
+    } catch (error) {
+      return { status: mapError(error) };
+    }
+    if (snap !== null && snap.path === dirPath && snap.stamp === stamp && sameNames(snap.names, names)) {
+      return snap;
+    }
+    const loaded = readEntries(dirPath, names);
+    if (loaded.status !== undefined) {
+      return loaded;
+    }
+    snap = { path: dirPath, stamp, names, entries: loaded.entries };
     return snap;
   }
 
@@ -327,7 +372,7 @@ export function createStore(root) {
         if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
           return emptyReply(StatusBadArgument);
         }
-        const loaded = loadSnap(located.path);
+        const loaded = loadSnap(located.path, index);
         if (loaded.status !== undefined) {
           return emptyReply(loaded.status);
         }

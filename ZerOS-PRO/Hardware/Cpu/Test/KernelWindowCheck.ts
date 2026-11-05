@@ -203,7 +203,10 @@ export namespace ZerOS {
           widen(128 * 64) +
           widen(64 * 448) +
           widen(64 * 4096 * 8) +
-          widen(16 * 768 + 16 * 2 * 4096 * 8);
+          widen(16 * 768 + 16 * 2 * 4096 * 8) +
+          /* 孩子名字散列：512 个桶头，每个目录项一个后继。 */
+          widen(512 * 64) +
+          widen(512 * 64);
         const memEndOffset = vfsEndOffset + widen(128 * 64) + widen(6) * widen(1048576) * widen(8);
         const gridBits = widen(253952);
         const memEnd = windowOrigin + memEndOffset;

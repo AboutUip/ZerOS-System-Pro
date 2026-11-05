@@ -50,7 +50,6 @@ export namespace ZerOS {
       const requestDebugRun = CpuSeatRoot.Hardware.Motherboard.requestDebugRun;
       const seatBinary = CpuSeatRoot.Hardware.Motherboard.seatBinary;
       const pushInbox = InboxRoot.Hardware.Motherboard.pushInbox;
-      const drainInboxThrough = InboxRoot.Hardware.Motherboard.drainInboxThrough;
       const notePanel = QueryRoot.Hardware.Motherboard.notePanel;
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
       const PointerPort = PointerConfigRoot.Hardware.Pointer.PointerConfig.OfficialPort;

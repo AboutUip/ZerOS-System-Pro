@@ -100,6 +100,7 @@
 | `ReadLinearBit(LinearBitIndex)` / `WriteLinearBit(LinearBitIndex, BitValue)` | `LinearBitIndex` 是 `bigint`。地址 0 是第 0 颗的位元 0 |
 | `ReadLinearInteger` / `WriteLinearInteger` | 可以跨颗粒。线性写入先查宽度和值，再查跨度 |
 | `Claim(BlockIndex, Owner)` / `Release(BlockIndex, Owner)` | 只针对浅切根。`Claim` 不改存储体。`Release` 成功时先把该根跨度内的位元清成 0，再把 `Owner` 放回 `null` |
+| `SetHertz(Hertz)` / `Metric(Kind)` | ZMP1 §4.27。`SetHertz` 把 Hz 改到 `1` 至 `1000000000`，并重新记下这条频率的时间起点；超出范围则失败且不改已记下的 Hz。`Metric` 的 `Kind` 为 `0` 时返回当前 Hz，为 `1` 时返回已完成条数。两者成功时各记一次已完成访问 |
 
 构造顺序：检查 `UnitCount`；循环 `new MemoryUnit(序号)`；冻结关联表；浅切 `Blocks`；只对 `InitState === 0x3` 的颗粒调用 `promoteToActive()`。`0x2` 与 `0x5` 保持不动。晋升不改 `Cells` / `CellCount` / `UnitOrdinal` / `Blocks`。
 

@@ -116,22 +116,6 @@ export namespace ZerOS {
       const runtimePrefix = "[ZerOS.Hardware.Cpu.CpuRuntime]";
       /** 一次装入最多读这么多个八位组。再长就拒绝，避免一条指令扫完整条地址线。 */
       const InstallOctetLimit = 16777216;
-      /**
-       * 核心刚抄完、还没入绘制队的一行字形标量。
-       * 只在画字符串那条命令的应答里写下，取走后立刻清空。
-       */
-      let deferredFont: Uint8Array | null = null;
-
-      /**
-       * 取出画字符串时核心交回的标量，并清空槽。
-       * 这些字节是在 gpu() 等待回复时由消息处理写进来的。
-       * 写在单独的函数里，调用方才能看见这次写入；写在同一个函数里，检查器会以为槽里仍是等待前清掉的空值。
-       */
-      function takeDeferredFont(): Uint8Array | null {
-        const bytes = deferredFont;
-        deferredFont = null;
-        return bytes;
-      }
 
       /** 一批出核心访问的结果。hostFault 非空时由 CPU 线程换成原来的失败语句。 */
       interface AccessOutcome {
@@ -858,11 +842,6 @@ export namespace ZerOS {
         core.Executed += 1;
         const isStore = record["isStore"] === true;
         const value = record["value"];
-        const carried = record["bytes"];
-        /* 画字符串先把标量交回这条线程再入队。呈现时才和矩形一起送显卡。 */
-        if (carried instanceof Uint8Array) {
-          deferredFont = carried;
-        }
         resolve({
           IsStore: isStore,
           Value: typeof value === "bigint" ? value : 0n,
@@ -1848,9 +1827,8 @@ export namespace ZerOS {
 
       /** 固件已经把这一次键写入环。监督核下一次读环前要丢掉自己的旧计数。 */
       let keyRingFresh = false;
-      /* 入站序号只在主板上增加。监督核读到环之后才算取完。
+      /* 入站次数只在主板上增加。监督核读到环之后才算取完。
          写环当时就记账的话，这一拍还拿着旧计数，conPump 会错过这一键。 */
-      let handledSerial = 0;
       let pendingHandled = 0;
 
       export function noteKeyRing(): void {
@@ -1869,7 +1847,6 @@ export namespace ZerOS {
         }
         const taken = pendingHandled;
         keyRingFresh = false;
-        handledSerial += pendingHandled;
         pendingHandled = 0;
         return taken;
       }

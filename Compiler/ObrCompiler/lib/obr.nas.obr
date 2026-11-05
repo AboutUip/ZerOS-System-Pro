@@ -763,6 +763,31 @@ deRfun obr::nas::openAt(long path, long mode, long* handle): long {
   return 0L;
 }
 
+/* 路径已经在装窗时核对过。这里只问下标还在不在这一窗里。 */
+deRfun nasIndexHit(long index): long {
+  nasArm();
+  if (memory::load64(nasMeta(0L)) != 1L) {
+    return 0L;
+  }
+  long start = memory::load64(nasMeta(1L));
+  long entries = memory::load64(nasMeta(2L));
+  if (index < start || index >= start + entries) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun obr::nas::readdirCached(long index, long address, long capacity, long* got): long {
+  *got = 0L;
+  if (index < 0L || index > 4294967295L || capacity < 0L) {
+    return 13L;
+  }
+  if (nasIndexHit(index) != 1L) {
+    return 1L;
+  }
+  return nasTake(index, address, capacity, got);
+}
+
 deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, long* got): long {
   *got = 0L;
   if (index < 0L || index > 4294967295L || capacity < 0L) {

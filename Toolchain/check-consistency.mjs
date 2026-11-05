@@ -48,26 +48,84 @@ function syncCursorLinks() {
   }
 }
 
-function checkCursorLinks() {
+/**
+ * `.cursor/` 不在仓库里。全新克隆没有它，这不是仓库不一致。
+ * 目录已经存在时，链接必须指向 Documents 里的权威源。
+ */
+export function inspectCursorLinks(root) {
+  const found = [];
+  const cursorRoot = path.join(root, ".cursor");
+  if (!existsSync(cursorRoot)) {
+    return found;
+  }
   for (const [src, dest] of cursorLinks) {
-    const from = path.join(repoRoot, src);
-    const to = path.join(repoRoot, dest);
+    const from = path.join(root, src);
+    const to = path.join(root, dest);
     if (!existsSync(from)) {
-      fail(`缺少权威源 ${src}`);
+      found.push(`缺少权威源 ${src}`);
       continue;
     }
     if (!existsSync(to)) {
-      fail(`${dest} 还没有接到 ${src}。在 Toolchain 执行 npm run skills:sync`);
+      found.push(`${dest} 还没有接到 ${src}。在 Toolchain 执行 npm run skills:sync`);
       continue;
     }
     const linked = lstatSync(to);
     if (!linked.isSymbolicLink()) {
-      fail(`${dest} 是实体目录，不是指向 ${src} 的链接`);
+      found.push(`${dest} 是实体目录，不是指向 ${src} 的链接`);
       continue;
     }
     if (realpathSync(to) !== realpathSync(from)) {
-      fail(`${dest} 没有指向 ${src}`);
+      found.push(`${dest} 没有指向 ${src}`);
     }
+  }
+  return found;
+}
+
+function checkCursorLinks() {
+  for (const message of inspectCursorLinks(repoRoot)) {
+    fail(message);
+  }
+}
+
+/** 服务表第一格里出现过的编号。正文里的数字不算。 */
+function documentedServices(text) {
+  const found = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|")) {
+      continue;
+    }
+    const cell = trimmed.split("|")[1] ?? "";
+    for (const match of cell.matchAll(/\d+/g)) {
+      found.add(Number(match[0]));
+    }
+  }
+  return found;
+}
+
+/** start.obr 里实际派发的服务号。范围写成 service >= a && service <= b。 */
+function implementedServices(text) {
+  const found = new Set();
+  for (const match of text.matchAll(/service == (\d+)L/g)) {
+    found.add(Number(match[1]));
+  }
+  for (const match of text.matchAll(/service >= (\d+)L && service <= (\d+)L/g)) {
+    const low = Number(match[1]);
+    const high = Number(match[2]);
+    for (let number = low; number <= high; number += 1) {
+      found.add(number);
+    }
+  }
+  return found;
+}
+
+function checkKernelServices() {
+  const docs = readText("ZerOS-PRO/Kernel/Docs/README.md");
+  const start = readText("ZerOS-PRO/Kernel/Init/start.obr");
+  const documented = documentedServices(docs);
+  const missing = [...implementedServices(start)].filter((number) => !documented.has(number)).sort((left, right) => left - right);
+  if (missing.length > 0) {
+    fail(`内核服务表缺 ${missing.join(", ")}`);
   }
 }
 
@@ -223,19 +281,23 @@ function checkDrivePaths() {
   }
 }
 
-if (process.argv.includes("--sync")) {
-  syncCursorLinks();
-}
-checkCursorLinks();
-checkProtocols();
-checkCompilerOutput();
-checkExamples();
-checkDrivePaths();
-
-if (failures.length > 0) {
-  for (const message of failures) {
-    process.stderr.write(`${message}\n`);
+const invokedDirectly = process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  if (process.argv.includes("--sync")) {
+    syncCursorLinks();
   }
-  process.exit(1);
+  checkCursorLinks();
+  checkProtocols();
+  checkCompilerOutput();
+  checkExamples();
+  checkDrivePaths();
+  checkKernelServices();
+
+  if (failures.length > 0) {
+    for (const message of failures) {
+      process.stderr.write(`${message}\n`);
+    }
+    process.exit(1);
+  }
+  process.stdout.write("consistency ok\n");
 }
-process.stdout.write("consistency ok\n");

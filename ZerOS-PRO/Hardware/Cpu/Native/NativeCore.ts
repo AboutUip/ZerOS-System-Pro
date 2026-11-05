@@ -1059,7 +1059,12 @@ export namespace ZerOS {
             cursor = end;
           }
         };
-        const fill = async (bit: bigint): Promise<void> => {
+        /* 环的通知已经到了，但这一圈读到的次数还没比上次更大。
+           读环返回真时，主循环自己记下次数已经前进。 */
+        let ringUnseen = false;
+        let ringAdvanced = false;
+        let lastRingCount = -1;
+        const fill = async (bit: bigint): Promise<boolean> => {
           const octet = Number(bit / 8n);
           if (keyRingOctet(octet)) {
             /* 次数、栅栏和五个槽一起读。一次只读一个字的话，conPump 要来回三四趟，一字节就要二十多毫秒。 */
@@ -1078,10 +1083,10 @@ export namespace ZerOS {
               }
               if (count > lastRingCount) {
                 lastRingCount = count;
-                ringAdvanced = true;
+                return true;
               }
             }
-            return;
+            return false;
           }
           /* 只把这一页已经改过的字节送出去。整份脏缓冲一起送的话，每次缺页都会把还没写完的记录切成几十字节。 */
           const dirtyPage = (bit / 8n) & ~pageMask;
@@ -1095,6 +1100,7 @@ export namespace ZerOS {
             count = 1;
           }
           install(page, await nativeReadSpan(ordinal, page * 8n, count));
+          return false;
         };
         const dropShared = (): void => {
           const sharedN = Number(sharedOctet);
@@ -1189,11 +1195,6 @@ export namespace ZerOS {
         /* 只记住已经写进环的按下次数。松开不加这个序号，回显的写出不会被切开。
            还有按下没进环时，这一拍满 1 毫秒就交给固件。 */
         let attentionSeen = 0;
-        /* 环的通知已经到了，但这一圈读到的次数还没比上次更大。
-           主循环走到升频也不许睡：次数没变，说明这一圈看见的仍是旧环，键还在环里。 */
-        let ringUnseen = false;
-        let ringAdvanced = false;
-        let lastRingCount = -1;
         const keyArrived = (): boolean => {
           return MetricRoot.Hardware.Motherboard.keySerialNow() !== attentionSeen
             || RuntimeRoot.Hardware.Cpu.keyUnwritten();
@@ -1315,7 +1316,7 @@ export namespace ZerOS {
             if (!canWait || !nativeTerminalLive() || performance.now() < hotUntil) {
               yieldChannel.port2.postMessage(null);
             }
-            if (!canWait || mark === null) {
+            if (mark === null || typeof Atomics.waitAsync !== "function") {
               return;
             }
             /* 等这一格发生变化。键入队会加一，不论当前是 0 还是上次没减干净的数。
@@ -1517,7 +1518,9 @@ export namespace ZerOS {
                 if (!isNativeMiss(error)) {
                   throw error;
                 }
-                await fill(error.bit);
+                if (await fill(error.bit)) {
+                  ringAdvanced = true;
+                }
                 if (recall(error.bit / 8n) === undefined) {
                   throw new Error("native instruction failed");
                 }

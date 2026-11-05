@@ -35,6 +35,19 @@ export namespace ZerOS {
 
       let hertz = OfficialHertz;
       let executed = 0;
+      /** 最近一次成功 SetHertz 记下的时间起点。失败的设置不会改它。 */
+      let hertzOrigin = Number.NaN;
+
+      function noteAccess(): void {
+        executed += 1;
+      }
+
+      function rememberOrigin(): void {
+        hertzOrigin = performance.now();
+        if (!Number.isFinite(hertzOrigin)) {
+          hertzOrigin = 0;
+        }
+      }
 
       function fail(message: string): never {
         throw new Error(`${clockPrefix} ${message}`);
@@ -48,12 +61,31 @@ export namespace ZerOS {
         return executed;
       }
 
-      /** 超出 1 到 1000000000 时失败，已记下的 Hz 不动。 */
+      /**
+       * ZMP1 §4.27 `SetHertz`。
+       * 超出 1 到 1000000000 时失败，已记下的 Hz 和时间起点都不动。
+       * 成功时换上新值，重新记下这条频率自己的时间起点，并记一次已完成访问。
+       */
       export function setHertz(value: number): void {
         if (!Number.isInteger(value) || value < HertzMin || value > HertzMax) {
           fail("Hz 不在 1 到 1000000000");
         }
         hertz = value;
+        rememberOrigin();
+        noteAccess();
+      }
+
+      /**
+       * ZMP1 §4.27 `Metric`。
+       * Kind 0 返回当前 Hz，Kind 1 返回已完成条数。其它 Kind 失败，条数不加。
+       * 成功时先记一次已完成访问，再返回，所以条数包含这一次。
+       */
+      export function metric(kind: number): number {
+        if (!Number.isInteger(kind) || (kind !== 0 && kind !== 1)) {
+          fail("没有这种内存指标");
+        }
+        noteAccess();
+        return kind === 0 ? hertz : executed;
       }
 
       /** 改用主板上电记下的起点。 */
@@ -63,7 +95,7 @@ export namespace ZerOS {
 
       /**
        * 成功的访问走这里。记一条已完成。
-       * metric 读到的频率和条数不变。
+       * Metric 的种类 1 会把这一条算进去。
        * 不再按到期时刻睡觉。睡觉时没有指令在跑，调用方只是被定时器按住。
        */
       export function spend(_cycles: number): Promise<void> {

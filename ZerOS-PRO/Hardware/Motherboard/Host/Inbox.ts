@@ -79,7 +79,7 @@ export namespace ZerOS {
         if (words.length < 1) {
           return -1n;
         }
-        let count = wordFromOctets(exchange(1, 0n));
+        const count = wordFromOctets(exchange(1, 0n));
         for (;;) {
           const word = words.shift();
           if (word === undefined) {

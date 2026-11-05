@@ -132,15 +132,15 @@ node dev\Debug\tools\survey-a0.mjs 6
 
 runner 以提示符事件为完成信号，不用固定等待时间判断命令结束。每条命令有硬超时；超时即中止并保留日志。
 
-### 3.3 54 条全命令语料
+### 3.3 全命令语料
 
-仓库内语料是 `Compiler/Debugger/Tools/ztrace-corpus.json`，覆盖 `/bin` 下除 `arg.obr` 外的全部 54 条命令。runner 会先校验语料与目录一致，少一条或多一条都直接失败。
+仓库内语料是 `Compiler/Debugger/Tools/ztrace-corpus.json`，覆盖 `Resource/Bin` 下除 `arg.obr` 外的全部命令。条数跟着命令源走，不再写死。runner 会先校验语料与目录一致，少一条或多一条都直接失败。开跑前在客根种下 `/home` 和语料要用的文件；客根不进版本库。
 
 ```powershell
 node Compiler\Debugger\Tools\ztrace-corpus.mjs --url "http://localhost:5180/" --out dev\Debug\ztrace-corpus --key-delay 200 --timeout 60000
 ```
 
-默认整个进程有硬超时（`--timeout × 54 + 120000` 毫秒），单条命令仍各有 `--timeout`。结果写到 `corpus-summary.json` 和 `corpus-summary.txt`；只有 54 条全部回到提示符、无 `error` 才返回 0。`--only name,...` 只用于定位，结果会标 `complete=false`，不能当验收。
+默认整个进程有硬超时（`--timeout × 本次条数 + 120000` 毫秒），单条命令仍各有 `--timeout`。结果写到 `corpus-summary.json` 和 `corpus-summary.txt`；只有本次语料全部回到提示符、无 `error` 才返回 0。`--only name,...` 只用于定位，结果会标 `complete=false`，不能当验收。
 
 v1.1 或 v2 要验证退出码时加 `--require-exit-codes`；v1.0 历史完成基线不加。退出码优先走宿主侧 `ProcessExit`：CPU 在服务 28 调用点直接读 `home+128`。全量曾停在 46/54，最后 8 条没有 `17 spawn`/`28 exit`，根因是 VFS 固定路径缓存耗尽；VFS 已扩到 512 项并加满时回收，最终全量 **54/54**、门禁 **8/8**，该开关可作为发布门禁。
 

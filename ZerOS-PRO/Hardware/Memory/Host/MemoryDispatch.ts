@@ -38,8 +38,7 @@ export namespace ZerOS {
       const spend = ClockRoot.Hardware.Memory.spend;
       const spendBulk = ClockRoot.Hardware.Memory.spendBulk;
       const setHertz = ClockRoot.Hardware.Memory.setHertz;
-      const currentHertz = ClockRoot.Hardware.Memory.currentHertz;
-      const currentExecuted = ClockRoot.Hardware.Memory.currentExecuted;
+      const metric = ClockRoot.Hardware.Memory.metric;
       const paceText = ClockRoot.Hardware.Memory.paceText;
       const adoptOrigin = ClockRoot.Hardware.Memory.adoptOrigin;
 
@@ -238,17 +237,12 @@ export namespace ZerOS {
           if (op === MailOp.Hertz) {
             const hertz = Number(address);
             setHertz(hertz);
-            await spend(1);
             finish(MailStatus.Ok, paceText());
             return;
           }
           if (op === MailOp.Metric) {
             const kind = Number(address);
-            if (kind !== 0 && kind !== 1) {
-              throw new Error("[ZerOS.Hardware.Memory.MemoryClock] 没有这种内存指标");
-            }
-            await spend(1);
-            words[2] = BigInt(kind === 0 ? currentHertz() : currentExecuted());
+            words[2] = BigInt(metric(kind));
             finish(MailStatus.Ok, paceText());
             return;
           }

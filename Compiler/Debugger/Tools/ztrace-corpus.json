@@ -1,15 +1,50 @@
 {
   "schema": "zeros.ztrace.corpus/1",
-  "description": "v1 全命令语料。每项只验证命令能回到提示符，不比较输出文本。",
+  "description": "全命令语料，与 Resource/Bin 里除 arg 以外的命令一一对应。每项只验证命令能回到提示符，不比较输出文本。/home 由 runner 在开跑前种下。",
   "commands": [
+    {
+      "name": "ar",
+      "command": "ar -t /home/lib.a",
+      "exit": 0
+    },
+    {
+      "name": "asa",
+      "command": "asa /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "awk",
+      "command": "awk print /home/test.txt",
+      "exit": 0
+    },
     {
       "name": "basename",
       "command": "basename /home/test.txt",
       "exit": 0
     },
     {
+      "name": "bc",
+      "command": "echo 1+1 | bc",
+      "exit": 0
+    },
+    {
+      "name": "cal",
+      "command": "cal 2020",
+      "exit": 0
+    },
+    {
       "name": "cat",
       "command": "cat /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "cflow",
+      "command": "cflow /home/c.c",
+      "exit": 0
+    },
+    {
+      "name": "chgrp",
+      "command": "chgrp 0 /home/test.txt",
       "exit": 0
     },
     {
@@ -38,8 +73,23 @@
       "exit": 0
     },
     {
+      "name": "compress",
+      "command": "compress /home/cz.txt",
+      "exit": 0
+    },
+    {
       "name": "cp",
       "command": "cp /home/test.txt /home/perf/corpus-copy.txt",
+      "exit": 0
+    },
+    {
+      "name": "csplit",
+      "command": "csplit /home/test.txt 1",
+      "exit": 0
+    },
+    {
+      "name": "ctags",
+      "command": "ctags /home/c.c",
       "exit": 0
     },
     {
@@ -55,6 +105,11 @@
     {
       "name": "dd",
       "command": "dd if=/home/test.txt of=/home/perf/corpus-dd.txt",
+      "exit": 0
+    },
+    {
+      "name": "df",
+      "command": "df",
       "exit": 0
     },
     {
@@ -78,8 +133,18 @@
       "exit": 0
     },
     {
+      "name": "ed",
+      "command": "echo q | ed /home/test.txt",
+      "exit": 0
+    },
+    {
       "name": "env",
       "command": "env",
+      "exit": 0
+    },
+    {
+      "name": "expand",
+      "command": "expand /home/test.txt",
       "exit": 0
     },
     {
@@ -93,6 +158,11 @@
       "exit": 1
     },
     {
+      "name": "file",
+      "command": "file /home/test.txt",
+      "exit": 0
+    },
+    {
       "name": "find",
       "command": "find /home/perf -name a.txt",
       "exit": 0
@@ -103,13 +173,43 @@
       "exit": 0
     },
     {
+      "name": "fuser",
+      "command": "fuser /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "gencat",
+      "command": "gencat /home/msg.cat /home/msg.src",
+      "exit": 0
+    },
+    {
+      "name": "getconf",
+      "command": "getconf PATH_MAX",
+      "exit": 0
+    },
+    {
       "name": "grep",
       "command": "grep Hello /home/test.txt",
       "exit": 0
     },
     {
+      "name": "groups",
+      "command": "groups",
+      "exit": 0
+    },
+    {
       "name": "head",
       "command": "head /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "hostid",
+      "command": "hostid",
+      "exit": 0
+    },
+    {
+      "name": "iconv",
+      "command": "iconv -f UTF-8 -t UTF-8 /home/test.txt",
       "exit": 0
     },
     {
@@ -123,13 +223,48 @@
       "exit": 0
     },
     {
+      "name": "join",
+      "command": "join /home/perf/a.txt /home/perf/b.txt",
+      "exit": 0
+    },
+    {
       "name": "kill",
       "command": "kill",
       "exit": 1
     },
     {
+      "name": "locale",
+      "command": "locale",
+      "exit": 0
+    },
+    {
+      "name": "logger",
+      "command": "logger hi",
+      "exit": 0
+    },
+    {
+      "name": "logname",
+      "command": "logname",
+      "exit": 1
+    },
+    {
       "name": "ls",
       "command": "ls /home/perf",
+      "exit": 0
+    },
+    {
+      "name": "m4",
+      "command": "echo hello | m4",
+      "exit": 0
+    },
+    {
+      "name": "man",
+      "command": "man ls",
+      "exit": 0
+    },
+    {
+      "name": "mesg",
+      "command": "mesg",
       "exit": 0
     },
     {
@@ -143,8 +278,23 @@
       "exit": 0
     },
     {
+      "name": "more",
+      "command": "more -e /home/test.txt",
+      "exit": 0
+    },
+    {
       "name": "mv",
       "command": "mv /home/perf/corpus-copy.txt /home/perf/corpus-copy2.txt",
+      "exit": 0
+    },
+    {
+      "name": "nl",
+      "command": "nl /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "nohup",
+      "command": "nohup true",
       "exit": 0
     },
     {
@@ -155,6 +305,26 @@
     {
       "name": "paste",
       "command": "paste /home/perf/a.txt /home/perf/b.txt",
+      "exit": 0
+    },
+    {
+      "name": "patch",
+      "command": "patch -i /home/fix.diff -o /home/patched.txt",
+      "exit": 0
+    },
+    {
+      "name": "pathchk",
+      "command": "pathchk /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "pax",
+      "command": "pax -w -f /home/pack.tar /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "pr",
+      "command": "pr -t /home/test.txt",
       "exit": 0
     },
     {
@@ -188,6 +358,11 @@
       "exit": 0
     },
     {
+      "name": "sed",
+      "command": "sed -n p /home/test.txt",
+      "exit": 0
+    },
+    {
       "name": "seq",
       "command": "seq 1 3",
       "exit": 0
@@ -203,6 +378,21 @@
       "exit": 0
     },
     {
+      "name": "split",
+      "command": "split -l 1 /home/test.txt /home/sp",
+      "exit": 0
+    },
+    {
+      "name": "strings",
+      "command": "strings /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "tabs",
+      "command": "tabs",
+      "exit": 0
+    },
+    {
       "name": "tail",
       "command": "tail /home/test.txt",
       "exit": 0
@@ -215,6 +405,11 @@
     {
       "name": "test",
       "command": "test -f /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "time",
+      "command": "time true",
       "exit": 0
     },
     {
@@ -238,8 +433,28 @@
       "exit": 0
     },
     {
+      "name": "tsort",
+      "command": "tsort /home/ts.txt",
+      "exit": 0
+    },
+    {
+      "name": "tty",
+      "command": "tty",
+      "exit": 0
+    },
+    {
       "name": "uname",
       "command": "uname",
+      "exit": 0
+    },
+    {
+      "name": "uncompress",
+      "command": "uncompress /home/uz.Z",
+      "exit": 0
+    },
+    {
+      "name": "unexpand",
+      "command": "unexpand /home/test.txt",
       "exit": 0
     },
     {
@@ -248,8 +463,28 @@
       "exit": 0
     },
     {
+      "name": "unlink",
+      "command": "unlink /home/gone.txt",
+      "exit": 0
+    },
+    {
+      "name": "uudecode",
+      "command": "uudecode /home/sample.uu",
+      "exit": 0
+    },
+    {
+      "name": "uuencode",
+      "command": "uuencode /home/test.txt /home/test.out",
+      "exit": 0
+    },
+    {
       "name": "wc",
       "command": "wc /home/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "what",
+      "command": "what /home/what.txt",
       "exit": 0
     },
     {
@@ -258,8 +493,18 @@
       "exit": 0
     },
     {
+      "name": "who",
+      "command": "who",
+      "exit": 0
+    },
+    {
       "name": "whoami",
       "command": "whoami",
+      "exit": 0
+    },
+    {
+      "name": "write",
+      "command": "echo hi | write root",
       "exit": 0
     },
     {
@@ -271,6 +516,11 @@
       "name": "yes",
       "command": "yes --help",
       "exit": 1
+    },
+    {
+      "name": "zcat",
+      "command": "zcat /home/zz.Z",
+      "exit": 0
     }
   ]
 }

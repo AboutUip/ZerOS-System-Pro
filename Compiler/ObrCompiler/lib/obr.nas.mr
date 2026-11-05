@@ -31,6 +31,8 @@ deRfun rename(string from, string to): long;
 deRfun statAt(long path, long* kind, long* size): long;
 deRfun openAt(long path, long mode, long* handle): long;
 deRfun readdirAt(long path, long index, long address, long capacity, long* got): long;
+/* 当前窗口已经对上路径时，只按下标取出一项。窗口里没有这个下标返回 1，调用方再走 readdirAt。1 不是「不是目录」。 */
+deRfun readdirCached(long index, long address, long capacity, long* got): long;
 deRfun mkdirAt(long path): long;
 deRfun unlinkAt(long path): long;
 /* 两条路径都是计数字符串，分别放进槽 0 和槽 1。 */

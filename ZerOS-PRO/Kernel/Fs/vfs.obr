@@ -184,12 +184,30 @@ deRfun layoutWord(long slot): long {
   return kSupervisor() + 13312L + slot * 64L;
 }
 
+deRfun ringEnd(): long {
+  return devRingBase() + devCount() * 2L * ringRoom() * 8L;
+}
+
+/* 孩子名字的散列。512 个桶头，每个目录项再留一个后继。
+   0 是链尾。根占 0 号槽，不会进桶。查找按名字进桶，不再顺着整条兄弟链数。 */
+deRfun bucketCount(): long {
+  return 512L;
+}
+
+deRfun hashHeadAt(): long {
+  return ringEnd();
+}
+
+deRfun hashLinkAt(): long {
+  return hashHeadAt() + bucketCount() * 64L;
+}
+
 deRfun vfsEnd(): long {
   long cached = memory::load64(layoutWord(0L));
   if (cached != 0L) {
     return cached;
   }
-  long base = devRingBase() + devCount() * 2L * ringRoom() * 8L;
+  long base = hashLinkAt() + dentryCount() * 64L;
   memory::store64(base, layoutWord(0L));
   return base;
 }
@@ -568,6 +586,65 @@ deRfun nameEq(long dent, long path, long from, long count): long {
   return 1L;
 }
 
+/* counted 为 1 时 address 是计数字符串，字节从 +64 起。为 0 时 address 就是名字八位组。 */
+deRfun nameHash(long parent, long address, long from, long count, long counted): long {
+  long hash = 216613L + parent;
+  long index = 0L;
+  while (index < count) {
+    long value = 0L;
+    if (counted == 1L) {
+      value = octetAt(address, from + index);
+    } else {
+      value = memory::loadOctet(address + (from + index) * 8L);
+    }
+    if (value < 0L) {
+      value = value + 256L;
+    }
+    hash = hash * 131L + value;
+    index = index + 1L;
+  }
+  if (hash < 0L) {
+    hash = 0L - hash;
+  }
+  if (hash < 0L) {
+    hash = 0L;
+  }
+  return hash % bucketCount();
+}
+
+deRfun hashInsert(long parent, long dent): void {
+  Dentry* entry = dentryAt(dent);
+  long bucket = nameHash(parent, nameAt(dent), 0L, entry.nameLen, 0L);
+  long head = hashHeadAt() + bucket * 64L;
+  memory::store64(memory::load64(head), hashLinkAt() + dent * 64L);
+  memory::store64(dent, head);
+}
+
+deRfun hashRemove(long parent, long dent): void {
+  Dentry* entry = dentryAt(dent);
+  long bucket = nameHash(parent, nameAt(dent), 0L, entry.nameLen, 0L);
+  long head = hashHeadAt() + bucket * 64L;
+  long index = memory::load64(head);
+  long prev = 0L;
+  long guard = 0L;
+  long limit = dentryCount();
+  while (index > 0L && guard < limit) {
+    guard = guard + 1L;
+    long next = memory::load64(hashLinkAt() + index * 64L);
+    if (index == dent) {
+      if (prev == 0L) {
+        memory::store64(next, head);
+      } else {
+        memory::store64(next, hashLinkAt() + prev * 64L);
+      }
+      memory::store64(0L, hashLinkAt() + dent * 64L);
+      return;
+    }
+    prev = index;
+    index = next;
+  }
+}
+
 deRfun findChild(long parent, long path, long from, long count): long {
   if (count == 1L && octetAt(path, from) == 46L) {
     return parent;
@@ -579,21 +656,20 @@ deRfun findChild(long parent, long path, long from, long count): long {
     }
     return up;
   }
-  /* 只走这个父目录自己的孩子链。目录项区和名字区的起点各算一次，
-     比较时不再为每一格重算 vfsBase。空槽和别的目录不再逐个发问。 */
+  /* 只走这个名字落进的那一条桶链。兄弟链仍留给内存目录按顺序交回。 */
+  long bucket = nameHash(parent, path, from, count, 1L);
   long base = dentryBase();
   long span = dentryStride();
   long names = nameBase();
   long nameStep = nameStride();
-  Dentry* owner = (Dentry*)(base + parent * span);
-  long index = owner.child;
+  long index = memory::load64(hashHeadAt() + bucket * 64L);
   long guard = 0L;
   long limit = dentryCount();
   while (index > 0L && guard < limit) {
     guard = guard + 1L;
     Dentry* entry = (Dentry*)(base + index * span);
-    long next = entry.next;
-    if (entry.used == 1L && entry.nameLen == count) {
+    long next = memory::load64(hashLinkAt() + index * 64L);
+    if (entry.used == 1L && entry.parent == parent && entry.nameLen == count) {
       long name = names + index * nameStep;
       long at = 0L;
       long same = 1L;
@@ -749,6 +825,7 @@ deRfun linkChild(long parent, long dent): void {
   entry.child = 0L;
   entry.next = owner.child;
   owner.child = dent;
+  hashInsert(parent, dent);
 }
 
 /* 从父链上摘掉。父目录的 parent 是 -1 时本来就不在链上。 */
@@ -761,6 +838,7 @@ deRfun unlinkChild(long dent): void {
     entry.next = 0L;
     return;
   }
+  hashRemove(parent, dent);
   Dentry* owner = (Dentry*)(base + parent * span);
   long index = owner.child;
   long prev = 0L;
@@ -1942,7 +2020,11 @@ deRfun doList(long caller, long home): long {
         if (nameCap > 512L) {
           nameCap = 512L;
         }
-        long listed = obr::nas::readdirAt(scratch(), cursor, at + 576L, nameCap, &got);
+        /* 同一目录连续取下一项时不再重比路径。窗口里没有这个下标才再要一次。 */
+        long listed = obr::nas::readdirCached(cursor, at + 576L, nameCap, &got);
+        if (listed == 1L) {
+          listed = obr::nas::readdirAt(scratch(), cursor, at + 576L, nameCap, &got);
+        }
         if (listed == 2L) {
           reading = 0L;
         } else if (listed == 7L && produced > 0L) {

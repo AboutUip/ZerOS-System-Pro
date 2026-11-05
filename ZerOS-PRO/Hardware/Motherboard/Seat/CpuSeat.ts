@@ -84,7 +84,10 @@ export namespace ZerOS {
           return { value, snapshot: null };
         }
         const drained = Drain(portIndex, 40);
-        if (drained === null || drained.status !== 0 || drained.bytes.length < 40) {
+        if (drained?.status !== 0) {
+          return { value, snapshot: null };
+        }
+        if (drained.bytes.length < 40) {
           return { value, snapshot: null };
         }
         const snapshot = new Uint8Array(40);

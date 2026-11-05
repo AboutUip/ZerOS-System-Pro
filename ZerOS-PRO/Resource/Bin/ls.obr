@@ -34,6 +34,8 @@
    -q 把小于 32 或大于 126 的八位组换成问号。宽度按八位组计算。
 
    -d 只列出操作数自己。-R 递归列子目录。两个都出现时后写的为准。
+   不带 -R 时不分配子目录名字池，路径栈和祖先栈只留一层。
+   这一层的名字池仍然要：名字先收下，排完才写。
    不进入名为 . 或 .. 的项。层数从操作数算第 1 层，到 32 就停，
    再往下写 ls: too deep。路径先拼上当前目录，再去掉 .、.. 和重复斜杠。
    正要进入的目录若和栈上任一祖先收成同一条绝对路径，写
@@ -1657,10 +1659,18 @@ deRfun main(): int {
   long entries = obr::proc::alloc(home, 1024L * 512L);
   long indices = obr::proc::alloc(home, 1024L * 64L);
   long namePool = obr::proc::alloc(home, 1024L * 512L * 8L);
-  long childPool = obr::proc::alloc(home, 65536L * 256L);
-  long paths = obr::proc::alloc(home, 32L * 65536L);
-  long anc = obr::proc::alloc(home, 32L * 65536L);
-  long frames = obr::proc::alloc(home, 32L * 512L);
+  /* 子目录名字和 32 层路径只在 -R 时申请。单目录只留当前这一层。 */
+  long childPool = 0L;
+  long pathSlots = 1L;
+  long frameBytes = 512L;
+  if (descend == 1L) {
+    childPool = obr::proc::alloc(home, 65536L * 256L);
+    pathSlots = 32L;
+    frameBytes = 32L * 512L;
+  }
+  long paths = obr::proc::alloc(home, pathSlots * 65536L);
+  long anc = obr::proc::alloc(home, pathSlots * 65536L);
+  long frames = obr::proc::alloc(home, frameBytes);
   long cwd = obr::proc::alloc(home, 65536L);
   long scratch = obr::proc::alloc(home, 65536L);
   long fold = obr::proc::alloc(home, 65536L);
@@ -1668,7 +1678,10 @@ deRfun main(): int {
   long dirAt = obr::proc::alloc(home, 64L * 64L);
   long dirLn = obr::proc::alloc(home, 64L * 64L);
   long dot = obr::proc::alloc(home, 64L);
-  if (opt == 0L || entries == 0L || indices == 0L || namePool == 0L || childPool == 0L) {
+  if (opt == 0L || entries == 0L || indices == 0L || namePool == 0L) {
+    return fail(home, "ls: out of memory\n");
+  }
+  if (descend == 1L && childPool == 0L) {
     return fail(home, "ls: out of memory\n");
   }
   if (paths == 0L || anc == 0L || frames == 0L || cwd == 0L || scratch == 0L || fold == 0L) {
@@ -1705,7 +1718,11 @@ deRfun main(): int {
   memory::store64(indices, opt + 1408L);
   memory::store64(namePool, opt + 1472L);
   memory::store64(childPool, opt + 1536L);
-  memory::store64(65536L * 256L, opt + 1600L);
+  long childCap = 0L;
+  if (descend == 1L) {
+    childCap = 65536L * 256L;
+  }
+  memory::store64(childCap, opt + 1600L);
   memory::store64(0L, opt + 1664L);
   memory::store64(paths, opt + 1728L);
   memory::store64(anc, opt + 1792L);

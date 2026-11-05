@@ -13,16 +13,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { abandonedSyscall } from "./ztrace-sched-gate.mjs";
+import { plantCorpusHome } from "./ztrace-home.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "../../..");
 const CORPUS_PATH = path.join(SCRIPT_DIR, "ztrace-corpus.json");
 const ZTRACE_PATH = path.join(SCRIPT_DIR, "ztrace.mjs");
 const BIN_DIR = path.join(REPO_ROOT, "ZerOS-PRO", "Resource", "Bin");
+const NAS_ROOT = path.join(REPO_ROOT, "ZerOS-PRO", "Hardware", "Nas", "Root");
 const CORPUS_SCHEMA = "zeros.ztrace.corpus/1";
 const RESULT_SCHEMA = "zeros.ztrace.corpus-result/1";
 const CAPTURE_SCHEMAS = new Set(["zeros.ztrace.capture/1", "zeros.ztrace.capture/2"]);
-const EXPECTED_COMMANDS = 54;
 
 class CliError extends Error {}
 
@@ -114,9 +115,6 @@ function parseArgs(argv) {
       options.only = value.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
     }
   }
-  if (options.totalTimeoutMs === 0) {
-    options.totalTimeoutMs = options.timeoutMs * EXPECTED_COMMANDS + 120000;
-  }
   return options;
 }
 
@@ -170,11 +168,8 @@ function validateCoverage(corpus) {
   const actual = new Set(corpus.commands.map((item) => item.name));
   const missing = [...expected].filter((name) => !actual.has(name)).sort();
   const extra = [...actual].filter((name) => !expected.has(name)).sort();
-  if (corpus.commands.length !== EXPECTED_COMMANDS) {
-    throw new CliError(`语料应有 ${String(EXPECTED_COMMANDS)} 条，实际 ${String(corpus.commands.length)} 条`);
-  }
   if (missing.length > 0 || extra.length > 0) {
-    throw new CliError(`语料与 /bin 不一致；缺少 ${missing.join(", ") || "-"}；多出 ${extra.join(", ") || "-"}`);
+    throw new CliError(`语料与 /bin 不一致；缺少 ${missing.join(", ") || "无"}；多出 ${extra.join(", ") || "无"}`);
   }
 }
 
@@ -386,11 +381,20 @@ async function main() {
     process.stderr.write(`ztrace-corpus: ${error instanceof Error ? error.message : String(error)}\n`);
     return 2;
   }
+  if (options.totalTimeoutMs === 0) {
+    options.totalTimeoutMs = options.timeoutMs * selected.length + 120000;
+  }
   if (options.list) {
     for (const item of selected) {
       process.stdout.write(`${item.name.padEnd(10)} ${item.command}\n`);
     }
     return 0;
+  }
+  try {
+    plantCorpusHome(NAS_ROOT);
+  } catch (error) {
+    process.stderr.write(`ztrace-corpus: 无法准备 /home：${error instanceof Error ? error.message : String(error)}\n`);
+    return 2;
   }
   try {
     fs.mkdirSync(options.out, { recursive: true });
