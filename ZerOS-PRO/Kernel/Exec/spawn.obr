@@ -166,6 +166,8 @@ deRfun execSpawn(long caller, long home): long {
     } else {
       /* 先设回 legacy bound，再 install：核上可能还留着上一个 flat 任务的窗口，
          install 的基址若用残留窗口，数据地址会和随后的 kArena bound 对不上。 */
+      while (taskDropZombie(core) == 1L) {
+      }
       obr::os::bound(core, kArena(core), kSlot());
       obr::os::install(core, imageAt(), size);
     }

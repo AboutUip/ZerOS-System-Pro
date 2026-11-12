@@ -1,8 +1,7 @@
 /* 真实鼠标驱动：服务 64 是共享页指针环的累计事件数，作为唯一事件源。
    启动时 base = 环当前计数；每个新事件更新服务 62。
-   home 每次发布前用服务 65 重取（按任务表，不受共享核当前 bound 影响），
-   home 为 0 时跳过本轮，等下一轮有效窗口再发布，避免 capture/restore 后
-   本地 home 变 0 造成 131072 越界。 */
+   重启时 SIGTERM 把 events 写进 handover 固定槽，新实例从这里续上基线。
+   home 每次发布前用服务 65 重取，home 为 0 时跳过本轮。 */
 import board;
 import memory;
 import obr.os;
@@ -22,9 +21,24 @@ deRfun publish(long home, long events, long base): void {
 
 deRfun main(): int {
   long home = homeNow();
+  if (home != 0L) {
+    memory::store64(2L, home + 64L);
+  }
+  long handed = obr::os::svc(57L);
+  home = homeNow();
   long device = obr::os::svc(64L);
+  long before = 0L;
+  if (handed == 8L && home != 0L) {
+    before = memory::load64(home + 131072L);
+  }
   long base = device;
-  long events = device;
+  if (before > base) {
+    base = before;
+  }
+  if (base < 1L) {
+    base = 1L;
+  }
+  long events = base;
   long seen = device;
   if (home != 0L) {
     publish(home, events, base);
@@ -43,6 +57,10 @@ deRfun main(): int {
     if (sig == 15L) {
       long bye = homeNow();
       if (bye != 0L) {
+        memory::store64(events, bye + 131072L);
+        memory::store64(8L, bye + 128L);
+        memory::store64(1L, bye + 64L);
+        obr::os::svc(57L);
         memory::store64(0L, bye + 128L);
       }
       obr::os::svc(28L);

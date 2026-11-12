@@ -119,20 +119,23 @@ NAS 上只放运行时映像：`/kernel/start`、`/kernel/init`、`/kernel/idle`
 | 53 | coreState。+448 是核号；回复 state、why、held、running 组合 |
 | 54 | parkCore。+448 是核号；把该核停着的任务 capture 进槽并标 Sleeping；成功 0，没有任务 2，没有槽 7 |
 | 55 | restartDriver。+128 是旧实例 pid（0 表示没有），+16384 是新实例路径；成功时 pid/core 在 +192/+256，没有可用核回复 11 |
-| 56 | drvManage。op 在 +64：1 load、2 stop、3 restart、4 rollback、5 list；路径 +16384，pid +128；restart/rollback 先发 SIGTERM 返回 12，超时后 +2048=1 升级 SIGKILL |
-| 57 | handover。op 在 +64：1 写、2 读、3 清；长度 +128，正文 +131072 |
+| 56 | drvManage。op 在 +64：1 load、2 stop、3 restart、4 rollback、5 list、10 live count、12 reload（从固定槽里的当前路径装载）；路径 +16384，pid +128；restart/rollback 先发 SIGTERM 返回 12，超时后 +2048=1 升级 SIGKILL |
+| 57 | handover。op 在 +64：1 写、2 读、3 清；长度 +128，正文 +131072；缓冲在监督核窗口 +16512，最多 256 个八位组 |
 | 58 | inputRead。把内核键盘镜像环里的真实字节读到调用者 +131072，回复字节数 |
-| 59 | kbdState。op 在 +64：1 发布（4 个字在 +131072）、2 读取（回复 32）；镜像在 shell 任务窗口 +3300000 |
+| 59 | kbdState。op 在 +64：1 发布（4 个字在 +131072）、2 读取（回复 32）；状态在监督核窗口 +18752 |
 | 60 | inputHead。回复键盘镜像环累计写入的字节数，用于断言驱动已追上、没有丢事件 |
 | 61 | pointerPoll。监督核从 ZPP1 扩展口 3 消费一个真实鼠标事件，回复 1/0；正文 kind/button/x/y/wheel/count 在 +131072 起 |
-| 62 | mouseState。op 在 +64：1 发布（4 个字在 +131072）、其它读取（回复 32）；状态在 shell 任务窗口 +3400000 |
+| 62 | mouseState。op 在 +64：1 发布（4 个字在 +131072）、其它读取（回复 32）；状态在监督核窗口 +16256 |
 | 63 | pointerPage。只读共享页指针环 x/y/flag/count 到 +131072，不消费队列 |
 | 64 | pointerCount。回复共享页指针环累计事件数（低页 12288），不依赖调用者窗口 |
 | 65 | myHome。回复调用者自己的窗口/数据起点；内核按任务表和核窗口兜底，不读异步指标页 |
 | 66 | 诊断：回复最近一次服务 65 的调用者 pid |
 | 67 | 诊断：回复最近一次服务 65 返回的 home |
 | 68 | 诊断：回复本核旧布局 kSp 单元的真实内存值 |
-| 69 | gpuState。op 在 +64：1 发布（frames/base 在 +131072）、其它读取（回复 16）；状态在 shell 任务窗口 +3500000 |
+| 69 | gpuState。读取 frames/base 到调用者 +131072（回复 16）；状态在监督核窗口 +16000 |
+| 70 | gpuPublish。发布调用者 +131072/+131136 的 frames/base 到监督核窗口 +16000/+16064 |
+| 71 | gpuPacked。回复 (frames<<32)|base 标量，不依赖调用者窗口 |
+| 72 | kbdPacked。回复键盘状态 (events<<32)|base，标量回复不依赖调用者窗口 |
 | 80 | bindWho。回复 core 3 上一个旧布局绑定任务的 pid（低 8 位由调用者取），用于定位 kSp fault 的共核任务 |
 | 81 | faultWho。回复 core 3 上因 fault 停下的任务 pid（调度扫描写入监督核窗口） |
 | 83 | mousePacked。回复鼠标状态 (events<<32)|base，标量回复不依赖调用者窗口 |

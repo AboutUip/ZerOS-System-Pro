@@ -1,4 +1,22 @@
-/* 浜や簰寮?shell銆傛簮鐮佸湪 Resource/App/sh锛屾寜瀛愮洰褰曞垎寮€锛岀紪鎴愬璺緞 /os/sh銆?   涓诲惊鐜槸鎻愮ず绗︺€佽琛屻€佽В鏋愩€佹淳鐢熴€佺瓑寰呫€傝缂栬緫鍦?obr.line锛岀敾闈㈠拰鏍囧噯杈撳嚭鍦?Draw銆?   鎻愮ず绗︽槸 root@zeros:銆佸綋鍓嶇洰褰曘€佸啀鍔?# 銆傚唴鏍稿彧浜ゅ師濮嬫寜閿€?   涓婃柟鍚戦敭鏄?ArrowUp锛屼笅鏂瑰悜閿槸 Down锛涜缂栬緫鎶婂畠浠敹鎴愬巻鍙层€?   Tab 鍦ㄥ懡浠ょ殑浣嶇疆琛ュ唴寤哄拰 PATH 閲岀殑绋嬪簭锛屽叾浣欒ˉ璺緞銆?   鍐呯疆 cd銆乪xit銆乭istory銆乧lear銆俥cho 鍜?pwd 鍦?/bin銆?   cd 鎸?POSIX.1-2017 鐨勫崄姝ヨ蛋銆?L 鏄己鐪侊紝-L 涓?-P 浠ュ悗鍐欑殑涓哄噯銆傛病鏈夋搷浣滄暟灏辩敤 HOME锛岀┖鎴栨湭璁剧疆鍒欏け璐ャ€?   cd - 绛夊悓 cd "$OLDPWD"锛屾垚鍔熸椂鎶婃柊鐨勭粷瀵硅矾寰勫啓鍒版爣鍑嗚緭鍑恒€傜浉瀵硅矾寰勪笖棣栦釜鍒嗛噺涓嶆槸 . 鎴?.. 鏃舵墠鏌?CDPATH锛?   鏈缃殑 CDPATH 褰撴垚绌轰覆銆傜┖娈靛拰鍗曠嫭涓€涓偣琛ㄧず褰撳墠鐩綍锛屽懡涓椂涓嶆墦鍗帮紱鍏跺畠闈炵┖鍒嗛噺鍛戒腑鎵嶆墦鍗般€?   澶辫触鏃跺伐浣滅洰褰曞拰 PWD 閮戒笉鍙樸€傝瘖鏂湪鏍囧噯閿欒锛屽墠缂€鏄?sh: cd:銆傛病鏈夌鍙烽摼鎺ャ€?   .. 鍦ㄨ繘鐩綍鍓嶆寜瀛楅潰鍒犳帀锛屽墠涓€娈靛繀椤诲凡缁忔槸鐩綍锛涙牴涓婄殑 .. 浠嶅仠鍦ㄦ牴銆傝矾寰勮秴杩?512 涓叓浣嶇粍灏卞け璐ャ€?   瑙勮寖绗?9 姝ヨ鎶婅繃闀跨殑缁濆璺緞鏀规垚鐩稿璺緞鍐?chdir锛岃繖閲屽仛涓嶅埌锛歅WD 浠嶅緱璁颁笅閭ｆ潯缁濆璺緞锛岀幆澧冨€兼渶闀夸篃鏄?512銆?   $? 鍙湪鏁磋瘝銆佷笖杩欎釜璇嶆病鏈夊崟寮曞彿瀛楄妭鏃舵崲鎴愪笂涓€鏉＄姸鎬併€?   澶栭儴鍛戒护鐨勫弬鏁板湪娲剧敓鍓嶅仛璺緞灞曞紑銆傛湭鍔犲紩鍙枫€佷篃娌¤鍙嶆枩鏉犳尅浣忕殑 *銆? 鍜屾垚瀵圭殑鏂规嫭鍙锋墠鏄ā寮忋€?   寮曞彿閲岀殑杩欏嚑涓瓧淇濇寔鍘熸牱銆備竴涓悕瀛楅兘瀵逛笉涓婃椂锛屽師璇嶇収鏃т氦缁欏懡浠ゃ€?   灞曞紑鍚庤秴杩?64 涓弬鏁版垨 8192 涓叓浣嶇粍灏变笉娲剧敓锛屽苟鍐?sh: argument list too long銆?   鐐瑰紑澶寸殑鐩綍椤癸紝鍙湁杩欎竴娈垫ā寮忎篃浠ョ偣寮€澶存墠瀵瑰緱涓娿€傚唴寤哄懡浠や笉灞曞紑銆?   绠￠亾鍜岄噸瀹氬悜鐢辫繖閲屾敼鎻忚堪绗︺€傛病鏈夋枩鏉犵殑鍚嶅瓧鎸?PATH 鎵撅紝缂虹渷鏄?/bin:/os:/kernel銆?   << 鍜?<<- 鐨勬鏂囧湪鍛戒护琛屾崲琛屼箣鍚庨€愯璇诲叆銆傝繖涓€杞鏂囦笉鍋氬弬鏁板睍寮€銆佸懡浠ゆ浛鎹㈠拰绠楁湳灞曞紑銆?   鍙傛暟鍜岀幆澧冨啓杩涚晫闄愯捣鐐?+4194304锛屽竷灞€鍜屽唴鏍哥殑 argAt 鐩稿悓銆傚懡浠ゅ墠鐨?NAME=value 鍙氦缁欒繖涓€娆℃淳鐢熴€?   鎵撲笉寮€鎺у埗鍙板氨鍋滃湪璁╁嚭涓婏紝鐩戠潱鏍告墠璁ゅ緱鍑鸿繖浠戒换鍔°€?   鎷嗚瘝鍦?Parse锛岃矾寰勫睍寮€鍦?Expand锛岀幆澧冨湪 Env锛宑d 鍦?Cd锛岃ˉ鍏ㄥ湪 Complete锛屾淳鐢熷湪 Run锛岀敾闈㈠湪 Draw銆?   琛岀紪杈戞槸 obr.line锛岃矾寰勬槸 obr.path锛屽叓浣嶇粍鏄?obr.oct銆備笉瀵煎叆杩欎簺搴撶殑绋嬪簭浠嶇洿鎺ヨ皟鐢ㄥ唴鏍告湇鍔℃惉瀛楄妭銆?*/
+/* 交互式 shell。源码在 Resource/App/sh，按子目录分开，编成客路径 /os/sh。
+   主循环是提示符、读行、解析、派生、等待。行编辑在 obr.line，画面和标准输出在 Draw。
+   提示符是 root@zeros:、当前目录、再加 # 。内核只交原始按键。
+   上方向键是 ArrowUp，下方向键是 Down；行编辑把它们收成历史。
+   Tab 在命令的位置补内建和 PATH 里的程序，其余补路径。
+   内置 cd、exit、history、clear。echo 和 pwd 在 /bin。
+   cd 按 POSIX.1-2017 的十步走。-L 是缺省，-L 与 -P 以后写的为准。没有操作数就用 HOME，空或未设置则失败。
+   cd - 等同 cd "$OLDPWD"，成功时把新的绝对路径写到标准输出。相对路径且首个分量不是 . 或 .. 时才查 CDPATH；
+   未设置的 CDPATH 当成空串。空段和单独一个点表示当前目录，命中时不打印；其它非空分量命中才打印。
+   失败时工作目录和 PWD 都不变。诊断在标准错误，前缀是 sh: cd:。没有符号链接。
+   .. 在进目录前按字面删掉，前一段必须已经是目录；根上的 .. 仍停在根。路径超过 512 个八位组就失败。
+   规范第 9 步要把过长的绝对路径改成相对路径再 chdir，这里做不到：PWD 仍得记下那条绝对路径，环境值最长也是 512。
+   $? 只在整词、且这个词没有单引号字节时换成上一条状态。
+   管道和重定向由这里改描述符。没有斜杠的名字按 PATH 找，缺省是 /bin:/os:/kernel。
+   << 和 <<- 的正文在命令行换行之后逐行读入。这一轮正文不做参数展开、命令替换和算术展开。
+   参数和环境写进界限起点 +4194304，布局和内核的 argAt 相同。命令前的 NAME=value 只交给这一次派生。
+   打不开控制台就停在让出上，监督核才认得出这份任务。
+   拆词在 Parse，环境在 Env，cd 在 Cd，补全在 Complete，派生在 Run，画面在 Draw。
+   行编辑是 obr.line，路径是 obr.path，八位组是 obr.oct。不导入这些库的程序仍直接调用内核服务搬字节。 */
 #DYN
 import memory;
 import obr.os;
@@ -15,7 +33,8 @@ import work;
 import bstate;
 
 
-/* 绌?__zap__ 鍧楁槸鍐呰仈鎶ゆ爮锛氬鍏ヨ皟鐢ㄥ彧鐣欏湪杩欎竴灞傚寘瑁呴噷銆?   ZAP 鏄犲儚鐨勫鍏ヨ皟鐢ㄧ偣涓婇檺 256锛屽寘瑁呰鍐呰仈灞曞紑浼氭妸姣忎釜璋冪敤鐐归兘鍙樻垚涓€娆″鍏ュ紩鐢ㄣ€?*/
+/* 包一层 __zap__ 块是内联护栏：导入调用只留在这层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun u8(long addr): long {
   __zap__ {
   }
@@ -50,7 +69,8 @@ deRfun attach(long home): long {
 }
 
 
-/* 璇诲埌鎻愪氦銆丆trl-D 鎴?Ctrl-C 鎵嶈繑鍥炪€傛竻灞忓拰琛ュ叏鐣欏湪杩欎竴琛岄噷銆?   1 鎻愪氦锛? Ctrl-D锛? Ctrl-C锛? 鏄绔凡缁忓叧鎺夛紝-1 鏄澶辫触銆?*/
+/* 读到提交、Ctrl-D 或 Ctrl-C 才返回。清屏和补全留在这一行里。
+   1 提交，2 Ctrl-D，3 Ctrl-C，0 是读端已经关掉，-1 是读失败。 */
 deRfun readLine(long home, long state, long work, long env, long gathering): long {
   while (1) {
     long status = obr::proc::read(home, 0L, 0L, 1L);
@@ -91,7 +111,7 @@ deRfun readLine(long home, long state, long work, long env, long gathering): lon
 }
 
 
-/* EXIT 鍔ㄤ綔鍦ㄥ３閫€鍑哄墠璺戜竴娆°€傚姩浣滈噷鐨勯€€鍑轰笉鍐嶉€掑綊璺?EXIT銆?*/
+/* EXIT 动作在壳退出前跑一次。动作里的退出不再递归跑 EXIT。 */
 deRfun exitTrap(long home, long bs, long state, long work, long env, long envTmp, long code): long {
   if (bsTrapState(bs, 0L) == 2L) {
     long leaving = 0L;
@@ -101,7 +121,7 @@ deRfun exitTrap(long home, long bs, long state, long work, long env, long envTmp
 }
 
 
-/* 鎸傜潃鐨勪俊鍙锋敹涓嬫潵璺戝姩浣溿€傜姸鎬?1 鏄拷鐣ャ€? 鏄己鐪侊紝閮戒笉鍋氫簨銆?*/
+/* 挂着的信号收下来跑动作。状态 2 才执行；其它状态不做事。 */
 deRfun sigTrap(long home, long bs, long state, long work, long env, long envTmp, long code, long* leaving): void {
   long sig = obr::proc::sigtake();
   long rounds = 0L;
@@ -115,7 +135,7 @@ deRfun sigTrap(long home, long bs, long state, long work, long env, long envTmp,
 }
 
 
-/* 鍑嗗濂芥帶鍒跺彴銆佺幆澧冨拰褰撳墠鐩綍涔嬪悗锛屽惊鐜氨鏄彁绀虹銆佽琛屻€佽В鏋愩€佹淳鐢熴€佺瓑寰呫€?*/
+/* 准备好控制台、环境和当前目录之后，循环就是提示符、读行、解析、派生、等待。 */
 deRfun main(): int {
   long home = obr::proc::home();
   if (attach(home) != 0L) {

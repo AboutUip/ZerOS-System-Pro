@@ -16,12 +16,12 @@ ZerOS-System-Pro/
 │   ├── System/               # 用户态。Init 是 1 号，客路径 /kernel/init
 │   ├── Resource/Font/        # 字体源。编译时拷到 NAS 的 /font，副本只读
 │   ├── Resource/Bin/         # 命令源。编译时写成 NAS 的 /bin
-│   ├── Resource/App/         # 应用程序源。sh 编成客路径 /os/sh
+│   ├── Resource/App/         # 正式客程序（sh、nic）；红测在未跟踪的 dev/App，默认不编译
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板、插座、上电入口
 │       ├── Cpu/  Gpu/  Memory/
 │       ├── Display/  Keyboard/  Pointer/  Sandbox/  Nas/  Nic/
-├── Driver/                   # Display、Gpu、Pointer、Nic。默认宽高在 Display/panel
+├── Driver/                   # Display、Gpu、Input、Nic、Pointer、Test、Time。默认宽高在 Display/panel
 ├── Compiler/ObrCompiler/     # 宿主编译器，.obr → ZAP
 ├── Compiler/ObrExtension/    # 编辑器扩展，.obr / .mr / .zap
 ├── Compiler/Debugger/        # ZTrace 工具侧；v1.1 已交付，v2 P4 进行中

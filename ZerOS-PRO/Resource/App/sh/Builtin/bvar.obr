@@ -1,4 +1,6 @@
-/* 鍙橀噺绫荤壒娈婂唴寤猴細export readonly set shift unset銆?   鏈３鐨勫彉閲忓氨鏄幆澧冨潡锛氱幆澧冨潡鍚屾椂鏄淳鐢熺粰瀛愪换鍔＄殑鐜锛屽３鍙橀噺涓€寰嬪鍑恒€?   readonly 璁板湪 bstate 鐨?readonly 琛ㄩ噷锛岃祴鍊艰矾寰勯兘鍏堣繃 bvAssign銆?*/
+/* 变量类特殊内建：export readonly set shift unset。
+   本壳的变量就是环境块：环境块同时是派生给子任务的环境，壳变量统一导出。
+   readonly 记在 bstate 的 readonly 表里，赋值路径都先过 bvAssign。 */
 #DYN
 #LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
@@ -11,7 +13,7 @@ import draw;
 import bvar;
 
 
-/* 璧嬪€肩粺涓€鍏ュ彛锛歳eadonly 鎸′綇杩斿洖 1锛屽閲忔弧杩斿洖 2锛屾垚鍔?0銆?*/
+/* 赋值统一入口：readonly 挡住返回 1，容量满返回 2，成功 0。 */
 deRfun bvAssign(long bs, long env, long name, long nameLen, long value, long valueLen): long {
   if (bsRoHas(bs, name, nameLen) == 1L) {
     return 1L;
@@ -23,7 +25,8 @@ deRfun bvAssign(long bs, long env, long name, long nameLen, long value, long val
 }
 
 
-/* 涓€琛?NAME='value'銆俻refix 鏄?"export "銆?readonly " 鎴栫┖銆?   琛屾斁宸ヤ綔鍖虹┖妗?35984锛屽紩鍙锋殏瀛樻斁 31872锛岄兘閬垮紑 resolve 鐨勪袱娈点€?*/
+/* 丢出 NAME='value'。prefix 是 "export "、"readonly " 或空。
+   行放工作区空段 35984，引号暂存放 31872，都避开 resolve 的两段。 */
 deRfun bvSayVar(long home, long work, string prefix, long name, long nameLen, long value, long valueLen): void {
   long buf = work + 35984L;
   long at = putText(buf, 0L, prefix);
@@ -50,7 +53,7 @@ deRfun bvListAll(long home, long work, long env, string prefix): long {
 }
 
 
-/* 涓€涓搷浣滄暟瑕佷箞鏄?NAME=VALUE锛岃涔堟槸 NAME銆傝繑鍥?0 璁颁笅锛? 涓嶆槸鏍囪瘑绗︺€?*/
+/* 丢一个操作数：要么 NAME=VALUE，要么是 NAME。返回 0 记下，1 不是标识符。 */
 deRfun bvOperand(long word, long wordLen, long* nameLen, long* value, long* valueLen): long {
   if (isAssign(word, wordLen, nameLen) == 1L) {
     *value = word + (*nameLen + 1L) * 8L;
@@ -156,7 +159,7 @@ deRfun bvUnset(long home, long bs, long state, long work, long out, long env, lo
       continue;
     }
     if (mode == 0L) {
-      /* 鏈３娌℃湁鍑芥暟锛泆nset -f 瀵逛笉瀛樺湪鐨勫嚱鏁版寜 POSIX 鎴愬姛銆?*/
+      /* 本壳没有函数；unset -f 对不存在的函数按 POSIX 成功。 */
       index = index + 1L;
       continue;
     }
@@ -189,7 +192,8 @@ deRfun bvShift(long home, long bs, long state, long work, long out, long env, lo
 }
 
 
-/* set 鐨勫紑鍏冲瓧姣嶏細a=1 e=2 f=4 n=8 u=16 v=32 x=64 C=128銆?   u 鍜?v 瑕佹敼璇嶆硶灞曞紑鍜岃琛屽洖鏄撅紝鏈３娌℃帴锛屾槑纭姤閿欍€?*/
+/* set 的开关字母：a=1 e=2 f=4 n=8 u=16 v=32 x=64 C=128。
+   u 和 v 要改词法展开和读行回显，本壳没接，明确报错。 */
 deRfun bvSetLetter(long home, long bs, long letter, long on): long {
   if (letter == 97L) {
     bsOptSet(bs, 1L, on);

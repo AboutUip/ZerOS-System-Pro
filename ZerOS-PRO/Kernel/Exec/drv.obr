@@ -90,10 +90,13 @@ deRfun drvInputPush(long value): void {
   memory::store64(tail, at + 64L);
 }
 
-/* 键盘驱动实时状态：+3300000 起 4 个字（events/base/line/col）。 */
+/* 键盘实时状态放监督核固定槽：+18752 起 4 个字（events/base/line/col）。 */
+deRfun drvKbdAt(): long {
+  return kSupervisor() + 18752L;
+}
+
 deRfun drvKbdPublish(long caller, long home): long {
-  long meta = drvMetaHome(caller, home);
-  long at = meta + 3300000L;
+  long at = drvKbdAt();
   memory::store64(memory::load64(home + 131072L), at);
   memory::store64(memory::load64(home + 131136L), at + 64L);
   memory::store64(memory::load64(home + 131200L), at + 128L);
@@ -102,8 +105,7 @@ deRfun drvKbdPublish(long caller, long home): long {
 }
 
 deRfun drvKbdRead(long caller, long home): long {
-  long meta = drvMetaHome(caller, home);
-  long at = meta + 3300000L;
+  long at = drvKbdAt();
   memory::store64(memory::load64(at), home + 131072L);
   memory::store64(memory::load64(at + 64L), home + 131136L);
   memory::store64(memory::load64(at + 128L), home + 131200L);
@@ -182,14 +184,6 @@ deRfun drvMousePacked(long caller, long home): long {
 /* GPU 帧计数放在监督核窗口。shell 是旧布局，+3500000 会落到窗口外。 */
 deRfun drvGpuAt(): long {
   return kSupervisor() + 16000L;
-}
-
-/* 打包回复：低 32 位 base，高 32 位 frames。共享核上不要再读调用方窗口。 */
-deRfun drvGpuPacked(long caller, long home): long {
-  long at = drvGpuAt();
-  long frames = memory::load64(at);
-  long base = memory::load64(at + 64L);
-  return (frames << 32L) | (base & 4294967295L);
 }
 
 deRfun drvGpuPublish(long caller, long home): long {
@@ -388,6 +382,40 @@ deRfun drvRingShift(long meta): void {
   memory::store64(0L, meta + 8400L);
 }
 
+/* 当前驱动路径的固定槽：长度字 + 最多 48 个八位组。
+   重启时从这拷贝到调用者窗口，不依赖 argv/参数区是否还活着。 */
+deRfun drvPathAt(): long {
+  return kSupervisor() + 19008L;
+}
+
+deRfun drvPathSave(long home): void {
+  long len = memory::load64(home + 16384L);
+  if (len < 0L || len > 48L) {
+    return;
+  }
+  long at = drvPathAt();
+  memory::store64(len, at);
+  long index = 0L;
+  while (index < len) {
+    memory::storeOctet(memory::loadOctet(home + 16448L + index * 8L), at + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun drvPathRestore(long home): void {
+  long at = drvPathAt();
+  long len = memory::load64(at);
+  if (len < 0L || len > 48L) {
+    len = 0L;
+  }
+  memory::store64(len, home + 16384L);
+  long index = 0L;
+  while (index < len) {
+    memory::storeOctet(memory::loadOctet(at + 64L + index * 8L), home + 16448L + index * 8L);
+    index = index + 1L;
+  }
+}
+
 /* 当前活着的 .zo 驱动：按 pid 取最新的一份。重启/停止传 0 时用它，
    不依赖任何窗口里存下来的 pid 字。 */
 deRfun drvFindZo(): long {
@@ -406,9 +434,9 @@ deRfun drvFindZo(): long {
   return best;
 }
 
-/* 最近一次成功装入的驱动 pid。固定槽，不依赖 shell/meta 窗口是否换过。 */
+/* 最近一次成功装入的驱动 pid。固定槽，避开 handover 字节区。 */
 deRfun drvPidAt(): long {
-  return kSupervisor() + 16640L;
+  return kSupervisor() + 18688L;
 }
 
 deRfun drvManage(long caller, long home): long {
@@ -421,7 +449,10 @@ deRfun drvManage(long caller, long home): long {
   }
   long meta = drvMetaHome(caller, home);
   if (pid == 0L && op != 1L && op != 5L) {
-    pid = drvFindZo();
+    pid = memory::load64(drvPidAt());
+    if (pid < 2L || taskByPid(pid) < 0L) {
+      pid = drvFindZo();
+    }
   }
   if (op == 1L) {
     /* 4 号核引导时已经装着 /kernel/drv/pulse。
@@ -430,6 +461,7 @@ deRfun drvManage(long caller, long home): long {
     long status = spawnFlat(caller, home, 5L);
     if (status == 0L) {
       drvPathCopy(meta + 12600L, home + 16384L);
+      drvPathSave(home);
       drvAdopt(home);
       memory::store64(memory::load64(home + 192L), meta + 16800L);
       memory::store64(memory::load64(home + 192L), drvPidAt());
@@ -521,13 +553,24 @@ deRfun drvManage(long caller, long home): long {
         drvRingShift(meta);
       }
       drvPathCopy(meta + 12600L, home + 16384L);
+      drvPathSave(home);
       drvAdopt(home);
       memory::store64(memory::load64(home + 192L), meta + 16800L);
       memory::store64(memory::load64(home + 192L), drvPidAt());
     }
     return status;
   }
-  if (op == 5L) {
+  if (op == 12L) {
+    /* 重启后 fresh load：用固定槽里的当前路径，不读 argv。 */
+    drvPathRestore(home);
+    memory::store64(0L, home + 576L);
+    long status = spawnFlat(caller, home, 5L);
+    if (status == 0L) {
+      drvAdopt(home);
+      memory::store64(memory::load64(home + 192L), drvPidAt());
+    }
+    return status;
+  }  if (op == 5L) {
     return drvList(home);
   }
   if (op == 7L) {

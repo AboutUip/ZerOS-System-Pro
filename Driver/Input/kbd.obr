@@ -6,18 +6,52 @@ import memory;
 import obr.os;
 
 deRfun main(): int {
-  long home = obr::os::svc(65L);
-  memory::store64(2L, home + 64L);
-  long count = obr::os::svc(57L);
+  long home = query(1L, 8L, obr::os::core());
+  long count = 0L;
+  long tries = 0L;
+  /* 刚装入时本核 bound 可能还没稳定；导入重试几次，坏的一次不会把基线清掉。 */
+  while (count != 32L && tries < 10L) {
+    home = query(1L, 8L, obr::os::core());
+    if (home != 0L) {
+      memory::store64(2L, home + 64L);
+      count = obr::os::svc(57L);
+    }
+    if (count != 32L) {
+      obr::os::dwell(20L);
+    }
+    tries = tries + 1L;
+  }
   long events = 0L;
   long line = 0L;
   long col = 0L;
+  /* 直接从固定槽取上一实例的 events/base；不依赖窗口是否对齐。 */
+  long packed = obr::os::svc(72L);
+  long carriedEvents = packed >> 32L;
+  long carriedBase = packed & 4294967295L;
   if (count == 32L) {
-    events = memory::load64(home + 131072L);
-    line = memory::load64(home + 131200L);
-    col = memory::load64(home + 131264L);
+    long loaded = query(1L, 8L, obr::os::core());
+    if (loaded != 0L) {
+      events = memory::load64(loaded + 131072L);
+      line = memory::load64(loaded + 131200L);
+      col = memory::load64(loaded + 131264L);
+    }
   }
   long base = events;
+  if (carriedBase > 0L) {
+    base = carriedBase;
+  }
+  if (carriedEvents > events) {
+    events = carriedEvents;
+  }
+  if (base > events) {
+    base = events;
+  }
+  if (base < 1L) {
+    base = 1L;
+    if (events < base) {
+      events = base;
+    }
+  }
   long published = -1L;
   while (1L) {
     long got = obr::os::svc(58L);

@@ -603,8 +603,8 @@ deRfun main(): int {
       obr::os::svc(56L);
       obr::os::dwell(300L);
     }
-    pathCopy(home, argPtr(home, 3L), len);
-    return done(home, call(home, 1L));
+    home = obr::proc::home();
+    return done(home, call(home, 12L));
   }
   return usage(home);
 }

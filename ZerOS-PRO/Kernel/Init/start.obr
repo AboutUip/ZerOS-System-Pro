@@ -15,7 +15,7 @@ import niccore;
 import flat;
 import drv;
 
-/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd  30 clock  31 utime  32 ident  33 task  34 list  35 prompt  36 command  37 frame  38 frameWait  39 present  40 feed  41 nicProbe  42 nicSend  43 nicReceive  44 nicSelfCheck  45 nicConfigure  46 spawnFlat  47 spawnMany  48 flatDone  49 monotonic  50 clockSet  51 flatDoneReset  52 idleMask  53 coreState  54 parkCore  55 restartDriver  56 drvManage  57 handover  58 inputRead  59 kbdState  60 inputHead  61 pointerPoll  62 mouseState  63 pointerPage  64 pointerCount  65 myHome  66/67/68 diag  69 gpuState  80 bindWho  81 faultWho  83 mousePacked */
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd  30 clock  31 utime  32 ident  33 task  34 list  35 prompt  36 command  37 frame  38 frameWait  39 present  40 feed  41 nicProbe  42 nicSend  43 nicReceive  44 nicSelfCheck  45 nicConfigure  46 spawnFlat  47 spawnMany  48 flatDone  49 monotonic  50 clockSet  51 flatDoneReset  52 idleMask  53 coreState  54 parkCore  55 restartDriver  56 drvManage  57 handover  58 inputRead  59 kbdState  60 inputHead  61 pointerPoll  62 mouseState  63 pointerPage  64 pointerCount  65 myHome  66/67/68 diag  69 gpuState  70 gpuPublish  71 gpuPacked  72 kbdPacked  80 bindWho  81 faultWho  83 mousePacked */
 
 deRfun pack(): long {
   return 4294967296L;
@@ -513,6 +513,14 @@ deRfun dispatch(long caller, long service): void {
     reply(caller, (gpuFrames << 32L) | gpuBase);
     return;
   }
+  /* 72 kbdPacked: (events<<32)|base，不经过调用方窗口。 */
+  if (service == 72L) {
+    long kbdAt = kSupervisor() + 18752L;
+    long kbdEvents = memory::load64(kbdAt);
+    long kbdBase = memory::load64(kbdAt + 64L) & 4294967295L;
+    reply(caller, (kbdEvents << 32L) | kbdBase);
+    return;
+  }
   /* 69 gpuState: read frames/base (reply 16). */
   if (service == 69L) {
     reply(caller, drvGpuRead(caller, home));
@@ -712,8 +720,15 @@ deRfun main(): int {
   memory::store64(0L, kSupervisor() + 16448L);
   /* handover 长度字。 */
   memory::store64(0L, kSupervisor() + 16512L);
-  /* 最近一次成功装入的驱动 pid。 */
-  memory::store64(0L, kSupervisor() + 16640L);
+  /* 最近一次成功装入的驱动 pid（放在 handover 字节区之后）。 */
+  memory::store64(0L, kSupervisor() + 18688L);
+  /* 键盘状态槽。 */
+  memory::store64(0L, kSupervisor() + 18752L);
+  memory::store64(0L, kSupervisor() + 18816L);
+  memory::store64(0L, kSupervisor() + 18880L);
+  memory::store64(0L, kSupervisor() + 18944L);
+  /* 当前驱动路径槽长度。 */
+  memory::store64(0L, kSupervisor() + 19008L);
   /* 窗口位图紧挨任务表。上电不是 0，不清就会把垃圾当成已占用，windowTake 一直失败。 */
   long map = 0L;
   while (map < 230L) {

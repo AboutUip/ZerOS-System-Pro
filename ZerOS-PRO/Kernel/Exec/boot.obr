@@ -68,8 +68,14 @@ deRfun freeCore(long core): long {
   if (userCore(core) == 0L) {
     return 0L;
   }
-  if (taskCount(core) != 0L) {
-    return 0L;
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (task.pid != 0L && task.core == core && task.state != TaskState::Zombie && task.state != TaskState::Empty) {
+      return 0L;
+    }
+    index = index + 1L;
   }
   return 1L;
 }

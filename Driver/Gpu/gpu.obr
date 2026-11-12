@@ -7,16 +7,6 @@ import board;
 import memory;
 import obr.os;
 
-deRfun sane(long value): long {
-  if (value < 0L) {
-    return 0L;
-  }
-  if (value > 1000000000L) {
-    return 0L;
-  }
-  return value;
-}
-
 deRfun homeNow(): long {
   return obr::os::svc(65L);
 }

@@ -1,4 +1,6 @@
-/* 鍛戒护绫诲父瑙勫唴寤猴細alias unalias command type hash pwd echo fc銆?   alias 琛ㄣ€乭ash 琛ㄥ湪 bstate锛涙煡璺緞鐢?run 鐨?resolve锛沞cho/pwd 瀵归綈 /bin 鍚屽悕宸ュ叿鐨勮緭鍑哄拰閫€鍑虹爜銆?   true/false 鍦?run 鐨勫垎鍙戣〃閲岀洿鎺ュ洖鐘舵€併€俴ill 鍜?newgrp 涓嶅湪杩欓噷锛氭淳鐢?/bin 鍚屽悕宸ュ叿锛岃涓哄嵆宸ュ叿琛屼负銆?*/
+/* 命令类常规内建：alias unalias command type hash pwd echo fc。
+   alias 表、hash 表在 bstate；查路径走 run 的 resolve；echo/pwd 对齐 /bin 同名工具的输出和退出码。
+   true/false 在 run 的分发表里直接回状态。kill 和 newgrp 不在这里：派生 /bin 同名工具，行为即工具行为。 */
 #DYN
 #LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
@@ -90,7 +92,7 @@ deRfun bcUnalias(long home, long bs, long state, long work, long out, long env, 
 }
 
 
-/* 鎶ュ憡涓€涓悕瀛楁€庝箞瑙ｉ噴銆傝繑鍥?1 鏄病鎵惧埌銆俶ode 0 鏄?type/-V 鐨勬暣鍙ワ紝1 鏄?-v 鐨勭畝鐭舰銆?*/
+/* 报告一个名字怎么解释。返回 1 是没找到。mode 0 是 type/-V 的整句，1 是 -v 的简短形。 */
 deRfun bcmdSayWhat(long home, long bs, long work, long env, long name, long nameLen, long mode): long {
   long index = bsAliasFind(bs, name, nameLen);
   if (index >= 0L) {
@@ -150,7 +152,8 @@ deRfun bcType(long home, long bs, long state, long work, long out, long env, lon
 }
 
 
-/* command [-p] [-v|-V] 鍚嶅瓧 [鍙傛暟...]銆?   -v/-V 鎶ュ憡瑙ｉ噴锛屽叾浣欎笉甯﹀埆鍚嶃€佷笉甯﹀嚱鏁扮洿鎺ユ淳鐢熷懡浠わ紙鍐呭缓浠嶆寜鍐呭缓璺戯級銆?*/
+/* command [-p] [-v|-V] 名字 [参数...]。
+   -v/-V 报告解释，其余不带别名、不带函数直接派生命令（内建仍按内建跑）。 */
 deRfun bcCommand(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
   long mode = 0L;
   long forcePath = 0L;
@@ -230,7 +233,7 @@ deRfun bcHash(long home, long bs, long state, long work, long out, long env, lon
 }
 
 
-/* ---- pwd锛氬榻?/bin/pwd銆?L 鏄己鐪侊紝PWD 瑕佹槸骞插噣鐨勭粷瀵硅矾寰勬墠鐢紝鍚﹀垯璧?getcwd銆?---- */
+/* ---- pwd：对齐 /bin/pwd。-L 是缺省，PWD 要是干净的绝对路径才用，否则走 getcwd。 ---- */
 
 deRfun bcReadCwd(long home, long dest): long {
   if (obr::proc::getcwd(home) != 0L) {
@@ -343,7 +346,7 @@ deRfun bcPwd(long home, long bs, long state, long work, long out, long env, long
 }
 
 
-/* fc锛氬彧鍋?-l 鍒楀巻鍙诧紙鍙甫璧锋鍙凤級銆傝璧风紪杈戝櫒鐨勫舰鎬佹槑纭姤涓嶆敮鎸併€?*/
+/* fc：只做 -l 列历史（可带起止号）。要起编辑器的形态明确报不支持。 */
 deRfun bcFc(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
   long at = command + 1L;
   long first = 0L;

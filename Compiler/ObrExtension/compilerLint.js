@@ -11,10 +11,6 @@ const { ANALYSIS_EXCLUDE, isInstallerCopy, isBadFixture } = require("./projectSc
 
 const SOURCE = "Obr";
 
-function stripLineComment(line) {
-  return line.replace(/\/\/.*$/, "");
-}
-
 function maskStrings(line) {
   return line.replace(/"(\\.|[^"\\])*"/g, '""').replace(/'(\\.|[^'\\])*'/g, "''");
 }
@@ -242,9 +238,10 @@ function scanLiveDiagnostics(document) {
     return diagnostics;
   }
   const lines = document.getText().split(/\r?\n/);
+  const sourceLines = stripComments(lines);
   for (let index = 0; index < lines.length; index += 1) {
     const raw = lines[index] || "";
-    const line = stripLineComment(raw).trim();
+    const line = (sourceLines[index] || "").trim();
     const range = new vscode.Range(index, 0, index, Math.max(1, raw.length));
     const version = line.match(/^#VERSION\b(.*)$/);
     if (version && version[1].trim() !== "1" && version[1].trim() !== "2") {

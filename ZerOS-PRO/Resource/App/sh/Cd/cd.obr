@@ -1,4 +1,4 @@
-/* 鍐呭缓 cd銆傛寜 POSIX 鐨勬楠ゆ敼宸ヤ綔鐩綍鍜?PWD銆備笉瑙ｆ瀽鏁磋锛屼笉娲剧敓鍒殑鍛戒护銆?*/
+/* 内建 cd。按 POSIX 的步骤改工作目录和 PWD。不解析整行，不派生别的命令。 */
 #DYN
 #LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
@@ -13,7 +13,8 @@ import work;
 import cd;
 
 
-/* 绌?__zap__ 鍧楁槸鍐呰仈鎶ゆ爮锛氬鍏ヨ皟鐢ㄥ彧鐣欏湪杩欎竴灞傚寘瑁呴噷銆?   ZAP 鏄犲儚鐨勫鍏ヨ皟鐢ㄧ偣涓婇檺 256锛屽寘瑁呰鍐呰仈灞曞紑浼氭妸姣忎釜璋冪敤鐐归兘鍙樻垚涓€娆″鍏ュ紩鐢ㄣ€?*/
+/* 包一层 __zap__ 块是内联护栏：导入调用只留在这层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun u8(long addr): long {
   __zap__ {
   }
@@ -21,7 +22,7 @@ deRfun u8(long addr): long {
 }
 
 
-/* 鎶婄浉瀵硅矾寰勬敹鎴愮粷瀵硅矾寰勶紝鍐欒繘 dest銆傛垚鍔熻繑鍥為暱搴︼紝澶辫触杩斿洖 -1銆?*/
+/* 把相对路径收成绝对路径，写进 dest。成功返回长度，失败返回 -1。 */
 deRfun normalize(long work, long rel, long relLen): long {
   long got = 0L;
   long cwdLen = memory::load64(cwdLenAt(work));
@@ -41,13 +42,13 @@ deRfun setCwd(long work, long addr, long count): void {
 }
 
 
-/* 褰撳墠鐩綍鍏堟妱鍑烘潵銆俷ormalize 浼氬崰鐢?scratch锛屼笉鑳芥妸鏃ц矾寰勬斁鍦ㄩ偅閲屻€?*/
+/* 当前目录先抄出来。normalize 会占用 scratch，不能把旧路径放在那里。 */
 deRfun oldCwdAt(long work): long {
   return work + 36000L;
 }
 
 
-/* 璇婃柇璧版爣鍑嗛敊璇€傛垚鍔熸椂鎵撳嵃鐨勬柊璺緞浠嶈蛋鏍囧噯杈撳嚭銆?*/
+/* 诊断走标准错误。成功时打印的新路径仍走标准输出。 */
 deRfun cdText(long home, string text): void {
   int raw = length(text);
   long count = raw;
@@ -103,7 +104,7 @@ deRfun cdFail(long home, long addr, long count, long code): long {
 }
 
 
-/* 1 鏄洰褰曪紝0 鏄埆鐨勭绫伙紝-1 鎵句笉鍒帮紝-3 鍚嶅瓧澶暱锛?4 娌℃湁鏉冮檺銆?*/
+/* 1 是目录，0 是别的种类，-1 找不到，-3 名字太长，-4 没有权限。 */
 deRfun probeDir(long home, long addr, long count): long {
   plantRaw(home, addr, count);
   long status = obr::proc::stat(home);
@@ -124,7 +125,11 @@ deRfun probeDir(long home, long addr, long count): long {
 }
 
 
-/* 瑙勮寖绗?7 姝ユ妸鐩稿璺緞鎺ュ埌 base 鍚庨潰锛岀 8 姝ュ啀鏀舵垚缁濆璺緞锛屽啓鍒?dest銆?   base 鍦?-L 鏃舵槸澹充笂鐨?PWD锛屽湪 -P 涓旇矾寰勭浉瀵规椂鏄?getcwd銆傜粷瀵硅矾寰勪笉鐢?base銆?   . 涓㈡帀銆?. 鍏堢‘璁ゅ墠涓€娈垫槸鐩綍鍐嶅垹锛涘垹涓嶆帀灏辫繑鍥烇紝鐩綍杩樻病鎹€?   鏍逛笂鐨?.. 鐣欏湪鏍癸細鐩綍椤归噷娌℃湁 ..锛屼氦缁欏唴鏍镐細鎵句笉鍒般€?   杩炵画鐨?/ 鏀舵垚涓€涓紝鍜屽師鏉ョ殑 pathNorm 涓€鏍枫€傝秴杩?512 杩斿洖 -3銆?*/
+/* 规范第 7 步把相对路径接到 base 后面，第 8 步再收成绝对路径，写到 dest。
+   base 在 -L 时是壳上的 PWD，在 -P 且路径相对时是 getcwd。绝对路径不用 base。
+   . 丢掉。.. 先确认前一段是目录再删；删不掉就返回，目录还没换。
+   根上的 .. 留在根：目录项里没有 ..，交给内核会找不到。
+   连续的 / 收成一个，和原来的 pathNorm 一样。超过 512 返回 -3。 */
 deRfun foldCd(long home, long work, long base, long baseLen, long rel, long relLen): long {
   long dest = destAt(work);
   long out = 0L;
@@ -194,7 +199,7 @@ deRfun foldCd(long home, long work, long base, long baseLen, long rel, long relL
 }
 
 
-/* 缁濆璺緞锛屾垨浠?. 鎴?.. 寮€澶达紝涓嶆煡 CDPATH銆?*/
+/* 绝对路径，或以 . 或 .. 开头，不查 CDPATH。 */
 deRfun skipsCdpath(long addr, long count): long {
   if (count < 1L) {
     return 1L;
@@ -216,7 +221,8 @@ deRfun skipsCdpath(long addr, long count): long {
 }
 
 
-/* 鍏堟寜绗?8 姝ユ敹鎴愮粷瀵硅矾寰勶紝鍐嶇湅缁撴灉鏄笉鏄洰褰曘€傞暱搴︾暀鍦?dest銆?   -1 鎵句笉鍒帮紝-2 涓嶆槸鐩綍锛?3 澶暱锛?4 娌℃湁鏉冮檺銆?*/
+/* 先按第 8 步收成绝对路径，再看结果是不是目录。长度留在 dest。
+   -1 找不到，-2 不是目录，-3 太长，-4 没有权限。 */
 deRfun lookDir(long home, long work, long base, long baseLen, long rel, long relLen): long {
   long got = foldCd(home, work, base, baseLen, rel, relLen);
   if (got < 1L) {
@@ -246,7 +252,9 @@ deRfun pullCwd(long home, long dest): long {
 }
 
 
-/* 绗?10 姝ャ€俢hdir 澶辫触鏃跺唴鏍哥洰褰曡繕鍦ㄥ師鍦帮紝澹充笂鐨?PWD 涓嶅姩銆?   -P 鎴愬姛鍚庡啀鍙?getcwd锛屼綔涓?pwd -P 浼氭墦鍗扮殑閭ｆ潯锛涜涓嶅埌灏辫蛋鍥炴棫鐩綍銆?   鎴愬姛鎵嶅啓 PWD 鍜?OLDPWD銆傝鎵撳嵃鏃跺啓鐨勬槸杩欐潯鏂扮粷瀵硅矾寰勶紝璧版爣鍑嗚緭鍑恒€?*/
+/* 第 10 步。chdir 失败时内核目录还在原地，壳上的 PWD 不动。
+   -P 成功后再取 getcwd，作为 pwd -P 会打印的那条；读不到就走回旧目录。
+   成功才写 PWD 和 OLDPWD。要打印时写的是这条新绝对路径，走标准输出。 */
 deRfun applyCd(long home, long work, long env, long pathLen, long logical, long printPath): long {
   long oldLen = memory::load64(cwdLenAt(work));
   copySpan(cwdAt(work), oldCwdAt(work), oldLen);
@@ -288,7 +296,7 @@ deRfun applyCd(long home, long work, long env, long pathLen, long logical, long 
 }
 
 
-/* 鎶?CDPATH 鐨勪竴娈靛拰鐩綍鍚嶆嫾鍒?join銆傜┖娈垫垨鍗曠嫭涓€涓偣灏辨槸鐩綍鍚嶆湰韬€?*/
+/* 把 CDPATH 的一段和目录名拼到 join。空段或单独一个点就是目录名本身。 */
 deRfun joinCd(long work, long comp, long compLen, long rel, long relLen): long {
   long at = work + 42000L;
   long filled = 0L;
@@ -387,7 +395,7 @@ deRfun doCd(long home, long work, long cmd, long env, long begin): long {
     cdText(home, "sh: cd: No such file or directory\n");
     return 1L;
   }
-  /* -L 鐢ㄥ３涓婄殑 PWD銆?P 涓旀搷浣滄暟鐩稿鏃剁敤鍐呮牳鐨勫綋鍓嶇洰褰曪紝.. 鎵嶆槸鐗╃悊涓婄殑涓婁竴灞傘€?*/
+  /* -L 用壳上的 PWD。-P 且操作数相对时用内核的当前目录，.. 才是物理上的上一层。 */
   long base = cwdAt(work);
   long baseLen = memory::load64(cwdLenAt(work));
   if (logical == 0L && u8(rel) != 47L) {
@@ -431,7 +439,7 @@ deRfun doCd(long home, long work, long cmd, long env, long begin): long {
         }
       }
     }
-    /* 绗?5 姝ユ病鏈夊懡涓洰褰曟椂钀藉埌绗?6 姝ワ紝鐩存帴鐢ㄦ搷浣滄暟銆備腑闂撮偅绉嶁€滀笉鏄洰褰曗€濅笉绠楀懡涓€?*/
+    /* 第 5 步没有命中目录时落到第 6 步，直接用操作数。中间那种“不是目录”不算命中。 */
     if (found == 0L) {
       got = lookDir(home, work, base, baseLen, rel, relLen);
     }

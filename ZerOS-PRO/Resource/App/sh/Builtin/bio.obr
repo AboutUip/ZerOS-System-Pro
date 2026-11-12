@@ -1,4 +1,7 @@
-/* read銆乽mask銆俽ead 浠庢弿杩扮 0 閫愪釜鍏綅缁勮涓€琛岋紝鎸?IFS 鍒囩粰鍙橀噺锛?r 涓嶅悆鍙嶆枩鏉狅紝-p 鎶婃彁绀哄啓鍒版爣鍑嗛敊璇€?   umask 鏄３鐘舵€侊紙bstate 閲岀殑 umask 瀛楋級锛氭煡璇㈠拰鍏繘鍒惰缃畬鏁达紝鍐呮牳鍒涘缓娌℃湁 umask 闈€?   ulimit 鍦?run 鐨勫垎鍙戣〃閲屾槑纭姤涓嶆敮鎸侊紙鍐呮牳娌℃湁璧勬簮闄愬埗闈紝涓嶈鍋囩姸鎬侊級銆?*/
+/* read、umask。read 从描述符 0 逐个八位组读入行，按 IFS 切给变量。
+   r 不吃反斜杠，-p 把提示写到标准错误。
+   umask 是壳状态（bstate 里的 umask 字）：查询和八进制设置完整，内核创建没有 umask 参数。
+   ulimit 在 run 的分发表里明确报不支持（内核没有资源限制面，不记假状态）。 */
 #DYN
 #LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
@@ -14,7 +17,7 @@ import work;
 import bio;
 
 
-/* 鏀朵竴琛岀殑缂撳啿鍙湪杩欓噷鐢宠涓€娆★細鍘熷琛屻€佸幓鍙嶆枩鏉犺銆両FS銆佸瓧娈靛尯鍚?8192 鍏綅缁勩€?*/
+/* 收一行的缓冲只在这里申请一次：原始行、去反斜杠行、IFS、字段区，8192 八位组。 */
 deRfun biBuf(long home, long work): long {
   long slot = lineBufAt(work);
   long buf = memory::load64(slot);
@@ -26,7 +29,7 @@ deRfun biBuf(long home, long work): long {
 }
 
 
-/* IFS 鍙栧€硷細娌¤缃槸榛樿绌虹櫧銆傝缃垚绌轰覆灏辨槸涓嶅垏鍒嗐€?*/
+/* IFS 取法：没设置是默认空白。设置成空串就是不切分。 */
 deRfun biIfs(long env, long work, long ifs): long {
   long value = 0L;
   long valueLen = 0L;

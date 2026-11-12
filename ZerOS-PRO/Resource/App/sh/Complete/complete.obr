@@ -1,4 +1,4 @@
-/* 鍒惰〃绗﹁ˉ鍏ㄣ€傚懡浠や綅缃ˉ鍐呭缓鍜?PATH锛屽叾浣欒ˉ璺緞銆備笉娲剧敓銆?*/
+/* 制表符补全。命令位置补内建和 PATH，其余补路径。不派生。 */
 #DYN
 #LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
@@ -13,7 +13,8 @@ import work;
 import complete;
 
 
-/* 绌?__zap__ 鍧楁槸鍐呰仈鎶ゆ爮锛氬鍏ヨ皟鐢ㄥ彧鐣欏湪杩欎竴灞傚寘瑁呴噷銆?   ZAP 鏄犲儚鐨勫鍏ヨ皟鐢ㄧ偣涓婇檺 256锛屽寘瑁呰鍐呰仈灞曞紑浼氭妸姣忎釜璋冪敤鐐归兘鍙樻垚涓€娆″鍏ュ紩鐢ㄣ€?*/
+/* 包一层 __zap__ 块是内联护栏：导入调用只留在这层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun u8(long addr): long {
   __zap__ {
   }
@@ -21,7 +22,7 @@ deRfun u8(long addr): long {
 }
 
 
-/* 绌烘牸鍜岃繖浜涘垎闅旂缁撴潫褰撳墠璇嶃€傚紩鍙峰厛涓嶅彟绠椼€?*/
+/* 空格和这些分隔符结束当前词。引号先不另算。 */
 deRfun isBreak(long value): long {
   if (value == 32L || value == 9L || value == 124L || value == 38L || value == 59L || value == 60L || value == 62L) {
     return 1L;
@@ -30,7 +31,7 @@ deRfun isBreak(long value): long {
 }
 
 
-/* 鍒氬垪鍑烘潵鐨勫悕瀛楀拰鍓嶇紑鐩哥灏辨妱鍒?dest銆傜偣寮€澶寸殑鍚嶅瓧鍙湪鍓嶇紑涔熸槸鐐规椂绠椼€?*/
+/* 刚列出来的名字和前缀相符就抄到 dest。点开头的名字只在前缀也是点时算。 */
 deRfun takeName(long home, long prefix, long prefixLen, long dest, long* outLen): long {
   long got = obr::proc::slot(home, 256L);
   if (got < 1L || got > 255L || got < prefixLen) {
@@ -53,7 +54,7 @@ deRfun takeName(long home, long prefix, long prefixLen, long dest, long* outLen)
 }
 
 
-/* 鐩綍鏈熬娌℃湁鏂滄潬灏辫ˉ涓€涓紝鍐嶆帴涓婂悕瀛椼€?*/
+/* 目录末尾没有斜杠就补一个，再接上名字。 */
 deRfun joinDir(long dir, long dirLen, long name, long nameLen, long dest): long {
   copySpan(dir, dest, dirLen);
   long out = dirLen;
@@ -66,7 +67,7 @@ deRfun joinDir(long dir, long dirLen, long name, long nameLen, long dest): long 
 }
 
 
-/* 鎶婂悕瀛楀苟杩涘凡鏈夌殑鍛戒腑銆傚叕鍏卞墠缂€鏀跺埌 compCommon锛屾潯鏁板姞涓€銆?*/
+/* 把名字并进已有的命中。公共前缀收到 compCommon，条数加一。 */
 deRfun keepCommon(long work, long name, long nameLen, long* matches, long* commonLen): void {
   if (*matches == 0L) {
     copySpan(name, compCommonAt(work), nameLen);
@@ -86,7 +87,8 @@ deRfun keepCommon(long work, long name, long nameLen, long* matches, long* commo
 }
 
 
-/* 鍏夋爣鍓嶈繖涓瘝鏄笉鏄懡浠ゃ€傝棣栥€佺閬撱€佸垎鍙枫€佷笌鍙凤紝浠ュ強 NAME=value 鍚庨潰锛岄兘鏄€?   灏忎簬鍙峰拰澶т簬鍙峰悗闈㈡槸璺緞銆傚凡缁忓嚭鐜拌繃鐨勬櫘閫氳瘝鍚庨潰涔熸槸璺緞銆?*/
+/* 光标前这个词是不是命令。行首、管道、分号、与号，以及 NAME=value 后面，都是。
+   小于号和大于号后面是路径。已经出现过的普通词后面也是路径。 */
 deRfun commandHere(long state, long start): long {
   long expect = 1L;
   long index = 0L;
@@ -123,7 +125,7 @@ deRfun commandHere(long state, long start): long {
 }
 
 
-/* PATH 鐨勬鏂囥€傛病璁剧疆鏃剁敤缂虹渷鐨?/bin:/os:/kernel锛屾斁鍦ㄥ伐浣滃尯閲屻€?*/
+/* PATH 的正文。没设置时用缺省的 /bin:/os:/kernel，放在工作区里。 */
 deRfun pathValue(long env, long work, long* outLen): long {
   long name = scratchAt(work);
   long nameLen = putText(name, 0L, "PATH");
@@ -138,7 +140,7 @@ deRfun pathValue(long env, long work, long* outLen): long {
 }
 
 
-/* 鍐呭缓鍚嶅瓧銆傚寰椾笂鍓嶇紑灏辫杩涘叕鍏卞墠缂€锛屾垨鑰呭湪鍒楀嚭鏃跺啓涓€琛屻€?*/
+/* 内建名字。对得上前缀就记进公共前缀，或者在列出时写一行。 */
 deRfun offerText(long home, long work, string text, long prefix, long prefixLen, long* matches, long* commonLen, long listing): void {
   int raw = length(text);
   long count = raw;
@@ -175,7 +177,7 @@ deRfun offerBuiltins(long home, long work, long prefix, long prefixLen, long* ma
 }
 
 
-/* 鍚嶅瓧鍜屽墠缂€鐩哥銆傜偣寮€澶寸殑鍚嶅瓧鍙湪鍓嶇紑涔熸槸鐐规椂绠椼€?*/
+/* 名字和前缀相符。点开头的名字只在前缀也是点时算。 */
 deRfun nameHit(long name, long nameLen, long prefix, long prefixLen): long {
   if (nameLen < 1L || nameLen > 255L || nameLen < prefixLen) {
     return 0L;
@@ -194,7 +196,7 @@ deRfun nameHit(long name, long nameLen, long prefix, long prefixLen): long {
 }
 
 
-/* 鐩綍閲屽拰鍓嶇紑鐩哥鐨勬櫘閫氭枃浠躲€傜洰褰曟湰韬笉鑳藉綋鍛戒护璺戯紝璺宠繃銆傜绫诲湪璁板綍閲屻€?*/
+/* 目录里和前缀相符的普通文件。目录本身不能当命令跑，跳过。种类在记录里。 */
 deRfun offerFiles(long home, long work, long dir, long dirLen, long prefix, long prefixLen, long* matches, long* commonLen, long listing): void {
   long index = 0L;
   while (index < 4096L) {
@@ -206,7 +208,7 @@ deRfun offerFiles(long home, long work, long dir, long dirLen, long prefix, long
     if (batch < 1L || batch > 8192L) {
       break;
     }
-    /* write 浼氱洊浣忓瓧鑺傚尯閲岀殑璁板綍銆傝鍒楀嚭鏉ユ椂锛屽厛鎶婂悕瀛楁妱杩涘伐浣滃尯锛屽啓鍑哄悗浠庝笅涓€鏉￠噸鏂拌銆?*/
+    /* write 会盖住字节区里的记录。要列出来时，先把名字抄进工作区，写出后从下一条重新要。 */
     long at = obr::proc::bytes(home);
     long item = 0L;
     long wrote = 0L;
@@ -238,7 +240,7 @@ deRfun offerFiles(long home, long work, long dir, long dirLen, long prefix, long
 }
 
 
-/* PATH 鐨勬瘡涓€娈垫敹鎴愮洰褰曪紝鍐嶆敹閲岄潰鐨勭▼搴忋€傜┖娈垫槸褰撳墠鐩綍銆?*/
+/* PATH 的每一段收成目录，再收里面的程序。空段是当前目录。 */
 deRfun offerPath(long home, long work, long env, long prefix, long prefixLen, long* matches, long* commonLen, long listing): void {
   long pathLen = 0L;
   long path = pathValue(env, work, &pathLen);
@@ -262,7 +264,7 @@ deRfun offerPath(long home, long work, long env, long prefix, long prefixLen, lo
 }
 
 
-/* 鍛戒护浣嶇疆銆佽瘝閲屾病鏈夋枩鏉狅細琛ュ唴寤哄拰 PATH銆傚敮涓€灏辫ˉ瀹屽苟鍔犵┖鏍笺€傚垎涓嶆竻灏变竴琛屼竴涓垪鍑烘潵銆?*/
+/* 命令位置、词里没有斜杠：补内建和 PATH。唯一就补完并加空格。分不清就一行一个列出来。 */
 deRfun completeCommand(long home, long state, long work, long env, long cur, long nameFrom, long nameLen): void {
   if (nameLen > 255L) {
     return;
@@ -294,7 +296,7 @@ deRfun completeCommand(long home, long state, long work, long env, long cur, lon
 }
 
 
-/* 澶氫釜鍚嶅瓧瀵逛笉涓婃洿澶氬叕鍏卞墠缂€鏃讹紝涓€琛屼竴涓啓鍑烘潵銆傜洰褰曞悗闈㈠姞鏂滄潬銆?*/
+/* 多个名字对不上更多公共前缀时，一行一个写出来。目录后面加斜杠。 */
 deRfun listMatches(long home, long work, long dir, long dirLen, long prefix, long prefixLen): void {
   sayByte(home, work, 10L);
   long index = 0L;
@@ -338,7 +340,9 @@ deRfun listMatches(long home, long work, long dir, long dirLen, long prefix, lon
 }
 
 
-/* Tab锛氬懡浠や綅缃笖娌℃湁鏂滄潬鏃惰ˉ鍛戒护锛屽惁鍒欒ˉ璺緞銆?   鍞竴灏辫ˉ瀹屻€傜洰褰曞姞鏂滄潬锛屾枃浠跺拰鍛戒护鍔犵┖鏍笺€?   鏈夋洿闀跨殑鍏叡鍓嶇紑灏卞彧琛ヨ繖涓€娈点€備粛鐒跺垎涓嶆竻灏辨妸鍚嶅瓧鍒楀嚭鏉ャ€?*/
+/* Tab：命令位置且没有斜杠时补命令，否则补路径。
+   唯一就补完。目录加斜杠，文件和命令加空格。
+   有更长的公共前缀就只补这一段。仍然分不清就把名字列出来。 */
 deRfun completeLine(long home, long state, long work, long env): void {
   long cur = obr::line::editCursor(state);
   long start = cur;

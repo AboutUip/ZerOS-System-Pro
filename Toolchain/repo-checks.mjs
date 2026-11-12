@@ -3,12 +3,10 @@
  * 快照要看见宿主在外面新增和改名。
  * 语料夹具要能种进一个空的客根。
  * 没有 .cursor 的目录不是一致性失败。
- * 扩展 lint 探针（16 例）也在这里跑，npm test 一并覆盖。
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createStore } from "../ZerOS-PRO/Hardware/Nas/Server/nas-fs.mjs";
 import { plantCorpusHome } from "../Compiler/Debugger/Tools/ztrace-home.mjs";
@@ -153,29 +151,15 @@ function checkFreshCursor() {
 }
 
 /**
- * 扩展插件 lint 探针：compilerLint.scanSyntaxRules 的 16 例实测（正例零诊断、反例命中）。
- * 探针从仓库根找 Compiler/ObrExtension，只用 node，不依赖 obrc。
+ * 扩展插件 lint 探针不在这里跑。
+ * 它放在未跟踪的 dev/Debug/plan2，属于本机逻辑验证；
+ * 标准 npm test 不依赖 dev/，克隆仓库后也能单独通过。
  */
-function checkLintProbe() {
-  const probe = path.join(here, "..", "dev", "Debug", "plan2", "extension-lint-probe.mjs");
-  const run = spawnSync(process.execPath, [probe], {
-    cwd: path.join(here, ".."),
-    encoding: "utf8"
-  });
-  const output = `${run.stdout || ""}${run.stderr || ""}`;
-  const summary = output.trim().split(/\r?\n/).pop() || "";
-  if (run.status !== 0) {
-    fail(`extension-lint-probe 失败（退出码 ${String(run.status)}）\n${output.trim()}`);
-    return;
-  }
-  process.stdout.write(`extension-lint-probe ${summary}\n`);
-}
 
 checkSnapshot();
 checkPlant();
 checkNoHomePaths();
 checkFreshCursor();
-checkLintProbe();
 if (process.exitCode === 1) {
   process.stderr.write("repo-checks failed\n");
 } else {

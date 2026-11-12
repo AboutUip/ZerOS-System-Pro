@@ -865,8 +865,6 @@ export namespace ZerOS {
           const octet = keptOctets.has(key) ? keptOctets.get(key) : recallRead(key);
           loaded = (loaded << 8n) | BigInt(octet ?? 0);
         }
-        if ((plan.base & 0xffffn) === 24n) {
-        }
         /* 窗口任务的 kSp 读到 0：用窗口里的 kStack 顶（起点 + 0x2000）补回。
            入口 stub 的 store 可能在上下文恢复时被清掉，内存仍是 0。 */
         const flatCell = boundLength === 4194304n ? boundOrigin + 4096n : null;
@@ -1014,8 +1012,6 @@ export namespace ZerOS {
           return { kind: "fault", message: "[ZerOS.Hardware.Cpu.CpuRuntime] core ordinal is outside the declared range" };
         }
         if (published.kind === "value") {
-          if (guestCore && seat === 1 && (field === 8 || field === 9)) {
-          }
           return { kind: "hit", register: destination, value: published.value };
         }
         const hit = queryCache.get(queryKey(seat, field, index));
@@ -2440,7 +2436,7 @@ export namespace ZerOS {
         }
         const bits = accessBits(opcode);
         if (hitsBound(address, bits, checkBound)) {
-          return { kind: "fault", message: `${address.toString()}+${String(bits)} len=${program === null ? -1 : program.length}`, hostFault: "bound" };
+          return { kind: "fault", message: `${address.toString()}+${String(bits)} len=${program === null ? "-1" : String(program.length)}`, hostFault: "bound" };
         }
         const data = writing ? readRegister(register) : 0n;
         if (writing) {
@@ -4941,8 +4937,6 @@ export namespace ZerOS {
             return;
           }
           const spans = collectDirtySpans();
-          if (spans.length > 0) {
-          }
           if (spans.length === 0) {
             publishPort.postMessage({ kind: "dirty-published", ok: true, message: "" });
             return;
@@ -5379,7 +5373,7 @@ export namespace ZerOS {
         }
         frameWord = frameHeld ? frame : null;
         const plantedSp = readKeptSp();
-        if (plantedSp !== null && plantedSp.some((value) => value !== 0)) {
+        if (plantedSp?.some((value) => value !== 0) === true) {
           lastSpBytes = plantedSp.slice();
         } else if (lastSpBytes !== null) {
           writeKeptSp(lastSpBytes);

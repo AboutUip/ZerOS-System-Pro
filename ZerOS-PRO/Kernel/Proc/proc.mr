@@ -44,6 +44,7 @@ deRfun poolGrow(long core, long extra): long;
 deRfun poolGive(long core, long origin, long span): void;
 deRfun heapOf(long core): long;
 deRfun taskRelease(long index): void;
+deRfun taskDropZombie(long core): long;
 deRfun taskScanEnd(): long;
 deRfun kSpan(): long;
 deRfun kSlot(): long;

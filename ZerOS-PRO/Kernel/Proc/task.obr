@@ -575,6 +575,21 @@ deRfun taskDrop(long core): void {
   taskRelease(taskFind(core));
 }
 
+/* 只丢掉这颗核上已经变成僵尸的格子。僵尸不会再跑，窗口/堆先还给池。 */
+deRfun taskDropZombie(long core): long {
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* dead = taskAt(index);
+    if (dead.pid != 0L && dead.core == core && dead.state == TaskState::Zombie) {
+      taskRelease(index);
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
 deRfun nextPid(): long {
   long at = pidWord();
   long value = memory::load64(at);

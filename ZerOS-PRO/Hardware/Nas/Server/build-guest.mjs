@@ -8,6 +8,8 @@
  * Driver/Nic/niclib 编成 /lib/nic.zdll；Driver/Time/time 编成 /lib/time.zdll；
  * Driver/Nic/niccore 链接进内核。离线时区数据库由 provision.mjs 安装。
  * Resource/App 的每个子目录是一个程序：带 main 的那份是入口，目录树里其余 .obr 都链进去。
+ * 本机红测/诊断程序放在未跟踪的 dev/App，默认不参与标准构建；
+ * 需要时用 dev/App/build.mjs 按名字单独编进 /app。
  * sh 的客路径仍是 /os/sh。其它程序写成 /app/目录名。*-check.obr 只在宿主编过，不装进客根。
  * 不写 .zap。编完再跑 provision.mjs，已有的 /boot/display 和 /boot/debug 不覆盖。
  * 默认不生成 .debug；需要 B2 源行映射时显式加 --debug-maps。
@@ -29,6 +31,9 @@ const lib = path.resolve(repo, "Compiler/ObrCompiler/lib");
 const memory = path.resolve(product, "Hardware/Memory");
 const board = path.resolve(product, "Hardware/Motherboard");
 const nicDriver = path.resolve(repo, "Driver/Nic");
+const inputDriver = path.resolve(repo, "Driver/Input");
+const gpuDriver = path.resolve(repo, "Driver/Gpu");
+const testDriver = path.resolve(repo, "Driver/Test");
 const timeDriver = path.resolve(repo, "Driver/Time");
 const debugMaps = process.argv.includes("--debug-maps");
 const debugFiles = [
@@ -243,33 +248,33 @@ fs.copyFileSync(zoV1, zoV2);
 fs.chmodSync(zoV1, 0o755);
 fs.chmodSync(zoV2, 0o755);
 compile(
-  [path.resolve(nicDriver, "flatmark.obr")],
+  [path.resolve(testDriver, "flatmark.obr")],
   path.resolve(zoDir, "flat-v1.zo"),
   [...userIncludes, "-flat"],
 );
 fs.chmodSync(path.resolve(zoDir, "flat-v1.zo"), 0o755);
 /* 150 任务运行红测的工作负载：flat yield 循环，跑完即退。 */
 const zoLoop = path.resolve(zoDir, "flatloop.zo");
-compile([path.resolve(nicDriver, "flatloop.obr")], zoLoop, [...userIncludes, "-flat"]);
+compile([path.resolve(testDriver, "flatloop.obr")], zoLoop, [...userIncludes, "-flat"]);
 fs.chmodSync(zoLoop, 0o755);
-compile([path.resolve(nicDriver, "handover.obr")], path.resolve(zoDir, "handover.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(testDriver, "handover.obr")], path.resolve(zoDir, "handover.zo"), [...userIncludes, "-flat"]);
 fs.chmodSync(path.resolve(zoDir, "handover.zo"), 0o755);
-compile([path.resolve(nicDriver, "holdover.obr")], path.resolve(zoDir, "holdover.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(testDriver, "holdover.obr")], path.resolve(zoDir, "holdover.zo"), [...userIncludes, "-flat"]);
 fs.chmodSync(path.resolve(zoDir, "holdover.zo"), 0o755);
-compile([path.resolve(nicDriver, "inputdev.obr")], path.resolve(zoDir, "inputdev.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(inputDriver, "inputdev.obr")], path.resolve(zoDir, "inputdev.zo"), [...userIncludes, "-flat"]);
 fs.chmodSync(path.resolve(zoDir, "inputdev.zo"), 0o755);
-compile([path.resolve(nicDriver, "kbd.obr")], path.resolve(zoDir, "kbd.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(inputDriver, "kbd.obr")], path.resolve(zoDir, "kbd.zo"), [...userIncludes, "-flat"]);
 fs.chmodSync(path.resolve(zoDir, "kbd.zo"), 0o755);
-compile([path.resolve(nicDriver, "mouse.obr")], path.resolve(zoDir, "mouse.zo"), [...userIncludes, "-flat"]);
-compile([path.resolve(nicDriver, "gpu.obr")], path.resolve(zoDir, "gpu.zo"), [...userIncludes, "-flat"]);
-compile([path.resolve(nicDriver, "gpuflat.obr")], path.resolve(zoDir, "gpuflat.zo"), [...userIncludes, "-flat"]);
-compile([path.resolve(nicDriver, "flatwrite.obr")], path.resolve(zoDir, "flatwrite.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(inputDriver, "mouse.obr")], path.resolve(zoDir, "mouse.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(gpuDriver, "gpu.obr")], path.resolve(zoDir, "gpu.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(testDriver, "gpuflat.obr")], path.resolve(zoDir, "gpuflat.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(testDriver, "flatwrite.obr")], path.resolve(zoDir, "flatwrite.zo"), [...userIncludes, "-flat"]);
 fs.chmodSync(path.resolve(zoDir, "flatwrite.zo"), 0o755);
 fs.chmodSync(path.resolve(zoDir, "gpuflat.zo"), 0o755);
 fs.chmodSync(path.resolve(zoDir, "gpu.zo"), 0o755);
 fs.chmodSync(path.resolve(zoDir, "mouse.zo"), 0o755);
 for (const plain of ["plaina", "plainb", "plainc", "bad", "depbad", "capbad"]) {
-  compile([path.resolve(nicDriver, `${plain}.obr`)], path.resolve(zoDir, `${plain}.zo`), [...userIncludes, "-flat"]);
+  compile([path.resolve(testDriver, `${plain}.obr`)], path.resolve(zoDir, `${plain}.zo`), [...userIncludes, "-flat"]);
   fs.chmodSync(path.resolve(zoDir, `${plain}.zo`), 0o755);
 }
 
