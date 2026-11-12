@@ -1,0 +1,16 @@
+/* Plan 2 M1：基类引用不能隐式给派生变量，必须显式强转。编译应当失败：不能把 Base 赋给 Sub。 */
+#VERSION 2
+
+class Base {
+  deRfun Base(): void { }
+}
+
+class Sub : Base {
+  deRfun Sub(): void { }
+}
+
+deRfun main(): int {
+  Base b = new Sub();
+  Sub s = b;
+  return 0;
+}

@@ -1,0 +1,12 @@
+/* offsetof 的字段名必须是直接字段，字段不存在编译应当失败。 */
+#VERSION 2
+
+struct Pair {
+  long a;
+  long b;
+}
+
+deRfun main(): int {
+  var[long] off = offsetof(Pair, missing);
+  return 0;
+}

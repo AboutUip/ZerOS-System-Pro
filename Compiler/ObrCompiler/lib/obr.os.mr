@@ -7,6 +7,8 @@ deRfun schedule(long core): void;
 deRfun slice(long count): void;
 /* 把整数放进目标核心的空保持位。 */
 deRfun pass(long core, long value): void;
+deRfun setTag(long core, long index): void;
+deRfun passTask(long core, long tag, long value): void;
 /* 取出本核心的保持位。取到返回 1，并把整数写进 value。空则返回 0。 */
 deRfun take(long* value): long;
 /* 把服务号交给监督核，停在下一条。回复写回返回值。 */

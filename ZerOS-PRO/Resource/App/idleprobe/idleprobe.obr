@@ -1,0 +1,13 @@
+#DYN
+/* 诊断：服务 52 返回 3–7 核的空闲掩码，退出码 = 20 + mask。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long mask = obr::os::svc(52L);
+  memory::store64(20L + mask, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

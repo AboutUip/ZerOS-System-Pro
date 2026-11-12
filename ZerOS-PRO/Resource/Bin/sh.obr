@@ -1,0 +1,149 @@
+/* POSIX.1-2017 sh（utilities/sh.html）在本平台的 /bin/sh：平台壳在 /os/sh
+   （交互壳，内建 cd exit history clear；不支持 -c 与脚本参数）。
+   形式：sh [-irs] [-c command_string] [command_file [argument...]]
+   行为口径：
+   -c command_string：把 command_string 与 exit 两行经管道交 /os/sh 执行
+     （等价语义：命令在子壳里跑完即回），退出码是壳的退出码——真执行。
+     后续的 command_name 与 argument 因平台壳无 $0/$1 语义，登记忽略（注明）。
+   -s 或无操作数：标准输入即命令流——把标准输入接到派生壳（fd 0 继承），
+     交互/批用法都可；argument 登记忽略（同上）。
+   command_file：把该文件接到派生壳的描述符 0（dup2 后派生 /os/sh），退出码传递。
+   -i：交互（等价无操作数）。-r：受限壳——平台无受限设施，登记忽略（注明）。
+   其余传统 shell 选项字母（a b C e f h k m n o p t u v x）：平台壳不支持开关，
+   写 sh: option -X is not supported on this platform，退出 2（不假装）。
+   退出码：子壳退出码（收 0..255）；用法错误 2；找不到文件 127。
+   诊断英文 ASCII，描述符 2，前缀 sh:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long cmdAt = 0L;
+  long cmdLen = 0L;
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long stdinMode = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L && fileLen == 0L && cmdLen == 0L) {
+      long c = 1L;
+      while (c < len) {
+        long o = byteAt(at + c * 8L);
+        if (o == 99L) {
+          index = index + 1L;
+          if (index >= count) {
+            writeErr(home, "sh: option requires an argument\n");
+            return finish(home, 2L);
+          }
+          cmdAt = argPtr(home, index);
+          cmdLen = argLen(home, index);
+          c = len;
+        } else if (o == 115L || o == 105L) {
+          stdinMode = 1L;
+          c = c + 1L;
+        } else if (o == 114L) {
+          /* 受限壳：平台无受限设施，登记忽略。 */
+          c = c + 1L;
+        } else {
+          memory::storeOctet(o, obr::proc::bytes(home));
+          writeErr(home, "sh: option -");
+          writeStr(home, 2L, "");
+          obr::proc::write(home, 2L, 0L, 1L);
+          writeErr(home, " is not supported on this platform\n");
+          return finish(home, 2L);
+        }
+      }
+    } else {
+      if (fileLen == 0L && cmdLen == 0L) {
+        fileAt = at;
+        fileLen = len;
+      }
+      /* 其余 argument：平台壳无位置参数语义，登记忽略。 */
+    }
+    index = index + 1L;
+  }
+  if (cmdLen > 0L) {
+    long status = shellRun(home, cmdAt, cmdLen);
+    return finish(home, status);
+  }
+  if (fileLen > 0L) {
+    plant(home, fileAt, fileLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "sh: ");
+      writeSpan(home, 2L, 0L, fileAt, fileLen);
+      writeErr(home, ": No such file or directory\n");
+      return finish(home, 127L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long saved = obr::proc::dup(home, 0L);
+    if (saved < 0L) {
+      return finish(home, 2L);
+    }
+    if (obr::proc::dup2(home, fd, 0L) != 0L) {
+      return finish(home, 2L);
+    }
+    obr::proc::close(home, fd);
+    long win = obr::proc::alloc(home, 139520L);
+    long scratch = obr::proc::alloc(home, 65728L);
+    if (win == 0L || scratch == 0L || saveWindow(home, win) != 0L) {
+      return finish(home, 2L);
+    }
+    if (setSolo(home, win, "/os/sh") != 0L) {
+      return finish(home, 2L);
+    }
+    putText(scratch, 0L, "/os/sh");
+    plant(home, scratch, 6L);
+    long status = 2L;
+    if (obr::proc::spawn(home, 0L) == 0L) {
+      long pid = obr::proc::slot(home, 192L);
+      obr::proc::dup2(home, saved, 0L);
+      obr::proc::close(home, saved);
+      obr::proc::wait(home, pid);
+      status = obr::proc::slot(home, 192L);
+      if (status < 0L) {
+        status = 0L;
+      }
+      if (status > 255L) {
+        status = status % 256L;
+      }
+    } else {
+      obr::proc::dup2(home, saved, 0L);
+      obr::proc::close(home, saved);
+    }
+    return finish(home, status);
+  }
+  /* 无操作数或 -s：标准输入即命令流（fd 0 继承给壳）。 */
+  long win = obr::proc::alloc(home, 139520L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  if (win == 0L || scratch == 0L || saveWindow(home, win) != 0L) {
+    return finish(home, 2L);
+  }
+  if (setSolo(home, win, "/os/sh") != 0L) {
+    return finish(home, 2L);
+  }
+  putText(scratch, 0L, "/os/sh");
+  plant(home, scratch, 6L);
+  if (obr::proc::spawn(home, 0L) != 0L) {
+    writeErr(home, "sh: cannot execute shell\n");
+    return finish(home, 2L);
+  }
+  long pid = obr::proc::slot(home, 192L);
+  obr::proc::wait(home, pid);
+  long status = obr::proc::slot(home, 192L);
+  if (status < 0L) {
+    status = 0L;
+  }
+  if (status > 255L) {
+    status = status % 256L;
+  }
+  return finish(home, status);
+}

@@ -1,0 +1,90 @@
+/* POSIX.1-2017 qmsg（utilities/qmsg.html，批量作业族）。选定子集：
+   qmsg [-E|-O] message... job_identifier...
+   给作业追加消息（头 msg: 行，多条追加多行；消息词以空格连接）。
+   -E 只写错误流、-O 只写输出流——本平台无流语义，登记 msgstream: E|O。
+   job_identifier 子集：纯数字作业号（可带 .queue 后缀，忽略后缀）。
+   不存在写 qmsg: job: nonexistent job，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 qmsg:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import nqslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/nqs");
+  nqsEnsure(home, dir, dirLen);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long stream = 0L;
+  long msgBuf = obr::proc::alloc(home, 65536L);
+  long msgLen = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len == 2L && (spanSame(at, len, "-E") == 1L || spanSame(at, len, "-O") == 1L)) {
+      stream = byteAt(at + 8L);
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "qmsg: invalid option\n");
+      return finish(home, 1L);
+    } else if (len >= 1L && byteAt(at) >= 48L && byteAt(at) <= 57L) {
+      /* 数字开头：作业号。 */
+      operands = operands + 1L;
+      long idLen = 0L;
+      while (idLen < len && byteAt(at + idLen * 8L) != 46L) {
+        idLen = idLen + 1L;
+      }
+      long path = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(dir, path, dirLen);
+      putText(path, dirLen, "/job.");
+      copySpan(at, path + (dirLen + 5L) * 8L, idLen);
+      long plen = dirLen + 5L + idLen;
+      if (nqsLoad(home, st, buf, path, plen) != 0L) {
+        writeErr(home, "qmsg: ");
+        writeSpan(home, 2L, 0L, at, idLen);
+        writeErr(home, ": nonexistent job\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      if (msgLen > 0L) {
+        nqsSet(st, "msg", msgBuf, msgLen);
+      }
+      if (stream != 0L) {
+        nqsSet(st, "msgstream", msgBuf, 0L);
+        memory::storeOctet(stream, msgBuf);
+        nqsSet(st, "msgstream", msgBuf, 1L);
+      }
+      if (nqsSave(home, st, buf, path, plen) != 0L) {
+        writeErr(home, "qmsg: cannot write job\n");
+        failed = 1L;
+      }
+    } else {
+      /* 消息词。 */
+      if (msgLen > 0L && msgLen + 1L < 8000L) {
+        memory::storeOctet(32L, msgBuf + msgLen * 8L);
+        msgLen = msgLen + 1L;
+      }
+      if (msgLen + len < 8000L) {
+        copySpan(at, msgBuf + msgLen * 8L, len);
+        msgLen = msgLen + len;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "qmsg: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

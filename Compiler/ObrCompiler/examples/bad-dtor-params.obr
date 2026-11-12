@@ -1,0 +1,11 @@
+/* Plan 2 M2：@Destruct 必须没有参数。编译应当失败：@Destruct 必须没有参数 A::cleanup。 */
+#VERSION 2
+
+class A {
+  deRfun A(): void { }
+  @Destruct deRfun cleanup(int n): void { }
+}
+
+deRfun main(): int {
+  return 0;
+}

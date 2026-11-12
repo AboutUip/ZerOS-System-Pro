@@ -9,31 +9,27 @@ import obr.os;
 import obr.proc;
 import arg;
 
+// 返回8位序列化值
+// 得到一个内存中8位组数据
 deRfun u8(long addr): long {
+  // 基于传入的addr得到8位组的值
   return obr::oct::get(addr);
 }
 
+// 克隆from到向后8位count作为区间的内存数据到to(克隆数据任然是8位count)
 deRfun copySpan(long from, long to, long count): void {
-  long index = 0L;
-  while (index < count) {
-    memory::storeOctet(u8(from + index * 8L), to + index * 8L);
-    index = index + 1L;
-  }
+  // 交给八位组库逐项复制，避免在调用处重复展开读写循环。
+  obr::oct::copy(from, to, count);
 }
 
 /* 八位组先搬进读写字节区再 write。一次最多 4096。 */
 deRfun writeFd(long home, long fd, long addr, long count): void {
-  long offset = 0L;
-  while (offset < count) {
+  for (long offset = 0L; offset < count;) {
     long chunk = count - offset;
     if (chunk > 4096L) {
       chunk = 4096L;
     }
-    long index = 0L;
-    while (index < chunk) {
-      memory::storeOctet(u8(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
-      index = index + 1L;
-    }
+    copySpan(addr + offset * 8L, obr::proc::bytes(home), chunk);
     obr::proc::write(home, fd, 0L, chunk);
     offset = offset + chunk;
   }

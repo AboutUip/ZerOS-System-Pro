@@ -25,6 +25,7 @@ import { ZerOS as ExpansionConfigRoot } from "../Config/ExpansionConfig";
 import { ZerOS as MetricPageRoot } from "./MetricPage";
 import { ZerOS as GpuSeatRoot } from "../Seat/GpuSeat";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
+import { ZerOS as TimeChipRoot } from "./TimeChip";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -35,6 +36,9 @@ export namespace ZerOS {
       const gpuInfo = GpuSeatRoot.Hardware.Motherboard.gpuInfo;
       const writeMetric = MetricPageRoot.Hardware.Motherboard.writeMetric;
       const queryPrefix = "[ZerOS.Hardware.Motherboard.HardwareQuery]";
+      const readTime = TimeChipRoot.Hardware.Motherboard.readTime;
+      const setTime = TimeChipRoot.Hardware.Motherboard.setTime;
+      const readMonotonicMilliseconds = TimeChipRoot.Hardware.Motherboard.readMonotonicMilliseconds;
 
       const protocols: readonly string[] = [
         BoardSupportRoot.Hardware.Motherboard.SupportedMemoryProtocols[0] ?? "",
@@ -54,6 +58,7 @@ export namespace ZerOS {
       let panelWidth = 0;
       let panelHeight = 0;
       let panelHertz = 0;
+      let stagedTimeLow = 0n;
 
       function fail(message: string): never {
         throw new Error(`${queryPrefix} ${message}`);
@@ -162,9 +167,30 @@ export namespace ZerOS {
             const offset = index % 8;
             return charAt(protocols[ordinal] ?? "", offset);
           }
-          /* 从 Unix 纪元起的毫秒。下标不参与计算。监督核用它给文件记时间，问一次就读一次，不能写进指标页再读旧值。 */
+          /* 从 Unix 纪元起的毫秒。下标不参与计算。 */
           if (field === 3) {
-            return BigInt(Date.now());
+            return readTime();
+          }
+          /* field 4 暂存低 32 位，field 5 用高 32 位提交完整 signed-64 时间。仅监督核可查询座位 0。 */
+          if (field === 4) {
+            if (index > 0xffffffff) {
+              fail("时间芯片低字超出 32 位");
+            }
+            stagedTimeLow = BigInt(index);
+            return 0n;
+          }
+          if (field === 5) {
+            if (index > 0xffffffff) {
+              fail("时间芯片高字超出 32 位");
+            }
+            const highWord = BigInt(index);
+            const signedHigh = highWord >= 0x80000000n ? highWord - 0x100000000n : highWord;
+            setTime((signedHigh << 32n) | stagedTimeLow);
+            return 0n;
+          }
+          /* 单调毫秒，仅供监督核调度；墙上时间设置不影响它。 */
+          if (field === 6) {
+            return readMonotonicMilliseconds();
           }
         }
         if (seat === 2) {

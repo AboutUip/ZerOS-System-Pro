@@ -1,0 +1,51 @@
+/* 行编辑引擎 editlib 的接口。实现见 editlib.obr（从 ed.obr 抽出，ed 本身不动）。
+   struct Ed 是编辑器状态；tool 字段 0 = ex、1 = vi，选诊断前缀。
+   行数据是隔 8 位八位组块（alloc 来的地址），行长八位组数在 len。 */
+struct Ed {
+  long home;
+  array[long] lens;
+  array[long] datas;
+  long count;
+  long cur;
+  long dirty;
+  long wrote;
+  long quitAsk;
+  long hadErr;
+  long tool;
+  long fnameLen;
+  long fname;
+}
+/* 建立编辑器状态：装数组、清字段。返回 0 失败（容量超限）。 */
+deRfun initEditor(Ed* ed, long home, long tool): long;
+/* 诊断：写前缀加消息到描述符 2，并置 hadErr。 */
+deRfun edErr(Ed* ed, string msg): void;
+/* 行最长八位组数（8192）。 */
+deRfun lineMax(): long;
+/* 行数上限（65536）。 */
+deRfun lineCap(): long;
+deRfun lineLen(Ed* ed, long index): long;
+deRfun lineData(Ed* ed, long index): long;
+deRfun setLine(Ed* ed, long index, long len, long data): void;
+/* 追加一行（data 是 alloc 块）。满 1 失败。 */
+deRfun pushLine(Ed* ed, long len, long data): long;
+/* 在 pos 插入一行。满 1 失败。 */
+deRfun insertAt(Ed* ed, long pos, long len, long data): long;
+/* 删 [from,to] 行。 */
+deRfun deleteRange(Ed* ed, long from, long to): void;
+/* 把文件读进缓冲（替换当前内容）。成功 1。 */
+deRfun loadFile(Ed* ed, long addr, long count): long;
+/* 把缓冲写到 path（绝对偏移、每行补换行）。成功 1。 */
+deRfun cmdWrite(Ed* ed, long path, long plen): long;
+/* 向标准输出写一行；number 非 0 时前面加行号与制表。 */
+deRfun printLine(Ed* ed, long index, long number): void;
+/* BRE 匹配：从 from 行找 pat（ed 同款子集）。命中 1 并写 *mstart、*mend 行号。 */
+deRfun breMatch(long text, long tlen, long from, long pat, long plen, long* mstart, long* mend): long;
+/* 在 index 行上做 BRE 替换（ed 同款）。返回 0 失败。 */
+deRfun applySub(Ed* ed, long index, long pat, long plen, long rep, long rlen, long global): long;
+/* 从描述符 0 读正文行插到 after 之后，单独一行 . 结束。返回 0 读失败。 */
+deRfun readBody(Ed* ed, long after): long;
+/* ed 命令集（a c d i p n w q Q s m t r j = 等）。返回 0 继续，2 退出。 */
+deRfun runCmd(Ed* ed, long cmd, long len): long;
+/* 在 ./tags 里找 tag（ctags 格式：tag 制表 file 制表 line）。命中 1：
+   文件名八位组写进 out，*fileLen 是长度，*line 是行号。 */
+deRfun findTag(long home, long tagAt, long tagLen, long out, long* fileLen, long* line): long;

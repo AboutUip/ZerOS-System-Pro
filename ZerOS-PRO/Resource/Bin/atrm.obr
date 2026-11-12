@@ -1,0 +1,50 @@
+/* POSIX XCU 索引（Issue 7）无 atrm（Issue 7 只留 at/batch/crontab；任务批 3 要求实现）。
+   形式：atrm job...
+   删除 /var/spool/at/ 里的作业（job.N）。
+   缺 job 写 atrm: missing operand，退出 1；删不掉写 atrm: job: cannot remove，
+   该作业算失败，最终退出 1。诊断英文 ASCII，描述符 2，前缀 atrm:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L);
+  long dirLen = putText(dir, 0L, "/var/spool/at");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operands = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "atrm: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      operands = operands + 1L;
+      long path = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(dir, path, dirLen);
+      putText(path, dirLen, "/job.");
+      copySpan(at, path + (dirLen + 5L) * 8L, len);
+      plant(home, path, dirLen + 5L + len);
+      if (obr::proc::unlink(home) != 0L) {
+        writeErr(home, "atrm: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": cannot remove\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "atrm: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

@@ -1,0 +1,41 @@
+/* Plan 2 M5：单态化泛型。class Stack[T] / deRfun first[T]，每个实参组合一份实例；
+   实例是普通类/函数（重载、虚派发、失败值管线全部复用）。结果 0。*/
+#VERSION 2
+
+class Stack[T] {
+  array[T] data;
+  int count;
+  deRfun Stack(): void { data = new array[T](8); count = 0; }
+  deRfun push(T v): void { data[count] = v; count = count + 1; }
+  deRfun get(int i): T { return data[i]; }
+  deRfun size(): int { return count; }
+}
+
+class Pair[A, B] {
+  A first;
+  B second;
+  deRfun Pair(A a, B b): void { first = a; second = b; }
+  deRfun left(): A { return first; }
+  deRfun right(): B { return second; }
+}
+
+deRfun first[T](array[T] a): T { return a[0]; }
+
+deRfun main(): int {
+  Stack[int] s = new Stack[int]();
+  s.push(3);
+  s.push(5);
+  if (s.get(0) != 3) return 1;
+  if (s.size() != 2) return 2;
+  Stack[string] names = new Stack[string]();
+  names.push("hi");
+  if (length(names.get(0)) != 2) return 3;
+  Pair[int, string] p = new Pair[int, string](9, "ok");
+  Pair[string, Pair[int, int]] q = new Pair[string, Pair[int, int]]("x", new Pair[int, int](1, 2));
+  if (p.left() != 9) return 4;
+  if (q.right().right() != 2) return 5;
+  array[int] xs = new array[int](2);
+  xs[0] = 41;
+  if (first[int](xs) != 41) return 6;
+  return 0;
+}

@@ -122,6 +122,8 @@ export namespace ZerOS {
         | { readonly Op: "schedule"; readonly Core: number }
         | { readonly Op: "slice"; readonly Count: number }
         | { readonly Op: "pass"; readonly Core: number; readonly Value: number }
+        | { readonly Op: "tag"; readonly Core: number; readonly Index: number }
+        | { readonly Op: "pass.task"; readonly Core: number; readonly Tag: number; readonly Value: number }
         | { readonly Op: "take"; readonly Found: number; readonly Value: number }
         | { readonly Op: "svc"; readonly Destination: number; readonly Service: number }
         | { readonly Op: "bound"; readonly Core: number; readonly Origin: number; readonly Length: number }
@@ -949,6 +951,12 @@ export namespace ZerOS {
         }
         if (instruction.Op === "gpu.character") {
           return `gpu.character r${String(instruction.X)}, r${String(instruction.Y)}, r${String(instruction.Code)}, r${String(instruction.Foreground)}, r${String(instruction.Background)}`;
+        }
+        if (instruction.Op === "tag") {
+          return `tag r${String(instruction.Core)}, r${String(instruction.Index)}`;
+        }
+        if (instruction.Op === "pass.task") {
+          return `pass.task r${String(instruction.Core)}, r${String(instruction.Tag)}, r${String(instruction.Value)}`;
         }
         if (instruction.Op === "load") {
           let mnemonic = "load";

@@ -1,0 +1,35 @@
+#DYN
+/* Stage B 验证：用服务 46 装 flat 网卡驱动，等它走 svc 45/41。 */
+import memory;
+import obr.os;
+import obr.print;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  setPath(home, "/drivers/nic-v1.zo");
+  long status = obr::os::svc(46L);
+  if (status != 0L) {
+    obr::print::text(home, "flat nic load failed\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  long round = 0L;
+  while (round < 4L) {
+    obr::os::dwell(1000L);
+    round = round + 1L;
+  }
+  obr::print::text(home, "flat nic waited\n");
+  obr::print::flush(home);
+  return 0;
+}

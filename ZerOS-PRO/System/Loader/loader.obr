@@ -3,7 +3,7 @@
    导入项是符号名、模块名、指令编号。符号名留给 attach，这里只按模块名去拉。
    loadlib 仍只按调用者给出的整条路径装入，不解释后缀。
    不画画面，不决定缓冲。 */
-#LINK /exec.obr, /spawn.obr
+#LINK /exec.obr, /spawn.obr, /flat.obr
 import exec;
 import memory;
 import obr.os;

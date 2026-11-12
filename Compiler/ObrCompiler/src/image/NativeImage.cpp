@@ -59,6 +59,8 @@ const EscapeForm kEscape[] = {
     {"gpu.accel", 0x13, 6},
     {"carry", 0x15, 6},
     {"offer", 0x1F, 6},
+    {"tag", 0x20, 2},
+    {"pass.task", 0x21, 3},
 };
 
 const WideForm kWide[] = {
@@ -76,6 +78,12 @@ const WideForm kIndirect[] = {
     {"sti.octet", 0x23, 1}, {"ldi.16", 0x24, 0},    {"sti.16", 0x25, 1},
     {"ldi.32", 0x26, 0},    {"sti.32", 0x27, 1},    {"ldi.f64", 0x28, 0},
     {"sti.f64", 0x29, 1},   {"ldi.f32", 0x2A, 0},   {"sti.f32", 0x2B, 1},
+    /* M-D：volatile 访问面别名（vld./vst.）——与 ldi./sti. 同一编码（未登记助记符面，
+       供 Peephole 屏蔽用；原生映像按同一指令编）。 */
+    {"vld.64", 0x20, 0},    {"vst.64", 0x21, 1},    {"vld.octet", 0x22, 0},
+    {"vst.octet", 0x23, 1}, {"vld.16", 0x24, 0},    {"vst.16", 0x25, 1},
+    {"vld.32", 0x26, 0},    {"vst.32", 0x27, 1},    {"vld.f64", 0x28, 0},
+    {"vst.f64", 0x29, 1},   {"vld.f32", 0x2A, 0},   {"vst.f32", 0x2B, 1},
 };
 
 void appendByte(std::vector<uint8_t>& out, uint8_t value) { out.push_back(value); }

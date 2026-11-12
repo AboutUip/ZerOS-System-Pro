@@ -24,6 +24,7 @@ import { ZerOS as SupportRoot } from "../Config/BoardSupport";
 import { ZerOS as DirectionRoot } from "../Enum/ChannelDirection";
 import { ZerOS as WidthRoot } from "../Enum/ChannelWidth";
 import { ZerOS as OpcodeRoot } from "../Enum/MemoryOpcode";
+import { ZerOS as TimeChipCheckRoot } from "./TimeChipCheck";
 
 export namespace ZerOS {
   export namespace Hardware {
@@ -43,6 +44,7 @@ export namespace ZerOS {
       const toMemoryOpcode = OpcodeRoot.Hardware.Motherboard.toMemoryOpcode;
       const memoryOpcodeWidth = OpcodeRoot.Hardware.Motherboard.memoryOpcodeWidth;
       const memoryOpcodeDirection = OpcodeRoot.Hardware.Motherboard.memoryOpcodeDirection;
+      const runTimeChipCheck = TimeChipCheckRoot.Hardware.Motherboard.runTimeChipCheck;
       const checkPrefix = "[ZerOS.Hardware.Motherboard.BoardSelfCheck]";
 
       function fail(message: string): never {
@@ -63,6 +65,7 @@ export namespace ZerOS {
        * 协议名单和指令操作码都属于这块板，不向内存或 CPU 借结果。
        */
       export function runBoardSelfCheck(): void {
+        runTimeChipCheck();
         if (!includes(SupportedMemoryProtocols, "ZMP1")) {
           fail("内存协议名单里没有 ZMP1");
         }

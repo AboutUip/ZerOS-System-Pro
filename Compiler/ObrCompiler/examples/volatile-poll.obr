@@ -1,0 +1,30 @@
+/* M-D 正例：volatile 指针的读写与转换规则（编译期 + 运行时可跑）。
+   `volatile T*` 经 `*p` 读写即 volatile 访问——发射 vld./vst. 面，Peephole 的重复 load
+   合并、常量删读、store→load 转发、常量指针折叠四个危险优化全屏蔽，轮询读逐条保留。
+   volatile↔普通指针隐式互转拒绝，显式转换（同点类型）才放行。 */
+#VERSION 2
+
+deRfun pollOnce(volatile long* cell, long expect): long {
+  /* 轮询读：每次 `*cell` 都是一条独立的 volatile 读。 */
+  long seen = *cell;
+  if (seen != expect) return 1;
+  *cell = expect + 1L;
+  if (*cell != expect + 1L) return 2;
+  return 0;
+}
+
+deRfun main(): long {
+  volatile long* cell = (volatile long*)1048576L;
+  *cell = 41L;
+  if (*cell != 41L) return 1;
+  if (pollOnce(cell, 41L) != 0L) return 2;
+  /* 显式转换：volatile↔普通同点类型放行（(volatile long*) 与 (long*) 都是转换形态）。 */
+  long* plain = (long*)cell;
+  volatile long* back = (volatile long*)plain;
+  *back = 43L;
+  if (*plain != 43L) return 3;
+  /* 复合赋值：读旧值、算、写回——读写两跳都在 volatile 面上。 */
+  *cell += 1L;
+  if (*cell != 44L) return 4;
+  return 0;
+}

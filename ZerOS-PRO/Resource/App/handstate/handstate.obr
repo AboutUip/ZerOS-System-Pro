@@ -1,0 +1,14 @@
+#DYN
+/* 读取服务 57 的 handover 长度，退出码 = 长度。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(57L);
+  memory::store64(count, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

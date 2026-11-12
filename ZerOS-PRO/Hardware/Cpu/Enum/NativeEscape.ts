@@ -132,6 +132,12 @@ export namespace ZerOS {
        */
       export const NativeEscapeOffer = 31;
 
+      /** 设置目标核当前调度任务的 tag。两个寄存器：核心、任务下标。 */
+      export const NativeEscapeTag = 32;
+
+      /** 带 tag 的延迟回复。三个寄存器：核心、tag、值。 */
+      export const NativeEscapePassTask = 33;
+
       /**
        * 这条转义后面固定有几个寄存器编号。
        * 没有计数字节。未登记的编号返回空，调用方必须失败且不改指令指针。
@@ -159,6 +165,7 @@ export namespace ZerOS {
           || opcode === NativeEscapePortState
           || opcode === NativeEscapeUnmap
           || opcode === NativeEscapeInbox
+          || opcode === NativeEscapeTag
         ) {
           return 2;
         }
@@ -168,6 +175,7 @@ export namespace ZerOS {
           || opcode === NativeEscapeExchange
           || opcode === NativeEscapePortChar
           || opcode === NativeEscapeAdmit
+          || opcode === NativeEscapePassTask
         ) {
           return 3;
         }

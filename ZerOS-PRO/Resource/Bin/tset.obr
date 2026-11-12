@@ -1,0 +1,94 @@
+/* POSIX XCU 索引（Issue 7）外的传统 tset（任务批 3 要求实现，注明非 XCU 表内）。
+   形式：tset [-IQqrs] [-] [-e c] [-i c] [-k c] [-m mapping] [type]
+   本平台没有 termios：tset 只解析与校验，不改任何终端状态（如实注明）。
+   type 缺省取 TERM 环境值，再缺省 zeros；类型在库或内建 zeros 中即成功退出 0。
+   -s 把解析出的类型名写到描述符 1 加换行；-r 传统上另报擦除字符，本平台无设置，
+   与 -s 同输出（注明）；-I -Q -q -e c -i c -k c -m mapping 校验后接受（不落内核）；
+   单独的 - 是旧式无类型操作数。
+   未定义类型写 tset: terminal type is not defined，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 tset:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import terminfo;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long buf = obr::proc::alloc(home, 65536L);
+  long term = obr::proc::alloc(home, 4096L);
+  if (buf == 0L || term == 0L) {
+    writeErr(home, "tset: out of memory\n");
+    return finish(home, 1L);
+  }
+  long termLen = 0L;
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long show = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L && (len != 1L)) {
+      long c = 1L;
+      while (c < len) {
+        long o = byteAt(at + c * 8L);
+        if (o == 115L || o == 114L) {
+          show = 1L;
+        } else if (o == 73L || o == 81L || o == 113L) {
+          /* -I -Q -q：接受。 */
+        } else if (o == 101L || o == 105L || o == 107L) {
+          /* -e -i -k 各带一个字符参数。 */
+          c = c + 1L;
+          if (c >= len) {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "tset: option requires an argument\n");
+              return finish(home, 1L);
+            }
+          }
+        } else if (o == 109L) {
+          /* -m mapping：整段随后（简化：吃掉同词余下或下一词）。 */
+          index = index + 1L;
+          if (index >= count) {
+            writeErr(home, "tset: option requires an argument\n");
+            return finish(home, 1L);
+          }
+          c = len;
+        } else {
+          writeErr(home, "tset: invalid option\n");
+          return finish(home, 1L);
+        }
+        c = c + 1L;
+      }
+    } else {
+      if (len == 1L && byteAt(at) == 45L) {
+        /* 旧式无类型。 */
+      } else if (termLen == 0L) {
+        if (len > 256L) {
+          writeErr(home, "tset: invalid terminal name\n");
+          return finish(home, 1L);
+        }
+        copySpan(at, term, len);
+        termLen = len;
+      }
+    }
+    index = index + 1L;
+  }
+  if (termLen == 0L) {
+    termLen = defaultTerm(home, term);
+  }
+  long size = entry(home, buf, 8192L, term, termLen);
+  if (size < 0L) {
+    writeErr(home, "tset: terminal type is not defined\n");
+    return finish(home, 1L);
+  }
+  if (show == 1L) {
+    writeSpan(home, 1L, 0L, term, termLen);
+    writeStr(home, 1L, "\n");
+  }
+  return finish(home, 0L);
+}

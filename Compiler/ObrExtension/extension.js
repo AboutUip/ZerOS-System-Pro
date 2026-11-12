@@ -1,6 +1,6 @@
 const vscode = require("vscode");
 const path = require("path");
-const { ANALYSIS_EXCLUDE, collectAnalysisUris, isInstallerCopy } = require("./projectScan");
+const { ANALYSIS_EXCLUDE, collectAnalysisUris, isInstallerCopy, isBadFixture } = require("./projectScan");
 const { registerSemanticTokensProvider } = require("./semanticTokens");
 const { registerZapBinary } = require("./zapBinary");
 const { parseDocumentSymbols, collectCalls, callMatchesSymbol } = require("./symbols");
@@ -233,6 +233,7 @@ class ObrIndex {
     this.byShortName = new Map();
     this.moduleNames = new Set();
     this.calls = [];
+    this.files = new Map();
     this.workspaceReady = false;
   }
 
@@ -241,6 +242,7 @@ class ObrIndex {
     this.byShortName.clear();
     this.moduleNames.clear();
     this.calls = [];
+    this.files.clear();
     const uris = await collectAnalysisUris();
     for (const uri of uris) {
       await this.indexFile(uri);
@@ -249,17 +251,29 @@ class ObrIndex {
   }
 
   async update(uri) {
-    // For simplicity and correctness, rebuild full index.
-    await this.rebuild();
+    await this.indexFile(uri);
+  }
+
+  remove(uri) {
+    const key = uri.toString();
+    const previous = this.files.get(key);
+    if (!previous) return;
+    for (const sym of previous.symbols) {
+      removeFromMapArray(this.byFullName, sym.fullName, sym);
+      removeFromMapArray(this.byShortName, sym.shortName, sym);
+    }
+    this.calls = this.calls.filter((call) => call.uri.toString() !== key);
+    this.files.delete(key);
+    this.moduleNames = new Set([...this.files.values()].map((file) => file.moduleName));
   }
 
   async indexFile(uri) {
+    this.remove(uri);
     try {
       const doc = await vscode.workspace.openTextDocument(uri);
       const source = doc.getText();
       const relative = vscode.workspace.asRelativePath(uri, false);
       const moduleName = getModuleNameFromUri(uri);
-      this.moduleNames.add(moduleName);
       const stored = [];
       for (const sym of parseDocumentSymbols(source)) {
         const item = {
@@ -271,12 +285,11 @@ class ObrIndex {
           moduleName
         };
         stored.push(item);
-        addToMapArray(this.byFullName, item.fullName, item);
-        addToMapArray(this.byShortName, item.shortName, item);
       }
+      const calls = [];
       for (const call of collectCalls(source)) {
         const caller = enclosingImplementation(stored, call.line + 1);
-        this.calls.push({
+        calls.push({
           ...call,
           line: call.line + 1,
           uri,
@@ -286,6 +299,13 @@ class ObrIndex {
           callerUri: uri
         });
       }
+      this.files.set(uri.toString(), { moduleName, symbols: stored, calls });
+      this.moduleNames.add(moduleName);
+      for (const item of stored) {
+        addToMapArray(this.byFullName, item.fullName, item);
+        addToMapArray(this.byShortName, item.shortName, item);
+      }
+      this.calls.push(...calls);
     } catch (_e) {
       // Ignore file parse/index failures to keep extension resilient.
     }
@@ -339,6 +359,14 @@ function addToMapArray(map, key, value) {
   map.get(key).push(value);
 }
 
+function removeFromMapArray(map, key, value) {
+  const values = map.get(key);
+  if (!values) return;
+  const index = values.indexOf(value);
+  if (index >= 0) values.splice(index, 1);
+  if (values.length === 0) map.delete(key);
+}
+
 function dedupeSymbols(symbols) {
   const seen = new Set();
   const out = [];
@@ -357,6 +385,97 @@ function stripBlockComments(text) {
 
 function stripLineComment(line) {
   return line.replace(/\/\/.*$/, "");
+}
+
+/* 单趟扫描，产出与原文等长的「只剩代码」行：字符串、行注释、块注释都替换为空格，
+   状态跨行延续。扫描注解前用它屏蔽噪声，列宽不变、诊断定位不漂。 */
+function maskNonCode(lines) {
+  let inBlock = false;
+  let quote = null;
+  let escape = false;
+  const out = [];
+  for (const src of lines) {
+    let line = "";
+    for (let i = 0; i < src.length; i += 1) {
+      const c = src[i];
+      const next = src[i + 1];
+      if (inBlock) {
+        if (c === "*" && next === "/") {
+          inBlock = false;
+          line += "  ";
+          i += 1;
+        } else {
+          line += " ";
+        }
+        continue;
+      }
+      if (quote) {
+        if (escape) escape = false;
+        else if (c === "\\") escape = true;
+        else if (c === quote) quote = null;
+        line += " ";
+        continue;
+      }
+      if (c === "/" && next === "/") {
+        line += " ".repeat(src.length - i);
+        break;
+      }
+      if (c === "/" && next === "*") {
+        inBlock = true;
+        line += "  ";
+        i += 1;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        quote = c;
+        line += " ";
+        continue;
+      }
+      line += c;
+    }
+    if (quote) escape = false;
+    out.push(line);
+  }
+  return out;
+}
+
+/* 合法特性集（与编译器 parse/ParserDecl.cpp 同步）：@Callfun(...) / @Friend(...) 带参，
+   @Overwrite / @Destruct / @Fails 裸写。注解可与声明同行、可多个连写、可与 public/private 交错。 */
+const ANNOTATION_NAMES = new Set(["Callfun", "Overwrite", "Destruct", "Fails", "Friend"]);
+
+/* Rule 4.2：特性形态检查。整行扫 @ 记号（注解可与声明同行、可在行中成员位、可多个连写、
+   可与 public/private 交错）；字符串与注释里的 @ 不算。合法形态零误报，真错照报。 */
+function scanAnnotationForm(lines, diagnostics) {
+  const code = maskNonCode(lines);
+  for (let i = 0; i < code.length; i += 1) {
+    const text = code[i];
+    for (const ann of text.matchAll(/@([A-Za-z_]\w*)/g)) {
+      const before = text[ann.index - 1];
+      if (before !== undefined && /[A-Za-z0-9_]/.test(before)) continue;
+      const name = ann[1];
+      let cursor = ann.index + ann[0].length;
+      let hasArgs = false;
+      if (text[cursor] === "(") {
+        const close = text.indexOf(")", cursor);
+        hasArgs = true;
+        cursor = close < 0 ? text.length : close + 1;
+      }
+      const range = new vscode.Range(i, 0, i, Math.max(1, (lines[i] || "").length));
+      if (!ANNOTATION_NAMES.has(name)) {
+        diagnostics.push(
+          new vscode.Diagnostic(range, "特性只接受 @Callfun、@Overwrite、@Destruct、@Fails 或 @Friend。", vscode.DiagnosticSeverity.Error)
+        );
+      } else if ((name === "Callfun" || name === "Friend") && !hasArgs) {
+        diagnostics.push(
+          new vscode.Diagnostic(range, `@${name} 缺少 (`, vscode.DiagnosticSeverity.Error)
+        );
+      } else if ((name === "Overwrite" || name === "Destruct" || name === "Fails") && hasArgs) {
+        diagnostics.push(
+          new vscode.Diagnostic(range, `@${name} 不带参数`, vscode.DiagnosticSeverity.Error)
+        );
+      }
+    }
+  }
 }
 
 function readFunctionHeader(lines, startLine) {
@@ -465,10 +584,10 @@ function buildDirectiveCompletionItems() {
     "@Overwrite",
     vscode.CompletionItemKind.Snippet
   );
-  overwrite.insertText = new vscode.SnippetString("@Overwrite(${1:*})");
+  overwrite.insertText = new vscode.SnippetString("@Overwrite");
   overwrite.filterText = "Overwrite";
   overwrite.detail = "Annotation";
-  overwrite.documentation = "Restrict where this function can be implemented.";
+  overwrite.documentation = "覆盖基类方法；签名须完全一致（M1）。";
 
   const callfun = new vscode.CompletionItem(
     "@Callfun",
@@ -560,9 +679,11 @@ async function findModuleUrisByName(moduleName) {
   return [...mrUris, ...obrUris].filter((uri) => !isInstallerCopy(uri.fsPath));
 }
 
-function collectDiagnosticsForDocument(document, index) {
+function collectDiagnosticsForDocument(document, index, localOnly = false) {
   const diagnostics = [];
   if (!LANGUAGE_IDS.includes(document.languageId)) return diagnostics;
+  /* 反例夹具只着色：不跑结构、live、工作区任何诊断。 */
+  if (isBadFixture(document.uri.fsPath)) return diagnostics;
 
   if (diagnosticsEnabled("structural")) {
     diagnostics.push(...scanStructuralDiagnostics(document.getText()));
@@ -570,7 +691,7 @@ function collectDiagnosticsForDocument(document, index) {
   if (vscode.workspace.getConfiguration("objectiveR").get("diagnostics.enable") !== false) {
     diagnostics.push(...scanLiveDiagnostics(document));
   }
-  if (!diagnosticsEnabled("workspace")) {
+  if (localOnly || !diagnosticsEnabled("workspace")) {
     return diagnostics;
   }
 
@@ -686,22 +807,9 @@ function collectDiagnosticsForDocument(document, index) {
     imported.add(moduleName);
   }
 
-  // Rule 4.2: annotation form. @Overwrite is not accepted by this compiler.
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = stripLineComment(lines[i] || "").trim();
-    if (!line.startsWith("@")) continue;
-    if (/^@Callfun\s*\([^)]*\)\s*$/.test(line)) continue;
-    diagnostics.push(
-      new vscode.Diagnostic(
-        new vscode.Range(
-          new vscode.Position(i, 0),
-          new vscode.Position(i, Math.max(1, (lines[i] || "").length))
-        ),
-        /^@Overwrite\b/.test(line) ? "这一版编译器不接受 @Overwrite。" : "特性只接受 @Callfun(...)。",
-        vscode.DiagnosticSeverity.Error
-      )
-    );
-  }
+  // Rule 4.2: annotation form（特性形态）。合法清单见 scanAnnotationForm——
+  // @Callfun/@Overwrite/@Destruct/@Fails/@Friend 全是现行特性，注解可与声明同行。
+  scanAnnotationForm(lines, diagnostics);
 
   // Rule 5: main.obr should define main():void
   const rel = vscode.workspace.asRelativePath(document.uri, false).replace(/\\/g, "/");
@@ -911,6 +1019,8 @@ async function activate(context) {
   const diagnosticCollection = vscode.languages.createDiagnosticCollection("objective-r");
   context.subscriptions.push(diagnosticCollection);
   let scheduledRefresh = null;
+  const scheduledDocumentRefreshes = new Map();
+  const scheduledFileRefreshes = new Map();
 
   const refreshDiagnosticsForAll = async () => {
     const uris = await collectAnalysisUris();
@@ -936,9 +1046,48 @@ async function activate(context) {
       }
     }, delayMs);
   };
+
+  const scheduleDocumentRefresh = (doc, delayMs = 500, localOnly = true) => {
+    const key = doc.uri.toString();
+    const pending = scheduledDocumentRefreshes.get(key);
+    if (pending) clearTimeout(pending);
+    scheduledDocumentRefreshes.set(key, setTimeout(async () => {
+      scheduledDocumentRefreshes.delete(key);
+      try {
+        await index.update(doc.uri);
+        diagnosticCollection.set(doc.uri, collectDiagnosticsForDocument(doc, index, localOnly));
+        semanticTokensChangeEmitter.fire();
+      } catch (_e) {
+        // Keep extension responsive if a document refresh fails.
+      }
+    }, delayMs));
+  };
+
+  const scheduleFileRefresh = (uri, delayMs = 300) => {
+    const key = uri.toString();
+    const pending = scheduledFileRefreshes.get(key);
+    if (pending) clearTimeout(pending);
+    scheduledFileRefreshes.set(key, setTimeout(async () => {
+      scheduledFileRefreshes.delete(key);
+      try {
+        await index.update(uri);
+        for (const doc of vscode.workspace.textDocuments) {
+          if (LANGUAGE_IDS.includes(doc.languageId)) {
+            diagnosticCollection.set(doc.uri, collectDiagnosticsForDocument(doc, index));
+          }
+        }
+        semanticTokensChangeEmitter.fire();
+      } catch (_e) {
+        // Keep extension responsive if a file refresh fails.
+      }
+    }, delayMs));
+  };
+
   context.subscriptions.push(
     new vscode.Disposable(() => {
       if (scheduledRefresh) clearTimeout(scheduledRefresh);
+      for (const timer of scheduledDocumentRefreshes.values()) clearTimeout(timer);
+      for (const timer of scheduledFileRefreshes.values()) clearTimeout(timer);
     })
   );
   await refreshDiagnosticsForAll();
@@ -947,15 +1096,16 @@ async function activate(context) {
   const watcherMr = vscode.workspace.createFileSystemWatcher("**/*.mr");
   const watcherObr = vscode.workspace.createFileSystemWatcher("**/*.obr");
 
-  const onChange = async (_uri) => {
-    scheduleIndexAndDiagnosticsRefresh(180);
+  const onChange = (uri) => {
+    scheduleFileRefresh(uri);
   };
+  const onCreateOrDelete = () => scheduleIndexAndDiagnosticsRefresh(350);
   watcherMr.onDidChange(onChange);
-  watcherMr.onDidCreate(onChange);
-  watcherMr.onDidDelete(onChange);
+  watcherMr.onDidCreate(onCreateOrDelete);
+  watcherMr.onDidDelete(onCreateOrDelete);
   watcherObr.onDidChange(onChange);
-  watcherObr.onDidCreate(onChange);
-  watcherObr.onDidDelete(onChange);
+  watcherObr.onDidCreate(onCreateOrDelete);
+  watcherObr.onDidDelete(onCreateOrDelete);
 
   context.subscriptions.push(watcherMr, watcherObr);
 
@@ -968,17 +1118,26 @@ async function activate(context) {
   );
 
   context.subscriptions.push(
-    vscode.workspace.onDidOpenTextDocument(async (doc) => {
+    vscode.workspace.onDidOpenTextDocument((doc) => {
       if (!LANGUAGE_IDS.includes(doc.languageId)) return;
-      diagnosticCollection.set(doc.uri, collectDiagnosticsForDocument(doc, index));
+      scheduleDocumentRefresh(doc, 0, true);
     }),
     vscode.workspace.onDidChangeTextDocument((evt) => {
       const doc = evt.document;
       if (!LANGUAGE_IDS.includes(doc.languageId)) return;
-      diagnosticCollection.set(doc.uri, collectDiagnosticsForDocument(doc, index));
-      scheduleIndexAndDiagnosticsRefresh(500);
+      scheduleDocumentRefresh(doc, 500, true);
+    }),
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      if (!LANGUAGE_IDS.includes(doc.languageId)) return;
+      scheduleDocumentRefresh(doc, 0, false);
     }),
     vscode.workspace.onDidCloseTextDocument((doc) => {
+      const key = doc.uri.toString();
+      const pending = scheduledDocumentRefreshes.get(key);
+      if (pending) {
+        clearTimeout(pending);
+        scheduledDocumentRefreshes.delete(key);
+      }
       diagnosticCollection.delete(doc.uri);
     })
   );
@@ -1064,7 +1223,7 @@ async function activate(context) {
 
       const word = document.getWordRangeAtPosition(
         position,
-        /#VERSION|#LINK|#DYN|[A-Za-z_][\w]*(?:\.[A-Za-z0-9]+)?/
+        /#VERSION|#LINK|#DYN|@(?:Overwrite|Callfun|Destruct|Fails|Friend)|[A-Za-z_][\w]*(?:\.[A-Za-z0-9]+)?/
       );
       if (word) {
         const text = document.getText(word);
@@ -1355,5 +1514,7 @@ function deactivate() {}
 
 module.exports = {
   activate,
-  deactivate
+  deactivate,
+  scanAnnotationForm,
+  collectDiagnosticsForDocument
 };

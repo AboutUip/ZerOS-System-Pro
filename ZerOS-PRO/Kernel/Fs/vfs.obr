@@ -6,7 +6,7 @@
    管道、设备环、终端格子和命令名各自在旁边的文件里。系统调用只负责转过去。
    描述符可以复制。几个描述符共用同一个打开对象时，关掉一个不关掉其余的。
    派生会把调用者已经打开的描述符交给子任务，两边各算一份。 */
-#LINK /start.obr, /exec.obr, /task.obr, /font.obr, /pipe.obr, /dev.obr, /console.obr, /comm.obr, /pool.obr, /boot.obr, /spawn.obr
+#LINK /start.obr, /exec.obr, /task.obr, /font.obr, /pipe.obr, /dev.obr, /console.obr, /comm.obr, /pool.obr, /boot.obr, /spawn.obr, /sig.obr
 import fs;
 import proc;
 import sched;

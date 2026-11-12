@@ -1,7 +1,7 @@
 /* 映像。把程序放进监督核槽尾，认出 ELF，装上一颗核。
    不管引导先装谁，不管参数和创建子任务。
    程序正文在编译器映像之后，末尾 90176 个八位组留给目录窗。 */
-#LINK /start.obr, /boot.obr, /spawn.obr, /loader.obr
+#LINK /start.obr, /boot.obr, /spawn.obr, /loader.obr, /flat.obr
 import proc;
 import memory;
 import obr.nas;
@@ -275,7 +275,8 @@ deRfun placeAt(long path, long core): long {
   if (elfImage(imageAt()) == 1L) {
     return compatPlace(core, imageAt(), size);
   }
-  obr::os::install(core, imageAt(), size);
+  /* 同 spawn：legacy 任务先设回 kArena bound，再 install。 */
   obr::os::bound(core, kArena(core), kSlot());
+  obr::os::install(core, imageAt(), size);
   return 0L;
 }

@@ -113,7 +113,7 @@ deRfun execSpawn(long caller, long home): long {
   long sharing = 0L;
   if (core == 0L) {
     core = 4L;
-    while (core < 8L && freeCore(core) == 0L) {
+    while (core < 8L && (core == 5L || freeCore(core) == 0L)) {
       core = core + 1L;
     }
     if (core >= 8L && freeCore(3L) == 1L) {
@@ -121,7 +121,7 @@ deRfun execSpawn(long caller, long home): long {
     }
     if (core >= 8L) {
       core = 4L;
-      while (core < 8L && stoppedForSlice(core) == 0L) {
+      while (core < 8L && (core == 5L || stoppedForSlice(core) == 0L)) {
         core = core + 1L;
       }
       if (core >= 8L && stoppedForSlice(3L) == 1L) {
@@ -164,8 +164,10 @@ deRfun execSpawn(long caller, long home): long {
         return placed;
       }
     } else {
-      obr::os::install(core, imageAt(), size);
+      /* 先设回 legacy bound，再 install：核上可能还留着上一个 flat 任务的窗口，
+         install 的基址若用残留窗口，数据地址会和随后的 kArena bound 对不上。 */
       obr::os::bound(core, kArena(core), kSlot());
+      obr::os::install(core, imageAt(), size);
     }
   } else if (planted != 1L) {
     return planted;

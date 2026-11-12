@@ -1,0 +1,31 @@
+/* M-E：原子访问与内存栅栏的签名面（编译期）。地址参数是 `volatile long*`（64 位对齐字），
+   内存序是编译期标注参数（编译期常量，不进运行时、不占指令）。cas/fetchAdd 返回旧值。
+   运行时动作本轮是余量（见 Compiler/ObrCompiler/README.md「运行时余量清单」）：
+   atomic.load/store 发 volatile 访存面（vld./vst.，acquire 丢读缓存、release 发布随固件
+   缓存模型落地）；atomic.cas/fetchAdd 的信箱服务序列化、memory::fence 的 svc 下限落地前，
+   调用先落停机桩（与 imported 函数「调用先跳 halt」同一约定，属不可恢复停机面）。 */
+namespace obr {
+namespace atomic {
+/* 内存序三档：Acquire = 丢本核读缓存后读；Release = 写后发布到主板；SeqCst = 两者叠加。
+   不提供 relaxed——枚举里没有这个值，写出来就是「没有枚举值 Relaxed」。 */
+enum MemoryOrder : long {
+  Acquire = 1,
+  Release = 2,
+  SeqCst = 3
+}
+/* 读共享字（volatile 读，逐条发射）。 */
+deRfun load(volatile long* p, long order): long;
+/* 写共享字（volatile 写，逐条发射）。单字 64 位对齐 store 原子是语义下限。 */
+deRfun store(volatile long* p, long value, long order): void;
+/* 比较并交换，返回旧值（旧值等于期望才换成新值）。经监督核信箱服务序列化（运行时余量）。 */
+deRfun cas(volatile long* p, long expect, long value, long order): long;
+/* 原子加，返回旧值。经监督核信箱服务序列化（运行时余量）。 */
+deRfun fetchAdd(volatile long* p, long delta, long order): long;
+}
+}
+
+namespace memory {
+/* 内存栅栏：本核已写的交上主板 + 丢本核读缓存（release+acquire 全屏障，一档）。
+   编译为一次轻量 svc（ping 服务，回复 0）——本轮运行时不发（fence svc = 运行时余量）。 */
+deRfun fence(): void;
+}

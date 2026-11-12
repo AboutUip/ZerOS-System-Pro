@@ -1,0 +1,32 @@
+#DYN
+/* 诊断：用允许核位图 23 只装 1 个 flatloop，退出码 = 实际落点核号。
+   5 = 没有装上；6 表示位图没生效。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  obr::os::svc(51L);
+  setPath(home, "/drivers/flatloop.zo");
+  memory::store64(1L, home + 448L);
+  memory::store64(23L, home + 1024L);
+  long made = obr::os::svc(47L);
+  long code = 5L;
+  if (made > 0L) {
+    code = memory::load64(home + 256L);
+  }
+  memory::store64(code, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

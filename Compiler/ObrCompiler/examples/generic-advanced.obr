@@ -1,0 +1,55 @@
+/* Plan 2 收口：缺口 5——方法级类型参数、泛型接口、T:Base 约束。
+   每个实参组合一份实例，实例是普通类/函数/接口。结果 0。*/
+#VERSION 2
+
+interface Box[T] {
+  deRfun put(T v): void;
+  deRfun get(): T;
+}
+
+class IntBox implements Box[int] {
+  int slot;
+  deRfun IntBox(): void { slot = 0; }
+  deRfun put(int v): void { slot = v; }
+  deRfun get(): int { return slot; }
+}
+
+class Cell[T] implements Box[T] {
+  T value;
+  deRfun Cell(T v): void { value = v; }
+  deRfun get(): T { return value; }
+  deRfun put(T v): void { value = v; }
+}
+
+class Animal {
+  deRfun Animal(): void { }
+  deRfun speak(): int { return 1; }
+}
+
+class Dog : Animal {
+  deRfun Dog(): void { Animal(); }
+  deRfun speak(): int { return 2; }
+}
+
+class Tools {
+  deRfun pick[T](T a): T { return a; }
+  deRfun hear[T : Animal](T a): int { return a.speak(); }
+}
+
+deRfun describe[T : Animal](T a): int { return a.speak(); }
+
+deRfun main(): int {
+  Box[int] a = new IntBox();
+  a.put(5);
+  if (a.get() != 5) return 1;
+  Box[string] b = new Cell[string]("hey");
+  if (length(b.get()) != 3) return 2;
+  Tools t = new Tools();
+  if (t.pick[int](7) != 7) return 3;
+  if (length(t.pick[string]("x")) != 1) return 4;
+  Dog d = new Dog();
+  if (describe[Dog](d) != 2) return 5;
+  if (t.hear[Dog](d) != 2) return 6;
+  Animal x = new Animal();
+  return describe[Animal](x) == 1 ? 0 : 7;
+}

@@ -1,0 +1,13 @@
+/* flat svc 诊断：先调服务 30（时钟），成功后在窗口写标记。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  long home = query(1L, 8L, obr::os::core());
+  long clock = obr::os::svc(30L);
+  memory::store64(clock, home + 0x4008L);
+  memory::store64(1497518673L, home + 0x4000L);
+  obr::os::svc(28L);
+  return 0;
+}

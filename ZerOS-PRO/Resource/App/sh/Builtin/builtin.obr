@@ -1,17 +1,31 @@
-/* 壳认的内建名字。只辨认 cd、exit、history、clear。不执行它们。 */
+/* 壳认的内建名字和编号。只辨认，不执行。
+   POSIX.1-2017 的特殊内建 15 个：: . break continue eval exec exit export readonly return set shift times trap unset。
+   常规内建按标准 2.9.1 的表：alias bg cd command false fc fg getopts hash jobs kill newgrp pwd read true umask unalias wait，
+   另有 XSI 的 type、ulimit，以及标准工具面里实现可选内建的 echo。
+   history、clear 是本壳原有扩展，保留。已发过的编号不改：cd=2、exit=4、history=5、clear=6。 */
 #DYN
-#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import obr.oct;
 import builtin;
 
+/* 空 __zap__ 块是内联护栏：导入调用只留在这一层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun bytesEq(long addr, long count, string text): long {
+  __zap__ {
+  }
   return obr::oct::eq(addr, count, text);
 }
 
 
 deRfun builtinId(long addr, long count): long {
+  if (bytesEq(addr, count, ":") == 1L) {
+    return 1L;
+  }
   if (bytesEq(addr, count, "cd") == 1L) {
     return 2L;
+  }
+  if (bytesEq(addr, count, ".") == 1L) {
+    return 3L;
   }
   if (bytesEq(addr, count, "exit") == 1L) {
     return 4L;
@@ -21,6 +35,119 @@ deRfun builtinId(long addr, long count): long {
   }
   if (bytesEq(addr, count, "clear") == 1L) {
     return 6L;
+  }
+  if (bytesEq(addr, count, "alias") == 1L) {
+    return 7L;
+  }
+  if (bytesEq(addr, count, "bg") == 1L) {
+    return 8L;
+  }
+  if (bytesEq(addr, count, "break") == 1L) {
+    return 9L;
+  }
+  if (bytesEq(addr, count, "command") == 1L) {
+    return 10L;
+  }
+  if (bytesEq(addr, count, "continue") == 1L) {
+    return 11L;
+  }
+  if (bytesEq(addr, count, "echo") == 1L) {
+    return 12L;
+  }
+  if (bytesEq(addr, count, "eval") == 1L) {
+    return 13L;
+  }
+  if (bytesEq(addr, count, "exec") == 1L) {
+    return 14L;
+  }
+  if (bytesEq(addr, count, "export") == 1L) {
+    return 15L;
+  }
+  if (bytesEq(addr, count, "false") == 1L) {
+    return 16L;
+  }
+  if (bytesEq(addr, count, "fc") == 1L) {
+    return 17L;
+  }
+  if (bytesEq(addr, count, "fg") == 1L) {
+    return 18L;
+  }
+  if (bytesEq(addr, count, "getopts") == 1L) {
+    return 19L;
+  }
+  if (bytesEq(addr, count, "hash") == 1L) {
+    return 20L;
+  }
+  if (bytesEq(addr, count, "jobs") == 1L) {
+    return 21L;
+  }
+  if (bytesEq(addr, count, "kill") == 1L) {
+    return 22L;
+  }
+  if (bytesEq(addr, count, "newgrp") == 1L) {
+    return 23L;
+  }
+  if (bytesEq(addr, count, "pwd") == 1L) {
+    return 24L;
+  }
+  if (bytesEq(addr, count, "read") == 1L) {
+    return 25L;
+  }
+  if (bytesEq(addr, count, "readonly") == 1L) {
+    return 26L;
+  }
+  if (bytesEq(addr, count, "return") == 1L) {
+    return 27L;
+  }
+  if (bytesEq(addr, count, "set") == 1L) {
+    return 28L;
+  }
+  if (bytesEq(addr, count, "shift") == 1L) {
+    return 29L;
+  }
+  if (bytesEq(addr, count, "times") == 1L) {
+    return 30L;
+  }
+  if (bytesEq(addr, count, "trap") == 1L) {
+    return 31L;
+  }
+  if (bytesEq(addr, count, "true") == 1L) {
+    return 32L;
+  }
+  if (bytesEq(addr, count, "type") == 1L) {
+    return 33L;
+  }
+  if (bytesEq(addr, count, "ulimit") == 1L) {
+    return 34L;
+  }
+  if (bytesEq(addr, count, "umask") == 1L) {
+    return 35L;
+  }
+  if (bytesEq(addr, count, "unalias") == 1L) {
+    return 36L;
+  }
+  if (bytesEq(addr, count, "unset") == 1L) {
+    return 37L;
+  }
+  if (bytesEq(addr, count, "wait") == 1L) {
+    return 38L;
+  }
+  return 0L;
+}
+
+
+/* POSIX.1-2017 的特殊内建：错误时非交互壳才退出；变量赋值在执行后留在壳里。
+   1 :、3 .、4 exit、9 break、11 continue、13 eval、14 exec、15 export、26 readonly、
+   27 return、28 set、29 shift、30 times、31 trap、37 unset。 */
+deRfun builtinSpecial(long id): long {
+  if (id == 1L || id == 3L || id == 4L || id == 9L || id == 11L) {
+    return 1L;
+  }
+  if (id == 13L || id == 14L || id == 15L || id == 26L || id == 27L) {
+    return 1L;
+  }
+  if (id == 28L || id == 29L || id == 30L || id == 31L || id == 37L) {
+    return 1L;
   }
   return 0L;
 }

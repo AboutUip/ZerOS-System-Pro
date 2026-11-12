@@ -85,7 +85,7 @@ bool Generator::calm(const Expr& expr) const {
   }
 
 void Generator::collectExpr(const Expr& expr, std::vector<int>& calls, bool& zap) const {
-    if (expr.kind == Expr::Kind::Call && expr.integer >= 0) calls.push_back(static_cast<int>(expr.integer));
+    if ((expr.kind == Expr::Kind::Call || expr.kind == Expr::Kind::VirtualCall) && expr.integer >= 0) calls.push_back(static_cast<int>(expr.integer));
     for (const Expr& kid : expr.kids) collectExpr(kid, calls, zap);
   }
 
@@ -131,13 +131,30 @@ void Generator::prepareInline() {
     extraMemo_.assign(static_cast<std::size_t>(count), -2);
     std::vector<std::vector<int>> calls(static_cast<std::size_t>(count));
     std::vector<int> zap(static_cast<std::size_t>(count), 0);
+    bool overwriteAny = false;
+    for (const Function& function : *functions_) {
+      if (function.overwrite) overwriteAny = true;
+    }
     for (int index = 0; index < count; index += 1) {
       bool seenZap = false;
       collectStmtList((*functions_)[static_cast<std::size_t>(index)].body, calls[static_cast<std::size_t>(index)], seenZap);
       const Function& current = (*functions_)[static_cast<std::size_t>(index)];
       if (seenZap || current.imported || !current.opcode.empty()) zap[static_cast<std::size_t>(index)] = 1;
-      /* 接口派发只认函数标签，方法不能因为只有一次静态调用就被内联掉。 */
-      if (interfaces_ != nullptr && !interfaces_->empty() && !current.owner.empty()) zap[static_cast<std::size_t>(index)] = 1;
+      /* 接口派发和 @Overwrite 覆盖链派发只认函数标签，方法不能因为只有一次静态调用就被内联掉。 */
+      if ((overwriteAny || (interfaces_ != nullptr && !interfaces_->empty())) && !current.owner.empty()) zap[static_cast<std::size_t>(index)] = 1;
+      /* 构造被 new 按函数标签调用（Lower 的 New 总走 emitIntegerCall，不在调用图里），
+         不能因为别处只有一次调用就被内联掉。析构同理（作用域尽头按标签调用）。 */
+      if (!current.owner.empty() && shortFunctionName(current.name) == current.owner) zap[static_cast<std::size_t>(index)] = 1;
+      if (current.destruct || current.dtorFrame) zap[static_cast<std::size_t>(index)] = 1;
+      /* @Fails 的返回值通道（r1）是调用约定的一部分，必须按标签整段调用。
+         结构体参数/返回值的展平 ABI 同理（内联器不认识隐藏目的槽）。 */
+      if (current.fails) zap[static_cast<std::size_t>(index)] = 1;
+      if (current.ret == TypeKind::Struct || current.ret == TypeKind::Span) zap[static_cast<std::size_t>(index)] = 1;
+      for (const Param& param : current.params) {
+        /* M-C：out/ref 形参函数禁止内联（地址字 ABI 是调用约定的一部分，同结构体展平护栏）。 */
+        if (param.mode != ParamMode::None) zap[static_cast<std::size_t>(index)] = 1;
+        if (param.type == TypeKind::Struct || param.type == TypeKind::Span) zap[static_cast<std::size_t>(index)] = 1;
+      }
     }
     std::vector<int> color(static_cast<std::size_t>(count), 0);
     std::vector<int> stack;
@@ -249,11 +266,25 @@ void Generator::emitInline(const Expr& expr, const Function& target) {
     next.file = target.origin;
     next.function = target.name;
     next.line = target.line;
+    /* 被调方自己的析构帧 + 内联边界：被调方的 return 只清自己的帧，
+       不许越过边界去清调用方的记录（否则析构会在调用中途被重复跑）。 */
+    dtorFrames_.emplace_back();
+    const std::size_t savedBarrier = dtorBarrier_;
+    dtorBarrier_ = dtorFrames_.size() - 1;
+    /* M-C：展开体里的名字是被调方的槽（含偏移重映射），out/ref 判定按被调方查——
+       out/ref 函数禁内联，被调方没有 out/ref 形参，调用方的出参槽不会被误认。 */
+    const Function* savedFn = currentFn_;
+    currentFn_ = &target;
     {
       const SiteGuard guard(*this, next);
       for (const Stmt& stmt : target.body) emitStmt(stmt, target.ret);
+      /* 落穿到内联尾的清理（return 都各自清完跳走了）；函数尾是 return 时没有落穿。 */
+      if (!endsWithReturn(target.body)) emitFrameEndDtors(dtorFrames_.back());
       emit(end + ":");
     }
+    currentFn_ = savedFn;
+    dtorFrames_.pop_back();
+    dtorBarrier_ = savedBarrier;
     inlineReturn_ = savedReturn;
     bias_ = savedBias;
     userWords_ = savedUser;

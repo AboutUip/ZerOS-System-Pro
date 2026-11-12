@@ -1,0 +1,38 @@
+#DYN
+/* 键盘镜像诊断：退出码 = head - events（0..200，0 表示驱动已追上镜像）。
+   253 = 服务 59 没有 32 字节状态；252 = line 为 0。
+   不判断 base（第一次装入时 base 本来就是 0）。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  obr::os::dwell(300L);
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(59L);
+  long head = obr::os::svc(60L);
+  if (count != 32L) {
+    memory::store64(253L, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  long events = memory::load64(home + 131072L);
+  long line = memory::load64(home + 131200L);
+  long code = 0L;
+  if (line < 1L) {
+    code = 252L;
+  } else {
+    long delta = head - events;
+    if (delta < 0L) {
+      delta = 0L;
+    }
+    if (delta > 200L) {
+      delta = 200L;
+    }
+    code = delta;
+  }
+  memory::store64(code, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

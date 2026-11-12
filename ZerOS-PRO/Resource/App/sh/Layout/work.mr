@@ -2,3 +2,10 @@
 deRfun cwdLenAt(long work): long;
 deRfun cwdAt(long work): long;
 deRfun prevAt(long work): long;
+deRfun screenAt(long work): long;
+deRfun poolAt(long work): long;
+deRfun nestAt(long work): long;
+deRfun scratchBufAt(long work): long;
+deRfun lineBufAt(long work): long;
+deRfun outOffAt(long work): long;
+deRfun trackAt(long work, long index): long;

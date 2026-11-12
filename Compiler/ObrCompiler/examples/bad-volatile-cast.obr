@@ -1,0 +1,8 @@
+/* 反例：volatile 指针与普通指针隐式互转拒绝——显式转换（同点类型）才放行。编译应当失败。 */
+#VERSION 2
+
+deRfun main(): long {
+  volatile long* vp = (volatile long*)4096L;
+  long* p = vp;
+  return 0;
+}

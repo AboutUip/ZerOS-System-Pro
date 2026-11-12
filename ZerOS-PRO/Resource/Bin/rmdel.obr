@@ -1,0 +1,93 @@
+/* POSIX.1-2017 rmdel（utilities/rmdel.html，SCCS 族）。选定子集：
+   rmdel -r sid [--] s.file...
+   删除指定 delta（子集：只允许删最新一条——SCCS 语义即不可删被后续引用的）。
+   -r 必给；缺写 rmdel: missing operand，退出 1。
+   不是最新 delta 写 rmdel: sid: not the newest，退出 1；
+   校验失败写 rmdel: 文件: invalid SCCS file，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 rmdel:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  if (st == 0L || buf == 0L) {
+    writeErr(home, "rmdel: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long sidAt = 0L;
+  long sidLen = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o != 114L) {
+        writeErr(home, "rmdel: invalid option\n");
+        return finish(home, 1L);
+      }
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "rmdel: missing operand\n");
+        return finish(home, 1L);
+      }
+      sidAt = argPtr(home, index);
+      sidLen = argLen(home, index);
+    } else {
+      operands = operands + 1L;
+      if (sidLen == 0L) {
+        writeErr(home, "rmdel: missing operand\n");
+        return finish(home, 1L);
+      }
+      if (sccsLoad(home, st, buf, at, len) != 0L) {
+        writeErr(home, "rmdel: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": invalid SCCS file\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long idx = sccsFind(st, sidAt, sidLen);
+      if (idx < 0L) {
+        writeErr(home, "rmdel: ");
+        writeSpan(home, 2L, 0L, sidAt, sidLen);
+        writeErr(home, ": nonexistent sid\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long n = memory::load64(st + 64L);
+      if (idx != n - 1L) {
+        writeErr(home, "rmdel: ");
+        writeSpan(home, 2L, 0L, sidAt, sidLen);
+        writeErr(home, ": not the newest\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      memory::store64(n - 1L, st + 64L);
+      if (sccsSave(home, st, buf, at, len) != 0L) {
+        writeErr(home, "rmdel: cannot write SCCS file\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "rmdel: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

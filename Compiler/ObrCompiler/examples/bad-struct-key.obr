@@ -1,0 +1,16 @@
+/* Plan 2 收口：集合的键不能是结构体（键按装箱引用散列，值语义会丢）。编译应当失败：集合的键不能是结构体。 */
+#VERSION 2
+
+struct Pair {
+  long a;
+  long b;
+}
+
+deRfun main(): int {
+  map[Pair, long] m = new map[Pair, long]();
+  Pair p;
+  p.a = 1;
+  p.b = 2;
+  m.put(p, 1L);
+  return 0;
+}

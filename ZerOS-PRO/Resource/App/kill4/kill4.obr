@@ -1,0 +1,35 @@
+#DYN
+/* 诊断：杀掉核 4 上的用户驱动，把核 4 释放给窗口任务测试。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long start = 0L;
+  long found = 1L;
+  while (found == 1L) {
+    long status = obr::proc::task(home, start);
+    if (status != 0L) {
+      break;
+    }
+    long next = obr::proc::slot(home, 320L);
+    long base = home + 131072L;
+    long pid = memory::load64(base);
+    long core = memory::load64(base + 192L);
+    if (core == 4L && pid > 1L) {
+      memory::store64(pid, home + 128L);
+      memory::store64(9L, home + 192L);
+      obr::os::svc(18L);
+      found = 0L;
+      break;
+    }
+    if (next == 0L) {
+      break;
+    }
+    start = next;
+  }
+  memory::store64(found, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

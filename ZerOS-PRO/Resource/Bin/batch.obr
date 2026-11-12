@@ -1,0 +1,215 @@
+/* POSIX.1-2017 batch（utilities/batch.html）选定子集。队列：/var/spool/at/。
+   形式：batch [-f file] [-m] [-q letter] [-X] [--]
+   从描述符 0（或 -f file）读命令入队（时间串恒 batch：由 runner 择机执行），
+   请求行 job N at batch 写标准输出。选项 -m 通知登记、-q letter 队列字母登记。
+   平台扩展 -X：手动 runner，把队列里全部未执行作业交 /os/sh 执行并置 done
+   （与 at 同款；无守护进程，不自动到期判定，如实注明）。
+   诊断英文 ASCII，描述符 2，前缀 batch:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L);
+  long dirLen = putText(dir, 0L, "/var/spool/at");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long runner = 0L;
+  long fileAt = 0L;
+  long fileLen = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 88L && len == 2L) {
+        runner = 1L;
+      } else if (o == 102L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "batch: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        fileAt = argPtr(home, index);
+        fileLen = argLen(home, index);
+      } else if ((o == 109L || o == 113L) && len == 2L) {
+        if (o == 113L) {
+          index = index + 1L;
+          if (index >= count || argLen(home, index) != 1L) {
+            writeErr(home, "batch: invalid queue\n");
+            return finish(home, 1L);
+          }
+        }
+      } else {
+        writeErr(home, "batch: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      writeErr(home, "batch: too many operands\n");
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  if (runner == 1L) {
+    /* 复用 at 的队列：逐条执行并置 done（简化：读 job.N 执行后删）。 */
+    plant(home, dir, dirLen);
+    long d = 0L;
+    while (d < 256L) {
+      if (obr::proc::readdir(home, d, 512L) != 0L) {
+        break;
+      }
+      long nlen = obr::proc::slot(home, 256L);
+      if (nlen < 1L) {
+        break;
+      }
+      long nameAt = obr::proc::bytes(home);
+      if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+        long path = obr::proc::alloc(home, 8192L * 8L);
+        copySpan(dir, path, dirLen);
+        memory::storeOctet(47L, path + dirLen * 8L);
+        copySpan(nameAt, path + (dirLen + 1L) * 8L, nlen);
+        plant(home, path, dirLen + 1L + nlen);
+        if (obr::proc::open(home, 0L) == 0L) {
+          long fd = obr::proc::slot(home, 192L);
+          long text = obr::proc::alloc(home, 65536L);
+          long total = 0L;
+          while (total < 65536L) {
+            if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+              break;
+            }
+            long got = obr::proc::slot(home, 320L);
+            if (got <= 0L) {
+              break;
+            }
+            if (got > 4096L) {
+              got = 4096L;
+            }
+            copySpan(obr::proc::bytes(home), text + total * 8L, got);
+            total = total + got;
+            if (got < 4096L) {
+              break;
+            }
+          }
+          obr::proc::close(home, fd);
+          long body = 0L;
+          while (body + 1L < total) {
+            if (byteAt(text + body * 8L) == 10L && byteAt(text + (body + 1L) * 8L) == 10L) {
+              body = body + 2L;
+              break;
+            }
+            body = body + 1L;
+          }
+          shellRun(home, text + body * 8L, total - body);
+          plant(home, path, dirLen + 1L + nlen);
+          obr::proc::unlink(home);
+        }
+      }
+      d = d + 1L;
+    }
+    return finish(home, 0L);
+  }
+  /* 入队（与 at 同布局，时间串恒 batch）。 */
+  putText(dir + 4096L, 0L, "/var");
+  plant(home, dir + 4096L, 4L);
+  obr::proc::mkdir(home);
+  putText(dir + 4096L, 0L, "/var/spool");
+  plant(home, dir + 4096L, 10L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  long nextPath = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, nextPath, dirLen);
+  putText(nextPath, dirLen, "/.next");
+  long job = 1L;
+  plant(home, nextPath, dirLen + 5L);
+  if (obr::proc::open(home, 0L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::read(home, fd, 0L, 8L);
+    long v = memory::load64(obr::proc::bytes(home));
+    if (v >= 1L && v < 1000000L) {
+      job = v;
+    }
+    obr::proc::close(home, fd);
+  }
+  long path = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, path, dirLen);
+  putText(path, dirLen, "/job.");
+  long plen = putNum(path, dirLen + 5L, job);
+  plant(home, path, plen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "batch: cannot queue job\n");
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long at = putText(obr::proc::bytes(home), 0L, "time: batch\n\n");
+  obr::proc::write(home, fd, 0L, at);
+  long off = at;
+  if (fileLen > 0L) {
+    plant(home, fileAt, fileLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "batch: cannot read commands\n");
+      obr::proc::close(home, fd);
+      return finish(home, 1L);
+    }
+    long sfd = obr::proc::slot(home, 192L);
+    /* 源偏移 soff 从 0 顺序读；off 是作业文件的写偏移，两者不能混用。 */
+    long soff = 0L;
+    while (1L == 1L) {
+      if (obr::proc::read(home, sfd, soff, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      obr::proc::write(home, fd, off, got);
+      off = off + got;
+      soff = soff + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, sfd);
+  } else {
+    long soff = 0L;
+    while (1L == 1L) {
+      if (obr::proc::read(home, 0L, soff, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      obr::proc::write(home, fd, off, got);
+      off = off + got;
+      soff = soff + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+  }
+  obr::proc::close(home, fd);
+  plant(home, nextPath, dirLen + 5L);
+  if (obr::proc::open(home, 1L) == 0L) {
+    fd = obr::proc::slot(home, 192L);
+    memory::store64(job + 1L, obr::proc::bytes(home));
+    obr::proc::write(home, fd, 0L, 8L);
+    obr::proc::close(home, fd);
+  }
+  writeStr(home, 1L, "job ");
+  writeNum(home, 1L, job);
+  writeStr(home, 1L, " at batch\n");
+  return finish(home, 0L);
+}

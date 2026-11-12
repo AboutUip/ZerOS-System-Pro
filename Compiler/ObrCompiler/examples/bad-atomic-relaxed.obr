@@ -1,0 +1,9 @@
+/* 反例：内存序没有 relaxed——枚举只有 Acquire/Release/SeqCst，写 Relaxed 就是编译错误。编译应当失败。 */
+#VERSION 2
+import obr.atomic;
+
+deRfun main(): long {
+  volatile long* p = (volatile long*)4096L;
+  long got = obr::atomic::load(p, obr::atomic::MemoryOrder::Relaxed);
+  return got;
+}

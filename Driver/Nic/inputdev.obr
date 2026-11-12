@@ -1,0 +1,45 @@
+/* 合成输入/GPU 状态驱动：维护 frame 计数和 cursor x/y，
+   只在 SIGTERM 时导出 24 个八位组（3 个 64 位字），重启后读回继续。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  long home = obr::os::svc(65L);
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(57L);
+  long frame = 0L;
+  long x = 0L;
+  long y = 0L;
+  if (count == 24L) {
+    frame = memory::load64(home + 131072L);
+    x = memory::load64(home + 131136L);
+    y = memory::load64(home + 131200L);
+  }
+  while (1L) {
+    frame = frame + 1L;
+    x = x + 1L;
+    if (x >= 80L) {
+      x = 0L;
+    }
+    y = y + 1L;
+    if (y >= 24L) {
+      y = 0L;
+    }
+    long sig = obr::os::svc(19L);
+    if (sig == 15L) {
+      long at = query(1L, 8L, obr::os::core());
+      memory::store64(frame, at + 131072L);
+      memory::store64(x, at + 131136L);
+      memory::store64(y, at + 131200L);
+      memory::store64(24L, at + 128L);
+      memory::store64(1L, at + 64L);
+      obr::os::svc(57L);
+      memory::store64(0L, at + 128L);
+      obr::os::svc(28L);
+      return 0;
+    }
+    obr::os::dwell(50L);
+  }
+  return 0;
+}

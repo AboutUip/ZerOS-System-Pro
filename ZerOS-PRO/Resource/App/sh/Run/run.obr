@@ -1,7 +1,7 @@
 /* 把已经拆好的命令派生出去并等待。管道、重定向和 here-document 正文都在这里。
    不画提示符，也不读键盘。 */
 #DYN
-#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
 import obr.proc;
 import obr.line;
@@ -12,10 +12,24 @@ import cd;
 import parse;
 import builtin;
 import draw;
+import expand;
+import work;
+import bcore;
+import bstate;
+import bvar;
+import bflow;
+import bopt;
+import bcmd;
+import bio;
+import bjob;
 import run;
 
 
+/* 空 __zap__ 块是内联护栏：导入调用只留在这一层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun u8(long addr): long {
+  __zap__ {
+  }
   return obr::oct::get(addr);
 }
 
@@ -25,55 +39,9 @@ deRfun argHome(long home): long {
 }
 
 
-deRfun packArgs(long home, long cmd, long begin): long {
-  long base = argHome(home);
-  long argc = cmdArgc(cmd) - begin;
-  if (argc < 0L || argc > 64L) {
-    return 1L;
-  }
-  long total = 0L;
-  long index = 0L;
-  while (index < argc) {
-    total = total + cmdArgLen(cmd, begin + index);
-    if (total > 8192L) {
-      return 1L;
-    }
-    index = index + 1L;
-  }
-  memory::store64(argc, base);
-  memory::store64(total, base + 128L);
-  index = 0L;
-  long filled = 0L;
-  while (index < argc) {
-    long count = cmdArgLen(cmd, begin + index);
-    memory::store64(count, base + 256L + index * 64L);
-    copySpan(cmdArgAt(cmd, begin + index), base + 8448L + filled * 8L, count);
-    filled = filled + count;
-    index = index + 1L;
-  }
-  return 0L;
-}
-
-
-deRfun readNum(long addr, long count, long* value): long {
-  if (count < 1L) {
-    return 1L;
-  }
-  long index = 0L;
-  long total = 0L;
-  while (index < count) {
-    long digit = u8(addr + index * 8L);
-    if (digit < 48L || digit > 57L) {
-      return 1L;
-    }
-    total = total * 10L + digit - 48L;
-    if (total > 255L) {
-      total = 255L;
-    }
-    index = index + 1L;
-  }
-  *value = total;
-  return 0L;
+/* 通配符在 fillArgs 里展开。没有通配符时仍按原来的参数块装。 */
+deRfun packArgs(long home, long work, long out, long cmd, long begin): long {
+  return fillArgs(home, work, out, cmd, begin);
 }
 
 
@@ -85,12 +53,12 @@ deRfun doHistory(long home, long state, long work): long {
     if (obr::line::editHist(state, index, paintAt(work), &got) == 0L) {
       long number = index + 1L;
       if (number >= 10L) {
-        sayByte(home, 48L + number / 10L);
+        sayByte(home, work, 48L + number / 10L);
       }
-      sayByte(home, 48L + number % 10L);
-      say(home, "  ");
-      saySpan(home, paintAt(work), got);
-      sayByte(home, 10L);
+      sayByte(home, work, 48L + number % 10L);
+      say(home, work, "  ");
+      saySpan(home, work, paintAt(work), got);
+      sayByte(home, work, 10L);
     }
     index = index + 1L;
   }
@@ -98,34 +66,294 @@ deRfun doHistory(long home, long state, long work): long {
 }
 
 
-deRfun doBuiltin(long home, long state, long work, long cmd, long begin, long env, long* leaving): long {
-  long id = builtinId(cmdArgAt(cmd, begin), cmdArgLen(cmd, begin));
+/* 重解析的解析区按嵌套深度分槽：eval 和别名展开可以再进 runText，不能共用一块。
+   每槽：解析结果 262144 字节 + here-document 正文 131072 字节。
+   池指针和下面的登记都放在工作区（work.obr），不用 static。
+   #DYN 程序和挂上的 .zdll 共用同一段静态区，同槽位会互相覆盖。 */
+deRfun runOut(long home, long work, long depth): long {
+  long slot = poolAt(work);
+  long pool = memory::load64(slot);
+  if (pool == 0L) {
+    pool = obr::proc::alloc(home, 393216L * 4L);
+    memory::store64(pool, slot);
+  }
+  return pool + depth * 393216L;
+}
+
+
+deRfun runDepth(long work, long op): long {
+  long slot = nestAt(work);
+  long depth = memory::load64(slot);
+  if (op > 0L) {
+    memory::store64(depth + 1L, slot);
+    return depth;
+  }
+  if (depth > 0L) {
+    depth = depth - 1L;
+    memory::store64(depth, slot);
+  }
+  return depth;
+}
+
+
+/* 文本和引号暂存共用一块：文本在 parseLine 后就死了，嵌套里可以重用。 */
+deRfun runScratch(long home, long work): long {
+  long slot = scratchBufAt(work);
+  long buf = memory::load64(slot);
+  if (buf == 0L) {
+    buf = obr::proc::alloc(home, 32768L * 8L);
+    memory::store64(buf, slot);
+  }
+  return buf;
+}
+
+
+/* 派生登记：条数、最大 pid、最后是不是外部命令。一个 runList 一份。
+   runList 进来先用 op 0 清一次，条数才和 pidAt 的下标对得上。 */
+deRfun runTrack(long work, long op, long value): long {
+  long tally = trackAt(work, 0L);
+  long count = memory::load64(tally);
+  if (op == 0L) {
+    memory::store64(0L, tally);
+    memory::store64(0L, trackAt(work, 1L));
+    memory::store64(0L, trackAt(work, 2L));
+    return 0L;
+  }
+  if (op == 1L) {
+    memory::store64(value, trackAt(work, 1L));
+    memory::store64(1L, trackAt(work, 2L));
+    memory::store64(count + 1L, tally);
+    return count;
+  }
+  if (op == 2L) {
+    memory::store64(0L, trackAt(work, 2L));
+    return 0L;
+  }
+  if (op == 3L) {
+    return count;
+  }
+  if (op == 4L) {
+    return memory::load64(trackAt(work, 2L));
+  }
+  return memory::load64(trackAt(work, 1L));
+}
+
+
+/* 外部命令：查路径、装参数和环境、派生。派生成功返回 -1，状态等收割时定。
+   查不到、装不下或派生失败给出诊断并返回状态。 */
+deRfun dispatchExternal(long home, long bs, long work, long out, long envTmp, long cmd, long command): long {
+  long got = resolve(home, bs, work, envTmp, cmdArgAt(cmd, command), cmdArgLen(cmd, command));
+  if (got < 1L) {
+    sayMissing(home, work, "sh: ", cmdArgAt(cmd, command), cmdArgLen(cmd, command), ": command not found\n");
+    return 127L;
+  }
+  if (packArgs(home, work, out, cmd, command) != 0L || packEnv(home, envTmp) != 0L) {
+    say(home, work, "sh: argument list too long\n");
+    return 1L;
+  }
+  plantRaw(home, destAt(work), got);
+  if (obr::proc::spawn(home, 0L) != 0L) {
+    sayMissing(home, work, "sh: ", cmdArgAt(cmd, command), cmdArgLen(cmd, command), ": command not found\n");
+    return 127L;
+  }
+  long pid = obr::proc::slot(home, 192L);
+  long slot = runTrack(work, 1L, pid);
+  memory::store64(pid, pidAt(work, slot));
+  return -1L;
+}
+
+
+/* 内建分发。名字表在 builtin，实现分在 bflow/bvar/bopt/bcmd/bio/bjob。
+   返回 -1 表示本壳不落这一条（newgrp），调用方改走外部派生。 */
+deRfun doBuiltin(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving, long id): long {
+  if (id == 1L) {
+    /* : 只回 0。 */
+    return 0L;
+  }
   if (id == 2L) {
-    return doCd(home, work, cmd, env, begin);
+    return doCd(home, work, cmd, env, command);
+  }
+  if (id == 3L) {
+    return bfDot(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
   }
   if (id == 4L) {
-    long code = 0L;
-    if (cmdArgc(cmd) > begin + 1L) {
-      if (readNum(cmdArgAt(cmd, begin + 1L), cmdArgLen(cmd, begin + 1L), &code) != 0L) {
-        say(home, "sh: exit: numeric argument required\n");
-      }
-    }
-    *leaving = 1L;
-    return code;
+    return bfExit(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
   }
   if (id == 5L) {
     return doHistory(home, state, work);
   }
   if (id == 6L) {
-    sayByte(home, 12L);
+    sayByte(home, work, 12L);
     return 0L;
   }
-  return 127L;
+  if (id == 7L) {
+    return bcAlias(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 8L || id == 18L || id == 21L) {
+    /* bg fg jobs：没有作业表，明确报不支持。 */
+    sayErr(home, "sh: job control is not supported on this system\n");
+    return 1L;
+  }
+  if (id == 9L) {
+    return bfBreak(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 10L) {
+    return bcCommand(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 11L) {
+    return bfContinue(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 12L) {
+    return bcEcho(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 13L) {
+    return bfEval(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 14L) {
+    return bfExec(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 15L) {
+    return bvExport(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 16L) {
+    return 1L;
+  }
+  if (id == 17L) {
+    return bcFc(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 19L) {
+    return boGetopts(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 20L) {
+    return bcHash(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 22L || id == 23L) {
+    /* kill、newgrp：派生 /bin 同名工具，行为即工具行为。 */
+    return -1L;
+  }
+  if (id == 24L) {
+    return bcPwd(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 25L) {
+    return biRead(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 26L) {
+    return bvReadonly(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 27L) {
+    return bfReturn(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 28L) {
+    return bvSet(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 29L) {
+    return bvShift(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 30L) {
+    /* times：内核没有 CPU 记账面，不写假的 0m0.00s。 */
+    sayErr(home, "sh: times: CPU time accounting is not available on this system\n");
+    return 1L;
+  }
+  if (id == 31L) {
+    return boTrap(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 32L) {
+    return 0L;
+  }
+  if (id == 33L) {
+    return bcType(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 34L) {
+    /* ulimit：内核没有资源限制面，不记假状态。 */
+    sayErr(home, "sh: ulimit: resource limits are not available on this system\n");
+    return 1L;
+  }
+  if (id == 35L) {
+    return biUmask(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 36L) {
+    return bcUnalias(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 37L) {
+    return bvUnset(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  if (id == 38L) {
+    return bjWait(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving);
+  }
+  return -1L;
 }
 
 
-/* 没有斜杠时按 PATH 找。缺省是 /bin:/os:/kernel。找到普通文件就写进 dest，返回长度。 */
-deRfun resolve(long home, long work, long env, long name, long nameLen): long {
+/* 重新解析一段文本并执行。eval、. 和别名展开都走这里。
+   文本里有 here-document 没有主循环收正文，明确报错。 */
+deRfun runText(long home, long bs, long state, long work, long env, long envTmp, long text, long textLen, long status, long* leaving): long {
+  long depth = runDepth(work, 1L);
+  if (depth >= 4L) {
+    runDepth(work, -1L);
+    sayErr(home, "sh: too much nesting\n");
+    return 2L;
+  }
+  long out = runOut(home, work, depth);
+  long body = out + 262144L;
+  long code = 0L;
+  if (parseLine(text, textLen, out, status) != 0L) {
+    sayErr(home, "sh: syntax error\n");
+    code = 2L;
+  } else if (hdCount(out) > 0L) {
+    sayErr(home, "sh: here-document not supported here\n");
+    code = 2L;
+  } else {
+    code = runParsed(home, bs, state, work, out, env, envTmp, status, body, leaving);
+  }
+  runDepth(work, -1L);
+  return code;
+}
+
+
+/* 一条命令的完整派生：别名展开、内建、外部。返回状态。
+   -1 表示外部已登记，状态等收割时定。useAlias 为 0 时跳过别名（command、exec 用）。 */
+deRfun runWord(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving, long useAlias): long {
+  long name = cmdArgAt(cmd, command);
+  long nameLen = cmdArgLen(cmd, command);
+  if (useAlias == 1L) {
+    long index = bsAliasFind(bs, name, nameLen);
+    if (index >= 0L && bsAliasValueLen(bs, index) > 0L && bsGuardHas(bs, name, nameLen) == 0L) {
+      long buf = runScratch(home, work);
+      if (buf == 0L) {
+        sayErr(home, "sh: out of memory\n");
+        return 1L;
+      }
+      bcCopy(bsAliasValueAt(bs, index), buf, bsAliasValueLen(bs, index));
+      long at = bsAliasValueLen(bs, index);
+      long arg = command + 1L;
+      while (arg < cmdArgc(cmd)) {
+        bcPut(buf, at, 32L);
+        at = at + 1L;
+        long quoted = bcQuote(buf + 131072L, cmdArgAt(cmd, arg), cmdArgLen(cmd, arg));
+        bcCopy(buf + 131072L, buf + at * 8L, quoted);
+        at = at + quoted;
+        arg = arg + 1L;
+      }
+      bsGuardPush(bs, name, nameLen);
+      long code = runText(home, bs, state, work, env, envTmp, buf, at, status, leaving);
+      bsGuardPop(bs);
+      return code;
+    }
+  }
+  long id = builtinId(name, nameLen);
+  if (id != 0L) {
+    long code = doBuiltin(home, bs, state, work, out, env, envTmp, body, cmd, command, status, leaving, id);
+    if (code >= 0L) {
+      return code;
+    }
+  }
+  return dispatchExternal(home, bs, work, out, envTmp, cmd, command);
+}
+
+
+/* 没有斜杠时按 PATH 找。缺省是 /bin:/os:/kernel。找到普通文件就写进 dest，返回长度。
+   bs 里的 hash 表先查（只有用 hash 内建记过的才在表里），路径失效就退回逐段搜。 */
+deRfun resolve(long home, long bs, long work, long env, long name, long nameLen): long {
   if (hasSlash(name, nameLen) == 1L) {
     long got = normalize(work, name, nameLen);
     if (got < 1L) {
@@ -137,6 +365,17 @@ deRfun resolve(long home, long work, long env, long name, long nameLen): long {
       return -1L;
     }
     return got;
+  }
+  long hit = bsHashFind(bs, name, nameLen);
+  if (hit >= 0L) {
+    long cached = bsHashPathAt(bs, hit);
+    long cachedLen = bsHashPathLen(bs, hit);
+    plantRaw(home, cached, cachedLen);
+    long kind = fileKind(home);
+    if (kind == 1L || kind == 5L) {
+      copySpan(cached, destAt(work), cachedLen);
+      return cachedLen;
+    }
   }
   long path = 0L;
   long pathLen = 0L;
@@ -444,11 +683,11 @@ deRfun closeHere(long home, long work): void {
 }
 
 
-deRfun hereFail(long home, long got): void {
+deRfun hereFail(long home, long work, long got): void {
   if (got == -2L) {
-    say(home, "sh: pipe failed\n");
+    say(home, work, "sh: pipe failed\n");
   } else {
-    say(home, "sh: here-document too large\n");
+    say(home, work, "sh: here-document too large\n");
   }
 }
 
@@ -470,13 +709,14 @@ deRfun listHere(long out, long first, long count): long {
    派生只把 0、1、2 交给子任务，所以这里先把管道或重定向 dup2 到这两个标准描述符。
    还生效的 here-document 把读端 dup2 到描述符 0，比管道更后。
    父任务自己的管道号码在等子任务之前关掉，写端才算真正结束。 */
-deRfun runList(long home, long state, long work, long out, long list, long env, long envTmp, long body, long* leaving): long {
+deRfun runList(long home, long bs, long state, long work, long out, long list, long env, long envTmp, long body, long prior, long* leaving): long {
   long first = listCmd(out, list);
   long count = listCmdCount(out, list);
   if (count < 1L || count > 3L) {
-    say(home, "sh: too many pipeline stages\n");
+    say(home, work, "sh: too many pipeline stages\n");
     return 1L;
   }
+  runTrack(work, 0L, 0L);
   long slot = 0L;
   while (slot < 4L) {
     memory::store64(-1L, hereFdAt(work, slot));
@@ -495,7 +735,7 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
           back = back + 1L;
         }
         closeHere(home, work);
-        say(home, "sh: pipe failed\n");
+        say(home, work, "sh: pipe failed\n");
         return 1L;
       }
       memory::store64(obr::proc::slot(home, 128L), pipeReadAt(work, index));
@@ -517,7 +757,7 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
   while (index < count) {
     if (lazy == 1L && index < pipes && memory::load64(pipeReadAt(work, index)) < 0L) {
       if (obr::proc::pipe(home) != 0L) {
-        say(home, "sh: pipe failed\n");
+        say(home, work, "sh: pipe failed\n");
         lastStatus = 1L;
         lastExternal = 0L;
         index = count;
@@ -551,7 +791,7 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
         }
         hereFd = attachHere(home, bodyAt(body, live), hdBodyLen(out, live));
         if (hereFd < 0L) {
-          hereFail(home, hereFd);
+          hereFail(home, work, hereFd);
           lastStatus = 1L;
           lastExternal = 0L;
           index = count;
@@ -570,7 +810,7 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
             closeFd(home, hereFd);
             memory::store64(-1L, hereFdAt(work, live));
           }
-          sayMissing(home, "sh: ", cmdRedirAt(cmd), cmdRedirLen(cmd), ": No such file or directory\n");
+          sayMissing(home, work, "sh: ", cmdRedirAt(cmd), cmdRedirLen(cmd), ": No such file or directory\n");
           lastStatus = 1L;
           lastExternal = 0L;
           index = count;
@@ -610,7 +850,7 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
       long opened = openRedir(home, cmd, redir);
       if (opened < 0L) {
         restore(home, saveIn, 0L);
-        sayMissing(home, "sh: ", cmdRedirAt(cmd), cmdRedirLen(cmd), ": No such file or directory\n");
+        sayMissing(home, work, "sh: ", cmdRedirAt(cmd), cmdRedirLen(cmd), ": No such file or directory\n");
         lastStatus = 1L;
         lastExternal = 0L;
         index = count;
@@ -633,6 +873,10 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
       saveOut = steer(home, outFd, 1L);
       if (saveOut < 0L) {
         steered = 0L;
+      } else {
+        /* fd 1 换成了重定向目标，输出位移从头记：`>` 是截断后从 0 写，
+           `>>` 由内核按追加处理、不看位移，管道也不看。 */
+        memory::store64(0L, outOffAt(work));
       }
     }
     if (extra >= 0L && extra != 0L && extra != 1L) {
@@ -646,7 +890,7 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
     if (steered == 0L) {
       restore(home, saveIn, 0L);
       restore(home, saveOut, 1L);
-      say(home, "sh: cannot redirect\n");
+      say(home, work, "sh: cannot redirect\n");
       lastStatus = 1L;
       lastExternal = 0L;
       index = count;
@@ -660,50 +904,38 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
       }
       command = command + 1L;
     }
+    long id = 0L;
+    if (command < argc) {
+      id = builtinId(cmdArgAt(cmd, command), cmdArgLen(cmd, command));
+    }
+    /* 赋值都进 envTmp；特殊内建和纯赋值行按 POSIX 再落进壳环境。 */
+    copyEnv(env, envTmp);
+    long cursor = 0L;
+    while (cursor < command) {
+      long word = cmdArgAt(cmd, cursor);
+      long wordLen = cmdArgLen(cmd, cursor);
+      long nameLen = 0L;
+      if (isAssign(word, wordLen, &nameLen) == 1L) {
+        envSet(envTmp, word, nameLen, word + (nameLen + 1L) * 8L, wordLen - nameLen - 1L);
+        if (command >= argc || builtinSpecial(id) == 1L) {
+          bvAssign(bs, env, word, nameLen, word + (nameLen + 1L) * 8L, wordLen - nameLen - 1L);
+        }
+      }
+      cursor = cursor + 1L;
+    }
     if (command >= argc) {
       lastStatus = 0L;
       lastExternal = 0L;
     } else {
-      long id = builtinId(cmdArgAt(cmd, command), cmdArgLen(cmd, command));
-      if (id != 0L) {
-        lastStatus = doBuiltin(home, state, work, cmd, command, env, leaving);
+      long code = runWord(home, bs, state, work, out, env, envTmp, body, cmd, command, prior, leaving, 1L);
+      if (code >= 0L) {
+        lastStatus = code;
         lastExternal = 0L;
       } else {
-        copyEnv(env, envTmp);
-        long cursor = 0L;
-        while (cursor < command) {
-          long word = cmdArgAt(cmd, cursor);
-          long wordLen = cmdArgLen(cmd, cursor);
-          long nameLen = 0L;
-          if (isAssign(word, wordLen, &nameLen) == 1L) {
-            envSet(envTmp, word, nameLen, word + (nameLen + 1L) * 8L, wordLen - nameLen - 1L);
-          }
-          cursor = cursor + 1L;
-        }
-        long got = resolve(home, work, envTmp, cmdArgAt(cmd, command), cmdArgLen(cmd, command));
-        if (got < 1L) {
-          sayMissing(home, "sh: ", cmdArgAt(cmd, command), cmdArgLen(cmd, command), ": command not found\n");
-          lastStatus = 127L;
-          lastExternal = 0L;
-        } else if (packArgs(home, cmd, command) != 0L || packEnv(home, envTmp) != 0L) {
-          say(home, "sh: argument list too long\n");
-          lastStatus = 1L;
-          lastExternal = 0L;
-        } else {
-          plantRaw(home, destAt(work), got);
-          if (obr::proc::spawn(home, 0L) != 0L) {
-            sayMissing(home, "sh: ", cmdArgAt(cmd, command), cmdArgLen(cmd, command), ": command not found\n");
-            lastStatus = 127L;
-            lastExternal = 0L;
-          } else {
-            long pid = obr::proc::slot(home, 192L);
-            memory::store64(pid, pidAt(work, pids));
-            pids = pids + 1L;
-            lastPid = pid;
-            lastExternal = 1L;
-            lastStatus = 0L;
-          }
-        }
+        lastStatus = 0L;
+        lastExternal = 1L;
+        lastPid = runTrack(work, 5L, 0L);
+        pids = pids + 1L;
       }
     }
     restore(home, saveIn, 0L);
@@ -737,8 +969,9 @@ deRfun runList(long home, long state, long work, long out, long list, long env, 
 }
 
 
-/* out 里已经是拆好的命令。here-document 的正文在 body，一份 4096 个八位组。 */
-deRfun runParsed(long home, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long {
+/* out 里已经是拆好的命令。here-document 的正文在 body，一份 4096 个八位组。
+   set -e：独立列表（没有 &&/|| 连着）失败就让壳退出，状态就是失败值。 */
+deRfun runParsed(long home, long bs, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long {
   /* 这一行开始执行。宿主在 svc 边界开命令 span，提示符再关。 */
   obr::proc::command(home);
   long status = previous;
@@ -754,8 +987,12 @@ deRfun runParsed(long home, long state, long work, long out, long env, long envT
       run = 0L;
     }
     if (run == 1L) {
-      status = runList(home, state, work, out, index, env, envTmp, body, leaving);
+      status = runList(home, bs, state, work, out, index, env, envTmp, body, status, leaving);
       if (*leaving == 1L) {
+        return status;
+      }
+      if (status != 0L && join == 0L && bsOptOn(bs, 2L) == 1L) {
+        *leaving = 1L;
         return status;
       }
     }

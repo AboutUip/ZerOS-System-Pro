@@ -1,0 +1,370 @@
+/* POSIX.1-2017 admin（utilities/admin.html，SCCS 族）。选定子集：
+   admin [-n] [-i[file]] [-y[comment]] [-t[file]] [-f[flag]] [-m[mod]]
+         [-a[login]] [-e[login]] [-d[flag]] [-h[flag]] [-q[flag]] [-p[sid]] [--] s.file...
+   建/改 SCCS s 文件（格式子集见 sccslib）。-n 建初始 delta 1.1（-p 可指定
+   首发 SID，本子集只支持 1.n 形态）；正文取 -i 文件（缺省 s.file 去 s. 前缀的
+   g 文件），无 -n 时忽略正文。-y 注释（缺省空）；-t 描述文件登记进注释区尾；
+   -f flag 设标志行（^Af）；-m mod 等价 -f m<mod>；-a/-e 用户表登记（^Au 行）；
+   -d flag 删对应 ^Af 行；-h 检查完整性后退出（不改）；-q[flag] 静默登记。
+   未支持+原因：分支/合并 SID 语义（SCCS 的 1.1.1.1 与锁语义）——本子集只做
+   1.n 线性；-z 造空 delta 不做。
+   缺操作数写 admin: missing operand，退出 1；已有文件且无 -n 且无 -d/-f/-a/-e
+   写 admin: file exists，退出 1；其余失败退出 1。
+   诊断英文 ASCII，描述符 2，前缀 admin:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun appendTag(long st, long base, long capLenAt, long cap, long tag, long valAt, long valLen): void {
+  long n = memory::load64(capLenAt);
+  if (n + valLen + 3L >= cap) {
+    return;
+  }
+  memory::storeOctet(1L, base + n * 8L);
+  memory::storeOctet(tag, base + (n + 1L) * 8L);
+  copySpan(valAt, base + (n + 2L) * 8L, valLen);
+  memory::storeOctet(10L, base + (n + 2L + valLen) * 8L);
+  memory::store64(n + valLen + 3L, capLenAt);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long out = obr::proc::alloc(home, 524288L);
+  if (st == 0L || buf == 0L || out == 0L) {
+    writeErr(home, "admin: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long makeNew = 0L;
+  long checkOnly = 0L;
+  long quiet = 0L;
+  long inAt = 0L;
+  long inLen = 0L;
+  long cmAt = 0L;
+  long cmLen = 0L;
+  long tAt = 0L;
+  long tLen = 0L;
+  long modAt = 0L;
+  long modLen = 0L;
+  long sidAt = 0L;
+  long sidLen = 0L;
+  long flags = obr::proc::alloc(home, 65536L);
+  long flagsLen = 0L;
+  long users = obr::proc::alloc(home, 65536L);
+  long usersLen = 0L;
+  long dels = obr::proc::alloc(home, 65536L);
+  long delsLen = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      /* 选项值：词内剩余或下一词。-n 与 -h 无值。 */
+      long vAt = at + 16L;
+      long vLen = len - 2L;
+      if (vLen == 0L && o != 110L && o != 104L) {
+        index = index + 1L;
+        if (index < count) {
+          vAt = argPtr(home, index);
+          vLen = argLen(home, index);
+        } else {
+          vAt = 0L;
+          vLen = 0L;
+        }
+      }
+      if (o == 110L || o == 104L) {
+        vLen = 0L;
+      }
+      if (o == 110L) {
+        makeNew = 1L;
+      } else if (o == 105L) {
+        inAt = vAt;
+        inLen = vLen;
+      } else if (o == 121L) {
+        cmAt = vAt;
+        cmLen = vLen;
+      } else if (o == 116L) {
+        tAt = vAt;
+        tLen = vLen;
+      } else if (o == 109L) {
+        modAt = vAt;
+        modLen = vLen;
+      } else if (o == 112L) {
+        sidAt = vAt;
+        sidLen = vLen;
+      } else if (o == 102L) {
+        if (vLen > 0L && flagsLen + vLen + 1L < 8000L) {
+          copySpan(vAt, flags + flagsLen * 8L, vLen);
+          flagsLen = flagsLen + vLen;
+        }
+      } else if (o == 97L || o == 101L) {
+        if (vLen > 0L && usersLen + vLen + 1L < 8000L) {
+          copySpan(vAt, users + usersLen * 8L, vLen);
+          usersLen = usersLen + vLen;
+          memory::storeOctet(32L, users + usersLen * 8L);
+          usersLen = usersLen + 1L;
+        }
+      } else if (o == 100L) {
+        if (vLen > 0L && delsLen + vLen + 1L < 8000L) {
+          copySpan(vAt, dels + delsLen * 8L, vLen);
+          delsLen = delsLen + vLen;
+        }
+      } else if (o == 104L) {
+        checkOnly = 1L;
+      } else if (o == 113L) {
+        quiet = 1L;
+      } else if (o == 122L) {
+        writeErr(home, "admin: option -z is not supported on this platform\n");
+        return finish(home, 1L);
+      } else {
+        writeErr(home, "admin: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      /* 现存性检查与建/改。 */
+      plant(home, at, len);
+      long exists = 0L;
+      if (obr::proc::open(home, 0L) == 0L) {
+        long fd = obr::proc::slot(home, 192L);
+        obr::proc::close(home, fd);
+        exists = 1L;
+      }
+      if (exists == 1L && makeNew == 0L && flagsLen == 0L && usersLen == 0L && delsLen == 0L) {
+        writeErr(home, "admin: file exists\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      if (exists == 0L) {
+        /* 新建头（空 delta 表）。 */
+        memory::store64(0L, st);
+        memory::store64(0L, st + 64L);
+        memory::store64(0L, st + 128L);
+        memory::store64(cmLen, st + 192L);
+        if (cmLen > 0L) {
+          copySpan(cmAt, st + 256L, cmLen);
+        }
+        memory::store64(usersLen, st + 3328L);
+        if (usersLen > 0L) {
+          copySpan(users, st + 2304L, usersLen);
+        }
+        memory::store64(0L, st + 4416L);
+      } else {
+        if (sccsLoad(home, st, buf, at, len) != 0L) {
+          writeErr(home, "admin: bad SCCS file\n");
+          failed = 1L;
+          index = index + 1L;
+          continue;
+        }
+        if (cmLen > 0L) {
+          memory::store64(cmLen, st + 192L);
+          copySpan(cmAt, st + 256L, cmLen);
+        }
+        if (usersLen > 0L) {
+          memory::store64(usersLen, st + 3328L);
+          copySpan(users, st + 2304L, usersLen);
+        }
+      }
+      /* 标志增删。 */
+      if (flagsLen > 0L) {
+        long n = memory::load64(st + 4416L);
+        copySpan(flags, st + 3392L + n * 8L, flagsLen);
+        memory::store64(n + flagsLen, st + 4416L);
+      }
+      if (delsLen > 0L) {
+        /* 从标志段删 ^Af<d>...行（简化：删含该字母开头的行）。 */
+        long seg = st + 3392L;
+        long segLen = memory::load64(st + 4416L);
+        long p = 0L;
+        long outLen = 0L;
+        while (p < segLen) {
+          long s0 = p;
+          while (p < segLen && byteAt(seg + p * 8L) != 10L) {
+            p = p + 1L;
+          }
+          long ll = p - s0 + 1L;
+          if (p < segLen) {
+            p = p + 1L;
+          }
+          long drop = 0L;
+          if (ll >= 3L && byteAt(seg + s0 * 8L) == 1L && byteAt(seg + (s0 + 1L) * 8L) == 102L) {
+            long d = 0L;
+            while (d < delsLen) {
+              if (byteAt(seg + (s0 + 2L) * 8L) == byteAt(dels + d * 8L)) {
+                drop = 1L;
+              }
+              d = d + 1L;
+            }
+          }
+          if (drop == 0L) {
+            copySpan(seg + s0 * 8L, seg + outLen * 8L, ll);
+            outLen = outLen + ll;
+          }
+        }
+        memory::store64(outLen, st + 4416L);
+      }
+      if (modLen > 0L) {
+        appendTag(st, st + 3392L, st + 4416L, 8000L, 102L, modAt, modLen);
+      }
+      if (quiet == 1L) {
+        appendTag(st, st + 3392L, st + 4416L, 8000L, 113L, 0L, 0L);
+      }
+      /* -h：只检查。 */
+      if (checkOnly == 1L) {
+        long code = sccsCheck(st);
+        if (code != 0L) {
+          writeErr(home, "admin: damaged SCCS file\n");
+          failed = 1L;
+        }
+        index = index + 1L;
+        continue;
+      }
+      /* -n：初始 delta。 */
+      if (makeNew == 1L) {
+        long e = st + 8192L;
+        long sidUse = sidAt;
+        long sidUseLen = sidLen;
+        if (sidUseLen == 0L) {
+          sidUse = st + 100000L;
+          sidUseLen = putText(sidUse, 0L, "1.1");
+        }
+        memory::store64(sidUseLen, e);
+        copySpan(sidUse, e + 64L, sidUseLen);
+        long now = sccsNow(home, e + 192L);
+        long uAt = e + 512L;
+        long uLen = putText(uAt, 0L, "root");
+        memory::store64(uLen, e + 448L);
+        memory::store64(1L, e + 768L);
+        long pl = putText(e + 896L, 0L, "000000/00000/00000");
+        memory::store64(pl, e + 832L);
+        /* 正文：-i 文件或 g 文件或标准输入。 */
+        long body = out;
+        long bodyLen = 0L;
+        long srcAt = inAt;
+        long srcLen = inLen;
+        if (srcLen == 0L) {
+          /* g 文件：s.file 去 s. 前缀。 */
+          long g = obr::proc::alloc(home, 8192L * 8L);
+          long p2 = 0L;
+          long nameAt = at;
+          long nameLen = len;
+          long slash = -1L;
+          long k = 0L;
+          while (k < len) {
+            if (byteAt(at + k * 8L) == 47L) {
+              slash = k;
+            }
+            k = k + 1L;
+          }
+          copySpan(at, g, len);
+          if (slash >= 0L && slash + 3L < len && byteAt(at + (slash + 1L) * 8L) == 115L && byteAt(at + (slash + 2L) * 8L) == 46L) {
+            copySpan(at + (slash + 3L) * 8L, g + (slash + 1L) * 8L, len - slash - 3L);
+            nameLen = len - 2L;
+          } else if (len > 2L && byteAt(at) == 115L && byteAt(at + 8L) == 46L) {
+            copySpan(at + 16L, g, len - 2L);
+            nameLen = len - 2L;
+          }
+          plant(home, g, nameLen);
+          if (obr::proc::open(home, 0L) == 0L) {
+            long fd = obr::proc::slot(home, 192L);
+            while (bodyLen < 65536L) {
+              if (obr::proc::read(home, fd, bodyLen, 4096L) != 0L) {
+                break;
+              }
+              long got = obr::proc::slot(home, 320L);
+              if (got <= 0L) {
+                break;
+              }
+              if (got > 4096L) {
+                got = 4096L;
+              }
+              copySpan(obr::proc::bytes(home), body + bodyLen * 8L, got);
+              bodyLen = bodyLen + got;
+              if (got < 4096L) {
+                break;
+              }
+            }
+            obr::proc::close(home, fd);
+            srcAt = g;
+            srcLen = nameLen;
+          }
+        } else {
+          plant(home, srcAt, srcLen);
+          if (obr::proc::open(home, 0L) == 0L) {
+            long fd = obr::proc::slot(home, 192L);
+            while (bodyLen < 65536L) {
+              if (obr::proc::read(home, fd, bodyLen, 4096L) != 0L) {
+                break;
+              }
+              long got = obr::proc::slot(home, 320L);
+              if (got <= 0L) {
+                break;
+              }
+              if (got > 4096L) {
+                got = 4096L;
+              }
+              copySpan(obr::proc::bytes(home), body + bodyLen * 8L, got);
+              bodyLen = bodyLen + got;
+              if (got < 4096L) {
+                break;
+              }
+            }
+            obr::proc::close(home, fd);
+          }
+        }
+        if (bodyLen > 0L) {
+          long total = memory::load64(st);
+          copySpan(body, buf + total * 8L, bodyLen);
+          memory::store64(total, e + 1024L);
+        } else {
+          memory::store64(0L, e + 1024L);
+        }
+        memory::store64(bodyLen, e + 1088L);
+        memory::store64(1L, st + 64L);
+      }
+      /* 描述文件登记。 */
+      if (tLen > 0L) {
+        plant(home, tAt, tLen);
+        if (obr::proc::open(home, 0L) == 0L) {
+          long fd = obr::proc::slot(home, 192L);
+          long n = memory::load64(st + 192L);
+          while (n < 250L) {
+            if (obr::proc::read(home, fd, n, 1L) != 0L) {
+              break;
+            }
+            long got = obr::proc::slot(home, 320L);
+            if (got <= 0L) {
+              break;
+            }
+            copySpan(obr::proc::bytes(home), st + 256L + n * 8L, 1L);
+            n = n + 1L;
+          }
+          memory::store64(n, st + 192L);
+          obr::proc::close(home, fd);
+        }
+      }
+      if (sccsSave(home, st, buf, at, len) != 0L) {
+        writeErr(home, "admin: cannot write SCCS file\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "admin: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

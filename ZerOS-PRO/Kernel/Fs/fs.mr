@@ -79,7 +79,8 @@ deRfun devPublish(long core, long pid, long name, long nameLen): long;
 deRfun devDrop(long pid): void;
 deRfun conPublish(): void;
 deRfun conShow(): void;
-deRfun conPump(): void;
+/* 读键盘环。1 表示 Ctrl+C 已经停掉前台，0 是没有。 */
+deRfun conPump(): long;
 /* 任务收掉时清掉它的键盘等待。核心号对不上就不动。 */
 deRfun conForget(long core): void;
 deRfun conPaint(): void;
@@ -95,6 +96,8 @@ deRfun frameEpoch(): long;
 deRfun frameWait(long caller): long;
 /* 拍号变了就返回正在等的核心，否则返回 -1。force 为 1 时同一拍也交出去。 */
 deRfun frameRelease(long force): long;
+/* 把等待显示的核交回。核已被别的任务占用时，标成就绪等调度恢复。 */
+deRfun frameWakeOn(long core): void;
 deRfun frameWake(): long;
 /* 没有脏行时记下拍号，不把显示程序叫醒。 */
 deRfun frameHold(): void;

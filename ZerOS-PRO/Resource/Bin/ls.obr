@@ -58,6 +58,7 @@ import obr.oct;
 import obr.os;
 import obr.proc;
 import obr.print;
+import time;
 import arg;
 
 deRfun u8(long addr): long {
@@ -1730,7 +1731,7 @@ deRfun main(): int {
   memory::store64(grab, opt + 2432L);
   memory::store64(timeSelect, opt + 2368L);
   long now = 0L;
-  if (obr::proc::clock(home) == 0L) {
+  if (time::clock(home) == 0L) {
     now = obr::proc::slot(home, 128L);
   }
   memory::store64(now, opt + 2496L);

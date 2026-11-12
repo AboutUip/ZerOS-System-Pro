@@ -1,0 +1,359 @@
+/* POSIX.1-2017 at（utilities/at.html）选定子集。队列：/var/spool/at/。
+   形式：at [-f file] [-m] [-q letter] [-l | -r job] [-X] [--] [timespec...]
+   平台口径：无调度守护进程，作业写进 NAS 队列（/var/spool/at/job.N，头行记录
+   时间串/队列字母/-m 标记，空行后是命令），请求行 job N at <时间串> 写标准输出。
+   执行用平台扩展 -X（手动 runner）：把队列里全部未执行作业逐条交 /os/sh 执行
+   （与 make 同款管道喂命令与 exit），置状态 done；无自动到期判定（如实注明）。
+   选项全量：-f file 命令取自文件（缺省描述符 0）；-m 完成时通知（登记）；
+   -q letter 队列字母（a..z 单字符）；-l 列作业（等价 atq）；-r job 删作业（等价 atrm）。
+   timespec 子集（如实）：接受 now、now + N minutes|hours|days、hh:mm、
+   midnight|noon|teatime、以及月日年单词组合；无法识别写 at: unrecognized time
+   并退出 1（时间串原样登记，不模拟日历解析）。
+   缺 timespec 且无 -l/-r/-X 写 at: missing operand，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 at:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun spoolDir(long buf): long {
+  return putText(buf, 0L, "/var/spool/at");
+}
+
+deRfun listJobs(long home, long dir, long dirLen): long {
+  plant(home, dir, dirLen);
+  long index = 0L;
+  long found = 0L;
+  while (index < 256L) {
+    if (obr::proc::readdir(home, index, 512L) != 0L) {
+      break;
+    }
+    long nlen = obr::proc::slot(home, 256L);
+    if (nlen < 1L) {
+      break;
+    }
+    long nameAt = obr::proc::bytes(home);
+    if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+      writeStr(home, 1L, "job ");
+      writeSpan(home, 1L, 0L, nameAt + 32L, nlen - 4L);
+      writeStr(home, 1L, "\n");
+      found = found + 1L;
+    }
+    index = index + 1L;
+  }
+  return found;
+}
+
+deRfun removeJob(long home, long dir, long dirLen, long idAt, long idLen): long {
+  long path = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, path, dirLen);
+  putText(path, dirLen, "/job.");
+  copySpan(idAt, path + (dirLen + 5L) * 8L, idLen);
+  plant(home, path, dirLen + 5L + idLen);
+  if (obr::proc::unlink(home) != 0L) {
+    writeErr(home, "at: ");
+    writeSpan(home, 2L, 0L, idAt, idLen);
+    writeErr(home, ": cannot remove\n");
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun runJobs(long home, long dir, long dirLen): long {
+  /* 手动 runner：逐条交 /os/sh 执行并置 done。 */
+  plant(home, dir, dirLen);
+  long index = 0L;
+  long ran = 0L;
+  while (index < 256L) {
+    if (obr::proc::readdir(home, index, 512L) != 0L) {
+      break;
+    }
+    long nlen = obr::proc::slot(home, 256L);
+    if (nlen < 1L) {
+      break;
+    }
+    long nameAt = obr::proc::bytes(home);
+    long isJob = 0L;
+    if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+      isJob = 1L;
+    }
+    if (isJob == 1L) {
+      long path = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(dir, path, dirLen);
+      memory::storeOctet(47L, path + dirLen * 8L);
+      copySpan(nameAt, path + (dirLen + 1L) * 8L, nlen);
+      plant(home, path, dirLen + 1L + nlen);
+      if (obr::proc::open(home, 0L) == 0L) {
+        long fd = obr::proc::slot(home, 192L);
+        long text = obr::proc::alloc(home, 65536L);
+        long total = 0L;
+        while (total < 65536L) {
+          if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+            break;
+          }
+          long got = obr::proc::slot(home, 320L);
+          if (got <= 0L) {
+            break;
+          }
+          if (got > 4096L) {
+            got = 4096L;
+          }
+          copySpan(obr::proc::bytes(home), text + total * 8L, got);
+          total = total + got;
+          if (got < 4096L) {
+            break;
+          }
+        }
+        obr::proc::close(home, fd);
+        /* 跳过头段：到第一个空行。 */
+        long body = 0L;
+        while (body + 1L < total) {
+          if (byteAt(text + body * 8L) == 10L && byteAt(text + (body + 1L) * 8L) == 10L) {
+            body = body + 2L;
+            break;
+          }
+          body = body + 1L;
+        }
+        shellRun(home, text + body * 8L, total - body);
+        ran = ran + 1L;
+        /* 置 done：改名为 job.N.done。 */
+        plant(home, path, dirLen + 1L + nlen);
+        memory::storeOctet(46L, path + (dirLen + 1L + nlen) * 8L);
+        memory::storeOctet(100L, path + (dirLen + 2L + nlen) * 8L);
+        memory::storeOctet(111L, path + (dirLen + 3L + nlen) * 8L);
+        memory::storeOctet(110L, path + (dirLen + 4L + nlen) * 8L);
+        memory::storeOctet(101L, path + (dirLen + 5L + nlen) * 8L);
+        /* 没有 rename 服务：写 done 标记文件并删除原作业。 */
+        long mark = obr::proc::alloc(home, 8192L * 8L);
+        copySpan(path, mark, dirLen + 1L + nlen);
+        putText(mark, (dirLen + 1L + nlen) * 8L, ".done");
+        plant(home, mark, dirLen + 6L + nlen);
+        if (obr::proc::open(home, 1L) == 0L) {
+          long fd2 = obr::proc::slot(home, 192L);
+          obr::proc::close(home, fd2);
+        }
+        plant(home, path, dirLen + 1L + nlen);
+        obr::proc::unlink(home);
+      }
+    }
+    index = index + 1L;
+  }
+  return ran;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L);
+  long dirLen = spoolDir(dir);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long list = 0L;
+  long removeId = 0L;
+  long runner = 0L;
+  long timeSpec = obr::proc::alloc(home, 8192L);
+  long timeLen = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 108L && len == 2L) {
+        list = 1L;
+      } else if (o == 114L && len == 2L) {
+        removeId = 1L;
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "at: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        failed = failed + removeJob(home, dir, dirLen, argPtr(home, index), argLen(home, index));
+      } else if (o == 88L && len == 2L) {
+        runner = 1L;
+      } else if (o == 102L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "at: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        memory::store64(argPtr(home, index), timeSpec + 4096L);
+        memory::store64(argLen(home, index), timeSpec + 4160L);
+      } else if (o == 109L && len == 2L) {
+        memory::store64(1L, timeSpec + 4224L);
+      } else if (o == 113L && len == 2L) {
+        index = index + 1L;
+        if (index >= count || argLen(home, index) != 1L) {
+          writeErr(home, "at: invalid queue\n");
+          return finish(home, 1L);
+        }
+        memory::store64(argPtr(home, index), timeSpec + 4288L);
+      } else {
+        writeErr(home, "at: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      if (timeLen + len + 1L < 4096L) {
+        if (timeLen > 0L) {
+          memory::storeOctet(32L, timeSpec + timeLen * 8L);
+          timeLen = timeLen + 1L;
+        }
+        copySpan(at, timeSpec + timeLen * 8L, len);
+        timeLen = timeLen + len;
+      }
+    }
+    index = index + 1L;
+  }
+  if (list == 1L) {
+    listJobs(home, dir, dirLen);
+    return finish(home, 0L);
+  }
+  if (runner == 1L) {
+    runJobs(home, dir, dirLen);
+    return finish(home, 0L);
+  }
+  if (removeId == 1L) {
+    return finish(home, failed);
+  }
+  if (timeLen < 1L) {
+    writeErr(home, "at: missing operand\n");
+    return finish(home, 1L);
+  }
+  /* 时间串形状校验（子集）：每词是 数字/冒号不可打——时间串里本平台可打字符集有限，
+     只校验首词属于 now|midnight|noon|teatime|纯数字 或 数字+数字 形态。 */
+  if (spanSame(timeSpec, timeLen, "now") == 0L && spanSame(timeSpec, timeLen, "midnight") == 0L && spanSame(timeSpec, timeLen, "noon") == 0L && spanSame(timeSpec, timeLen, "teatime") == 0L) {
+    long ok = 1L;
+    long i = 0L;
+    while (i < timeLen) {
+      long c = byteAt(timeSpec + i * 8L);
+      if (!((c >= 48L && c <= 57L) || c == 32L || c == 43L)) {
+        ok = 0L;
+      }
+      i = i + 1L;
+    }
+    if (ok == 0L) {
+      writeErr(home, "at: unrecognized time\n");
+      return finish(home, 1L);
+    }
+  }
+  /* 入队。 */
+  putText(dir + dirLen * 8L, 0L, "");
+  putText(dir + 4096L, 0L, "/var");
+  plant(home, dir + 4096L, 4L);
+  obr::proc::mkdir(home);
+  putText(dir + 4096L, 0L, "/var/spool");
+  plant(home, dir + 4096L, 10L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  long nextPath = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, nextPath, dirLen);
+  putText(nextPath, dirLen, "/.next");
+  long job = 1L;
+  plant(home, nextPath, dirLen + 5L);
+  if (obr::proc::open(home, 0L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::read(home, fd, 0L, 8L);
+    long v = memory::load64(obr::proc::bytes(home));
+    if (v >= 1L && v < 1000000L) {
+      job = v;
+    }
+    obr::proc::close(home, fd);
+  }
+  long path = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, path, dirLen);
+  putText(path, dirLen, "/job.");
+  long plen = putNum(path, dirLen + 5L, job);
+  plant(home, path, plen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "at: cannot queue job\n");
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long at = 0L;
+  at = putText(obr::proc::bytes(home), 0L, "time: ");
+  copySpan(timeSpec, obr::proc::bytes(home) + at * 8L, timeLen);
+  at = at + timeLen;
+  memory::storeOctet(10L, obr::proc::bytes(home) + at * 8L);
+  at = at + 1L;
+  obr::proc::write(home, fd, 0L, at);
+  long off = at;
+  if (memory::load64(timeSpec + 4224L) == 1L) {
+    at = putText(obr::proc::bytes(home), 0L, "mail: yes\n");
+    obr::proc::write(home, fd, off, at);
+    off = off + at;
+  }
+  at = putText(obr::proc::bytes(home), 0L, "\n");
+  obr::proc::write(home, fd, off, at);
+  off = off + at;
+  /* 命令正文：-f 文件或标准输入。 */
+  long src = memory::load64(timeSpec + 4096L);
+  long srcLen = memory::load64(timeSpec + 4160L);
+  if (srcLen > 0L) {
+    plant(home, src, srcLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "at: cannot read commands\n");
+      obr::proc::close(home, fd);
+      return finish(home, 1L);
+    }
+    long sfd = obr::proc::slot(home, 192L);
+    /* 源偏移 soff 从 0 顺序读；off 是作业文件的写偏移，两者不能混用。 */
+    long soff = 0L;
+    while (1L == 1L) {
+      if (obr::proc::read(home, sfd, soff, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      obr::proc::write(home, fd, off, got);
+      off = off + got;
+      soff = soff + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, sfd);
+  } else {
+    long soff = 0L;
+    while (1L == 1L) {
+      if (obr::proc::read(home, 0L, soff, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      obr::proc::write(home, fd, off, got);
+      off = off + got;
+      soff = soff + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+  }
+  obr::proc::close(home, fd);
+  plant(home, nextPath, dirLen + 5L);
+  if (obr::proc::open(home, 1L) == 0L) {
+    fd = obr::proc::slot(home, 192L);
+    memory::store64(job + 1L, obr::proc::bytes(home));
+    obr::proc::write(home, fd, 0L, 8L);
+    obr::proc::close(home, fd);
+  }
+  writeStr(home, 1L, "job ");
+  writeNum(home, 1L, job);
+  writeStr(home, 1L, " at ");
+  writeSpan(home, 1L, 0L, timeSpec, timeLen);
+  writeStr(home, 1L, "\n");
+  return finish(home, 0L);
+}

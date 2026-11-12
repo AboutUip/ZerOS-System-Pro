@@ -25,6 +25,7 @@ import memory;
 import obr.oct;
 import obr.os;
 import obr.proc;
+import time;
 import arg;
 
 deRfun u8(long addr): long {
@@ -379,7 +380,7 @@ deRfun main(): int {
   if (haveRef == 1L && haveTime == 1L) {
     return fail(home, "touch: cannot specify both -r and -t\n");
   }
-  if (obr::proc::clock(home) != 0L) {
+  if (time::clock(home) != 0L) {
     return fail(home, "touch: cannot read clock\n");
   }
   long now = obr::proc::slot(home, 128L);

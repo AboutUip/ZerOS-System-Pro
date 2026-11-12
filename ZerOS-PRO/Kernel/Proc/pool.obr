@@ -4,6 +4,7 @@
 import proc;
 import fs;
 import memory;
+import window;
 
 /* 编译器映像占窗口前 137904128 位。后面到槽尾是这一核的堆池，约 16316416 个八位组。
    不再按份切死。先给 4194304 个八位组，池里不够就先给 65536，之后紧挨着的空闲块还能长。 */
@@ -122,6 +123,10 @@ deRfun poolGrow(long core, long extra): long {
   }
   Task* task = taskAt(index);
   if (task.core < 3L || task.mm.heap == 0L) {
+    return 0L;
+  }
+  /* 任务窗口的边界是固定的，不从核堆池再长。 */
+  if (windowTagged(task.cap) != 0L) {
     return 0L;
   }
   long block = task.mm.origin + task.mm.length;

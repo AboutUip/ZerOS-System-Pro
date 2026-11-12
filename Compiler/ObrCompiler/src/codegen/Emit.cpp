@@ -41,20 +41,25 @@ void Generator::address(int slot) {
     frameHeld_ = true;
   }
 
-void Generator::emitStore(TypeKind type) {
-    if (type == TypeKind::Float || type == TypeKind::Double) emit("sti.f64 r0, r5");
-    else if (type == TypeKind::Short) emit("sti.16 r0, r5");
-    else if (type == TypeKind::Int || type == TypeKind::Char) emit("sti.32 r0, r5");
-    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::Interface || type == TypeKind::String) emit("sti.64 r0, r5");
-    else emit("sti.64 r0, r5");
+/* M-D：volatile 访问以未登记助记符面发射（vld./vst.）——编码与 ldi./sti. 相同
+   （assembler 里是同一张表的别名），Peephole 不认识它们：合并/删读/转发/折叠
+   四个危险优化按未知助记符全屏蔽（liveOf=Clobber、forward=clearAll）。 */
+void Generator::emitStore(TypeKind type, bool volatileAccess) {
+    const char* head = volatileAccess ? "vst." : "sti.";
+    if (type == TypeKind::Float || type == TypeKind::Double) emit(std::string(head) + "f64 r0, r5");
+    else if (type == TypeKind::Short) emit(std::string(head) + "16 r0, r5");
+    else if (type == TypeKind::Int || type == TypeKind::Char) emit(std::string(head) + "32 r0, r5");
+    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::Interface || type == TypeKind::String) emit(std::string(head) + "64 r0, r5");
+    else emit(std::string(head) + "64 r0, r5");
   }
 
-void Generator::emitLoad(TypeKind type) {
-    if (type == TypeKind::Float || type == TypeKind::Double) emit("ldi.f64 r0, r5");
-    else if (type == TypeKind::Short) emit("ldi.16 r0, r5");
-    else if (type == TypeKind::Int || type == TypeKind::Char) emit("ldi.32 r0, r5");
-    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::Interface || type == TypeKind::String) emit("ldi.64 r0, r5");
-    else emit("ldi.64 r0, r5");
+void Generator::emitLoad(TypeKind type, bool volatileAccess) {
+    const char* head = volatileAccess ? "vld." : "ldi.";
+    if (type == TypeKind::Float || type == TypeKind::Double) emit(std::string(head) + "f64 r0, r5");
+    else if (type == TypeKind::Short) emit(std::string(head) + "16 r0, r5");
+    else if (type == TypeKind::Int || type == TypeKind::Char) emit(std::string(head) + "32 r0, r5");
+    else if (type == TypeKind::Long || type == TypeKind::Ptr || type == TypeKind::Interface || type == TypeKind::String) emit(std::string(head) + "64 r0, r5");
+    else emit(std::string(head) + "64 r0, r5");
   }
 
 void Generator::emitZap(const std::string& body, int startLine) {

@@ -1,0 +1,282 @@
+/* 鍙橀噺绫荤壒娈婂唴寤猴細export readonly set shift unset銆?   鏈３鐨勫彉閲忓氨鏄幆澧冨潡锛氱幆澧冨潡鍚屾椂鏄淳鐢熺粰瀛愪换鍔＄殑鐜锛屽３鍙橀噺涓€寰嬪鍑恒€?   readonly 璁板湪 bstate 鐨?readonly 琛ㄩ噷锛岃祴鍊艰矾寰勯兘鍏堣繃 bvAssign銆?*/
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
+import memory;
+import bcore;
+import bstate;
+import env;
+import span;
+import parse;
+import draw;
+import bvar;
+
+
+/* 璧嬪€肩粺涓€鍏ュ彛锛歳eadonly 鎸′綇杩斿洖 1锛屽閲忔弧杩斿洖 2锛屾垚鍔?0銆?*/
+deRfun bvAssign(long bs, long env, long name, long nameLen, long value, long valueLen): long {
+  if (bsRoHas(bs, name, nameLen) == 1L) {
+    return 1L;
+  }
+  if (envSet(env, name, nameLen, value, valueLen) != 0L) {
+    return 2L;
+  }
+  return 0L;
+}
+
+
+/* 涓€琛?NAME='value'銆俻refix 鏄?"export "銆?readonly " 鎴栫┖銆?   琛屾斁宸ヤ綔鍖虹┖妗?35984锛屽紩鍙锋殏瀛樻斁 31872锛岄兘閬垮紑 resolve 鐨勪袱娈点€?*/
+deRfun bvSayVar(long home, long work, string prefix, long name, long nameLen, long value, long valueLen): void {
+  long buf = work + 35984L;
+  long at = putText(buf, 0L, prefix);
+  copySpan(name, buf + at * 8L, nameLen);
+  at = at + nameLen;
+  bcPut(buf, at, 61L);
+  at = at + 1L;
+  long quoted = bcQuote(work + 31872L, value, valueLen);
+  copySpan(work + 31872L, buf + at * 8L, quoted);
+  at = at + quoted;
+  saySpan(home, work, buf, at);
+  say(home, work, "\n");
+}
+
+
+deRfun bvListAll(long home, long work, long env, string prefix): long {
+  long count = envCount(env);
+  long index = 0L;
+  while (index < count) {
+    bvSayVar(home, work, prefix, envNameAt(env, index), envNameLen(env, index), envValueAt(env, index), envValueLen(env, index));
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+/* 涓€涓搷浣滄暟瑕佷箞鏄?NAME=VALUE锛岃涔堟槸 NAME銆傝繑鍥?0 璁颁笅锛? 涓嶆槸鏍囪瘑绗︺€?*/
+deRfun bvOperand(long word, long wordLen, long* nameLen, long* value, long* valueLen): long {
+  if (isAssign(word, wordLen, nameLen) == 1L) {
+    *value = word + (*nameLen + 1L) * 8L;
+    *valueLen = wordLen - *nameLen - 1L;
+  } else {
+    *nameLen = wordLen;
+    *value = 0L;
+    *valueLen = 0L;
+  }
+  if (bcName(word, *nameLen) == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+deRfun bvExport(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  if (cmdArgc(cmd) <= command + 1L) {
+    return bvListAll(home, work, env, "export ");
+  }
+  long code = 0L;
+  long index = command + 1L;
+  while (index < cmdArgc(cmd)) {
+    long word = cmdArgAt(cmd, index);
+    long nameLen = 0L;
+    long value = 0L;
+    long valueLen = 0L;
+    if (bvOperand(word, cmdArgLen(cmd, index), &nameLen, &value, &valueLen) != 0L) {
+      sayErrMissing(home, "sh: export: ", word, nameLen, ": not an identifier\n");
+      code = 1L;
+    } else if (valueLen > 0L || value != 0L) {
+      long saved = bvAssign(bs, env, word, nameLen, value, valueLen);
+      if (saved == 1L) {
+        sayErrMissing(home, "sh: export: ", word, nameLen, ": readonly variable\n");
+        code = 1L;
+      } else if (saved == 2L) {
+        sayErr(home, "sh: export: cannot set variable\n");
+        code = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return code;
+}
+
+
+deRfun bvReadonly(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  if (cmdArgc(cmd) <= command + 1L) {
+    long count = bsRoCount(bs);
+    long index = 0L;
+    while (index < count) {
+      bvSayVar(home, work, "readonly ", bsRoNameAt(bs, index), bsRoNameLen(bs, index), 0L, 0L);
+      index = index + 1L;
+    }
+    return 0L;
+  }
+  long code = 0L;
+  long index = command + 1L;
+  while (index < cmdArgc(cmd)) {
+    long word = cmdArgAt(cmd, index);
+    long nameLen = 0L;
+    long value = 0L;
+    long valueLen = 0L;
+    if (bvOperand(word, cmdArgLen(cmd, index), &nameLen, &value, &valueLen) != 0L) {
+      sayErrMissing(home, "sh: readonly: ", word, nameLen, ": not an identifier\n");
+      code = 1L;
+    } else {
+      if (valueLen > 0L || value != 0L) {
+        long saved = bvAssign(bs, env, word, nameLen, value, valueLen);
+        if (saved != 0L) {
+          sayErrMissing(home, "sh: readonly: ", word, nameLen, ": cannot set\n");
+          code = 1L;
+          index = index + 1L;
+          continue;
+        }
+      }
+      if (bsRoAdd(bs, word, nameLen) != 0L) {
+        sayErr(home, "sh: readonly: table full\n");
+        code = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return code;
+}
+
+
+deRfun bvUnset(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long mode = 1L;
+  long code = 0L;
+  long index = command + 1L;
+  while (index < cmdArgc(cmd)) {
+    long word = cmdArgAt(cmd, index);
+    long len = cmdArgLen(cmd, index);
+    if (len == 2L && bcU8(word) == 45L && bcU8(word + 8L) == 102L) {
+      mode = 0L;
+      index = index + 1L;
+      continue;
+    }
+    if (len == 2L && bcU8(word) == 45L && bcU8(word + 8L) == 118L) {
+      mode = 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (mode == 0L) {
+      /* 鏈３娌℃湁鍑芥暟锛泆nset -f 瀵逛笉瀛樺湪鐨勫嚱鏁版寜 POSIX 鎴愬姛銆?*/
+      index = index + 1L;
+      continue;
+    }
+    if (bsRoHas(bs, word, len) == 1L) {
+      sayErrMissing(home, "sh: unset: ", word, len, ": readonly variable\n");
+      code = 1L;
+      index = index + 1L;
+      continue;
+    }
+    envRemove(env, word, len);
+    index = index + 1L;
+  }
+  return code;
+}
+
+
+deRfun bvShift(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long n = 1L;
+  if (cmdArgc(cmd) > command + 1L) {
+    if (bcDec(cmdArgAt(cmd, command + 1L), cmdArgLen(cmd, command + 1L), &n) != 0L) {
+      sayErr(home, "sh: shift: numeric argument required\n");
+      return 2L;
+    }
+  }
+  if (bsPosShift(bs, n) != 0L) {
+    sayErr(home, "sh: shift: can't shift that many\n");
+    return 1L;
+  }
+  return 0L;
+}
+
+
+/* set 鐨勫紑鍏冲瓧姣嶏細a=1 e=2 f=4 n=8 u=16 v=32 x=64 C=128銆?   u 鍜?v 瑕佹敼璇嶆硶灞曞紑鍜岃琛屽洖鏄撅紝鏈３娌℃帴锛屾槑纭姤閿欍€?*/
+deRfun bvSetLetter(long home, long bs, long letter, long on): long {
+  if (letter == 97L) {
+    bsOptSet(bs, 1L, on);
+    return 0L;
+  }
+  if (letter == 101L) {
+    bsOptSet(bs, 2L, on);
+    return 0L;
+  }
+  if (letter == 102L) {
+    bsOptSet(bs, 4L, on);
+    return 0L;
+  }
+  if (letter == 110L) {
+    bsOptSet(bs, 8L, on);
+    return 0L;
+  }
+  if (letter == 120L) {
+    bsOptSet(bs, 64L, on);
+    return 0L;
+  }
+  if (letter == 67L) {
+    bsOptSet(bs, 128L, on);
+    return 0L;
+  }
+  sayErrByte(home, 45L);
+  sayErrByte(home, letter);
+  sayErr(home, " is not supported\n");
+  return 2L;
+}
+
+
+deRfun bvSet(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long first = command + 1L;
+  long argc = cmdArgc(cmd);
+  if (argc <= first) {
+    return bvListAll(home, work, env, "");
+  }
+  long code = 0L;
+  long at = first;
+  long sawMarker = 0L;
+  while (at < argc) {
+    long word = cmdArgAt(cmd, at);
+    long len = cmdArgLen(cmd, at);
+    if (len < 1L) {
+      break;
+    }
+    if (bcU8(word) != 45L && bcU8(word) != 43L) {
+      break;
+    }
+    if (len == 1L || (len == 2L && bcU8(word + 8L) == 45L)) {
+      sawMarker = 1L;
+      at = at + 1L;
+      break;
+    }
+    if (bcU8(word + 8L) == 111L) {
+      sayErr(home, "sh: set: -o is not supported\n");
+      return 2L;
+    }
+    long on = 1L;
+    if (bcU8(word) == 43L) {
+      on = 0L;
+    }
+    long index = 1L;
+    while (index < len) {
+      code = bvSetLetter(home, bs, bcU8(word + index * 8L), on);
+      if (code != 0L) {
+        return code;
+      }
+      index = index + 1L;
+    }
+    at = at + 1L;
+  }
+  if (at < argc || sawMarker == 1L) {
+    long count = 0L;
+    while (at + count < argc && count < 16L) {
+      count = count + 1L;
+    }
+    long index = 0L;
+    while (index < count) {
+      if (bsPosSet(bs, index, cmdArgAt(cmd, at + index), cmdArgLen(cmd, at + index)) != 0L) {
+        sayErr(home, "sh: set: positional parameter too long\n");
+        return 1L;
+      }
+      index = index + 1L;
+    }
+    bsPosKeep(bs, count);
+  }
+  return code;
+}

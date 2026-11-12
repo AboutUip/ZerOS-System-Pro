@@ -94,10 +94,12 @@ function parseArgs(argv) {
     url: "http://localhost:5173/",
     chrome: null,
     keepGoing: false,
+    pointerAutoplay: false,
+    pointerPulse: false,
     help: false,
   };
   const valueFlags = new Set(["--command", "--out", "--timeout", "--key-delay", "--url", "--chrome"]);
-  const noValueFlags = new Set(["--keep-going", "--help"]);
+  const noValueFlags = new Set(["--keep-going", "--pointer-autoplay", "--pointer-pulse", "--help"]);
 
   for (let index = 0; index < argv.length; index += 1) {
     const raw = argv[index] ?? "";
@@ -111,6 +113,8 @@ function parseArgs(argv) {
         throw new CliError(`${flag} 不接受值`);
       }
       if (flag === "--keep-going") options.keepGoing = true;
+      else if (flag === "--pointer-autoplay") options.pointerAutoplay = true;
+      else if (flag === "--pointer-pulse") options.pointerPulse = true;
       else options.help = true;
       continue;
     }
@@ -969,6 +973,21 @@ async function pressEnter(cdp, signal) {
   await dispatchKey(cdp, "keyUp", info, signal);
 }
 
+/** 打一串固定 pointer 脉冲：让真实鼠标设备产生一批事件后停下，不持续占门核。 */
+async function pulsePointer(cdp, signal) {
+  for (let index = 0; index < 8; index += 1) {
+    const x = 320 + (index % 2) * 240;
+    const y = 240 + (index % 4) * 40;
+    await cdp.send(
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x, y, button: "none", buttons: 0 },
+      signal,
+    );
+    await sleep(30, signal);
+  }
+  await sleep(300, signal);
+}
+
 /* -------------------------------------------------------------------------- */
 /* 命令                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -1069,6 +1088,14 @@ async function captureCommand(cdp, command, options, index, total) {
   try {
     await assertPage(cdp, signal);
     await clearTrace(cdp, signal);
+    /* 命令执行前再打一批指针事件：让驱动在命令运行前已经处理并发布。 */
+    if (options.pointerPulse) {
+      try {
+        await pulsePointer(cdp, AbortSignal.timeout(5000));
+      } catch {
+        /* 脉冲只是测试输入，失败不改变命令结果。 */
+      }
+    }
     /* 清空之后 shell 可能还停在上一轮读循环的尾部；先让终端回到读状态再打字。 */
     await sleep(800, signal);
     const baseline = await readStatus(cdp, signal);
@@ -1384,6 +1411,7 @@ async function main() {
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 
+  let pointerTimer = null;
   try {
     const browser = findBrowser(options.chrome);
     log(`browser=${path.basename(browser)}`);
@@ -1449,6 +1477,19 @@ async function main() {
     log("debug surface ready; waiting for the initial prompt");
     await waitForInitialPrompt(cdp);
 
+    if (options.pointerAutoplay) {
+      let phase = 0;
+      pointerTimer = setInterval(() => {
+        const x = 320 + (phase % 2) * 240;
+        const y = 240 + (phase % 2) * 160;
+        phase += 1;
+        void cdp
+          .send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 })
+          .catch(() => {});
+      }, 60);
+      log("pointer autoplay on");
+    }
+
     const bootStatus = await withTimeout(readStatus(cdp), COLLECT_TIMEOUT_MS, "boot status");
     const bootReport = await withTimeout(readReport(cdp), COLLECT_TIMEOUT_MS, "boot report");
     const bootEntries = await withTimeout(readDump(cdp), COLLECT_TIMEOUT_MS, "boot entries");
@@ -1467,6 +1508,13 @@ async function main() {
       log(`[${String(index + 1)}/${String(total)}] type ${JSON.stringify(command)}`);
       const result = await captureCommand(cdp, command, options, index, total);
       commands.push(result);
+      if (options.pointerPulse) {
+        try {
+          await pulsePointer(cdp, AbortSignal.timeout(5000));
+        } catch {
+          /* 脉冲只是测试输入，失败不改变命令结果。 */
+        }
+      }
       if (typeof result.error === "string") {
         log(`[${String(index + 1)}/${String(total)}] ERROR ${result.error}`);
         exitCode = 1;
@@ -1501,6 +1549,10 @@ async function main() {
     log(`capture failed: ${clip(errorMessage(error), 1000)}`);
     exitCode = 1;
   } finally {
+    if (pointerTimer !== null) {
+      clearInterval(pointerTimer);
+      pointerTimer = null;
+    }
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     await shutdown();

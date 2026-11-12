@@ -7,11 +7,18 @@ const vscode = require("vscode");
 const { parseMergedLinkItemsFromSource } = require("./linkParse");
 
 const ANALYSIS_EXCLUDE =
-  "{**/node_modules/**,**/.git/**,**/BuildSystem/Installer/work/**,**/BuildSystem/Installer/out/**}";
+  "{**/node_modules/**,**/.git/**,**/dev/**,**/pristine/**,**/BuildSystem/Installer/work/**,**/BuildSystem/Installer/out/**}";
 
 function isInstallerCopy(fsPath) {
   const text = String(fsPath || "").replace(/\\/g, "/").toLowerCase();
   return text.includes("/buildsystem/installer/work/") || text.includes("/buildsystem/installer/out/");
+}
+
+/* 反例夹具（bad-*.obr）故意不合法。对它们跑诊断只会满屏红、淹没真问题，
+   所以插件只保留语法着色：结构检查、live 扫描、obrc lint 统一在这里短路。 */
+function isBadFixture(fsPath) {
+  const name = String(fsPath || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+  return name.startsWith("bad-") && name.endsWith(".obr");
 }
 
 function dedupeUris(arr) {
@@ -78,5 +85,6 @@ async function collectAnalysisUris() {
 module.exports = {
   ANALYSIS_EXCLUDE,
   isInstallerCopy,
+  isBadFixture,
   collectAnalysisUris
 };

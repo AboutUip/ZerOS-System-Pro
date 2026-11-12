@@ -1,0 +1,52 @@
+/* M-C：多返回值 = 多个 out 形参（不引入元组返回）——3 出参 + 状态返回，
+   上限沿既有约束（参数字上限、itable ≤5 字含 out）。
+   @Fails + out：失败路径不写出参（值保持调用前，调用方不得依赖失败时的出参值）。结果 0。*/
+#VERSION 2
+
+deRfun statLike(long path, out long kind, out long size, out long mode): long {
+  kind = 1;
+  size = 2;
+  mode = 3;
+  return 0;
+}
+
+@Fails deRfun failEarly(out long v): long {
+  throw fail.of(9);
+}
+
+@Fails deRfun writeThenFail(out long v): long {
+  v = 11;
+  throw fail.of(4);
+}
+
+deRfun main(): long {
+  long kind = 0;
+  long size = 0;
+  long mode = 0;
+  long status = statLike(0L, kind, size, mode);
+  if (status != 0L) return 1;
+  if (kind != 1L || size != 2L || mode != 3L) return 2;
+  /* 状态返回 + 出参互补：状态非 0 时出参不看。 */
+  long again = -1;
+  status = statLike(0L, kind, again, mode);
+  if (status != 0L) return 3;
+  if (again != 2L) return 4;
+  /* @Fails + out：失败路径不写出参，值保持调用前。 */
+  long kept = 55;
+  try {
+    failEarly(kept);
+    return 5;
+  } catch (fail e) {
+    if (e.code != 9L) return 6;
+  }
+  if (kept != 55L) return 7;
+  /* 文档口径：失败时出参不被写，调用方不得依赖其值——写过再失败的按约定不看。 */
+  long dirty = 33;
+  try {
+    writeThenFail(dirty);
+    return 8;
+  } catch (fail e) {
+    if (e.code != 4L) return 9;
+  }
+  return 0;
+}

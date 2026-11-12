@@ -1,0 +1,8 @@
+/* 反例：原子地址非 64 位对齐（5953 = 5952 + 1，不是 64 的倍数）。编译应当失败。 */
+#VERSION 2
+import obr.atomic;
+
+deRfun main(): long {
+  obr::atomic::store((volatile long*)5953L, 1L, obr::atomic::MemoryOrder::Release);
+  return 0;
+}

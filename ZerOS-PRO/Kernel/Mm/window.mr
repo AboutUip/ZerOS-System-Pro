@@ -1,0 +1,8 @@
+/* 任务窗口分配器。窗口从客核 3 到 7 的低 8MiB 和高 17–32MiB 空洞里取，
+   避开旧布局任务在 8–17MiB 的数据。一个窗口 512KiB。 */
+deRfun windowTake(): long;
+deRfun windowFree(long origin): void;
+deRfun windowBits(): long;
+deRfun windowHeapOffset(): long;
+deRfun windowTag(): long;
+deRfun windowTagged(long cap): long;

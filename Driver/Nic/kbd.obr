@@ -1,0 +1,70 @@
+/* 真实键盘驱动：从服务 58 读取控制台镜像的真实键盘字节，
+   维护事件数、行数和列号。只在 SIGTERM 时导出 32 字节：
+   events / base / line / col。重启后从 base 继续，事件不丢。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  long home = obr::os::svc(65L);
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(57L);
+  long events = 0L;
+  long line = 0L;
+  long col = 0L;
+  if (count == 32L) {
+    events = memory::load64(home + 131072L);
+    line = memory::load64(home + 131200L);
+    col = memory::load64(home + 131264L);
+  }
+  long base = events;
+  long published = -1L;
+  while (1L) {
+    long got = obr::os::svc(58L);
+    /* 本核窗口起点当场取。驱动长期运行、又和别的窗口共核时，启动时缓存的值可能被踩。 */
+    long at = query(1L, 8L, obr::os::core());
+    long index = 0L;
+    while (index < got) {
+      long value = memory::loadOctet(at + 131072L + index * 8L);
+      events = events + 1L;
+      if (value == 10L) {
+        line = line + 1L;
+        col = 0L;
+      } else if (value == 127L) {
+        if (col > 0L) {
+          col = col - 1L;
+        }
+      } else {
+        col = col + 1L;
+      }
+      index = index + 1L;
+    }
+    if (events != published) {
+      memory::store64(events, at + 131072L);
+      memory::store64(base, at + 131136L);
+      memory::store64(line, at + 131200L);
+      memory::store64(col, at + 131264L);
+      memory::store64(1L, at + 64L);
+      obr::os::svc(59L);
+      /* 同时 checkpoint 到 handover 缓冲，重启后 base 从这里继续。 */
+      memory::store64(32L, at + 128L);
+      obr::os::svc(57L);
+      published = events;
+    }
+    long sig = obr::os::svc(19L);
+    if (sig == 15L) {
+      memory::store64(events, at + 131072L);
+      memory::store64(base, at + 131136L);
+      memory::store64(line, at + 131200L);
+      memory::store64(col, at + 131264L);
+      memory::store64(32L, at + 128L);
+      memory::store64(1L, at + 64L);
+      obr::os::svc(57L);
+      memory::store64(0L, at + 128L);
+      obr::os::svc(28L);
+      return 0;
+    }
+    obr::os::yield();
+  }
+  return 0;
+}

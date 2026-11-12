@@ -593,19 +593,30 @@ deRfun main(): int {
     }
   }
   /* 32 条路径，每条 8192 个八位组。帧 32 个。
-     每帧 256 个名字，每个 256 个八位组。三张字表跟名字槽对齐。 */
-  long paths = obr::proc::alloc(home, 32L * 65536L);
-  long frames = obr::proc::alloc(home, 32L * 1024L);
-  long names = obr::proc::alloc(home, 32L * 256L * 2048L);
-  long lens = obr::proc::alloc(home, 32L * 256L * 64L);
-  long kinds = obr::proc::alloc(home, 32L * 256L * 64L);
-  long order = obr::proc::alloc(home, 32L * 256L * 64L);
-  long scratchName = obr::proc::alloc(home, 512L * 8L);
-  long scratchPath = obr::proc::alloc(home, 8192L * 8L);
-  if (paths == 0L || frames == 0L || names == 0L || lens == 0L || kinds == 0L || order == 0L || scratchName == 0L || scratchPath == 0L) {
+     每帧 256 个名字，每个 256 个八位组。三张字表跟名字槽对齐。
+     这些表加起来大约 2.5MB，一次分配才放得进 4MB 的堆。
+     拆开申请时，放得进一颗的小块会被甩到下一颗 2MB 上，八次就把堆耗尽，
+     于是一启动就报 out of memory。 */
+  long pathSpan = 32L * 65536L;
+  long frameSpan = 32L * 1024L;
+  long nameSpan = 32L * 256L * 2048L;
+  long wordSpan = 32L * 256L * 64L;
+  long scratchNameSpan = 512L * 8L;
+  long scratchPathSpan = 8192L * 8L;
+  long total = pathSpan + frameSpan + nameSpan + wordSpan + wordSpan + wordSpan + scratchNameSpan + scratchPathSpan;
+  long slab = obr::proc::alloc(home, total);
+  if (slab == 0L) {
     writeErr(home, "tree: out of memory\n");
     return finish(home, 1L);
   }
+  long paths = slab;
+  long frames = paths + pathSpan;
+  long names = frames + frameSpan;
+  long lens = names + nameSpan;
+  long kinds = lens + wordSpan;
+  long order = kinds + wordSpan;
+  long scratchName = order + wordSpan;
+  long scratchPath = scratchName + scratchNameSpan;
   long outAt = 0L;
   long dirs = 0L;
   long files = 0L;

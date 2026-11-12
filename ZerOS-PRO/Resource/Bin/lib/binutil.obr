@@ -1,0 +1,535 @@
+/* Bin 命令的共享辅助模块（模块名 binutil）。
+   只被 ZerOS-PRO/Resource/Bin 下的新命令引用；老命令不 import，构建上零变化。
+   提供：错误/输出打印（writeErr、writeStr、writeSpan、writeNum、writeHex）、
+   跨度搬运（copySpan、putText、putNum、spanNum、spanSame、byteAt）、
+   路径处理（plant、fileKind、hasSlash、resolve 按 PATH 找程序）、
+   派生命令（saveWindow、publish、savedArg*，布局取自 nohup 的已验证实现）。
+   所有文本诊断写描述符 2。结束用 finish（服务 28）。 */
+#DYN
+import memory;
+import obr.oct;
+import obr.proc;
+import arg;
+
+deRfun byteAt(long addr): long {
+  return obr::oct::get(addr);
+}
+
+deRfun copySpan(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(byteAt(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 把字符串按 UTF-8 写成隔 8 位的八位组。返回下一个偏移。 */
+deRfun putText(long addr, long at, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + (at + index) * 8L);
+    index = index + 1;
+  }
+  return at + raw;
+}
+
+/* 十进制写成隔 8 位的八位组，负数带减号。返回下一个偏移。不处理最小负数。 */
+deRfun putNum(long addr, long at, long value): long {
+  long next = at;
+  long work = value;
+  if (work < 0L) {
+    memory::storeOctet(45L, addr + next * 8L);
+    next = next + 1L;
+    work = -work;
+  }
+  long scale = 1L;
+  while (scale <= work / 10L) {
+    scale = scale * 10L;
+  }
+  if (work == 0L) {
+    memory::storeOctet(48L, addr + next * 8L);
+    return next + 1L;
+  }
+  while (scale > 0L) {
+    long digit = work / scale % 10L;
+    memory::storeOctet(48L + digit, addr + next * 8L);
+    next = next + 1L;
+    scale = scale / 10L;
+  }
+  return next;
+}
+
+/* 解析十进制整数（可带 +、-）。全部消费才成功：0 成功，7 不合法。 */
+deRfun spanNum(long addr, long count, long* value): long {
+  if (count < 1L || count > 19L) {
+    return 7L;
+  }
+  long index = 0L;
+  long sign = 1L;
+  long first = byteAt(addr);
+  if (first == 45L) {
+    sign = -1L;
+    index = 1L;
+  } else if (first == 43L) {
+    index = 1L;
+  }
+  if (index >= count) {
+    return 7L;
+  }
+  long total = 0L;
+  long seen = 0L;
+  while (index < count) {
+    long octet = byteAt(addr + index * 8L);
+    if (octet < 48L || octet > 57L) {
+      return 7L;
+    }
+    /* 上限 2^62/5 = 922337203685477580 由小立即数算出：≥1048576 的立即数会被当数据地址重定位。 */
+    if (total > 1024L * 1024L * 1024L * 1024L * 1024L * 1024L * 4L / 5L) {
+      return 7L;
+    }
+    total = total * 10L + octet - 48L;
+    seen = seen + 1L;
+    index = index + 1L;
+  }
+  if (seen > 19L) {
+    return 7L;
+  }
+  *value = sign * total;
+  return 0L;
+}
+
+/* 隔 8 位的八位组跨度与字符串逐字节比较。相同返回 1。 */
+deRfun spanSame(long addr, long count, string text): long {
+  int raw = length(text);
+  long rawLen = raw;
+  if (count != rawLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < rawLen) {
+    long ch = text[index];
+    if (byteAt(addr + index * 8L) != ch) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 字符串直接写到 fd。文本不拆块，调用方控制在 4096 八位组以内。 */
+deRfun writeStr(long home, long fd, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  if (count > 0L) {
+    obr::proc::write(home, fd, 0L, count);
+  }
+}
+
+deRfun writeErr(long home, string text): void {
+  writeStr(home, 2L, text);
+}
+
+/* 隔 8 位的八位组跨度写到 fd。每次最多 4096 个。offset 按写出量推进。
+   成功返回 0，写失败返回 1。控制台和管道不看偏移。 */
+deRfun writeSpan(long home, long fd, long offset, long addr, long count): long {
+  long done = 0L;
+  while (done < count) {
+    long chunk = count - done;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(addr + done * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, offset + done, chunk) != 0L) {
+      return 1L;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L) {
+      return 1L;
+    }
+    if (wrote > chunk) {
+      wrote = chunk;
+    }
+    done = done + wrote;
+  }
+  return 0L;
+}
+
+deRfun writeNum(long home, long fd, long value): void {
+  long end = putNum(obr::proc::bytes(home), 0L, value);
+  obr::proc::write(home, fd, 0L, end);
+}
+
+/* 十六进制写 fd，位数不足补 0。digits 在 1 到 16 之间。 */
+deRfun writeHex(long home, long fd, long value, long digits): void {
+  long index = digits - 1L;
+  while (index >= 0L) {
+    long nibble = value % 16L;
+    if (nibble < 0L) {
+      nibble = -nibble;
+    }
+    long octet = 48L + nibble;
+    if (nibble > 9L) {
+      octet = 87L + nibble;
+    }
+    memory::storeOctet(octet, obr::proc::bytes(home) + index * 8L);
+    value = value / 16L;
+    index = index - 1L;
+  }
+  obr::proc::write(home, fd, 0L, digits);
+}
+
+/* 路径长度字在路径起点，八位组从 +64 起、隔 8 位。计数字符串最长 8192。 */
+deRfun plant(long home, long addr, long count): void {
+  memory::store64(count, obr::proc::path(home));
+  copySpan(addr, obr::proc::path(home) + 64L, count);
+}
+
+/* stat 当前 plant 的路径。返回 +128 的种类；不存在或失败返回 -1。 */
+deRfun fileKind(long home): long {
+  if (obr::proc::stat(home) != 0L) {
+    return -1L;
+  }
+  return obr::proc::slot(home, 128L);
+}
+
+deRfun hasSlash(long addr, long count): long {
+  long index = 0L;
+  while (index < count) {
+    if (byteAt(addr + index * 8L) == 47L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 按 PATH（缺省 /bin:/os:/kernel）找可执行程序。命中时拼好的路径放在 scratch
+   的开头，*outLen 是长度。scratch 至少 65728 八位组：开头放拼好的路径，
+   +65536 放缺省 PATH 文本，+65664 放名字 PATH。kind 1 或 5 算命中。 */
+deRfun resolve(long home, long scratch, long name, long nameLen, long* outLen): long {
+  if (hasSlash(name, nameLen) == 1L) {
+    if (nameLen < 1L || nameLen > 8192L) {
+      return 0L;
+    }
+    copySpan(name, scratch, nameLen);
+    plant(home, scratch, nameLen);
+    long kind = fileKind(home);
+    if (kind == 1L || kind == 5L) {
+      *outLen = nameLen;
+      return 1L;
+    }
+    return 0L;
+  }
+  long path = 0L;
+  long pathLen = 0L;
+  long value = 0L;
+  long valueLen = 0L;
+  if (envLookup(home, scratch + 65664L, 4L, &value, &valueLen) == 1L) {
+    path = value;
+    pathLen = valueLen;
+  } else {
+    path = scratch + 65536L;
+    pathLen = putText(path, 0L, "/bin:/os:/kernel");
+  }
+  long cursor = 0L;
+  while (cursor <= pathLen) {
+    long start = cursor;
+    while (cursor < pathLen && byteAt(path + cursor * 8L) != 58L) {
+      cursor = cursor + 1L;
+    }
+    long compLen = cursor - start;
+    long joined = 0L;
+    long ok = 1L;
+    if (compLen == 0L) {
+      if (nameLen < 0L || nameLen > 8192L) {
+        ok = 0L;
+      } else {
+        if (nameLen > 0L) {
+          copySpan(name, scratch, nameLen);
+        }
+        joined = nameLen;
+      }
+    } else {
+      long extra = 0L;
+      if (byteAt(path + (start + compLen - 1L) * 8L) != 47L) {
+        extra = 1L;
+      }
+      joined = compLen + extra + nameLen;
+      if (nameLen < 0L || joined > 8192L) {
+        ok = 0L;
+      } else {
+        copySpan(path + start * 8L, scratch, compLen);
+        if (extra == 1L) {
+          memory::storeOctet(47L, scratch + compLen * 8L);
+        }
+        if (nameLen > 0L) {
+          copySpan(name, scratch + (compLen + extra) * 8L, nameLen);
+        }
+      }
+    }
+    if (ok == 1L && joined > 0L) {
+      plant(home, scratch, joined);
+      long kind = fileKind(home);
+      if (kind == 1L || kind == 5L) {
+        *outLen = joined;
+        return 1L;
+      }
+    }
+    if (cursor >= pathLen) {
+      return 0L;
+    }
+    cursor = cursor + 1L;
+  }
+  return 0L;
+}
+
+deRfun sumLens(long table, long index): long {
+  long filled = 0L;
+  long cursor = 0L;
+  while (cursor < index) {
+    filled = filled + memory::load64(table + cursor * 64L);
+    cursor = cursor + 1L;
+  }
+  return filled;
+}
+
+deRfun copyWindow(long from, long to): void {
+  long index = 0L;
+  while (index < 139520L) {
+    memory::store64(memory::load64(from + index), to + index);
+    index = index + 64L;
+  }
+}
+
+deRfun savedCount(long saved): long {
+  return memory::load64(saved);
+}
+
+deRfun savedArgLen(long saved, long index): long {
+  return memory::load64(saved + 256L + index * 64L);
+}
+
+deRfun savedArgPtr(long saved, long index): long {
+  return saved + 8448L + sumLens(saved + 256L, index) * 8L;
+}
+
+/* 把本任务的参数与环境窗口整份抄到 saved（至少 139520 八位组）。
+   参数或环境超过 64 条、八位组超过 8192 时返回 1。 */
+deRfun saveWindow(long home, long saved): long {
+  long narg = argc(home);
+  long nenv = envc(home);
+  if (narg < 0L || narg > 64L || nenv < 0L || nenv > 64L) {
+    return 1L;
+  }
+  memory::store64(narg, saved);
+  memory::store64(nenv, saved + 64L);
+  long argBytes = 0L;
+  long index = 0L;
+  while (index < narg) {
+    long len = argLen(home, index);
+    if (len < 0L || len > 8192L || argBytes + len > 8192L) {
+      return 1L;
+    }
+    memory::store64(len, saved + 256L + index * 64L);
+    if (len > 0L) {
+      copySpan(argPtr(home, index), saved + 8448L + argBytes * 8L, len);
+    }
+    argBytes = argBytes + len;
+    index = index + 1L;
+  }
+  memory::store64(argBytes, saved + 128L);
+  while (index < 64L) {
+    memory::store64(0L, saved + 256L + index * 64L);
+    index = index + 1L;
+  }
+  long envBytes = 0L;
+  index = 0L;
+  while (index < nenv) {
+    long len = envLen(home, index);
+    if (len < 0L || len > 8192L || envBytes + len > 8192L) {
+      return 1L;
+    }
+    memory::store64(len, saved + 4352L + index * 64L);
+    if (len > 0L) {
+      copySpan(envPtr(home, index), saved + 73984L + envBytes * 8L, len);
+    }
+    envBytes = envBytes + len;
+    index = index + 1L;
+  }
+  memory::store64(envBytes, saved + 192L);
+  while (index < 64L) {
+    memory::store64(0L, saved + 4352L + index * 64L);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 把 saved 里的环境整份写回本任务窗口，参数换成 saved 里下标 begin 起的那些。
+   spawn 会把本任务窗口抄给子任务，所以派生前调用这个。失败返回 1。 */
+deRfun publish(long home, long saved, long begin): long {
+  long base = obr::proc::args(home);
+  copyWindow(saved, base);
+  long all = memory::load64(saved);
+  if (begin < 1L || begin >= all) {
+    return 1L;
+  }
+  long argcOut = all - begin;
+  if (argcOut < 1L || argcOut > 64L) {
+    return 1L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < argcOut) {
+    long len = savedArgLen(saved, begin + index);
+    if (len < 0L || len > 8192L || total + len > 8192L) {
+      return 1L;
+    }
+    total = total + len;
+    index = index + 1L;
+  }
+  long skip = sumLens(saved + 256L, begin);
+  memory::store64(argcOut, base);
+  memory::store64(total, base + 128L);
+  index = 0L;
+  while (index < 64L) {
+    long len = 0L;
+    if (index < argcOut) {
+      len = savedArgLen(saved, begin + index);
+    }
+    memory::store64(len, base + 256L + index * 64L);
+    index = index + 1L;
+  }
+  if (total > 0L) {
+    copySpan(saved + 8448L + skip * 8L, base + 8448L, total);
+  }
+  return 0L;
+}
+
+/* 把 saved 的参数整份换成单个参数 arg0，环境不动，供 spawn 抄给子任务。失败返回 1。 */
+deRfun setSolo(long home, long saved, string arg0): long {
+  int raw = length(arg0);
+  if (raw < 1 || raw > 8192) {
+    return 1L;
+  }
+  long base = obr::proc::args(home);
+  copyWindow(saved, base);
+  memory::store64(1L, base);
+  memory::store64(raw, base + 128L);
+  long index = 0L;
+  while (index < 64L) {
+    memory::store64(0L, base + 256L + index * 64L);
+    index = index + 1L;
+  }
+  memory::store64(raw, base + 256L);
+  putText(base + 8448L, 0L, arg0);
+  return 0L;
+}
+
+/* 构造子任务参数窗口：argsBegin 开始（环境不动），argsPush 逐个加参数，
+   argsDone 收尾。窗口布局同 saveWindow：个数在 +0，八位组总数在 +128，
+   长度表在 +256，八位组在 +8448。失败返回 1。 */
+deRfun argsBegin(long home, long saved): long {
+  long base = obr::proc::args(home);
+  copyWindow(saved, base);
+  memory::store64(0L, base);
+  memory::store64(0L, base + 128L);
+  long index = 0L;
+  while (index < 64L) {
+    memory::store64(0L, base + 256L + index * 64L);
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun argsPush(long home, long addr, long count): long {
+  long base = obr::proc::args(home);
+  long have = memory::load64(base);
+  long total = memory::load64(base + 128L);
+  if (have < 0L || have >= 64L || count < 0L || count > 8192L || total + count > 8192L) {
+    return 1L;
+  }
+  memory::store64(count, base + 256L + have * 64L);
+  if (count > 0L) {
+    copySpan(addr, base + 8448L + total * 8L, count);
+  }
+  memory::store64(have + 1L, base);
+  memory::store64(total + count, base + 128L);
+  return 0L;
+}
+
+deRfun argsDone(long home): long {
+  long base = obr::proc::args(home);
+  if (memory::load64(base) < 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 把一段命令文本交给 /os/sh 执行：建管道，标准输入喂命令与 exit 两行，
+   exit 保证壳退出并传递状态。返回子进程退出码（收 0..255），失败 2。 */
+deRfun shellRun(long home, long cmdAt, long cmdLen): long {
+  if (obr::proc::pipe(home) != 0L) {
+    return 2L;
+  }
+  long readEnd = obr::proc::slot(home, 128L);
+  long writeEnd = obr::proc::slot(home, 192L);
+  long saved = obr::proc::dup(home, 0L);
+  if (saved < 0L) {
+    return 2L;
+  }
+  if (obr::proc::dup2(home, readEnd, 0L) != 0L) {
+    obr::proc::close(home, readEnd);
+    obr::proc::close(home, writeEnd);
+    return 2L;
+  }
+  obr::proc::close(home, readEnd);
+  long win = obr::proc::alloc(home, 139520L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  if (win == 0L || scratch == 0L || saveWindow(home, win) != 0L) {
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    obr::proc::close(home, writeEnd);
+    return 2L;
+  }
+  putText(scratch, 0L, "/os/sh");
+  if (setSolo(home, win, "/os/sh") != 0L) {
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    obr::proc::close(home, writeEnd);
+    return 2L;
+  }
+  plant(home, scratch, 6L);
+  long status = 2L;
+  if (obr::proc::spawn(home, 0L) == 0L) {
+    long pid = obr::proc::slot(home, 192L);
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    writeSpan(home, writeEnd, 0L, cmdAt, cmdLen);
+    writeStr(home, writeEnd, "\nexit\n");
+    obr::proc::close(home, writeEnd);
+    obr::proc::wait(home, pid);
+    status = obr::proc::slot(home, 192L);
+    if (status < 0L) {
+      status = 0L;
+    }
+    if (status > 255L) {
+      status = status % 256L;
+    }
+  } else {
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    obr::proc::close(home, writeEnd);
+  }
+  return status;
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}

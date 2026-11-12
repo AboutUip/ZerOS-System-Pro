@@ -1,0 +1,213 @@
+/* POSIX.1-2017 get（utilities/get.html，SCCS 族）。选定子集：
+   get [-r sid] [-s] [-p] [-e] [-i] [-l[a]] [-c cutoff] [-x excl] [-i incl]
+       [--] s.file...
+   取出某 SID 的正文（子集：SID 只支持 1.n，缺省最新；正文=各插入段拼接）。
+   -p 写标准输出（缺省写 g 文件：操作数去 s. 前缀/目录段）；-s 静默（不打
+   统计行）；-e/-i 登记活动到 p 文件（-e 时新 SID=1.n+1，-i 同义）；-l 取出
+   并锁（同 -e）；-c/-x/-i 编号形式登记接受（子集不做裁剪，注明）。
+   统计行格式（非 -s）：<sid>\n<行数> lines\n 写标准错误。
+   未支持+原因：分支 SID（1.1.1.1）与 include/exclude 裁剪——线性子集。
+   校验失败写 get: 文件: can't get file，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 get:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long out = obr::proc::alloc(home, 524288L);
+  if (st == 0L || buf == 0L || out == 0L) {
+    writeErr(home, "get: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long sidAt = 0L;
+  long sidLen = 0L;
+  long silent = 0L;
+  long toStdout = 0L;
+  long lockEdit = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      long vAt = at + 16L;
+      long vLen = len - 2L;
+      if (o == 114L || o == 99L || o == 120L || o == 105L && len > 2L) {
+        if (vLen == 0L) {
+          index = index + 1L;
+          if (index < count) {
+            vAt = argPtr(home, index);
+            vLen = argLen(home, index);
+          } else {
+            vAt = 0L;
+            vLen = 0L;
+          }
+        }
+      }
+      if (o == 114L) {
+        sidAt = vAt;
+        sidLen = vLen;
+      } else if (o == 115L) {
+        silent = 1L;
+      } else if (o == 112L) {
+        toStdout = 1L;
+      } else if (o == 101L) {
+        lockEdit = 1L;
+      } else if (o == 108L) {
+        lockEdit = 1L;
+      } else if (o == 105L && len == 2L) {
+        lockEdit = 1L;
+      } else if (o == 99L || o == 120L) {
+        /* 裁剪选项登记接受（子集不裁剪）。 */
+      } else {
+        writeErr(home, "get: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      if (sccsLoad(home, st, buf, at, len) != 0L) {
+        writeErr(home, "get: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": can't get file\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long idx = sccsFind(st, sidAt, sidLen);
+      if (idx < 0L) {
+        writeErr(home, "get: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": nonexistent sid\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long bodyLen = sccsBody(st, buf, idx, out);
+      if (bodyLen < 0L) {
+        writeErr(home, "get: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": can't get file\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long e = st + 8192L + idx * 1536L;
+      if (silent == 0L) {
+        writeErr(home, "get: ");
+        writeSpan(home, 2L, 0L, e + 64L, memory::load64(e));
+        writeErr(home, "\n");
+        writeErr(home, "get: ");
+        writeNum(home, 2L, bodyLen);
+        writeErr(home, " bytes\n");
+      }
+      if (toStdout == 1L) {
+        writeSpan(home, 1L, 0L, out, bodyLen);
+      } else {
+        /* g 文件：操作数去 s. 前缀（含目录段）。 */
+        long g = obr::proc::alloc(home, 8192L * 8L);
+        long slash = -1L;
+        long k = 0L;
+        while (k < len) {
+          if (byteAt(at + k * 8L) == 47L) {
+            slash = k;
+          }
+          k = k + 1L;
+        }
+        copySpan(at, g, len);
+        if (slash >= 0L && slash + 3L < len && byteAt(at + (slash + 1L) * 8L) == 115L && byteAt(at + (slash + 2L) * 8L) == 46L) {
+          copySpan(at + (slash + 3L) * 8L, g + (slash + 1L) * 8L, len - slash - 3L);
+          len = len - 2L;
+        } else if (len > 2L && byteAt(at) == 115L && byteAt(at + 8L) == 46L) {
+          copySpan(at + 16L, g, len - 2L);
+          len = len - 2L;
+        }
+        plant(home, g, len);
+        if (obr::proc::open(home, 1L) != 0L) {
+          writeErr(home, "get: cannot write g file\n");
+          failed = 1L;
+        } else {
+          long fd = obr::proc::slot(home, 192L);
+          writeSpan(home, fd, 0L, out, bodyLen);
+          obr::proc::close(home, fd);
+        }
+      }
+      if (lockEdit == 1L) {
+        /* p 文件：<旧sid> <新sid> root <时间>。 */
+        long p = obr::proc::alloc(home, 8192L * 8L);
+        copySpan(at, p, 0L);
+        copySpan(at, p, len);
+        /* p 文件名：同 g 文件规则 + "p"。 */
+        long pn = obr::proc::alloc(home, 8192L * 8L);
+        copySpan(at, pn, 0L);
+        long slash = -1L;
+        long k = 0L;
+        while (k < len) {
+          if (byteAt(at + k * 8L) == 47L) {
+            slash = k;
+          }
+          k = k + 1L;
+        }
+        long nameAt = at;
+        long nameLen = len;
+        if (slash >= 0L) {
+          nameAt = at + (slash + 1L) * 8L;
+          nameLen = len - slash - 1L;
+        }
+        long o2 = 0L;
+        if (slash >= 0L) {
+          copySpan(at, pn, slash + 1L);
+          o2 = slash + 1L;
+        }
+        if (nameLen > 2L && byteAt(nameAt) == 115L && byteAt(nameAt + 8L) == 46L) {
+          copySpan(nameAt + 16L, pn + o2 * 8L, nameLen - 2L);
+          o2 = o2 + nameLen - 2L;
+        } else {
+          copySpan(nameAt, pn + o2 * 8L, nameLen);
+          o2 = o2 + nameLen;
+        }
+        putText(pn, o2, "p");
+        plant(home, pn, o2 + 1L);
+        if (obr::proc::open(home, 1L) == 0L) {
+          long fd = obr::proc::slot(home, 192L);
+          long line = obr::proc::bytes(home);
+          long o3 = putText(line, 0L, "000000/00000/00000");
+          /* 简化：旧 sid 写目标 sid 文本，新 sid 1.n+1 由 delta 认。 */
+          o3 = 0L;
+          long sl = memory::load64(e);
+          copySpan(e + 64L, line, sl);
+          o3 = sl;
+          memory::storeOctet(32L, line + o3 * 8L);
+          o3 = o3 + 1L;
+          copySpan(e + 64L, line + o3 * 8L, sl);
+          o3 = o3 + sl;
+          memory::storeOctet(32L, line + o3 * 8L);
+          o3 = o3 + 1L;
+          o3 = putText(line, o3, "root ");
+          o3 = putText(line, o3, "00/00/00 00:00:00");
+          memory::storeOctet(10L, line + o3 * 8L);
+          o3 = o3 + 1L;
+          obr::proc::write(home, fd, 0L, o3);
+          obr::proc::close(home, fd);
+        }
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "get: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

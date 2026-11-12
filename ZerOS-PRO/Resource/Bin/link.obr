@@ -1,0 +1,41 @@
+/* POSIX.1-2017 link（utilities/link.html）。形式是 link source target。
+   -- 结束选项。恰好两个操作数，缺一写 link: missing operand，退出 1。
+   本系统 VFS 没有链接服务（nlink 恒为 1，内核未派发 link 类系统调用），
+   硬链接无法创建。完整处理完操作数后写
+   link: link creation is not supported on this platform 到描述符 2，退出 1。
+   不假装成功，也不改任何文件。诊断英文 ASCII，前缀 link:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operands = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "link: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      ended = 1L;
+    }
+    index = index + 1L;
+  }
+  while (index < count) {
+    operands = operands + 1L;
+    index = index + 1L;
+  }
+  if (operands < 2L) {
+    writeErr(home, "link: missing operand\n");
+    return finish(home, 1L);
+  }
+  writeErr(home, "link: link creation is not supported on this platform\n");
+  return finish(home, 1L);
+}

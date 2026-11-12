@@ -1,0 +1,58 @@
+/* POSIX XCU 索引（Issue 7）无 atq（Issue 7 只留 at/batch/crontab；任务批 3 要求实现）。
+   形式：atq [-q letter] [--] [user...]
+   列出 /var/spool/at/ 里的作业（job.N 一行一条：`job N`）。
+   -q letter 与 user... 按传统口径接受登记（本平台单用户 root，不筛选，注明）。
+   无作业时静默退出 0。诊断英文 ASCII，描述符 2，前缀 atq:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L);
+  long dirLen = putText(dir, 0L, "/var/spool/at");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      if (spanSame(at, len, "-q") == 1L) {
+        index = index + 1L;
+        if (index >= count || argLen(home, index) != 1L) {
+          writeErr(home, "atq: invalid queue\n");
+          return finish(home, 1L);
+        }
+      } else {
+        writeErr(home, "atq: invalid option\n");
+        return finish(home, 1L);
+      }
+    }
+    /* user 操作数：单用户平台，登记不筛选。 */
+    index = index + 1L;
+  }
+  plant(home, dir, dirLen);
+  long d = 0L;
+  while (d < 256L) {
+    if (obr::proc::readdir(home, d, 512L) != 0L) {
+      break;
+    }
+    long nlen = obr::proc::slot(home, 256L);
+    if (nlen < 1L) {
+      break;
+    }
+    long nameAt = obr::proc::bytes(home);
+    if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+      writeStr(home, 1L, "job ");
+      writeSpan(home, 1L, 0L, nameAt + 32L, nlen - 4L);
+      writeStr(home, 1L, "\n");
+    }
+    d = d + 1L;
+  }
+  return finish(home, 0L);
+}

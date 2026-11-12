@@ -1,0 +1,125 @@
+#DYN
+/* Stage B 运行红测：分批把 flat 任务放到空闲核上跑完。
+   每批只装空闲核能接的数量；等这批全部退出后再装下一批。
+   退出码 = 20 + 创建数×10 + 完成数，直接读出结果。 */
+import memory;
+import obr.os;
+import obr.print;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun print3(long home, long value): void {
+  long clamped = value;
+  if (clamped < 0L) {
+    clamped = 0L;
+  }
+  if (clamped > 999L) {
+    clamped = 999L;
+  }
+  obr::print::byte(home, 48L + clamped / 100L);
+  obr::print::byte(home, 48L + (clamped % 100L) / 10L);
+  obr::print::byte(home, 48L + clamped % 10L);
+  obr::print::byte(home, 10L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  /* 驱动核已经由 drv 管理器独占/回收，这里不再 park 3/4 号核：
+     park 会把上下文搬进槽，再叠上 150 个窗口任务时宿主 trace 容易过载。 */
+  obr::os::svc(51L);
+  /* 受控回收 4 号核（外壳所在核）：把外壳上下文收进槽，4 号才能接 flat 任务。
+     不 park 自己所在的核。 */
+  if (obr::os::core() != 4L) {
+    memory::store64(4L, home + 448L);
+    obr::os::svc(54L);
+  }
+  /* 清零 per-core 创建计数：窗口低地址可能带进旧值，mask 会因此出现未用过的核。 */
+  long clearCore = 3L;
+  while (clearCore < 8L) {
+    memory::store64(0L, home + 640L + clearCore * 64L);
+    clearCore = clearCore + 1L;
+  }
+  /* 显式允许 3/4/5/7 四核：bit0=3,bit1=4,bit2=5,bit4=7 → 23。 */
+  memory::store64(23L, home + 1024L);
+  setPath(home, "/drivers/flatloop.zo");
+  long made = 0L;
+  long done = 0L;
+  long rounds = 0L;
+  while (made < 150L && rounds < 1200L) {
+    memory::store64(150L - made, home + 448L);
+    long fresh = obr::os::svc(47L);
+    if (fresh > 0L) {
+      made = made + fresh;
+    }
+    /* 一批任务几百毫秒内跑完；只睡一次，下一轮自然节流，不逐毫秒轮询。 */
+    obr::os::dwell(300L);
+    rounds = rounds + 1L;
+  }
+  done = obr::os::svc(48L);
+  /* 任务都是“让出一次就退出”，但批末可能还有几个没走完；最多再等 3 秒。 */
+  long waitRounds = 0L;
+  while (done < 150L && waitRounds < 60L) {
+    obr::os::dwell(50L);
+    done = obr::os::svc(48L);
+    waitRounds = waitRounds + 1L;
+  }
+  /* 核对内核确实读到了允许核位图。 */
+  if (memory::load64(home + 1152L) != 23L) {
+    memory::store64(99L, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  /* 每核创建数跨批次累计。mask 的 bit0…bit4 依次是核 3…7。 */
+  long mask = 0L;
+  long used = 0L;
+  long core = 3L;
+  while (core < 8L) {
+    /* 验收要求 3/4/5/7 四核都参与；额外地用到 6 号核不算失败。 */
+    if (core != 6L) {
+      long count = obr::proc::slot(home, 640L + core * 64L);
+      obr::print::text(home, "core=");
+      print3(home, core);
+      print3(home, count);
+      if (count > 0L) {
+        used = used + 1L;
+        if (core == 3L) {
+          mask = mask + 1L;
+        }
+        if (core == 4L) {
+          mask = mask + 2L;
+        }
+        if (core == 5L) {
+          mask = mask + 4L;
+        }
+        if (core == 7L) {
+          mask = mask + 16L;
+        }
+      }
+    }
+    core = core + 1L;
+  }
+  obr::print::text(home, "made=");
+  print3(home, made);
+  obr::print::text(home, "done=");
+  print3(home, done);
+  obr::print::text(home, "used=");
+  print3(home, used);
+  obr::print::flush(home);
+  /* 40 + mask = 通过。mask 直接说明哪些核跑过；3 个核能跑完 150 就是通过。 */
+  long result = 80L + mask;
+  if (made == 150L && done >= 150L && used >= 4L) {
+    result = 40L + mask;
+  }
+  memory::store64(result, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

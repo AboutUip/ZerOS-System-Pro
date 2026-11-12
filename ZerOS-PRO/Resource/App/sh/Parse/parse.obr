@@ -1,6 +1,9 @@
-/* 把一行拆成命令、参数和重定向。不读键盘，不执行。 */
+/* 把一行拆成命令、参数和重定向。不读键盘，不执行。
+   每个参数再记 64 个标记，1 表示这个字节来自引号或反斜杠。
+   参数标记从 out+131072 起，每个参数 512 位。正在收集的词放在 out+196608，最多 160 个字节。
+   out 因此至少要有 262144 位。标记给路径展开用，这里不读目录。 */
 #DYN
-#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
 import obr.oct;
 import parse;
@@ -20,8 +23,41 @@ deRfun putByte(long addr, long index, long value): void {
 }
 
 
+/* 空 __zap__ 块是内联护栏：导入调用只留在这一层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun lexU8(long addr): long {
+  __zap__ {
+  }
   return obr::oct::get(addr);
+}
+
+
+/* 参数标记紧跟在 16 条命令后面。一个参数 64 个字节，一步 512 位。 */
+deRfun argFlagAt(long out, long cmdIndex, long argIndex): long {
+  return out + 131072L + (cmdIndex * 8L + argIndex) * 512L;
+}
+
+
+/* 1 是引号或反斜杠里的字节。越界当成字面，避免展开去读到别的参数。 */
+deRfun argLiteral(long out, long cmdIndex, long argIndex, long byteIndex): long {
+  if (cmdIndex < 0L || argIndex < 0L || byteIndex < 0L || byteIndex >= 64L) {
+    return 1L;
+  }
+  return lexU8(argFlagAt(out, cmdIndex, argIndex) + byteIndex * 8L);
+}
+
+
+deRfun markByte(long out, long index, long literal): void {
+  if (index >= 0L && index < 160L) {
+    memory::storeOctet(literal, out + 196608L + index * 8L);
+  }
+}
+
+
+/* 词的字节进暂存，同时记下这一位是不是字面。literal 为 1 时通配符不当模式。 */
+deRfun keepByte(long out, long index, long value, long literal): void {
+  putByte(lexScratchAt(out), index, value);
+  markByte(out, index, literal);
 }
 
 
@@ -231,6 +267,12 @@ deRfun takeWord(long out, long cmdIndex, long wordLen, long status, long redir, 
   }
   if (plain == 1L && wordLen == 2L && lexU8(from) == 36L && lexU8(from + 8L) == 63L) {
     wordLen = putDigits(from, status);
+    /* 换成的是十进制数字，不再带原来的 $ 和 ?。每一位都按字面记。 */
+    long step = 0L;
+    while (step < wordLen) {
+      markByte(out, step, 1L);
+      step = step + 1L;
+    }
   }
   long argc = memory::load64(cmd);
   if (argc >= 8L || wordLen > 64L) {
@@ -238,6 +280,11 @@ deRfun takeWord(long out, long cmdIndex, long wordLen, long status, long redir, 
   }
   memory::store64(wordLen, cmd + 192L + argc * 64L);
   copyBytes(from, cmdArgAt(cmd, argc), wordLen);
+  long step = 0L;
+  while (step < wordLen) {
+    memory::storeOctet(lexU8(out + 196608L + step * 8L), argFlagAt(out, cmdIndex, argc) + step * 8L);
+    step = step + 1L;
+  }
   memory::store64(argc + 1L, cmd);
   return 0L;
 }
@@ -283,7 +330,7 @@ deRfun putWord(long out, long cur, long wordLen, long status, long redir, long p
 }
 
 
-/* 0 成功，1 语法错误。out 至少要有 131072 位。
+/* 0 成功，1 语法错误。out 至少要有 262144 位。
    列表之间是 &&、|| 或 ;。列表里面是管道。文件重定向是 >、>>、<。
    << 和 <<- 的下一个词是结束词，不进参数。一条简单命令最多两个，一行最多四个。 */
 deRfun parseLine(long src, long count, long out, long status): long {
@@ -352,7 +399,7 @@ deRfun parseLine(long src, long count, long out, long status): long {
         if (wordLen >= limit) {
           return 1L;
         }
-        putByte(lexScratchAt(out), wordLen, value);
+        keepByte(out, wordLen, value, 1L);
         wordLen = wordLen + 1L;
         plain = 0L;
       }
@@ -399,7 +446,7 @@ deRfun parseLine(long src, long count, long out, long status): long {
       if (wordLen >= limit) {
         return 1L;
       }
-      putByte(lexScratchAt(out), wordLen, value);
+      keepByte(out, wordLen, value, 1L);
       wordLen = wordLen + 1L;
       index = index + 1L;
       continue;
@@ -422,7 +469,7 @@ deRfun parseLine(long src, long count, long out, long status): long {
       if (hdWait != 0L && wordLen >= 128L) {
         return 1L;
       }
-      putByte(lexScratchAt(out), wordLen, value);
+      keepByte(out, wordLen, value, 1L);
       wordLen = wordLen + 1L;
       index = index + 1L;
       continue;
@@ -571,7 +618,7 @@ deRfun parseLine(long src, long count, long out, long status): long {
     if (wordLen >= limit) {
       return 1L;
     }
-    putByte(lexScratchAt(out), wordLen, value);
+    keepByte(out, wordLen, value, 0L);
     wordLen = wordLen + 1L;
     held = 1L;
     index = index + 1L;

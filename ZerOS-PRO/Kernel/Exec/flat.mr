@@ -1,0 +1,11 @@
+/* 任务窗口装入。映像用 -flat 编译；路径在调用者窗口 +16384。
+   成功时 pid/core 写在 +192/+256。 */
+deRfun spawnFlat(long caller, long home, long pin): long;
+/* 批量装 flat 任务；+960 是本轮上限，+1024 是指定核（0 自动）。
+   返回实际创建数，峰值任务数写在 +384，每核创建数从 +640 起。 */
+deRfun spawnMany(long caller, long home): long;
+/* 窗口任务退出计数：op 1 清零，2 加一，0 读值。服务 51 清零，
+   procExitAt 每收一个窗口任务加一。 */
+deRfun flatDone(long op): long;
+/* 这颗核现在能不能装入新的窗口任务。 */
+deRfun flatCoreIdle(long core): long;

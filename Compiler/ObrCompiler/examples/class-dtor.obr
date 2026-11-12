@@ -1,0 +1,46 @@
+/* Plan 2 M2：析构。@Destruct 是析构方法（零参、: void、每类至多一个）。
+   带析构的所有权变量（new 直接初始化）在作用域退出和 return 时按 LIFO 析构；
+   基类析构自动链（派生先、基类后）；按对象头 class ID 动态派发。结果 0。*/
+#VERSION 2
+
+class Witness {
+  int sum;
+  deRfun Witness(): void { sum = 0; }
+}
+
+class Base {
+  Witness w;
+  int tag;
+  deRfun Base(Witness x, int t): void { w = x; tag = t; }
+  @Destruct deRfun kill(): void { w.sum = w.sum * 10 + tag; }
+}
+
+class Sub : Base {
+  deRfun Sub(Witness x, int t): void { Base(x, t); }
+  @Destruct deRfun cleanup(): void { w.sum = w.sum * 10 + 7; }
+}
+
+deRfun make(Witness w): void {
+  Base a = new Sub(w, 1);
+  {
+    Base b = new Base(w, 2);
+    if (w.sum != 0) return;
+  }
+  if (w.sum != 2) return;
+}
+
+deRfun makeAlias(Witness w): void {
+  Base aliasHolder = new Base(w, 5);
+  Base alias = aliasHolder;
+  /* 别名不析构：本函数返回时只析构 aliasHolder 一次 → 5 */
+}
+
+deRfun main(): int {
+  Witness w1 = new Witness();
+  make(w1);
+  /* 块作用域 b(2) 先析构；函数作用域 a 是 Sub：cleanup(7) 后自动链 kill(1) → 2 然后 71 */
+  if (w1.sum != 271) return 1;
+  Witness w2 = new Witness();
+  makeAlias(w2);
+  return w2.sum == 5 ? 0 : 2;
+}

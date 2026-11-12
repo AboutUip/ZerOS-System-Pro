@@ -1,0 +1,8 @@
+/* Plan 2 M2：__dtor_ 前缀保留给运行时清扫入口。编译应当失败：__dtor_ 前缀保留给运行时 __dtor_sweep。 */
+#VERSION 2
+
+export deRfun __dtor_sweep(): void { }
+
+deRfun main(): int {
+  return 0;
+}

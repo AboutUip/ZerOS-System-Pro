@@ -1,0 +1,190 @@
+/* POSIX.1-2017 qselect（utilities/qselect.html，批量作业族）。选定子集：
+   qselect [-a [-]date_time] [-A account_string] [-c [-]interval] [-h u|h]
+            [-l resource_list] [-N job_name] [-p [-]priority] [-P project]
+            [-q destination] [-r y|n] [-s state] [-u user_list]
+   按条件筛选作业并把作业号（每行一个）写到标准输出。条件字段对应
+   键值头（account/name/priority/project/queue/rerun/state/hold/atime），
+   数值条件支持前导 - 表示「小于」（子集：其余比较按等于；resource_list
+   仅登记不筛选——无调度器，如实注明）。
+   无操作数：列全部作业号。无匹配静默退出 0。
+   诊断英文 ASCII，描述符 2，前缀 qselect:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import nqslib;
+
+deRfun fieldMatch(long st, string key, long at, long len, long neg): long {
+  long vAt = 0L;
+  long vLen = 0L;
+  if (nqsGet(st, key, &vAt, &vLen) != 1L) {
+    return 0L;
+  }
+  if (neg == 1L) {
+    /* 数值小于条件。 */
+    long a = 0L;
+    long b = 0L;
+    long i = 0L;
+    while (i < len && i < 9L) {
+      long o = byteAt(at + i * 8L);
+      if (o < 48L || o > 57L) {
+        return 0L;
+      }
+      a = a * 10L + o - 48L;
+      i = i + 1L;
+    }
+    i = 0L;
+    while (i < vLen && i < 9L) {
+      long o = byteAt(vAt + i * 8L);
+      if (o < 48L || o > 57L) {
+        return 0L;
+      }
+      b = b * 10L + o - 48L;
+      i = i + 1L;
+    }
+    if (b < a) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (vLen != len) {
+    return 0L;
+  }
+  long c = 0L;
+  while (c < len) {
+    if (byteAt(vAt + c * 8L) != byteAt(at + c * 8L)) {
+      return 0L;
+    }
+    c = c + 1L;
+  }
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/nqs");
+  long count = argc(home);
+  long index = 1L;
+  long filters = obr::proc::alloc(home, 65536L);
+  long nfilt = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && spanSame(at, len, "--") == 1L) {
+      index = index + 1L;
+      continue;
+    }
+    if (len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      long neg = 0L;
+      long vAt = at + 16L;
+      long vLen = len - 2L;
+      if (vLen == 0L) {
+        index = index + 1L;
+        if (index < count) {
+          vAt = argPtr(home, index);
+          vLen = argLen(home, index);
+        } else {
+          vAt = 0L;
+          vLen = 0L;
+        }
+      }
+      if (vLen > 1L && byteAt(vAt) == 45L) {
+        neg = 1L;
+        vAt = vAt + 8L;
+        vLen = vLen - 1L;
+      }
+      long key = 0L;
+      if (o == 65L) {
+        key = 1L;
+      } else if (o == 78L) {
+        key = 2L;
+      } else if (o == 112L) {
+        key = 3L;
+      } else if (o == 80L) {
+        key = 4L;
+      } else if (o == 113L) {
+        key = 5L;
+      } else if (o == 114L) {
+        key = 6L;
+      } else if (o == 115L) {
+        key = 7L;
+      } else if (o == 104L) {
+        key = 8L;
+      } else if (o == 97L) {
+        key = 9L;
+      } else if (o == 108L || o == 117L) {
+        /* -l 登记不筛选；-u 简化为 owner 等值。 */
+        if (o == 117L) {
+          key = 10L;
+        }
+      } else {
+        writeErr(home, "qselect: invalid option\n");
+        return finish(home, 1L);
+      }
+      if (key > 0L && nfilt < 32L) {
+        memory::store64(key, filters + nfilt * 160L);
+        memory::store64(vAt, filters + nfilt * 160L + 64L);
+        memory::store64(vLen, filters + nfilt * 160L + 96L);
+        memory::store64(neg, filters + nfilt * 160L + 128L);
+        nfilt = nfilt + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  plant(home, dir, dirLen);
+  nqsEnsure(home, dir, dirLen);
+  long d = 0L;
+  while (d < 512L) {
+    if (obr::proc::readdir(home, d, 512L) != 0L) {
+      break;
+    }
+    long nlen = obr::proc::slot(home, 256L);
+    if (nlen < 1L) {
+      break;
+    }
+    long nameAt = obr::proc::bytes(home);
+    if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+      long path = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(dir, path, dirLen);
+      memory::storeOctet(47L, path + dirLen * 8L);
+      copySpan(nameAt, path + (dirLen + 1L) * 8L, nlen);
+      long plen = dirLen + 1L + nlen;
+      if (nqsLoad(home, st, buf, path, plen) == 0L) {
+        long hit = 1L;
+        long f = 0L;
+        while (f < nfilt && hit == 1L) {
+          long key = memory::load64(filters + f * 160L);
+          long vAt = memory::load64(filters + f * 160L + 64L);
+          long vLen = memory::load64(filters + f * 160L + 96L);
+          long neg = memory::load64(filters + f * 160L + 128L);
+          long ok = 0L;
+          if (key == 1L) ok = fieldMatch(st, "account", vAt, vLen, neg);
+          if (key == 2L) ok = fieldMatch(st, "name", vAt, vLen, neg);
+          if (key == 3L) ok = fieldMatch(st, "priority", vAt, vLen, neg);
+          if (key == 4L) ok = fieldMatch(st, "project", vAt, vLen, neg);
+          if (key == 5L) ok = fieldMatch(st, "queue", vAt, vLen, neg);
+          if (key == 6L) ok = fieldMatch(st, "rerun", vAt, vLen, neg);
+          if (key == 7L) ok = fieldMatch(st, "state", vAt, vLen, neg);
+          if (key == 8L) ok = fieldMatch(st, "hold", vAt, vLen, neg);
+          if (key == 9L) ok = fieldMatch(st, "atime", vAt, vLen, neg);
+          if (key == 10L) ok = fieldMatch(st, "owner", vAt, vLen, neg);
+          if (ok == 0L) {
+            hit = 0L;
+          }
+          f = f + 1L;
+        }
+        if (hit == 1L) {
+          writeSpan(home, 1L, 0L, nameAt + 32L, nlen - 4L);
+          writeStr(home, 1L, "\n");
+        }
+      }
+    }
+    d = d + 1L;
+  }
+  return finish(home, 0L);
+}

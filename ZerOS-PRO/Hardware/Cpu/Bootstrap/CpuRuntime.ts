@@ -109,6 +109,12 @@ export namespace ZerOS {
       type ProgramSymbol = BinaryRoot.Hardware.Cpu.ProgramSymbol;
       const RelocateSlotBits = ConfigRoot.Hardware.Cpu.Config.RelocateSlotBits;
       const RelocateDataFloor = ConfigRoot.Hardware.Cpu.Config.RelocateDataFloor;
+      /**
+       * 任务窗口 kUi+158 格 = scratchWords 下标 158：编译器把 __dtor_sweep 的标号写在这里，
+       * reap 变体的放回从槽里私有字节的 scratch 字组按这个下标取清扫入口（M2-(d)）。
+       * 这块 kUi 格被引擎就地收进 scratch 字组，从不进私有八位组表、也从不上主板。
+       */
+      const DtorSweepCellIndex = 158;
       const MapEndBits = ConfigRoot.Hardware.Cpu.Config.MapEndBits;
       const CompatSpaceBytes = ConfigRoot.Hardware.Cpu.Config.CompatSpaceBytes;
       const CompatUserFloor = ConfigRoot.Hardware.Cpu.Config.CompatUserFloor;
@@ -178,6 +184,7 @@ export namespace ZerOS {
         cacheReject: ((error: Error) => void) | null;
         /** 私有写入已经按槽换上，或已经清掉。参数是这次是否写上。 */
         cachePlanted: ((ok: boolean) => void) | null;
+        cacheSeeded: ((ok: boolean) => void) | null;
         /** Schedule 拉起装入序列后的那一次执行。宿主用它等程序停下来。 */
         started: Promise<void> | null;
         /** 下次从这里继续。空表示从第一条重新开始。 */
@@ -199,6 +206,8 @@ export namespace ZerOS {
         /** 负长度表示还不限制访存。 */
         boundOrigin: bigint;
         boundLength: bigint;
+        /** 这颗核最近一次 pass() 时的窗口起点。服务 28 用它读退出码，不读后来被换掉的 bound。 */
+        passOrigin: bigint;
         /** 系统调用的回复要写进这个寄存器。空表示没在等。 */
         svcDest: number | null;
         /**
@@ -266,6 +275,8 @@ export namespace ZerOS {
       const coreRank = [0, 0, 0, 0, 0, 0, 0, 0];
       /** 连续执行 core 的次数。空转循环会一直涨，普通程序问一次编号就清零。 */
       const idleSpins = new Map<number, number>();
+      /** 空转核上一次放行一条的墙钟。放行按 30 Hz 预算限速（M2-(d)）。 */
+      const idleReleaseAt = new Map<number, number>();
       /**
        * 这颗核心正停在 dwell 的墙钟上。
        * sequenceBusy 还在，但没有指令在跑。监督核不能把它当成客程序正在执行。
@@ -551,6 +562,7 @@ export namespace ZerOS {
           cached: null,
           cacheReject: null,
           cachePlanted: null,
+        cacheSeeded: null,
           started: null,
           resumeCursor: null,
           stopKind: 0,
@@ -560,6 +572,7 @@ export namespace ZerOS {
           sliceQuota: 0,
           sliceLeft: 0,
           boundOrigin: 0n,
+        passOrigin: 0n,
           boundLength: -1n,
           svcDest: null,
           guest: false,
@@ -575,7 +588,7 @@ export namespace ZerOS {
           blockToken: null,
         };
         port.onmessage = (event: MessageEvent): void => {
-          onCoreMessage(core, event.data as unknown);
+          onCoreMessage(core, event.data as unknown, ordinal);
         };
         cores.set(ordinal, core);
         /* 卸下时标记已写成 0。不立刻写回的话，别的核心会把这颗新挂上的核心读成没有挂载。 */
@@ -608,7 +621,7 @@ export namespace ZerOS {
         }
       }
 
-      function onCoreMessage(core: MountedCore, data: unknown): void {
+      function onCoreMessage(core: MountedCore, data: unknown, ordinal = -1): void {
         if (typeof data !== "object" || data === null || Array.isArray(data)) {
           return;
         }
@@ -675,6 +688,7 @@ export namespace ZerOS {
           return;
         }
         if (record["kind"] === "access") {
+          if (ordinal !== 0) traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 66, 0);
           const resolve = core.access;
           const reject = core.accessReject;
           core.access = null;
@@ -741,7 +755,16 @@ export namespace ZerOS {
           }
           return;
         }
+        if (record["kind"] === "cache-seeded") {
+          const resolve = core.cacheSeeded;
+          core.cacheSeeded = null;
+          if (resolve !== null) {
+            resolve(record["ok"] === true);
+          }
+          return;
+        }
         if (record["kind"] === "stored") {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 91, 0);
           const resolve = core.deposited;
           const reject = core.depositReject;
           core.deposited = null;
@@ -766,6 +789,7 @@ export namespace ZerOS {
           return;
         }
         if (record["kind"] === "span") {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 93, 0);
           const resolve = core.span;
           const reject = core.spanReject;
           core.span = null;
@@ -1001,6 +1025,7 @@ export namespace ZerOS {
 
       /** 已挂载核心进入执行中。已装入且当前没在跑时，从第一条开始执行那段序列。 */
       export function schedule(ordinal: number): void {
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 71, 0);
         /* 新的可运行核心要叫醒停在空转或 dwell 上的人。叫醒排到当前栈结束之后，避免重入。 */
         notifySched();
         const core = requireOrdinal(ordinal);
@@ -1236,6 +1261,12 @@ export namespace ZerOS {
         core.stopKind = kind;
         halt(ordinal);
         wakeGate(ordinal);
+        /* 让出/时间片/抢占的停点要交给监督核下一圈扫表换回（M2-(d)）。
+           wakeGate 只叫醒已经停机的监督核；它还睡在 yieldTurn 或闩上时会整个漏掉，
+           换回永远轮不到。releaseGateWait 粘一次唤醒，poke 把睡着的让出拉回来。 */
+        if (kind === 1) {
+          releaseGateWait();
+        }
         /* 系统调用会停很久。客程序不继续，核心仍要醒着，由固件按 30 Hz 空转。 */
         if (kind === 2) {
           beginBlockedPace(ordinal);
@@ -1576,6 +1607,40 @@ export namespace ZerOS {
       }
 
       /**
+       * 有没有停在让出上、等监督核下一圈扫表处理的客核心（M2-(d)）。
+       * 停机原因 1 加保留的下一条，就是时间片、让出或抢占的停点：扫表必然换回或恢复它。
+       * 等系统调用回复的核是原因 2 且仍在执行中，不在这里。
+       * 监督核的 yieldTurn 见到这种现场就不能睡在入站字上——一次让出只点燃一拍，
+       * 一圈扫表常跨好几拍，睡下去换回就永远轮不到（同核派生换回卡死的根因）。
+       */
+      export function guestYieldPending(self: number): boolean {
+        for (const [ordinal, core] of cores) {
+          if (ordinal === self || ordinal < 3) {
+            continue;
+          }
+          if (
+            core.state === CoreStateHalted
+            && core.stopKind === 1
+            && core.resumeCursor !== null
+            && !sequenceBusy.has(ordinal)
+          ) {
+            return true;
+          }
+          /* 停机但映像还在（含 __dtor_sweep 变体停机）也是扫表的新工作（M2-(d) reap 实证）：
+             清扫停机的收尾（procSwept → 交回 → 回复）要跨好几拍才走完，
+             睡下去就永远轮不到，等待者收不到交回。映像被摘除后这项自然清掉。 */
+          if (
+            core.state === CoreStateHalted
+            && core.installed !== null
+            && !sequenceBusy.has(ordinal)
+          ) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      /**
        * 已经交给监督核、客程序还停在里面的系统调用号。
        * 读是 7。壳等键盘时只有这一号，固件要连着收键。
        * 写、查找和派生也让客程序停在同一种等待里。这段时间若仍放宽固件，
@@ -1779,10 +1844,18 @@ export namespace ZerOS {
 
       /** 前台还在取指时，监督核停在这里。系统调用写入保持位后立刻继续，不再空转扫表。 */
       let gateWait: (() => void) | null = null;
+      /**
+       * 让出/停机/系统调用发生在监督核还没停上闩时，这次唤醒要留住（M2-(d)）。
+       * releaseGateWait 原来只叫醒正在等的那一个；监督核还在自己那一拍里时唤醒整个丢掉，
+       * 它随后停在闩上等一条永远不会来的调用——同核派生换回就永远轮不到。
+       * 粘住一次就够：闩只在 parkForGuest 处停，消费后若又有新事件会再置位。
+       */
+      let gateWake = false;
 
       export function nativeWaitLatch(): Promise<void> {
         /* 环里已经有键时不能睡。这一拍的取指还没读到，睡下去要等下一拍显示才醒。 */
-        if (nativeGatePending() || keyRingFresh) {
+        if (nativeGatePending() || keyRingFresh || gateWake) {
+          gateWake = false;
           return Promise.resolve();
         }
         return new Promise((resolve): void => {
@@ -1790,7 +1863,8 @@ export namespace ZerOS {
             gateWait = null;
             resolve();
           };
-          if (nativeGatePending() || keyRingFresh) {
+          if (nativeGatePending() || keyRingFresh || gateWake) {
+            gateWake = false;
             const resume = gateWait;
             gateWait = null;
             resume();
@@ -1798,30 +1872,36 @@ export namespace ZerOS {
         });
       }
 
-      /** 监督核正停在消息通道让出上。键、调用和显示拍要把它立刻拉回来，不能再等这一拍排到帧末。 */
-      let yieldPoke: (() => void) | null = null;
+      /**
+       * 监督核正停在消息通道让出上。键、调用和显示拍要把它立刻拉回来，不能再等这一拍排到帧末。
+       * 每条原生循环登记自己的恢复点（M2-(d)）：原来只有最后一个单槽，谁后启动谁占走，
+       * 唤醒就落到别人头上——监督核停在 yieldTurn 的 waitAsync 分支时永远醒不来。
+       */
+      const yieldPokes = new Map<number, () => void>();
 
-      export function bindYieldPoke(poke: () => void): void {
-        yieldPoke = poke;
+      export function bindYieldPoke(ordinal: number, poke: () => void): void {
+        yieldPokes.set(ordinal, poke);
+      }
+
+      export function unbindYieldPoke(ordinal: number): void {
+        yieldPokes.delete(ordinal);
       }
 
       export function pokeYield(): void {
-        const poke = yieldPoke;
-        if (poke !== null) {
+        /* 全体叫一遍：每个恢复点自判空并只多跑一拍，不会把停机的核心拉起来。 */
+        for (const poke of yieldPokes.values()) {
           poke();
         }
       }
 
       export function releaseGateWait(): void {
+        gateWake = true;
         const resume = gateWait;
         gateWait = null;
         if (resume !== null) {
           resume();
         }
-        const poke = yieldPoke;
-        if (poke !== null) {
-          poke();
-        }
+        pokeYield();
         notifySched();
       }
 
@@ -2146,7 +2226,10 @@ export namespace ZerOS {
           return true;
         }
         idleParked.add(ordinal);
-        notifySched();
+        /* 停车不是真实工作，不叫醒别人（M2-(d)）：原来这里 notifySched 会把另外两个
+           同样停着的空转驱动叫起来，各执行一条又停车再叫醒——三核互相叫醒的风暴，
+           每秒上万条突发把观测全刷掉。真实工作（releaseGateWait/schedule/dwell 收尾）
+           和监督核拍尾的 supervisorPoke（33 毫秒一拍）才叫醒它们。 */
         try {
           for (;;) {
             if (stopNow()) {
@@ -2157,6 +2240,17 @@ export namespace ZerOS {
             const keys = firmwareOwesKeyPoll();
             if (!guest && !supervisor && !keys) {
               if (!onlyIdleLeft(ordinal)) {
+                /* 别人正忙也不是真实工作：放行按 30 Hz 预算限速（M2-(d)）。
+                   内核每圈 schedule 都 notifySched，不限速时停着的空转每秒被叫醒上万次、
+                   每次放一条就是一个突发加一条采样，观测全被刷掉，
+                   连退出码都会因为追踪环打满而取不到。 */
+                const released = idleReleaseAt.get(ordinal) ?? 0;
+                const now = performance.now();
+                if (now - released < 33) {
+                  await waitSched();
+                  continue;
+                }
+                idleReleaseAt.set(ordinal, now);
                 return false;
               }
               await waitSched();
@@ -2174,7 +2268,17 @@ export namespace ZerOS {
             if (MetricPageRoot.Hardware.Motherboard.keyAttention()) {
               continue;
             }
-            /* 只剩固件收键。放一条，让 30 Hz 驱动能读到放行字，然后调用方必须再让出。 */
+            /* 只剩固件收键。放一条，让 30 Hz 驱动能读到放行字，然后调用方必须再让出。
+               同样按 30 Hz 预算限速：驱动本来就是 30 Hz 的，一次叫醒一条不会更快。 */
+            {
+              const released = idleReleaseAt.get(ordinal) ?? 0;
+              const now = performance.now();
+              if (now - released < 33) {
+                await waitSched();
+                continue;
+              }
+              idleReleaseAt.set(ordinal, now);
+            }
             return false;
           }
         } finally {
@@ -2215,6 +2319,7 @@ export namespace ZerOS {
        * 谁都不跑时才睡剩余的毫秒，并且和 waitSched 赛跑。客程序若在睡眠中变得可运行，立刻改成让出。
        */
       async function dwellUntil(ordinal: number, milliseconds: number): Promise<void> {
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 72, milliseconds);
         const deadline = performance.now() + milliseconds;
         dwelling.add(ordinal);
         notifySched();
@@ -2236,6 +2341,7 @@ export namespace ZerOS {
           }
         } finally {
           dwelling.delete(ordinal);
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 73, 0);
           notifySched();
         }
       }
@@ -3258,6 +3364,17 @@ export namespace ZerOS {
         sequenceBusy.delete(ordinal);
         idleParked.delete(ordinal);
         dwelling.delete(ordinal);
+        /* 停在指令边界的序列把抢占等待者一并交还（M2-(d)）：同 runSequence 的收尾，
+           否则从停机/让出退出的原生序列把 preempt 挂死，capture/restore 不再返回。 */
+        const preemptWake = cores.get(ordinal)?.preemptResolve ?? null;
+        if (preemptWake !== null) {
+          const settled = cores.get(ordinal);
+          if (settled !== undefined) {
+            settled.preemptResolve = null;
+            settled.preemptRequested = false;
+          }
+          preemptWake();
+        }
         /* 原生客程序停机、让出或进入系统调用时，监督核可能还停在 nativeWaitLatch。
            不叫醒的话，已经没有指令在跑，监督核却要等下一次碰巧写入的调用。
            排到当前函数返回之后，避免在 finally 里面重入这颗核心。 */
@@ -3373,6 +3490,7 @@ export namespace ZerOS {
         return new Promise<void>((resolve, reject): void => {
           core.deposited = resolve;
           core.depositReject = reject;
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 90, 1);
           core.port.postMessage({ kind: "store-span", address, bytes });
         });
       }
@@ -3389,6 +3507,7 @@ export namespace ZerOS {
         return new Promise<void>((resolve, reject): void => {
           core.deposited = resolve;
           core.depositReject = reject;
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 90, 2);
           core.port.postMessage({ kind: "store-spans", addresses: addresses.slice(), parts: parts.slice() });
         });
       }
@@ -3402,6 +3521,7 @@ export namespace ZerOS {
         return new Promise<Uint8Array>((resolve, reject): void => {
           core.span = resolve;
           core.spanReject = reject;
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 92, 0);
           core.port.postMessage({ kind: "span", address, length });
         });
       }
@@ -3499,6 +3619,78 @@ export namespace ZerOS {
       }
 
       /** 装入或卸下成功后清掉上一份程序留下的私有写入。 */
+      /** 把装入后的入口 kSp 值直接放进核心私有窗口缓存，第一次 prologue 就能读到。 */
+      function seedPrivate(ordinal: number, address: bigint, bytes: Uint8Array): Promise<void> {
+        const core = requireOrdinal(ordinal);
+        if (core.cacheSeeded !== null || core.pending !== null) {
+          installFail("target core is not halted");
+        }
+        return new Promise((resolve, reject): void => {
+          core.cacheSeeded = (ok: boolean): void => {
+            if (ok) {
+              resolve();
+              return;
+            }
+            reject(new Error("seed private bytes failed"));
+          };
+          core.port.postMessage({ kind: "cache-seed", address, bytes: bytes.slice() });
+        });
+      }
+
+      function wordOctets(value: bigint): Uint8Array {
+        const octets = new Uint8Array(8);
+        let rest = value;
+        for (let index = 0; index < 8; index += 1) {
+          octets[index] = Number(rest & 0xffn);
+          rest >>= 8n;
+        }
+        return octets;
+      }
+
+      /** 旧布局任务恢复/装入后保证 kSp 单元非 0；内存与私有缓存同时落地。 */
+      async function seedLegacyStack(target: number, cache: PrivateOctets | null): Promise<void> {
+        const core = requireOrdinal(target);
+        if (core.boundLength < 268435456n) {
+          return;
+        }
+        const floor = BigInt(RelocateDataFloor);
+        const cell = core.boundOrigin + 68173760n - floor;
+        const top = core.boundOrigin + 68173824n - floor;
+        if (cell < core.boundOrigin || cell + 64n > core.boundOrigin + core.boundLength) {
+          return;
+        }
+        const base = cell / 8n;
+        let cached = -1n;
+        if (cache !== null && cache.addresses.length === cache.bytes.length) {
+          let word = 0n;
+          let present = true;
+          for (let index = 0; index < 8; index += 1) {
+            const key = base + BigInt(index);
+            const at = cache.addresses.findIndex((item) => item === key);
+            if (at < 0) {
+              present = false;
+              break;
+            }
+            word |= BigInt(cache.bytes[at] ?? 0) << BigInt(index * 8);
+          }
+          if (present) {
+            cached = word;
+          }
+        }
+        if (cached > 0n) {
+          await writeSpan(target, cell, wordOctets(cached));
+          return;
+        }
+        const memory = await readSpan(target, cell, 8);
+        let stored = 0n;
+        for (let index = 7; index >= 0; index -= 1) {
+          stored = (stored << 8n) | BigInt(memory[index] ?? 0);
+        }
+        const value = stored !== 0n ? stored : top;
+        await writeSpan(target, cell, wordOctets(value));
+        await seedPrivate(target, cell, wordOctets(value));
+      }
+
       function clearPrivate(ordinal: number, name: "install" | "release"): Promise<void> {
         const core = requireOrdinal(ordinal);
         if (core.cachePlanted !== null || core.pending !== null) {
@@ -3635,6 +3827,16 @@ export namespace ZerOS {
         return requireOrdinal(ordinal).nativeWindow;
       }
 
+      /** 这颗核最近一次 pass() 时的窗口起点。没有记录时是 0。 */
+      export function readPassOrigin(ordinal: number): bigint {
+        return requireOrdinal(ordinal).passOrigin;
+      }
+
+      /** 调用方此刻的窗口起点。服务 28 就在这条 svc 上读退出码。 */
+      export function readBoundOrigin(ordinal: number): bigint {
+        return requireOrdinal(ordinal).boundOrigin;
+      }
+
       /** 取指模块加载时接上续跑。调度发现原生系统调用的回复后调用它。 */
       export function bindNativeResume(resume: (ordinal: number) => Promise<void>): void {
         nativeResume = resume;
@@ -3730,6 +3932,7 @@ export namespace ZerOS {
        * 调用方停在这条指令上，等监督核取走那一次再试。
        */
       export function nativeSvc(ordinal: number, service: bigint, reply: number): boolean {
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 74, Number(service & 0xffn));
         if (gateOrdinal === null || gateOrdinal === ordinal) {
           fail("syscall has no supervisor");
         }
@@ -3811,8 +4014,11 @@ export namespace ZerOS {
           requireOrdinal(ordinal).Executed += 1;
           return false;
         }
+        /* 前台已经按 Ctrl+C 卸掉，核心还记着那次系统调用，回复不会再来。
+           再调度一次就跳过。停掉监督核的话，外壳的提示符也跟着没了。 */
         if ((chosen.nativeReply !== null || chosen.svcDest !== null) && chosen.latch === null) {
-          fail("schedule found a syscall with no reply");
+          requireOrdinal(ordinal).Executed += 1;
+          return false;
         }
         if (!sequenceBusy.has(to)) {
           schedule(to);
@@ -3880,7 +4086,10 @@ export namespace ZerOS {
         }
         const chosen = requireOrdinal(to);
         if (to !== ordinal) {
-          await preempt(to, 2);
+          /* 已经停着、也没有序列在跑时不需要抢占；preempt 会为新窗口等一次确认。 */
+          if (chosen.state !== CoreStateHalted || sequenceBusy.has(to)) {
+            await preempt(to, 2);
+          }
         }
         if (to !== ordinal && (chosen.state !== CoreStateHalted || sequenceBusy.has(to))) {
           fail("bound target is not halted");
@@ -3924,10 +4133,18 @@ export namespace ZerOS {
         if (requireOrdinal(ordinal).guest && !guestMayQuery(ordinal, seatNumber, fieldNumber, indexNumber)) {
           fail("privileged instruction");
         }
-        /*
-         * 解释执行的查询先读指标页。原生监督核不经过那条路径，座位 0 的墙上时钟只写在页上。
-         * 再送去主板会被判成没有这种字段，引导里第一次给文件盖时间就停机。
-         */
+        /* 本核的状态/窗口字段直接读实时核心状态。指标页是异步发布的：
+           刚 bound/install 完就读页，可能拿到上一个任务的窗口（甚至 0），
+           驱动把 home 记成 0，SIGTERM 导出就会写到低地址。 */
+        if (seatNumber === 1 && indexNumber === ordinal && fieldNumber >= 5 && fieldNumber <= 12) {
+          const live = queryCpu(fieldNumber, indexNumber);
+          /* 窗口字段 0 表示还没定界/已释放，回退指标页。 */
+          if (live !== 0n || fieldNumber !== 8) {
+            requireOrdinal(ordinal).Executed += 1;
+            return live;
+          }
+        }
+        /* 解释执行的查询先读指标页。墙上时钟字段不在页上，需实时向主板时钟芯片查询。 */
         const published = MetricPageRoot.Hardware.Motherboard.readMetric(seatNumber, fieldNumber, indexNumber);
         if (published.kind === "missing") {
           if (published.reason === "port") {
@@ -4123,8 +4340,14 @@ export namespace ZerOS {
         }
         await preempt(target, 4);
         const targetCore = cores.get(target);
-        if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
+        if (targetCore === undefined || sequenceBusy.has(target)) {
           contextFail("capture", "target core is not halted");
+        }
+        if (targetCore.state !== CoreStateHalted) {
+          /* 系统调用停走的序列把核心留在「执行中」（blocked-pace，内核查询要看见它在跑）；
+             序列已经不在了，收走前按抢占同款先停在指令边界（M2-(d)）：
+             否则正常从 svc/让出退出的序列一进 capture 就判「未停机」，整条换人链停摆。 */
+          halt(target);
         }
         if (targetCore.installed === null && targetCore.native === null) {
           contextFail("capture", "target has no program");
@@ -4162,32 +4385,64 @@ export namespace ZerOS {
           frameHeld: cache.frameHeld,
           frame: cache.frame,
         };
+        /* 换人是扫表的未完工作（M2-(d)）：收走之后还有放回/交回复/调度，
+           监督核在这一串走完之前不能睡进 yieldTurn，否则半截换回就永远停着。 */
+        releaseGateWait();
       }
 
-      /** 把槽放回已停止的核心。放回后仍然停止，要另一次 schedule 才继续。私有写入整份替换，地址不换算。 */
+      /**
+       * 把槽放回已停止的核心。放回后仍然停止，要另一次 schedule 才继续。私有写入整份替换，地址不换算。
+       * 槽号 OfficialSlotCount（256）起是 reap 变体（M2 触发点 (d)，2026-11-06）：放回 槽号-256 的上下文，
+       * 并把恢复 PC 换成槽内私有字节里的清扫入口（映像入口单元写下的 __dtor_sweep 标号），
+       * 丢掉没回复的系统调用状态——被放弃的任务从清扫入口跑一次、清理后正常退出。
+       * 操作数域扩展，不是新指令；0 到 255 的原语义不变（与内核 slotLimit() 同一标定，
+       * 早先注释写「8 到 15」是 8 槽时代的旧约定，2026-11-08 修正）。
+       */
       async function restoreContext(caller: number, targetValue: bigint, slotValue: bigint): Promise<void> {
         if (!supervisor(caller)) {
           contextFail("restore", "requires the supervisor");
         }
+        const reap = slotValue >= BigInt(ContextSlotCount);
+        const slot = contextSlot(reap ? slotValue - BigInt(ContextSlotCount) : slotValue);
         const target = coreOrdinal(targetValue);
-        const slot = contextSlot(slotValue);
         if (target === null || target === caller || slot === null) {
           contextFail("restore", "target core is not halted");
         }
         await preempt(target, 5);
         const targetCore = cores.get(target);
-        if (targetCore?.state !== CoreStateHalted || sequenceBusy.has(target)) {
+        if (targetCore === undefined || sequenceBusy.has(target)) {
           contextFail("restore", "target core is not halted");
+        }
+        if (targetCore.state !== CoreStateHalted) {
+          /* 同 capture：blocked-pace 的残留「执行中」按抢占同款先停（M2-(d)）。 */
+          halt(target);
         }
         const held = contextSlots[slot];
         if (held?.filled !== true) {
           contextFail("restore", "slot is empty");
+        }
+        /* reap 变体：清扫入口从槽里的私有字节取（M2-(d)）。
+           不走保持位、也不让内核按窗口地址读：同核共享换回后那格被另一任务的
+           私有整份替换盖住，而且窗口里的写入从不上主板，按地址读到的永远不是它。 */
+        let reapSweep = 0n;
+        if (reap) {
+          /* 清扫入口（kUi+158 格 = __dtor_sweep 的标号）在 scratchWords[158] 里：
+             kUi 格块（ScratchBase..ScratchLimit）被引擎的 absorbScratch 就地收进 scratch 字组，
+             从不进 keptOctets、也从不上主板——按窗口地址读永远是 0（M2-(d) 实证）。
+             copyPrivate/replacePrivate 的 scratch 字段随上下文整份迁移，这里才是权威来源。 */
+          const words = held.cache.scratch;
+          const cell = words[DtorSweepCellIndex];
+          reapSweep = cell ?? 0n;
         }
         if (compatOwner === target || held.native?.compat === true) {
           contextFail("restore", "compat task");
         }
         await plantRegisters(target, held.registers);
         await plantPrivate(target, held.cache);
+        await seedLegacyStack(target, held.cache);
+        /* 换人后读缓存随上下文作废：上一份任务留下的读缓存不属于这份上下文，
+           监督核又可能刚改过窗口（fd/计数/读回正文），留着会读到旧值（M2-(d) reap）。 */
+        targetCore.port.postMessage({ kind: "forget-reads" });
         targetCore.installed = held.steps.length === 0 ? null : held.steps.slice();
         targetCore.native = copyNative(held.native);
         targetCore.nativeReply = held.nativeReply;
@@ -4203,6 +4458,32 @@ export namespace ZerOS {
         targetCore.sliceLeft = held.sliceLeft;
         targetCore.svcDest = held.svcDest;
         targetCore.latch = held.latch;
+        if (reap) {
+          if (reapSweep > 0n) {
+            /* M2 触发点 (d)：恢复 PC 换成清扫入口（映像入口单元的 __dtor_sweep 标号），
+               没回复的系统调用作废——被放弃的任务从清扫入口跑一次、清理后正常退出。
+               原生帧的续跑点是帧里的 rip，不看 resumeCursor——原生映像任务（当前只有内核）
+               不走放弃清扫；命令/应用都是装入序列，走这里。 */
+            targetCore.resumeCursor = Number(reapSweep);
+            targetCore.stopKind = 1;
+          } else {
+            /* 没有清扫入口：这台映像没有析构记录，没有要扫的。
+               保持停机并摘掉程序，schedule 不会再跑它；
+               下一次扫表按「清扫已停」走 procSwept 收尾，所有权对象泄漏，如实如此。 */
+            targetCore.resumeCursor = null;
+            targetCore.stopKind = 0;
+            targetCore.installed = null;
+          }
+          targetCore.latch = null;
+          targetCore.nativeReply = null;
+          targetCore.svcDest = null;
+        }
+        /* 同 capture：放回之后还有交回复/调度，换人没走完之前监督核不能睡（M2-(d)）。 */
+        /* 放回改了 stopKind/续跑点（reap 变体、无析构摘除都是），查询面要跟着重发：
+           否则扫表还看见旧的「停在系统调用里（原因 2）」，清扫停机永远走不到 procSwept，
+           等待者永远收不到交回（M2-(d) reap 实证）。 */
+        publishCpuQuery();
+        releaseGateWait();
       }
 
       /** 把目标核心的 8 个寄存器写成 0。目标这时是停止的，不能用 Place。 */
@@ -4278,7 +4559,10 @@ export namespace ZerOS {
         const codeBase = targetCore.installed.length;
         const library = image.steps.slice();
         const limit = codeBase + library.length;
-        const bias = BigInt(target) * BigInt(RelocateSlotBits);
+        /* 任务窗口程序在 attach 之前已经 bound；动态库的数据也落到同一个窗口。 */
+        const bias = targetCore.boundLength > 0n
+          ? targetCore.boundOrigin - BigInt(RelocateDataFloor)
+          : BigInt(target) * BigInt(RelocateSlotBits);
         for (const reloc of image.relocs) {
           const current = library[reloc.index];
           if (current === undefined) {
@@ -4419,7 +4703,11 @@ export namespace ZerOS {
           installFail("dynamic library");
         }
         const placed = image.steps.slice();
-        const bias = BigInt(target) * BigInt(RelocateSlotBits);
+        /* 旧布局按核心槽重定位。任务窗口布局在 install 之前已经 bound，
+           数据地址加上 windowOrigin - DataFloor；两种布局共用这条公式。 */
+        const bias = targetCore.boundLength > 0n
+          ? targetCore.boundOrigin - BigInt(RelocateDataFloor)
+          : BigInt(target) * BigInt(RelocateSlotBits);
         for (const reloc of image.relocs) {
           const current = placed[reloc.index];
           if (current === undefined) {
@@ -4437,12 +4725,50 @@ export namespace ZerOS {
             installFail("relocation");
           }
         }
+        /* 安全网：仍落在本任务窗口之前的旧布局数据立即数，补上同一 bias。
+           漏掉一条 load 会让 kSp 读到全局低地址的 0，随后写 frame+64 越界。 */
+        const dataFloor = BigInt(RelocateDataFloor);
+        const origin = dataFloor + bias;
+        for (let index = 0; index < placed.length; index += 1) {
+          const step = placed[index];
+          if (step === undefined) {
+            continue;
+          }
+          if (step.Op === "load" || step.Op === "store") {
+            if (step.Address >= dataFloor && step.Address < origin) {
+              placed[index] = { ...step, Address: step.Address + bias };
+            }
+          } else if (step.Op === "place") {
+            if (step.Data >= dataFloor && step.Data < origin) {
+              placed[index] = { ...step, Data: step.Data + bias };
+            }
+          }
+        }
         await preempt(target, 7);
         if (targetCore.state !== CoreStateHalted || sequenceBusy.has(target)) {
           installFail("target core is not halted");
         }
         await wipeRegisters(target);
         await clearPrivate(target, "install");
+        /* -pie 入口 stub 把 kStack 写进 kSp 单元。解释器的私有窗口缓存可能在
+           同核 install/release 时被清掉；这里把同一个值直接写进真实内存，
+           保证 prologue 读到的帧基址不是 0。 */
+        const entryPlace = placed[0];
+        const entryStore = placed[1];
+        if (entryPlace !== undefined && entryStore !== undefined
+          && entryPlace.Op === "place" && entryStore.Op === "store"
+          && entryPlace.Register === entryStore.Register
+          && accessBits(entryStore.Opcode) === 64) {
+          const octets = new Uint8Array(8);
+          let rest = entryPlace.Data < 0n ? entryPlace.Data + (1n << 64n) : entryPlace.Data;
+          for (let index = 0; index < 8; index += 1) {
+            octets[index] = Number(rest & 0xffn);
+            rest >>= 8n;
+          }
+          await writeSpan(target, entryStore.Address, octets);
+          await seedPrivate(target, entryStore.Address, octets);
+        }
+        await seedLegacyStack(target, null);
         targetCore.installed = placed;
         clearNativeHold(targetCore);
         targetCore.exports = copySymbols(image.symbols);
@@ -4583,9 +4909,11 @@ export namespace ZerOS {
           fail("this core is already running another program");
         }
         sequenceBusy.add(ordinal);
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 68, 0);
         const started = requireOrdinal(ordinal);
         let cursor = started.resumeCursor ?? 0;
         const deliver = started.svcDest;
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 69, (deliver !== null ? 1 : 0) + (started.latch !== null ? 2 : 0) + (started.resumeCursor !== null ? 4 : 0));
         started.resumeCursor = null;
         started.stopKind = 0;
         /* schedule 写页时原因可能还是上一拍的让出。这里改回 0 再写一次，扫表才不会把正在跑的命令当成已经停下。 */
@@ -4606,7 +4934,9 @@ export namespace ZerOS {
           started.svcDest = null;
           openSvc.delete(ordinal);
           endSvcSpan(ordinal);
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 78, 0);
           await place(ordinal, deliver, reply);
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 79, 0);
         }
         while (cursor < steps.length) {
           if (leaveForFaultFrame(ordinal)) {
@@ -4741,8 +5071,20 @@ export namespace ZerOS {
               continue;
             }
           }
+          if (ordinal !== 0 && step.Op !== "core") {
+            traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 55, (cursor >>> 16) & 0xffff);
+            traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 53, cursor & 0xffff);
+            let opHash = 0;
+            for (let at = 0; at < step.Op.length; at += 1) {
+              opHash = (opHash * 31 + step.Op.charCodeAt(at)) & 0xffff;
+            }
+            traceInstant(TraceOp.HostEvent, TraceLayer.Host, ordinal, 54, opHash);
+          }
           refuseGuest(ordinal, step.Op);
-          if (step.Op !== "core") {
+          /* 跳转不算工作（M2-(d) 修正）：空转驱动的 while (core()) 编成 core();jnz，
+             jnz 若也清零空转计数，驱动永远攒不到 2、永不停车——CPU 空烧、
+             每圈回一次引擎，观测全被刷掉。访存、系统调用和其它转义仍清零。 */
+          if (step.Op !== "core" && step.Op !== "jz" && step.Op !== "jnz") {
             noteIdleShape(ordinal, false);
           }
           if (step.Op === "halt") {
@@ -4752,7 +5094,14 @@ export namespace ZerOS {
             stopping.svcDest = null;
             noteStop(ordinal, StopReasonHalted, cursor, "halt", "");
             halt(ordinal);
+            /* 停机改了 stopKind，查询面要跟着重发（M2-(d) reap 实证）：
+               扫表读的是查询面，不重发就还看见旧的「停在系统调用里（原因 2）」，
+               清扫停机永远走不到 procSwept，等待者永远收不到交回。 */
+            publishCpuQuery();
             wakeGate(ordinal);
+            /* 程序停机是扫表的新工作（M2-(d)）：监督核睡在 yieldTurn/闩上时 wakeGate 够不着，
+               不补 releaseGateWait 就会拿着这份停机一直睡，wait 的回复永远不来。 */
+            releaseGateWait();
             return;
           }
           if (step.Op === "yield") {
@@ -4838,8 +5187,14 @@ export namespace ZerOS {
               }
               continue;
             }
+            /* 和原生调度同一条：系统调用已经不会再有回复时，这一拍跳过。 */
             if (chosen.svcDest !== null && chosen.latch === null) {
-              fail("schedule found a syscall with no reply");
+              requireOrdinal(ordinal).Executed += 1;
+              cursor += 1;
+              if (consume(ordinal, cursor, 1)) {
+                return;
+              }
+              continue;
             }
             if (!sequenceBusy.has(target)) {
               schedule(target);
@@ -4932,21 +5287,28 @@ export namespace ZerOS {
              * 宿主在调用点直接读这个字，不依赖 guest 的单个诊断字。
              */
             if (service === 28n && traceEnabled()) {
-              try {
-                const core = requireOrdinal(ordinal);
-                const bytes = await readSpan(ordinal, core.boundOrigin + 128n, 8);
-                let code = 0n;
-                for (let index = 0; index < 8; index += 1) {
-                  code |= BigInt(bytes[index] ?? 0) << BigInt(index * 8);
+              /* 先同步快照调用方窗口，再 await。passOrigin 是别人回传时的窗口，
+                 共享核上读它会把退出码读到监督核窗口去。 */
+              const home = requireOrdinal(ordinal).boundOrigin;
+              if (home !== 0n) {
+                try {
+                  const bytes = await readSpan(ordinal, home + 128n, 8);
+                  let code = 0n;
+                  for (let index = 0; index < 8; index += 1) {
+                    code |= BigInt(bytes[index] ?? 0) << BigInt(index * 8);
+                  }
+                  traceInstant(TraceOp.ProcessExit, TraceLayer.Sched, ordinal, Number(code & 0xffffn), 0);
+                } catch {
+                  /* 读不到就保留原有 TaskExit 路径，不阻塞退出。 */
                 }
-                traceInstant(TraceOp.ProcessExit, TraceLayer.Sched, ordinal, Number(code & 0xffffn), 0);
-              } catch {
-                /* 读不到就保留原有 TaskExit 路径，不阻塞退出。 */
               }
             }
             /* 监督核的保持位一次只有一条。先把栈和脏页交出去，这两次等待期间别的核心可能先交上调用。
                等保持位空了再立刻交。中间不能再等待，否则刚看过是空的，交的时候又满了，这次调用会把客程序打停。 */
             if (requireOrdinal(ordinal).guest) {
+              /* svc 边界作废本核心读缓存（M2-(d) reap）：监督核会在这次调用里改窗口
+                 （fd、计数、读回正文），留着缓存就读到旧值。 */
+              requireOrdinal(ordinal).port.postMessage({ kind: "forget-reads" });
               await publishSp(ordinal);
               await publishDirty(ordinal);
             }
@@ -5296,7 +5658,10 @@ export namespace ZerOS {
         finished.svcDest = null;
         noteStop(ordinal, StopReasonHalted, cursor, "", "");
         halt(ordinal);
+        publishCpuQuery();
         wakeGate(ordinal);
+        /* 同 halt 操作码：程序末的停机也要把睡着的监督核拉回扫表（M2-(d)）。 */
+        releaseGateWait();
         } catch (error: unknown) {
           /* 失败的那条命令可能还占着核心。先记下失败的那一条，再把回调放开。
              用户核在这里停成查询上的正常结束；异常仍抛出，由 schedule 决定不报给主板。
@@ -5331,6 +5696,7 @@ export namespace ZerOS {
             core.cached = null;
             core.cacheReject = null;
             core.cachePlanted = null;
+            core.cacheSeeded = null;
             /* 用户核要让内核看见「已经停下、原因 0、任务仍在跑」。
                原因 3 只留在上面的宿主记录里，不能写进查询字段 11。 */
             if (userCore(ordinal)) {
@@ -5362,6 +5728,18 @@ export namespace ZerOS {
           }
           activeProgram.delete(ordinal);
           sequenceBusy.delete(ordinal);
+          /* 停在指令边界的序列把抢占等待者一并交还（M2-(d)）：preempt 的等待若只在
+             stopIfPreempted 路径兑现，从 svc/让出/停机正常退出的序列会把它永远挂住，
+             capture/restore 从此不返回，监督核整条换人链停摆。 */
+          const preemptWake = cores.get(ordinal)?.preemptResolve ?? null;
+          if (preemptWake !== null) {
+            const settled = cores.get(ordinal);
+            if (settled !== undefined) {
+              settled.preemptResolve = null;
+              settled.preemptRequested = false;
+            }
+            preemptWake();
+          }
           idleParked.delete(ordinal);
           dwelling.delete(ordinal);
           noteIdleShape(ordinal, false);
@@ -5522,8 +5900,10 @@ export namespace ZerOS {
           fail("target latch is already full");
         }
         target.latch = data;
+        target.passOrigin = requireOrdinal(fromOrdinal).boundOrigin;
         target.port.postMessage({ kind: "pass", data });
         if (gateOrdinal !== null && toOrdinal === gateOrdinal) {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, fromOrdinal, 70, 0);
           releaseGateWait();
         }
       }

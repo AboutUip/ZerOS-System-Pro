@@ -1,6 +1,6 @@
 /* 任务的命令名。紧挨终端格子存放，起点向格子要，不自己算布局。
    不管绘制，不管键盘。 */
-#LINK /start.obr, /exec.obr, /task.obr, /boot.obr, /spawn.obr
+#LINK /start.obr, /exec.obr, /task.obr, /boot.obr, /spawn.obr, /flat.obr, /drv.obr
 import fs;
 import proc;
 import memory;

@@ -1,0 +1,105 @@
+/* POSIX.1-2017 tput（utilities/tput.html）。选定子集：
+   tput [-T terminal] capname
+   本平台没有标准 terminfo 二进制库：条目是本平台文本编译格式，库在
+   /usr/share/terminfo/<名字>，内建 zeros（console）条目 cols#80 lines#24
+   （取自内核控制台缺省 80×24）。控制台不解释 ANSI 序列，clear 这类串能力
+   不在表里，按 tput 语义「找不到能力」处理，不假装。
+   -T 指定终端名；缺省用 TERM 环境值，没有则 zeros。
+   name 写主名字、longname 写长名并加换行。数值能力写十进制加换行。
+   字符串能力把解码后的八位组写到描述符 1，不加换行。开关能力在条目里退出 0，
+   不在退出 1。找不到条目写 tput: unknown terminal: 名字，退出 2；
+   找不到能力写 tput: unknown capability: 名字，退出 1。
+   缺操作数或选项不对退出 2。诊断英文 ASCII，描述符 2，前缀 tput:。
+   结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import terminfo;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long buf = obr::proc::alloc(home, 65536L);
+  long term = obr::proc::alloc(home, 4096L);
+  long out = obr::proc::alloc(home, 65536L);
+  if (buf == 0L || term == 0L || out == 0L) {
+    writeErr(home, "tput: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long termLen = 0L;
+  if (index + 1L < count && spanSame(argPtr(home, index), argLen(home, index), "-T") == 1L) {
+    index = index + 1L;
+    termLen = argLen(home, index);
+    if (termLen < 1L || termLen > 256L) {
+      writeErr(home, "tput: invalid terminal name\n");
+      return finish(home, 2L);
+    }
+    copySpan(argPtr(home, index), term, termLen);
+    index = index + 1L;
+  }
+  if (termLen == 0L) {
+    termLen = defaultTerm(home, term);
+  }
+  if (index >= count) {
+    writeErr(home, "tput: missing operand\n");
+    return finish(home, 2L);
+  }
+  long capAt = argPtr(home, index);
+  long capLen = argLen(home, index);
+  index = index + 1L;
+  if (index < count) {
+    writeErr(home, "tput: too many operands\n");
+    return finish(home, 2L);
+  }
+  long size = entry(home, buf, 8192L, term, termLen);
+  if (size < 0L) {
+    writeErr(home, "tput: unknown terminal: ");
+    writeSpan(home, 2L, 0L, term, termLen);
+    writeErr(home, "\n");
+    return finish(home, 2L);
+  }
+  long at = 0L;
+  long len = 0L;
+  if (spanSame(capAt, capLen, "name") == 1L) {
+    if (firstName(buf, size, &at, &len) == 1L) {
+      writeSpan(home, 1L, 0L, buf + at * 8L, len);
+      writeStr(home, 1L, "\n");
+      return finish(home, 0L);
+    }
+  }
+  if (spanSame(capAt, capLen, "longname") == 1L) {
+    if (longName(buf, size, &at, &len) == 1L) {
+      writeSpan(home, 1L, 0L, buf + at * 8L, len);
+      writeStr(home, 1L, "\n");
+      return finish(home, 0L);
+    }
+  }
+  long kind = 0L;
+  long num = 0L;
+  long textAt = 0L;
+  long textLen = 0L;
+  if (find(buf, size, capAt, capLen, &kind, &num, &textAt, &textLen) == 0L) {
+    writeErr(home, "tput: unknown capability: ");
+    writeSpan(home, 2L, 0L, capAt, capLen);
+    writeErr(home, "\n");
+    return finish(home, 1L);
+  }
+  if (kind == 1L) {
+    writeNum(home, 1L, num);
+    writeStr(home, 1L, "\n");
+    return finish(home, 0L);
+  }
+  if (kind == 2L) {
+    long made = decodeValue(buf, textAt, textLen, out);
+    if (made < 0L) {
+      writeErr(home, "tput: bad capability value\n");
+      return finish(home, 2L);
+    }
+    writeSpan(home, 1L, 0L, out, made);
+    return finish(home, 0L);
+  }
+  return finish(home, 0L);
+}

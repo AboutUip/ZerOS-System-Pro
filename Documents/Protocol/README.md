@@ -14,5 +14,6 @@
 | **ZXP1 / ZXD1** | 扩展口与交换 | [Expansion](./PhysicalHardware/Expansion/README.md) |
 | **ZSP1** | 沙盒 | [Sandbox](./PhysicalHardware/Sandbox/README.md) |
 | **ZNP1** | NAS | [Nas](./PhysicalHardware/Nas/README.md) |
+| **ZNC1** | 网卡（原始以太网帧） | [Nic](./PhysicalHardware/Nic/README.md) |
 
 硬件协议的总表在 [PhysicalHardware](./PhysicalHardware/README.md)。内核与显卡之间的文本契约不在上表里：[Utf8](./Kernel/README.md)。

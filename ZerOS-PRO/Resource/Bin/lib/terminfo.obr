@@ -1,0 +1,487 @@
+/* terminfo 族命令的共享模块（模块名 terminfo）。
+   本平台没有标准 terminfo 二进制库，选用自己的文本编译格式，如实记录：
+   条目内容是若干行。第一行是名字行，竖线分隔（末段是长名）；
+   以后每行一个能力：name（开关）、name#数、name=转义文本。
+   转义文本里可打印 ASCII 原样，反斜杠、逗号、冒号写 \\ \, \:，其余写 \nnn 八进制。
+   条目库在 /usr/share/terminfo/<名字>（每文件一个条目，扁平存放）。
+   内建条目 zeros（别名 console，长名 ZerOS console grid）：
+   cols#80 lines#24，取自内核控制台缺省 80×24；查库不中才用内建。
+   名字和能力都按隔 8 位八位组跨度传入（命令行参数本来就是跨度）。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun isDigit(long octet): long {
+  if (octet >= 48L && octet <= 57L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isNameChar(long octet): long {
+  if (octet >= 48L && octet <= 57L) {
+    return 1L;
+  }
+  if (octet >= 65L && octet <= 90L) {
+    return 1L;
+  }
+  if (octet >= 97L && octet <= 122L) {
+    return 1L;
+  }
+  if (octet == 43L || octet == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 两个隔 8 位跨度逐字节比较。相同 1。 */
+deRfun sameSpan(long a, long aLen, long b, long bLen): long {
+  if (aLen != bLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < aLen) {
+    if (byteAt(a + index * 8L) != byteAt(b + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 把 [termAt,termLen] 对应的条目装进 buf（隔 8 位八位组），返回八位组数。
+   先查 /usr/share/terminfo/<名字>，查不到时 zeros/console 用内建条目。
+   找不到返回 -1。cap 是 buf 能放的八位组数。 */
+deRfun entry(long home, long buf, long cap, long termAt, long termLen): long {
+  if (termLen < 1L || termLen > 256L) {
+    return -1L;
+  }
+  long at = putText(buf, 0L, "/usr/share/terminfo/");
+  copySpan(termAt, buf + at * 8L, termLen);
+  plant(home, buf, at + termLen);
+  if (obr::proc::open(home, 0L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    long total = 0L;
+    while (total < cap) {
+      long want = cap - total;
+      if (want > 4096L) {
+        want = 4096L;
+      }
+      if (obr::proc::read(home, fd, total, want) != 0L) {
+        total = -1L;
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got < 0L) {
+        total = -1L;
+        break;
+      }
+      if (got == 0L) {
+        break;
+      }
+      if (got > want) {
+        got = want;
+      }
+      copySpan(obr::proc::bytes(home), buf + total * 8L, got);
+      total = total + got;
+      if (got < want) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+    return total;
+  }
+  /* zeros 或 console：写内建条目。 */
+  long named = 0L;
+  if (spanSame(termAt, termLen, "zeros") == 1L) {
+    named = 1L;
+  }
+  if (spanSame(termAt, termLen, "console") == 1L) {
+    named = 1L;
+  }
+  if (named == 1L) {
+    long next = 0L;
+    next = putText(buf, next, "zeros|console|ZerOS console grid\n");
+    next = putText(buf, next, "cols#80\n");
+    next = putText(buf, next, "lines#24\n");
+    return next;
+  }
+  return -1L;
+}
+
+/* 在条目内容里找能力。第一个换行起的行才是能力行。
+   找到返回 1：*kind 是 0 开关、1 数值、2 字符串；*num 是数值；
+   *textAt 与 *textLen 是字符串值（仍是转义文本）的偏移和长度。 */
+deRfun find(long buf, long count, long capAt, long capLen, long* kind, long* num, long* textAt, long* textLen): long {
+  long line = 0L;
+  while (line < count && byteAt(buf + line * 8L) != 10L) {
+    line = line + 1L;
+  }
+  while (line < count) {
+    line = line + 1L;
+    long start = line;
+    while (line < count && byteAt(buf + line * 8L) != 10L) {
+      line = line + 1L;
+    }
+    long end = line;
+    long nameEnd = start;
+    while (nameEnd < end) {
+      long octet = byteAt(buf + nameEnd * 8L);
+      if (octet == 35L || octet == 61L) {
+        break;
+      }
+      nameEnd = nameEnd + 1L;
+    }
+    if (sameSpan(buf + start * 8L, nameEnd - start, capAt, capLen) == 1L) {
+      if (nameEnd >= end) {
+        *kind = 0L;
+        return 1L;
+      }
+      long mark = byteAt(buf + nameEnd * 8L);
+      if (mark == 35L) {
+        long value = 0L;
+        if (spanNum(buf + (nameEnd + 1L) * 8L, end - nameEnd - 1L, &value) != 0L) {
+          return 0L;
+        }
+        *kind = 1L;
+        *num = value;
+        return 1L;
+      }
+      *kind = 2L;
+      *textAt = nameEnd + 1L;
+      *textLen = end - nameEnd - 1L;
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+/* 名字行第一段（主名字）。成功 1 并写 *at、*len。 */
+deRfun firstName(long buf, long count, long* at, long* len): long {
+  long end = 0L;
+  while (end < count && byteAt(buf + end * 8L) != 10L) {
+    if (byteAt(buf + end * 8L) == 124L) {
+      *at = 0L;
+      *len = end;
+      return 1L;
+    }
+    end = end + 1L;
+  }
+  if (end == 0L) {
+    return 0L;
+  }
+  *at = 0L;
+  *len = end;
+  return 1L;
+}
+
+/* 名字行最后一段（长名）。没有竖线时与 firstName 相同。 */
+deRfun longName(long buf, long count, long* at, long* len): long {
+  long bar = -1L;
+  long end = 0L;
+  while (end < count && byteAt(buf + end * 8L) != 10L) {
+    if (byteAt(buf + end * 8L) == 124L) {
+      bar = end;
+    }
+    end = end + 1L;
+  }
+  if (end == 0L) {
+    return 0L;
+  }
+  *at = bar + 1L;
+  *len = end - bar - 1L;
+  return 1L;
+}
+
+/* 把转义文本 [at,len] 解码成隔 8 位八位组写到 out。返回八位组数；语法错 -1。 */
+deRfun decodeValue(long buf, long at, long len, long out): long {
+  long next = 0L;
+  long index = 0L;
+  while (index < len) {
+    long octet = byteAt(buf + (at + index) * 8L);
+    if (octet != 92L) {
+      memory::storeOctet(octet, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+      continue;
+    }
+    index = index + 1L;
+    if (index >= len) {
+      return -1L;
+    }
+    long esc = byteAt(buf + (at + index) * 8L);
+    if (esc == 69L || esc == 101L) {
+      memory::storeOctet(27L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (esc == 110L) {
+      memory::storeOctet(10L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (esc == 116L) {
+      memory::storeOctet(9L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (esc == 114L) {
+      memory::storeOctet(13L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (esc == 98L) {
+      memory::storeOctet(8L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (esc == 102L) {
+      memory::storeOctet(12L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (esc == 115L) {
+      memory::storeOctet(32L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (esc == 92L || esc == 44L || esc == 58L || esc == 94L) {
+      memory::storeOctet(esc, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+    } else if (isDigit(esc) == 1L) {
+      long value = 0L;
+      long used = 0L;
+      while (used < 3L && index < len && isDigit(byteAt(buf + (at + index) * 8L)) == 1L) {
+        value = value * 8L + byteAt(buf + (at + index) * 8L) - 48L;
+        index = index + 1L;
+        used = used + 1L;
+      }
+      if (value > 255L) {
+        return -1L;
+      }
+      memory::storeOctet(value, out + next * 8L);
+      next = next + 1L;
+    } else {
+      return -1L;
+    }
+  }
+  return next;
+}
+
+/* 源形式转规范形式。src 是隔 8 位八位组。返回写出的八位组数；语法错 -1。
+   语法子集：名字段（竖线分隔）到逗号；能力段逗号分隔，允许空白与空段；
+   能力是 name、name#十进制、name=转义文本、name@（取消，不写进规范形式）。
+   转义认 \E \e \n \t \r \b \f \s \\ \, \: \^ \nnn 与 ^X。 */
+deRfun compile(long src, long srcLen, long out, long cap): long {
+  long index = 0L;
+  long next = 0L;
+  while (index < srcLen && byteAt(src + index * 8L) == 32L) {
+    index = index + 1L;
+  }
+  long namesStart = index;
+  while (index < srcLen && byteAt(src + index * 8L) != 44L) {
+    index = index + 1L;
+  }
+  if (index >= srcLen) {
+    return -1L;
+  }
+  long namesEnd = index;
+  while (namesEnd > namesStart && byteAt(src + (namesEnd - 1L) * 8L) == 32L) {
+    namesEnd = namesEnd - 1L;
+  }
+  if (namesEnd <= namesStart || next + namesEnd - namesStart + 1L > cap) {
+    return -1L;
+  }
+  long copy = namesStart;
+  while (copy < namesEnd) {
+    long octet = byteAt(src + copy * 8L);
+    if (octet < 33L || octet > 126L) {
+      return -1L;
+    }
+    memory::storeOctet(octet, out + next * 8L);
+    next = next + 1L;
+    copy = copy + 1L;
+  }
+  memory::storeOctet(10L, out + next * 8L);
+  next = next + 1L;
+  index = index + 1L;
+  while (1L == 1L) {
+    while (index < srcLen) {
+      long octet = byteAt(src + index * 8L);
+      if (octet != 32L && octet != 10L && octet != 9L && octet != 44L) {
+        break;
+      }
+      index = index + 1L;
+    }
+    if (index >= srcLen) {
+      return next;
+    }
+    long nameStart = index;
+    while (index < srcLen && isNameChar(byteAt(src + index * 8L)) == 1L) {
+      index = index + 1L;
+    }
+    long nameLen = index - nameStart;
+    if (nameLen < 1L) {
+      return -1L;
+    }
+    long mark = 0L;
+    if (index < srcLen) {
+      mark = byteAt(src + index * 8L);
+    }
+    if (mark == 64L) {
+      index = index + 1L;
+    } else {
+      if (next + nameLen + 2L > cap) {
+        return -1L;
+      }
+      copySpan(src + nameStart * 8L, out + next * 8L, nameLen);
+      next = next + nameLen;
+      if (mark == 35L) {
+        index = index + 1L;
+        while (index < srcLen && byteAt(src + index * 8L) == 32L) {
+          index = index + 1L;
+        }
+        long numStart = index;
+        if (index < srcLen && byteAt(src + index * 8L) == 45L) {
+          index = index + 1L;
+        }
+        while (index < srcLen && isDigit(byteAt(src + index * 8L)) == 1L) {
+          index = index + 1L;
+        }
+        long value = 0L;
+        if (spanNum(src + numStart * 8L, index - numStart, &value) != 0L) {
+          return -1L;
+        }
+        memory::storeOctet(35L, out + next * 8L);
+        next = putNum(out, next + 1L, value);
+      } else if (mark == 61L) {
+        index = index + 1L;
+        memory::storeOctet(61L, out + next * 8L);
+        next = next + 1L;
+        while (index < srcLen && byteAt(src + index * 8L) != 44L) {
+          long octet = byteAt(src + index * 8L);
+          if (next + 4L > cap) {
+            return -1L;
+          }
+          if (octet == 92L) {
+            index = index + 1L;
+            if (index >= srcLen) {
+              return -1L;
+            }
+            long esc = byteAt(src + index * 8L);
+            if (esc == 69L || esc == 101L) {
+              next = putText(out, next, "\\E");
+            } else if (esc == 110L) {
+              next = putText(out, next, "\\n");
+            } else if (esc == 116L) {
+              next = putText(out, next, "\\t");
+            } else if (esc == 114L) {
+              next = putText(out, next, "\\r");
+            } else if (esc == 98L) {
+              next = putText(out, next, "\\b");
+            } else if (esc == 102L) {
+              next = putText(out, next, "\\f");
+            } else if (esc == 115L) {
+              memory::storeOctet(32L, out + next * 8L);
+              next = next + 1L;
+            } else if (esc == 92L || esc == 44L || esc == 58L || esc == 94L) {
+              memory::storeOctet(92L, out + next * 8L);
+              memory::storeOctet(esc, out + (next + 1L) * 8L);
+              next = next + 2L;
+            } else if (isDigit(esc) == 1L) {
+              long value = 0L;
+              long used = 0L;
+              while (used < 3L && index < srcLen && isDigit(byteAt(src + index * 8L)) == 1L) {
+                value = value * 8L + byteAt(src + index * 8L) - 48L;
+                index = index + 1L;
+                used = used + 1L;
+              }
+              if (value > 255L) {
+                return -1L;
+              }
+              next = putText(out, next, "\\");
+              memory::storeOctet(48L + value / 64L, out + next * 8L);
+              memory::storeOctet(48L + value / 8L % 8L, out + (next + 1L) * 8L);
+              memory::storeOctet(48L + value % 8L, out + (next + 2L) * 8L);
+              next = next + 3L;
+              continue;
+            } else {
+              return -1L;
+            }
+            index = index + 1L;
+          } else if (octet == 94L) {
+            index = index + 1L;
+            if (index >= srcLen) {
+              return -1L;
+            }
+            long careted = byteAt(src + index * 8L);
+            long value = 0L;
+            if (careted == 63L) {
+              value = 127L;
+            } else {
+              value = careted - 64L;
+            }
+            if (value < 0L || value > 255L) {
+              return -1L;
+            }
+            next = putText(out, next, "\\");
+            memory::storeOctet(48L + value / 64L, out + next * 8L);
+            memory::storeOctet(48L + value / 8L % 8L, out + (next + 1L) * 8L);
+            memory::storeOctet(48L + value % 8L, out + (next + 2L) * 8L);
+            next = next + 3L;
+            index = index + 1L;
+          } else {
+            if (octet < 32L || octet > 126L) {
+              return -1L;
+            }
+            if (octet == 58L) {
+              memory::storeOctet(92L, out + next * 8L);
+              next = next + 1L;
+            }
+            memory::storeOctet(octet, out + next * 8L);
+            next = next + 1L;
+            index = index + 1L;
+          }
+        }
+      }
+      memory::storeOctet(10L, out + next * 8L);
+      next = next + 1L;
+    }
+    if (index < srcLen && byteAt(src + index * 8L) == 44L) {
+      index = index + 1L;
+    }
+    if (next > cap) {
+      return -1L;
+    }
+  }
+}
+
+/* 规范形式转源形式（每行加缩进与尾逗号）。返回写出的八位组数；放不下 -1。 */
+deRfun sourceForm(long buf, long count, long out, long cap): long {
+  long next = 0L;
+  long index = 0L;
+  while (index < count) {
+    long octet = byteAt(buf + index * 8L);
+    if (next + 2L > cap) {
+      return -1L;
+    }
+    memory::storeOctet(octet, out + next * 8L);
+    next = next + 1L;
+    if (octet == 10L) {
+      memory::storeOctet(44L, out + next - 1L);
+      if (index + 1L < count) {
+        next = putText(out, next, "\n\t");
+      }
+    }
+    index = index + 1L;
+  }
+  return next;
+}
+
+/* TERM 环境值写进 buf，返回长度。没有 TERM 时是 zeros。 */
+deRfun defaultTerm(long home, long buf): long {
+  putText(buf, 0L, "TERM");
+  long value = 0L;
+  long valueLen = 0L;
+  if (envLookup(home, buf, 4L, &value, &valueLen) == 1L && valueLen > 0L && valueLen < 512L) {
+    copySpan(value, buf, valueLen);
+    return valueLen;
+  }
+  return putText(buf, 0L, "zeros");
+}

@@ -63,6 +63,10 @@
 
 打开失败写 `cat: 路径: No such file or directory`，继续后面的文件，已经写出的内容留下，最终退出 1。不认识的选项写 `cat: invalid option` 并立刻退出 1。读失败写 `cat: read error`，写失败写 `cat: write error`。目录、权限和别的打开错误这一轮都用同一句 `No such file or directory`。
 
+## ncat
+
+`ncat.obr` 是用 `#VERSION 2` 编写的重构版 `cat`，命令行选项、文件处理和退出行为与上面的 `cat` 相同；诊断前缀使用 `ncat:`。实现以 `CatCommand` 类持有任务窗口状态，并通过 `obr::oct::copy` 复用八位组复制逻辑。NAS 构建会自动把它编译为 `/bin/ncat`。
+
 ## mkdir
 
 规范页：`utilities/mkdir.html`。形式是 `mkdir [-p] [-m mode] dir...`。没有 umask。没有 `-m` 时不再 `chmod`，权限保持内核创建目录时的值。

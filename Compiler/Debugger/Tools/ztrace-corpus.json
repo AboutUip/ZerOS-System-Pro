@@ -1,25 +1,55 @@
 {
   "schema": "zeros.ztrace.corpus/1",
-  "description": "全命令语料，与 Resource/Bin 里除 arg 以外的命令一一对应。每项只验证命令能回到提示符，不比较输出文本。/home 由 runner 在开跑前种下。",
+  "description": "全命令语料，与 Resource/Bin 里除 arg 以外的命令一一对应。每项只验证命令能回到提示符，不比较输出文本。/temp/test 由 runner 在开跑前种下。",
   "commands": [
     {
+      "name": "admin",
+      "command": "admin -n -i/temp/test/c.c /temp/test/perf/s.cc",
+      "exit": 0
+    },
+    {
+      "name": "apply",
+      "command": "apply echo \"q dd\" > /temp/test/perf/excmds",
+      "exit": 0
+    },
+    {
       "name": "ar",
-      "command": "ar -t /home/lib.a",
+      "command": "ar -t /temp/test/lib.a",
       "exit": 0
     },
     {
       "name": "asa",
-      "command": "asa /home/test.txt",
+      "command": "asa /temp/test/test.txt",
       "exit": 0
     },
     {
+      "name": "at",
+      "command": "at now < /temp/test/cz.txt",
+      "exit": 0
+    },
+    {
+      "name": "atq",
+      "command": "atq",
+      "exit": 0
+    },
+    {
+      "name": "atrm",
+      "command": "atrm 0",
+      "exit": 1
+    },
+    {
       "name": "awk",
-      "command": "awk print /home/test.txt",
+      "command": "awk print /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "basename",
-      "command": "basename /home/test.txt",
+      "command": "basename /temp/test/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "batch",
+      "command": "batch < /temp/test/cz.txt",
       "exit": 0
     },
     {
@@ -28,73 +58,88 @@
       "exit": 0
     },
     {
+      "name": "c99",
+      "command": "c99 -o /temp/test/perf/x /temp/test/c.c",
+      "exit": 127
+    },
+    {
       "name": "cal",
       "command": "cal 2020",
       "exit": 0
     },
     {
       "name": "cat",
-      "command": "cat /home/test.txt",
+      "command": "cat /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "cflow",
-      "command": "cflow /home/c.c",
+      "command": "cflow /temp/test/c.c",
       "exit": 0
     },
     {
       "name": "chgrp",
-      "command": "chgrp 0 /home/test.txt",
+      "command": "chgrp 0 /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "chmod",
-      "command": "chmod 644 /home/test.txt",
+      "command": "chmod 644 /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "chown",
-      "command": "chown 0 /home/test.txt",
+      "command": "chown 0 /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "cksum",
-      "command": "cksum /home/test.txt",
+      "command": "cksum /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "cmp",
-      "command": "cmp /home/test.txt /home/test.txt",
+      "command": "cmp /temp/test/test.txt /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "comm",
-      "command": "comm /home/perf/a.txt /home/perf/b.txt",
+      "command": "comm /temp/test/perf/a.txt /temp/test/perf/b.txt",
       "exit": 0
     },
     {
       "name": "compress",
-      "command": "compress /home/cz.txt",
+      "command": "compress /temp/test/cz.txt",
       "exit": 0
     },
     {
       "name": "cp",
-      "command": "cp /home/test.txt /home/perf/corpus-copy.txt",
+      "command": "cp /temp/test/test.txt /temp/test/perf/corpus-copy.txt",
       "exit": 0
     },
     {
+      "name": "crontab",
+      "command": "crontab -l",
+      "exit": 1
+    },
+    {
       "name": "csplit",
-      "command": "csplit /home/test.txt 1",
+      "command": "csplit /temp/test/test.txt 1",
       "exit": 0
     },
     {
       "name": "ctags",
-      "command": "ctags /home/c.c",
+      "command": "ctags /temp/test/c.c",
       "exit": 0
     },
     {
       "name": "cut",
-      "command": "cut -f 1 /home/test.txt",
+      "command": "cut -f 1 /temp/test/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "cxref",
+      "command": "cxref /temp/test/c.c",
       "exit": 0
     },
     {
@@ -104,7 +149,12 @@
     },
     {
       "name": "dd",
-      "command": "dd if=/home/test.txt of=/home/perf/corpus-dd.txt",
+      "command": "dd if=/temp/test/test.txt of=/temp/test/perf/corpus-dd.txt",
+      "exit": 0
+    },
+    {
+      "name": "delta",
+      "command": "delta /temp/test/perf/s.cc < /temp/test/cz.txt",
       "exit": 0
     },
     {
@@ -114,17 +164,32 @@
     },
     {
       "name": "diff",
-      "command": "diff /home/test.txt /home/test.txt",
+      "command": "diff /temp/test/test.txt /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "dirname",
-      "command": "dirname /home/test.txt",
+      "command": "dirname /temp/test/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "drv",
+      "command": "drv list",
+      "exit": 0
+    },
+    {
+      "name": "dtorreap",
+      "command": "dtorreap hold",
+      "exit": 0
+    },
+    {
+      "name": "dtorvictim",
+      "command": "dtorvictim",
       "exit": 0
     },
     {
       "name": "du",
-      "command": "du /home/perf",
+      "command": "du /temp/test/perf",
       "exit": 0
     },
     {
@@ -134,7 +199,7 @@
     },
     {
       "name": "ed",
-      "command": "echo q | ed /home/test.txt",
+      "command": "echo q | ed /temp/test/test.txt",
       "exit": 0
     },
     {
@@ -143,8 +208,13 @@
       "exit": 0
     },
     {
+      "name": "ex",
+      "command": "ex /temp/test/test.txt < /temp/test/perf/excmds",
+      "exit": 0
+    },
+    {
       "name": "expand",
-      "command": "expand /home/test.txt",
+      "command": "expand /temp/test/test.txt",
       "exit": 0
     },
     {
@@ -159,27 +229,42 @@
     },
     {
       "name": "file",
-      "command": "file /home/test.txt",
+      "command": "file /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "find",
-      "command": "find /home/perf -name a.txt",
+      "command": "find /temp/test/perf -name a.txt",
+      "exit": 0
+    },
+    {
+      "name": "flatwrite",
+      "command": "/bin/flatwrite",
       "exit": 0
     },
     {
       "name": "fold",
-      "command": "fold -w 8 /home/test.txt",
+      "command": "fold -w 8 /temp/test/test.txt",
       "exit": 0
     },
     {
+      "name": "fort77",
+      "command": "fort77 /temp/test/c.c",
+      "exit": 127
+    },
+    {
       "name": "fuser",
-      "command": "fuser /home/test.txt",
+      "command": "fuser /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "gencat",
-      "command": "gencat /home/msg.cat /home/msg.src",
+      "command": "gencat /temp/test/msg.cat /temp/test/msg.src",
+      "exit": 0
+    },
+    {
+      "name": "get",
+      "command": "get -p /temp/test/perf/s.cc",
       "exit": 0
     },
     {
@@ -188,8 +273,13 @@
       "exit": 0
     },
     {
+      "name": "gpuflat",
+      "command": "/bin/gpuflat",
+      "exit": 0
+    },
+    {
       "name": "grep",
-      "command": "grep Hello /home/test.txt",
+      "command": "grep Hello /temp/test/test.txt",
       "exit": 0
     },
     {
@@ -199,7 +289,7 @@
     },
     {
       "name": "head",
-      "command": "head /home/test.txt",
+      "command": "head /temp/test/test.txt",
       "exit": 0
     },
     {
@@ -209,7 +299,7 @@
     },
     {
       "name": "iconv",
-      "command": "iconv -f UTF-8 -t UTF-8 /home/test.txt",
+      "command": "iconv -f UTF-8 -t UTF-8 /temp/test/test.txt",
       "exit": 0
     },
     {
@@ -218,13 +308,28 @@
       "exit": 0
     },
     {
+      "name": "infocmp",
+      "command": "infocmp zeros",
+      "exit": 0
+    },
+    {
       "name": "install",
-      "command": "install /home/test.txt /home/perf/corpus-install.txt",
+      "command": "install /temp/test/test.txt /temp/test/perf/corpus-install.txt",
+      "exit": 0
+    },
+    {
+      "name": "ipcrm",
+      "command": "ipcrm 1",
+      "exit": 1
+    },
+    {
+      "name": "ipcs",
+      "command": "ipcs",
       "exit": 0
     },
     {
       "name": "join",
-      "command": "join /home/perf/a.txt /home/perf/b.txt",
+      "command": "join /temp/test/perf/a.txt /temp/test/perf/b.txt",
       "exit": 0
     },
     {
@@ -233,8 +338,28 @@
       "exit": 1
     },
     {
+      "name": "lex",
+      "command": "lex -t < /temp/test/cz.txt",
+      "exit": 1
+    },
+    {
+      "name": "link",
+      "command": "link /temp/test/test.txt /temp/test/perf/corpus-link.txt",
+      "exit": 1
+    },
+    {
+      "name": "ln",
+      "command": "ln /temp/test/test.txt /temp/test/perf/corpus-ln.txt",
+      "exit": 1
+    },
+    {
       "name": "locale",
       "command": "locale",
+      "exit": 0
+    },
+    {
+      "name": "localedef",
+      "command": "localedef -c C",
       "exit": 0
     },
     {
@@ -248,14 +373,29 @@
       "exit": 1
     },
     {
+      "name": "lp",
+      "command": "lp /temp/test/test.txt",
+      "exit": 0
+    },
+    {
       "name": "ls",
-      "command": "ls /home/perf",
+      "command": "ls /temp/test/perf",
       "exit": 0
     },
     {
       "name": "m4",
       "command": "echo hello | m4",
       "exit": 0
+    },
+    {
+      "name": "mailx",
+      "command": "mailx -s hi root < /temp/test/cz.txt",
+      "exit": 0
+    },
+    {
+      "name": "make",
+      "command": "make -f /temp/test/test.txt",
+      "exit": 2
     },
     {
       "name": "man",
@@ -269,27 +409,52 @@
     },
     {
       "name": "mkdir",
-      "command": "mkdir -p /home/perf/corpus-dir",
+      "command": "mkdir -p /temp/test/perf/corpus-dir",
       "exit": 0
     },
     {
+      "name": "mkfifo",
+      "command": "mkfifo /temp/test/perf/corpus-fifo",
+      "exit": 1
+    },
+    {
       "name": "mktemp",
-      "command": "mktemp /home/perf/tmp.XXXXXX",
+      "command": "mktemp /temp/test/perf/tmp.XXXXXX",
       "exit": 0
     },
     {
       "name": "more",
-      "command": "more -e /home/test.txt",
+      "command": "more -e /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "mv",
-      "command": "mv /home/perf/corpus-copy.txt /home/perf/corpus-copy2.txt",
+      "command": "mv /temp/test/perf/corpus-copy.txt /temp/test/perf/corpus-copy2.txt",
+      "exit": 0
+    },
+    {
+      "name": "ncat",
+      "command": "ncat /temp/test/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "newgrp",
+      "command": "newgrp bin",
+      "exit": 1
+    },
+    {
+      "name": "nice",
+      "command": "nice true",
       "exit": 0
     },
     {
       "name": "nl",
-      "command": "nl /home/test.txt",
+      "command": "nl /temp/test/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "nm",
+      "command": "nm /bin/echo",
       "exit": 0
     },
     {
@@ -299,37 +464,42 @@
     },
     {
       "name": "od",
-      "command": "od /home/test.txt",
+      "command": "od /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "paste",
-      "command": "paste /home/perf/a.txt /home/perf/b.txt",
+      "command": "paste /temp/test/perf/a.txt /temp/test/perf/b.txt",
       "exit": 0
     },
     {
       "name": "patch",
-      "command": "patch -i /home/fix.diff -o /home/patched.txt",
+      "command": "patch -i /temp/test/fix.diff -o /temp/test/patched.txt",
       "exit": 0
     },
     {
       "name": "pathchk",
-      "command": "pathchk /home/test.txt",
+      "command": "pathchk /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "pax",
-      "command": "pax -w -f /home/pack.tar /home/test.txt",
+      "command": "pax -w -f /temp/test/pack.tar /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "pr",
-      "command": "pr -t /home/test.txt",
+      "command": "pr -t /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "printf",
       "command": "printf hi",
+      "exit": 0
+    },
+    {
+      "name": "prs",
+      "command": "prs /temp/test/perf/s.cc",
       "exit": 0
     },
     {
@@ -343,28 +513,108 @@
       "exit": 0
     },
     {
-      "name": "realpath",
-      "command": "realpath /home/test.txt",
+      "name": "qalter",
+      "command": "qalter",
+      "exit": 1
+    },
+    {
+      "name": "qdel",
+      "command": "qdel 0",
+      "exit": 1
+    },
+    {
+      "name": "qhold",
+      "command": "qhold 0",
+      "exit": 1
+    },
+    {
+      "name": "qmove",
+      "command": "qmove dest 0",
+      "exit": 1
+    },
+    {
+      "name": "qmsg",
+      "command": "qmsg hi 0",
+      "exit": 1
+    },
+    {
+      "name": "qrerun",
+      "command": "qrerun 0",
+      "exit": 1
+    },
+    {
+      "name": "qrls",
+      "command": "qrls 0",
+      "exit": 1
+    },
+    {
+      "name": "qselect",
+      "command": "qselect",
       "exit": 0
     },
     {
+      "name": "qsig",
+      "command": "qsig 0",
+      "exit": 1
+    },
+    {
+      "name": "qstat",
+      "command": "qstat",
+      "exit": 0
+    },
+    {
+      "name": "qsub",
+      "command": "qsub /temp/test/cz.txt",
+      "exit": 0
+    },
+    {
+      "name": "realpath",
+      "command": "realpath /temp/test/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "renice",
+      "command": "renice 5 1",
+      "exit": 1
+    },
+    {
       "name": "rm",
-      "command": "rm /home/perf/corpus-copy2.txt",
+      "command": "rm /temp/test/perf/corpus-copy2.txt",
+      "exit": 0
+    },
+    {
+      "name": "rmdel",
+      "command": "rmdel -r 1.2 /temp/test/perf/s.cc",
       "exit": 0
     },
     {
       "name": "rmdir",
-      "command": "rmdir /home/perf/corpus-dir",
+      "command": "rmdir /temp/test/perf/corpus-dir",
+      "exit": 0
+    },
+    {
+      "name": "sact",
+      "command": "sact /temp/test/perf/s.cc",
+      "exit": 0
+    },
+    {
+      "name": "sccs",
+      "command": "sccs -p /temp/test/perf get -p cc",
       "exit": 0
     },
     {
       "name": "sed",
-      "command": "sed -n p /home/test.txt",
+      "command": "sed -n p /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "seq",
       "command": "seq 1 3",
+      "exit": 0
+    },
+    {
+      "name": "sh",
+      "command": "sh -c true",
       "exit": 0
     },
     {
@@ -374,17 +624,32 @@
     },
     {
       "name": "sort",
-      "command": "sort /home/perf/a.txt",
+      "command": "sort /temp/test/perf/a.txt",
       "exit": 0
     },
     {
       "name": "split",
-      "command": "split -l 1 /home/test.txt /home/sp",
+      "command": "split -l 1 /temp/test/test.txt /temp/test/sp",
       "exit": 0
     },
     {
       "name": "strings",
-      "command": "strings /home/test.txt",
+      "command": "strings /temp/test/test.txt",
+      "exit": 0
+    },
+    {
+      "name": "strip",
+      "command": "strip /bin/echo",
+      "exit": 0
+    },
+    {
+      "name": "stty",
+      "command": "stty -a",
+      "exit": 0
+    },
+    {
+      "name": "sync",
+      "command": "sync",
       "exit": 0
     },
     {
@@ -394,18 +659,28 @@
     },
     {
       "name": "tail",
-      "command": "tail /home/test.txt",
+      "command": "tail /temp/test/test.txt",
       "exit": 0
     },
     {
+      "name": "talk",
+      "command": "talk root",
+      "exit": 1
+    },
+    {
       "name": "tee",
-      "command": "echo hi | tee /home/perf/corpus-tee.txt",
+      "command": "echo hi | tee /temp/test/perf/corpus-tee.txt",
       "exit": 0
     },
     {
       "name": "test",
-      "command": "test -f /home/test.txt",
+      "command": "test -f /temp/test/test.txt",
       "exit": 0
+    },
+    {
+      "name": "tic",
+      "command": "tic < /temp/test/cz.txt",
+      "exit": 1
     },
     {
       "name": "time",
@@ -413,8 +688,18 @@
       "exit": 0
     },
     {
+      "name": "toe",
+      "command": "toe",
+      "exit": 0
+    },
+    {
       "name": "touch",
-      "command": "touch /home/perf/corpus-touch.txt",
+      "command": "touch /temp/test/perf/corpus-touch.txt",
+      "exit": 0
+    },
+    {
+      "name": "tput",
+      "command": "tput cols",
       "exit": 0
     },
     {
@@ -424,7 +709,7 @@
     },
     {
       "name": "tree",
-      "command": "tree -L 1 /home/perf",
+      "command": "tree -L 1 /temp/test/perf",
       "exit": 0
     },
     {
@@ -433,13 +718,23 @@
       "exit": 0
     },
     {
+      "name": "tset",
+      "command": "tset zeros",
+      "exit": 0
+    },
+    {
       "name": "tsort",
-      "command": "tsort /home/ts.txt",
+      "command": "tsort /temp/test/ts.txt",
       "exit": 0
     },
     {
       "name": "tty",
       "command": "tty",
+      "exit": 0
+    },
+    {
+      "name": "umask",
+      "command": "umask",
       "exit": 0
     },
     {
@@ -449,42 +744,72 @@
     },
     {
       "name": "uncompress",
-      "command": "uncompress /home/uz.Z",
+      "command": "uncompress /temp/test/uz.Z",
       "exit": 0
     },
     {
       "name": "unexpand",
-      "command": "unexpand /home/test.txt",
+      "command": "unexpand /temp/test/test.txt",
       "exit": 0
     },
     {
+      "name": "unget",
+      "command": "unget /temp/test/perf/s.cc",
+      "exit": 1
+    },
+    {
       "name": "uniq",
-      "command": "uniq /home/perf/a.txt",
+      "command": "uniq /temp/test/perf/a.txt",
       "exit": 0
     },
     {
       "name": "unlink",
-      "command": "unlink /home/gone.txt",
+      "command": "unlink /temp/test/gone.txt",
+      "exit": 0
+    },
+    {
+      "name": "uucp",
+      "command": "uucp /temp/test/cz.txt /temp/test/perf/ud2.txt",
       "exit": 0
     },
     {
       "name": "uudecode",
-      "command": "uudecode /home/sample.uu",
+      "command": "uudecode /temp/test/sample.uu",
       "exit": 0
     },
     {
       "name": "uuencode",
-      "command": "uuencode /home/test.txt /home/test.out",
+      "command": "uuencode /temp/test/test.txt /temp/test/test.out",
       "exit": 0
     },
     {
+      "name": "uustat",
+      "command": "uustat",
+      "exit": 0
+    },
+    {
+      "name": "uux",
+      "command": "uux true",
+      "exit": 0
+    },
+    {
+      "name": "val",
+      "command": "val /temp/test/perf/s.cc",
+      "exit": 0
+    },
+    {
+      "name": "vi",
+      "command": "vi /temp/test/test.txt < /temp/test/perf/excmds",
+      "exit": 1
+    },
+    {
       "name": "wc",
-      "command": "wc /home/test.txt",
+      "command": "wc /temp/test/test.txt",
       "exit": 0
     },
     {
       "name": "what",
-      "command": "what /home/what.txt",
+      "command": "what /temp/test/what.txt",
       "exit": 0
     },
     {
@@ -509,8 +834,13 @@
     },
     {
       "name": "xargs",
-      "command": "xargs echo < /home/test.txt",
+      "command": "xargs echo < /temp/test/test.txt",
       "exit": 0
+    },
+    {
+      "name": "yacc",
+      "command": "yacc /temp/test/test.txt",
+      "exit": 1
     },
     {
       "name": "yes",
@@ -519,7 +849,7 @@
     },
     {
       "name": "zcat",
-      "command": "zcat /home/zz.Z",
+      "command": "zcat /temp/test/zz.Z",
       "exit": 0
     }
   ]

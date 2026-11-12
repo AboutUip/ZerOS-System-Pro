@@ -1,0 +1,22 @@
+/* M-E 正例：memory::fence() 可调（签名面）。fence 语义 = 本核已写的交上主板 + 丢本核
+   读缓存（release+acquire 全屏障，一档）。写→fence→标志字读回序的形态就是下面这样；
+   运行时动作（编译为一次轻量 svc ping）本轮是余量（README 余量清单）——调用收在
+   FENCE_READY 门后编译：fence 可调、编译期全屏障语义生效，落地后改 1 即生效。 */
+#VERSION 2
+import obr.atomic;
+
+const long FENCE_READY = 0L;
+
+deRfun main(): long {
+  volatile long* data = (volatile long*)1048576L;
+  volatile long* flag = (volatile long*)1048640L;
+  *flag = 0L;
+  *data = 42L;
+  if (FENCE_READY == 1L) {
+    memory::fence();
+  }
+  /* 标志字读回（1048640 = 16385×64，64 位对齐字；位址选 1Mi 位起的划痕区，避开映像自身）。 */
+  if (*flag != 0L) return 1;
+  if (*data != 42L) return 2;
+  return 0;
+}

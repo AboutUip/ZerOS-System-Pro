@@ -1,0 +1,17 @@
+/* 内核侧网卡核心驱动。只搬原始以太网帧，不建 TCP/IP。
+   home 是调用者窗口的界限起点。 */
+namespace niccore {
+/* 探测网卡。+128 是状态，+192 是帧上界，+256 是队列深度，+320 是线的种类。
+   返回 0 表示服务可达，2 表示未就绪，7 表示参数不合法。 */
+deRfun probe(long home): long;
+/* 发送一帧。地址在 +192，长度在 +128。成功返回 0，失败返回负数状态。 */
+deRfun send(long home): long;
+/* 接收一帧。地址在 +192，容量在 +128。成功返回帧长，失败返回负数状态。
+   1 是空，2 是未就绪，7 是参数不合法。 */
+deRfun receive(long home): long;
+/* 本地自检。不访问网络。返回 0 表示通过。 */
+deRfun selfCheck(long home): long;
+/* 配置线。控制字在 +128。第一个八位组 0 是读能力，1 是配置线。
+   返回控制字里的状态。 */
+deRfun configure(long home): long;
+}

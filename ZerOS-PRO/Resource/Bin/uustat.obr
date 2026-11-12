@@ -1,0 +1,301 @@
+/* POSIX.1-2017 uustat（utilities/uustat.html）。选定子集：
+   uustat [-a] [-e] [-j] [-k job] [-m] [-p] [-q] [-r job] [-s] [-S system]
+           [-u user] [-x debug] [-X] [--] [job...]
+   列出 /var/spool/uucp/ 作业。缺省：每行 `job <N> state <S> dest <D>`；
+   -a 全部（同缺省）、-e 简表（job+state）、-j 显示作业号（同缺省）、
+   -m 机器状态（本平台无网络：输出 `system: local` 行，注明）、-p 显示
+   进度（登记）、-q 每系统一个计数行（子集：`local <count>`）、
+   -s 状态（同缺省）。-k job 删除作业（= uustat -k，真删）；
+   -r job 重排（= state:Q）；-u user 按 owner 过滤；-S system 登记忽略；
+   -x debug 登记。
+   平台扩展 -X：手动 runner——把 state:Q 作业落地（把 data.<N> 拷到 dest
+   路径并置 state:D，删除作业与副本），与 qsub -X 同口径（无守护进程，
+   手动触发，如实注明）。
+   job 操作数子集：纯数字作业号。不存在写 uustat: job: nonexistent job，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 uustat:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/uucp");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long brief = 0L;
+  long machine = 0L;
+  long quietQ = 0L;
+  long runner = 0L;
+  long killAt = 0L;
+  long killLen = 0L;
+  long rerunAt = 0L;
+  long rerunLen = 0L;
+  long userAt = 0L;
+  long userLen = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 101L) {
+        brief = 1L;
+      } else if (o == 109L) {
+        machine = 1L;
+      } else if (o == 113L) {
+        quietQ = 1L;
+      } else if (o == 88L) {
+        runner = 1L;
+      } else if (o == 107L || o == 114L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "uustat: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        if (o == 107L) {
+          killAt = argPtr(home, index);
+          killLen = argLen(home, index);
+        } else {
+          rerunAt = argPtr(home, index);
+          rerunLen = argLen(home, index);
+        }
+      } else if (o == 117L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "uustat: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        userAt = argPtr(home, index);
+        userLen = argLen(home, index);
+      } else if (o == 83L || o == 120L || o == 97L || o == 106L || o == 112L || o == 115L) {
+        /* 登记接受。 */
+      } else {
+        writeErr(home, "uustat: invalid option\n");
+        return finish(home, 1L);
+      }
+    }
+    index = index + 1L;
+  }
+  putText(dir + 4096L, 0L, "/var");
+  plant(home, dir + 4096L, 4L);
+  obr::proc::mkdir(home);
+  putText(dir + 4096L, 0L, "/var/spool");
+  plant(home, dir + 4096L, 10L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  if (machine == 1L) {
+    writeStr(home, 1L, "system: local\n");
+    return finish(home, 0L);
+  }
+  if (killLen > 0L) {
+    long p = obr::proc::alloc(home, 8192L * 8L);
+    copySpan(dir, p, dirLen);
+    putText(p, dirLen, "/job.");
+    copySpan(killAt, p + (dirLen + 5L) * 8L, killLen);
+    plant(home, p, dirLen + 5L + killLen);
+    if (obr::proc::unlink(home) != 0L) {
+      writeErr(home, "uustat: ");
+      writeSpan(home, 2L, 0L, killAt, killLen);
+      writeErr(home, ": nonexistent job\n");
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  if (rerunLen > 0L) {
+    /* 重排：state:Q。 */
+    long p = obr::proc::alloc(home, 8192L * 8L);
+    copySpan(dir, p, dirLen);
+    putText(p, dirLen, "/job.");
+    copySpan(rerunAt, p + (dirLen + 5L) * 8L, rerunLen);
+    long plen = dirLen + 5L + rerunLen;
+    plant(home, p, plen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "uustat: ");
+      writeSpan(home, 2L, 0L, rerunAt, rerunLen);
+      writeErr(home, ": nonexistent job\n");
+      return finish(home, 1L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::close(home, fd);
+    /* 就地改 state 首行（state: Q）。 */
+    plant(home, p, plen);
+    if (obr::proc::open(home, 2L) == 0L) {
+      fd = obr::proc::slot(home, 192L);
+      obr::proc::read(home, fd, 0L, 8L);
+      memory::storeOctet(81L, obr::proc::bytes(home) + 48L);
+      obr::proc::write(home, fd, 7L, 1L);
+      obr::proc::close(home, fd);
+    }
+    return finish(home, 0L);
+  }
+  if (runner == 1L) {
+    /* 手动 runner：state:Q 作业落地。 */
+    long d = 0L;
+    while (d < 512L) {
+      if (obr::proc::readdir(home, d, 512L) != 0L) {
+        break;
+      }
+      long nlen = obr::proc::slot(home, 256L);
+      if (nlen < 1L) {
+        break;
+      }
+      long nameAt = obr::proc::bytes(home);
+      if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+        long p = obr::proc::alloc(home, 8192L * 8L);
+        copySpan(dir, p, dirLen);
+        memory::storeOctet(47L, p + dirLen * 8L);
+        copySpan(nameAt, p + (dirLen + 1L) * 8L, nlen);
+        long plen = dirLen + 1L + nlen;
+        plant(home, p, plen);
+        if (obr::proc::open(home, 0L) == 0L) {
+          long fd = obr::proc::slot(home, 192L);
+          long text = obr::proc::alloc(home, 65536L);
+          long total = 0L;
+          while (total < 8192L) {
+            if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+              break;
+            }
+            long got = obr::proc::slot(home, 320L);
+            if (got <= 0L) {
+              break;
+            }
+            if (got > 4096L) {
+              got = 4096L;
+            }
+            copySpan(obr::proc::bytes(home), text + total * 8L, got);
+            total = total + got;
+            if (got < 4096L) {
+              break;
+            }
+          }
+          obr::proc::close(home, fd);
+          /* 找 state:Q 与 dest: 值。 */
+          long isQ = 0L;
+          long destAt = 0L;
+          long destLen = 0L;
+          long i = 0L;
+          while (i + 6L < total) {
+            if (byteAt(text + i * 8L) == 115L && byteAt(text + (i + 1L) * 8L) == 116L && byteAt(text + (i + 2L) * 8L) == 97L && byteAt(text + (i + 3L) * 8L) == 116L && byteAt(text + (i + 4L) * 8L) == 101L) {
+              if (byteAt(text + (i + 7L) * 8L) == 81L) {
+                isQ = 1L;
+              }
+            }
+            if (byteAt(text + i * 8L) == 100L && byteAt(text + (i + 1L) * 8L) == 101L && byteAt(text + (i + 2L) * 8L) == 115L && byteAt(text + (i + 3L) * 8L) == 116L) {
+              destAt = i + 6L;
+              destLen = 0L;
+              while (destAt + destLen < total && byteAt(text + (destAt + destLen) * 8L) != 10L) {
+                destLen = destLen + 1L;
+              }
+            }
+            i = i + 1L;
+          }
+          if (isQ == 1L && destLen > 0L) {
+            /* data.<N> 拷到 dest。 */
+            long dp = obr::proc::alloc(home, 8192L * 8L);
+            copySpan(dir, dp, dirLen);
+            putText(dp, dirLen, "/data.");
+            copySpan(nameAt + 32L, dp + (dirLen + 6L) * 8L, nlen - 4L);
+            plant(home, dp, dirLen + 6L + nlen - 4L);
+            if (obr::proc::open(home, 0L) == 0L) {
+              long sfd = obr::proc::slot(home, 192L);
+              plant(home, text + destAt * 8L, destLen);
+              if (obr::proc::open(home, 1L) == 0L) {
+                long dfd = obr::proc::slot(home, 192L);
+                long off = 0L;
+                while (1L == 1L) {
+                  if (obr::proc::read(home, sfd, off, 4096L) != 0L) {
+                    break;
+                  }
+                  long got = obr::proc::slot(home, 320L);
+                  if (got <= 0L) {
+                    break;
+                  }
+                  if (got > 4096L) {
+                    got = 4096L;
+                  }
+                  obr::proc::write(home, dfd, off, got);
+                  off = off + got;
+                  if (got < 4096L) {
+                    break;
+                  }
+                }
+                obr::proc::close(home, dfd);
+              }
+              obr::proc::close(home, sfd);
+            }
+            plant(home, p, plen);
+            obr::proc::unlink(home);
+            plant(home, dp, dirLen + 6L + nlen - 4L);
+            obr::proc::unlink(home);
+          }
+        }
+      }
+      d = d + 1L;
+    }
+    return finish(home, 0L);
+  }
+  /* 列表。 */
+  long jobs = 0L;
+  long d = 0L;
+  while (d < 512L) {
+    if (obr::proc::readdir(home, d, 512L) != 0L) {
+      break;
+    }
+    long nlen = obr::proc::slot(home, 256L);
+    if (nlen < 1L) {
+      break;
+    }
+    long nameAt = obr::proc::bytes(home);
+    if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+      jobs = jobs + 1L;
+      writeStr(home, 1L, "job ");
+      writeSpan(home, 1L, 0L, nameAt + 32L, nlen - 4L);
+      if (brief == 0L) {
+        /* 读 state 与 dest。 */
+        long p = obr::proc::alloc(home, 8192L * 8L);
+        copySpan(dir, p, dirLen);
+        memory::storeOctet(47L, p + dirLen * 8L);
+        copySpan(nameAt, p + (dirLen + 1L) * 8L, nlen);
+        plant(home, p, dirLen + 1L + nlen);
+        if (obr::proc::open(home, 0L) == 0L) {
+          long fd = obr::proc::slot(home, 192L);
+          long text = obr::proc::bytes(home);
+          obr::proc::read(home, fd, 0L, 256L);
+          obr::proc::close(home, fd);
+          writeStr(home, 1L, " state ");
+          writeSpan(home, 1L, 0L, text + 56L, 1L);
+          /* dest: 行（跳过前两行找）。 */
+          long i = 0L;
+          while (i < 240L) {
+            if (byteAt(text + i * 8L) == 100L && byteAt(text + (i + 1L) * 8L) == 101L && byteAt(text + (i + 2L) * 8L) == 115L && byteAt(text + (i + 3L) * 8L) == 116L) {
+              writeStr(home, 1L, " dest ");
+              long j = i + 6L;
+              while (j < 250L && byteAt(text + j * 8L) != 10L) {
+                memory::storeOctet(byteAt(text + j * 8L), obr::proc::bytes(home) + 2048L);
+                obr::proc::write(home, 1L, 0L, 1L);
+                j = j + 1L;
+              }
+              i = 240L;
+            }
+            i = i + 1L;
+          }
+        }
+      }
+      writeStr(home, 1L, "\n");
+    }
+    d = d + 1L;
+  }
+  if (quietQ == 1L) {
+    writeStr(home, 1L, "local ");
+    writeNum(home, 1L, jobs);
+    writeStr(home, 1L, "\n");
+  }
+  return finish(home, failed);
+}

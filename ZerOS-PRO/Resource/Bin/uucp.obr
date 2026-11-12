@@ -1,0 +1,205 @@
+/* POSIX.1-2017 uucp（utilities/uucp.html）。选定子集：
+   uucp [-c] [-C] [-d] [-f] [-g grade] [-j] [-m] [-n notify] [-r] [-s file]
+        [-S file] [-u] [-x debug] [--] source... destination
+   把文件排入 /var/spool/uucp/ 脱机队列（本平台无 uucico 守护与网络：
+   队列=目录里的作业记录 + 内容副本，由 uustat -X 手动 runner 落地）。
+   作业记录 /var/spool/uucp/job.<N>（键值头+空行+内容）：
+   state:Q|D、source、dest、grade、notify、spoolfile。
+   选项：-c 不拷贝（登记）、-C 拷贝（缺省行为）、-d 建目录（登记）、
+   -f 不用已有拷贝（登记）、-g grade 等级登记、-j 报 job id（缺省亦报）、
+   -m 完成通知登记、-n notify 用户登记、-r 不报状态（登记）、-s/-S 状态文件
+   登记、-u/-x 登记。
+   source 与 destination 形态 system!path（本平台 system 忽略，只按路径拷贝；
+   如实注明）。缺 destination 写 uucp: missing operand，退出 1。
+   打不开 source 写 uucp: 文件: cannot access，退出 1。
+   成功打印 job <N>。诊断英文 ASCII，描述符 2，前缀 uucp:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/uucp");
+  long buf = obr::proc::alloc(home, 524288L);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long grade = 78L;
+  long notify = obr::proc::alloc(home, 4096L * 8L);
+  long notifyLen = 0L;
+  long srcs = obr::proc::alloc(home, 65536L);
+  long nsrc = 0L;
+  long destAt = 0L;
+  long destLen = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 103L || o == 110L || o == 115L || o == 83L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "uucp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        if (o == 110L) {
+          notifyLen = argLen(home, index);
+          copySpan(argPtr(home, index), notify, notifyLen);
+        } else if (o == 103L) {
+          grade = byteAt(argPtr(home, index));
+        }
+        /* -s/-S 状态文件登记忽略（无守护，注明）。 */
+      } else if (o == 99L || o == 67L || o == 100L || o == 102L || o == 106L || o == 109L || o == 114L || o == 117L || o == 120L) {
+        /* 登记接受。 */
+      } else {
+        writeErr(home, "uucp: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      if (destAt == 0L && nsrc == 0L) {
+        /* 先收集 source，最后一个非选项是 destination——简化：倒数第一为 dest。 */
+        memory::store64(at, srcs + nsrc * 128L);
+        memory::store64(len, srcs + nsrc * 128L + 64L);
+        nsrc = nsrc + 1L;
+      } else {
+        memory::store64(at, srcs + nsrc * 128L);
+        memory::store64(len, srcs + nsrc * 128L + 64L);
+        nsrc = nsrc + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (nsrc < 2L) {
+    writeErr(home, "uucp: missing operand\n");
+    return finish(home, 1L);
+  }
+  destAt = memory::load64(srcs + (nsrc - 1L) * 128L);
+  destLen = memory::load64(srcs + (nsrc - 1L) * 128L + 64L);
+  nsrc = nsrc - 1L;
+  /* 建队列目录。 */
+  long p = obr::proc::alloc(home, 8192L * 8L);
+  putText(p, 0L, "/var");
+  plant(home, p, 4L);
+  obr::proc::mkdir(home);
+  putText(p, 0L, "/var/spool");
+  plant(home, p, 10L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  /* 作业号。 */
+  copySpan(dir, p, dirLen);
+  putText(p, dirLen, "/.next");
+  long job = 1L;
+  plant(home, p, dirLen + 5L);
+  if (obr::proc::open(home, 0L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::read(home, fd, 0L, 8L);
+    long v = memory::load64(obr::proc::bytes(home));
+    if (v >= 1L && v < 1000000L) {
+      job = v;
+    }
+    obr::proc::close(home, fd);
+  }
+  plant(home, p, dirLen + 5L);
+  if (obr::proc::open(home, 1L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    memory::store64(job + 1L, obr::proc::bytes(home));
+    obr::proc::write(home, fd, 0L, 8L);
+    obr::proc::close(home, fd);
+  }
+  /* 每个 source 一个作业记录 + 内容副本。 */
+  long s = 0L;
+  while (s < nsrc) {
+    long at = memory::load64(srcs + s * 128L);
+    long len = memory::load64(srcs + s * 128L + 64L);
+    plant(home, at, len);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "uucp: ");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, ": cannot access\n");
+      failed = 1L;
+      s = s + 1L;
+      continue;
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long total = 0L;
+    while (total < 65536L) {
+      if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), buf + total * 8L, got);
+      total = total + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+    /* 内容副本 <dir>/data.<N> */
+    copySpan(dir, p, dirLen);
+    putText(p, dirLen, "/data.");
+    long plen = putNum(p, dirLen + 6L, job);
+    plant(home, p, plen);
+    if (obr::proc::open(home, 1L) == 0L) {
+      fd = obr::proc::slot(home, 192L);
+      writeSpan(home, fd, 0L, buf, total);
+      obr::proc::close(home, fd);
+    }
+    /* 作业记录 <dir>/job.<N> */
+    copySpan(dir, p, dirLen);
+    putText(p, dirLen, "/job.");
+    plen = putNum(p, dirLen + 5L, job);
+    plant(home, p, plen);
+    if (obr::proc::open(home, 1L) != 0L) {
+      writeErr(home, "uucp: cannot queue job\n");
+      failed = 1L;
+      s = s + 1L;
+      continue;
+    }
+    fd = obr::proc::slot(home, 192L);
+    long o = obr::proc::bytes(home);
+    long n = 0L;
+    n = putText(o, n, "state: Q\nsource: ");
+    copySpan(at, o + n * 8L, len);
+    n = n + len;
+    n = putText(o, n, "\ndest: ");
+    copySpan(destAt, o + n * 8L, destLen);
+    n = n + destLen;
+    memory::storeOctet(10L, o + n * 8L);
+    n = n + 1L;
+    n = putText(o, n, "grade: ");
+    memory::storeOctet(grade, o + n * 8L);
+    n = n + 1L;
+    memory::storeOctet(10L, o + n * 8L);
+    n = n + 1L;
+    if (notifyLen > 0L) {
+      n = putText(o, n, "notify: ");
+      copySpan(notify, o + n * 8L, notifyLen);
+      n = n + notifyLen;
+      memory::storeOctet(10L, o + n * 8L);
+      n = n + 1L;
+    }
+    memory::storeOctet(10L, o + n * 8L);
+    n = n + 1L;
+    obr::proc::write(home, fd, 0L, n);
+    obr::proc::close(home, fd);
+    writeStr(home, 1L, "job ");
+    writeNum(home, 1L, job);
+    writeStr(home, 1L, "\n");
+    job = job + 1L;
+    s = s + 1L;
+  }
+  return finish(home, failed);
+}

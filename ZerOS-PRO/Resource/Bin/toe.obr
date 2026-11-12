@@ -1,0 +1,94 @@
+/* POSIX XCU 索引（Issue 7）外的传统 toe（任务批 3 要求实现，注明非 XCU 表内）。
+   形式：toe [-a] [-v] [--] [file...]
+   列出 terminfo 库里的条目：/usr/share/terminfo 下每文件一名，加内建 zeros。
+   选项 -a（列全部）与 -v（长格式）按 tabs 口径接受：输出恒为
+   `名字 制表 长名` 每行一条（长名取名字行末段，缺省用名字本身）。
+   file... 传统上是库目录列表：本实现接受并把它们当附加库目录扫描。
+   打不开的目录跳过；目录都扫不到时只列内建 zeros，退出 0。
+   诊断英文 ASCII，描述符 2，前缀 toe:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import terminfo;
+
+deRfun listDir(long home, long buf, long out, long dirAt, long dirLen): long {
+  plant(home, dirAt, dirLen);
+  long index = 0L;
+  long found = 0L;
+  while (1L == 1L) {
+    if (obr::proc::readdir(home, index, 512L) != 0L) {
+      break;
+    }
+    long nlen = obr::proc::slot(home, 256L);
+    if (nlen < 1L) {
+      break;
+    }
+    long nameAt = obr::proc::bytes(home);
+    /* 跳过 . 与 .. 。 */
+    if (!(nlen == 1L && byteAt(nameAt) == 46L) && !(nlen == 2L && byteAt(nameAt) == 46L && byteAt(nameAt + 8L) == 46L)) {
+      long size = entry(home, buf, 8192L, nameAt, nlen);
+      writeSpan(home, 1L, 0L, nameAt, nlen);
+      writeStr(home, 1L, "\t");
+      if (size > 0L) {
+        long at = 0L;
+        long len = 0L;
+        if (longName(buf, size, &at, &len) == 1L) {
+          writeSpan(home, 1L, 0L, buf + at * 8L, len);
+        }
+      }
+      writeStr(home, 1L, "\n");
+      found = found + 1L;
+    }
+    index = index + 1L;
+    if (index > 512L) {
+      break;
+    }
+  }
+  return found;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long buf = obr::proc::alloc(home, 65536L);
+  long out = obr::proc::alloc(home, 65536L);
+  if (buf == 0L || out == 0L) {
+    writeErr(home, "toe: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long dirs = 0L;
+  long total = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 97L || o == 118L) {
+        /* -a -v：接受，输出形式恒定。 */
+      } else {
+        writeErr(home, "toe: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      total = total + listDir(home, buf, out, at, len);
+      dirs = dirs + 1L;
+    }
+    index = index + 1L;
+  }
+  if (dirs == 0L) {
+    long def = obr::proc::alloc(home, 4096L);
+    long defLen = putText(def, 0L, "/usr/share/terminfo");
+    total = total + listDir(home, buf, out, def, defLen);
+  }
+  /* 内建 zeros 放最前做不到（已输出）；恒在库缺省时输出。 */
+  if (total == 0L) {
+    writeStr(home, 1L, "zeros\tZerOS console grid\n");
+  }
+  return finish(home, 0L);
+}

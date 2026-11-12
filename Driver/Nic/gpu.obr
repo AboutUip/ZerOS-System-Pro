@@ -1,0 +1,104 @@
+/* 真实 GPU/显示驱动：每来一个真实显示帧（服务 37）计数一次，
+   服务 70 发布 frames/base，服务 57 在 SIGTERM 时导出 8 字节。
+   所有状态读写都用服务 65 返回的权威 home；home 为 0 时跳过写入，
+   避免 capture/restore 后本地 home 变 0 造成 131072 越界。
+   帧号直接取显示拍号，并挡掉单次异常的巨大读数，避免基线被拉飞。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun sane(long value): long {
+  if (value < 0L) {
+    return 0L;
+  }
+  if (value > 1000000000L) {
+    return 0L;
+  }
+  return value;
+}
+
+deRfun homeNow(): long {
+  return obr::os::svc(65L);
+}
+
+deRfun publish(long frames, long base): void {
+  long at = homeNow();
+  if (at == 0L) {
+    return;
+  }
+  memory::store64(frames, at + 131072L);
+  memory::store64(base, at + 131136L);
+  obr::os::svc(70L);
+}
+
+deRfun readFrame(): long {
+  long a = obr::os::svc(37L);
+  long b = obr::os::svc(37L);
+  if (a < 0L || b < 0L) {
+    return 0L;
+  }
+  if (a > b) {
+    long swap = a;
+    a = b;
+    b = swap;
+  }
+  /* 两次读数相差太大，说明其中一次是坏值。取较小的一次。 */
+  if (b - a > 1000L) {
+    return a;
+  }
+  return b;
+}
+
+deRfun main(): int {
+  long home = homeNow();
+  if (home != 0L) {
+    memory::store64(2L, home + 64L);
+  }
+  long handed = obr::os::svc(57L);
+  home = homeNow();
+  long base = 0L;
+  if (handed == 8L && home != 0L) {
+    base = memory::load64(home + 131072L);
+  }
+  long frame = readFrame();
+  /* 交接值必须落在当前拍号附近；离得太远就是坏值。 */
+  if (base < 0L || base > frame + 1000000L) {
+    base = 0L;
+  }
+  if (frame > base) {
+    base = frame;
+  }
+  if (base < 1L) {
+    base = 1L;
+  }
+  publish(base, base);
+  long published = base;
+  while (1L) {
+    frame = readFrame();
+    /* 只接受向前且幅度合理的拍号；一次坏读数不能把发布值顶到天上。 */
+    if (frame > published && frame - published < 100000L) {
+      if (frame - published >= 32L) {
+        publish(frame, base);
+        published = frame;
+      }
+    }
+    long sig = obr::os::svc(19L);
+    if (sig == 15L) {
+      home = homeNow();
+      if (home != 0L) {
+        memory::store64(published, home + 131072L);
+        memory::store64(8L, home + 128L);
+        memory::store64(1L, home + 64L);
+        obr::os::svc(57L);
+        home = homeNow();
+        if (home != 0L) {
+          memory::store64(0L, home + 128L);
+        }
+      }
+      obr::os::svc(28L);
+      return 0;
+    }
+    obr::os::dwell(100L);
+  }
+  return 0;
+}

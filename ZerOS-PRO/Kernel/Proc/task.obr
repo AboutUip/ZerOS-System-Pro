@@ -1,9 +1,10 @@
 /* 任务表。凭证、名次、槽和任务的生灭。表放在监督核窗口里。
    不管客核堆池，不管信号、退出和等待。 */
-#LINK /start.obr, /sched.obr, /vfs.obr, /exec.obr, /mm.obr, /pipe.obr, /dev.obr, /console.obr, /comm.obr, /pool.obr, /sig.obr, /boot.obr, /spawn.obr, /frame.obr
+#LINK /start.obr, /sched.obr, /vfs.obr, /exec.obr, /mm.obr, /pipe.obr, /dev.obr, /console.obr, /comm.obr, /pool.obr, /sig.obr, /boot.obr, /spawn.obr, /frame.obr, /flat.obr, /window.obr, /drv.obr
 import proc;
 import fs;
 import memory;
+import window;
 
 deRfun kFloor(): long {
   return 1024L * 1024L;
@@ -262,6 +263,23 @@ deRfun taskAt(long index): Task* {
   return (Task*)(tableBase() + index * taskStride());
 }
 
+/* 这颗核当前占着核的任务：运行槽里那份，核号必须对上。
+   共享核上 taskFind 会先看见别的睡任务；系统调用/退出必须用这一份。 */
+deRfun taskCurrent(long core): long {
+  if (core < 0L || core > 7L) {
+    return -1L;
+  }
+  long index = memory::load64(taskRunSlot(core)) - 1L;
+  if (index < 0L || index >= taskLimit()) {
+    return -1L;
+  }
+  Task* task = taskAt(index);
+  if (task.pid == 0L || task.core != core || task.state == TaskState::Empty) {
+    return -1L;
+  }
+  return index;
+}
+
 /* 正在跑的优先，其次是堵在系统调用里的，再其次是还没收掉的僵尸。就绪的只在没有这三类时才返回。 */
 deRfun taskFind(long core): long {
   /* 正在跑的优先。这一格在改状态时已经记下。对不上再看正在睡的那一格。 */
@@ -464,6 +482,19 @@ deRfun schedWork(): long {
 
 /* 有档就只在最高档里挑。没有分档的旧任务仍走原来的绕圈。 */
 deRfun taskPrefer(long core, long except): long {
+  /* 同核派生的父任务带着 -2 等 spawn 的回复：它卡在调用里，必须先换回来交回复（M2-(d)）。
+     同档轮转让空转驱动先上的话，驱动会在宿主侧空转停车（pauseIdleSpin），
+     核在内核眼里还在取指，扫表永远换不走它，父任务在槽里饿死、整机停摆。 */
+  long scan = 0L;
+  long end = taskScanEnd();
+  while (scan < end) {
+    Task* task = taskAt(scan);
+    if (scan != except && task.pid != 0L && task.core == core
+      && task.state == TaskState::Ready && task.code == -2L && task.held > 0L) {
+      return scan;
+    }
+    scan = scan + 1L;
+  }
   long best = taskBestRank(core, except);
   if (best < 1L) {
     return taskReady(core, except);
@@ -515,7 +546,11 @@ deRfun taskRelease(long index): void {
   }
   Task* task = taskAt(index);
   if (task.core >= 3L && task.mm.heap != 0L && task.mm.length > 0L) {
-    poolGive(task.core, task.mm.heap, task.mm.length);
+    if (windowTagged(task.cap) != 0L) {
+      windowFree(task.mm.origin);
+    } else {
+      poolGive(task.core, task.mm.heap, task.mm.length);
+    }
     task.mm.heap = 0L;
     task.mm.length = 0L;
   }
@@ -651,9 +686,55 @@ deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state):
   return pid;
 }
 
+/* 窗口任务：不调用 heapOf，不从核心堆池领 heap；mm 直接指向任务窗口。 */
+deRfun taskSpawnWindow(long core, long pid, long uid, long gid, long cap, long state, long origin, long length, long heap): long {
+  if (core < 3L || core > 7L || pid < 1L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < taskLimit() && taskAt(index).pid != 0L) {
+    index = index + 1L;
+  }
+  if (index >= taskLimit()) {
+    return 0L;
+  }
+  Task* task = taskAt(index);
+  task.pid = pid;
+  task.ppid = 1L;
+  taskArrive(index, state);
+  task.core = core;
+  if (state == TaskState::Running) {
+    memory::store64(index + 1L, taskRunSlot(core));
+  }
+  if (state == TaskState::Sleeping) {
+    memory::store64(index + 1L, taskCache(core));
+  }
+  task.cred.uid = uid;
+  task.cred.gid = gid;
+  task.cred.euid = uid;
+  task.cred.egid = gid;
+  task.mm.origin = origin;
+  task.mm.length = length;
+  task.mm.heap = heap;
+  task.mm.brk = heap;
+  task.mm.freeHead = 0L;
+  task.cap = cap;
+  task.cwd = 0L;
+  task.sig = 0L;
+  task.code = 0L;
+  task.waitFor = 0L;
+  task.held = 0L;
+  rankSet(index, 1L);
+  taskNote(index);
+  return pid;
+}
+
 /* 没有任务就拒绝。装入和卸下要管理权的最低位。只有 euid 0、没有这一位，不能装入。 */
 deRfun taskAllows(long core, long service): long {
-  long index = taskFind(core);
+  long index = taskCurrent(core);
+  if (index < 0L) {
+    index = taskFind(core);
+  }
   if (index < 0L) {
     return 0L;
   }

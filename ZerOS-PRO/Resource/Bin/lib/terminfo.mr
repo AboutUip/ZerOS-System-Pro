@@ -1,0 +1,21 @@
+/* terminfo 族命令共享模块 terminfo 的接口。实现见 terminfo.obr。
+   条目是文本编译格式（详见实现头注释），库在 /usr/share/terminfo/<名字>，
+   内建 zeros（console）条目 cols#80 lines#24。
+   缓冲与名字都按隔 8 位八位组跨度传入；调用方自备缓冲（建议 8192 八位组以上）。 */
+/* 装入 [termAt,termLen] 的条目到 buf，返回八位组数；找不到 -1。 */
+deRfun entry(long home, long buf, long cap, long termAt, long termLen): long;
+/* 在条目内容里找能力。1 找到：*kind 0 开关/1 数值/2 字符串，数值在 *num，
+   字符串值（转义文本）偏移与长度在 *textAt、*textLen。0 没有。 */
+deRfun find(long buf, long count, long capAt, long capLen, long* kind, long* num, long* textAt, long* textLen): long;
+/* 名字行第一段（主名字）。成功 1 并写 *at、*len。 */
+deRfun firstName(long buf, long count, long* at, long* len): long;
+/* 名字行最后一段（长名）。成功 1 并写 *at、*len。 */
+deRfun longName(long buf, long count, long* at, long* len): long;
+/* 转义文本 [at,len] 解码成隔 8 位八位组写到 out。返回八位组数；语法错 -1。 */
+deRfun decodeValue(long buf, long at, long len, long out): long;
+/* 源形式转规范形式。返回八位组数；语法错 -1。 */
+deRfun compile(long src, long srcLen, long out, long cap): long;
+/* 规范形式转源形式（缩进加尾逗号）。返回八位组数；放不下 -1。 */
+deRfun sourceForm(long buf, long count, long out, long cap): long;
+/* TERM 环境值写进 buf，返回长度；没有 TERM 时是 zeros。 */
+deRfun defaultTerm(long home, long buf): long;

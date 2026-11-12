@@ -1,0 +1,133 @@
+/* getopts銆乼rap銆俫etopts 鐨勮В鏋愭牳蹇冨湪 bcore锛屾父鏍囧拰 OPTIND 瀛樺湪 bstate 鐘舵€佸潡閲岋紝璺ㄦ璋冪敤鎺ョ潃涓婂洖銆?   trap 鍙鍔ㄤ綔琛細EXIT 鍔ㄤ綔鍦ㄥ３閫€鍑烘椂璺戯紝淇″彿鍔ㄤ綔鍦ㄤ富寰幆鏀朵俊鍙锋椂璺戙€?   times 鍦?run 鐨勫垎鍙戣〃閲屾槑纭姤涓嶆敮鎸侊紙鍐呮牳娌℃湁 CPU 璁拌处闈級銆?*/
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
+import memory;
+import bcore;
+import bstate;
+import env;
+import span;
+import parse;
+import draw;
+import bvar;
+import bopt;
+
+
+deRfun boGetopts(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long argc = cmdArgc(cmd);
+  if (argc < command + 3L) {
+    sayErr(home, "sh: getopts: usage: getopts optstring name [arg ...]\n");
+    return 2L;
+  }
+  long optStr = cmdArgAt(cmd, command + 1L);
+  long optLen = cmdArgLen(cmd, command + 1L);
+  long nameAt = cmdArgAt(cmd, command + 2L);
+  long nameLen = cmdArgLen(cmd, command + 2L);
+  long argvBase = bsPosBase(bs);
+  long count = bsPosCount(bs);
+  if (argc > command + 3L) {
+    count = argc - command - 3L;
+    if (count > 16L) {
+      sayErr(home, "sh: getopts: too many arguments\n");
+      return 2L;
+    }
+    long index = 0L;
+    while (index < count) {
+      bsOptArgvPut(bs, index, cmdArgAt(cmd, command + 3L + index), cmdArgLen(cmd, command + 3L + index));
+      index = index + 1L;
+    }
+    argvBase = bsOptArgvBase(bs);
+  }
+  long gotName = 0L;
+  long optArgLen = 0L;
+  long bad = 0L;
+  long code = bcGetopts(argvBase, count, optStr, optLen,
+                        (long*)(bs + 192L), (long*)(bs + 256L), (long*)(bs + 128L),
+                        bsNameAt(bs), &gotName,
+                        bsOptArgAt(bs), &optArgLen, &bad);
+  long silent = 0L;
+  if (optLen > 0L && bcU8(optStr) == 58L) {
+    silent = 1L;
+  }
+  if (code == 2L && silent == 0L) {
+    sayErr(home, "sh: getopts: illegal option -- ");
+    sayErrByte(home, bad);
+    sayErr(home, "\n");
+  }
+  if (code == 3L && silent == 0L) {
+    sayErr(home, "sh: getopts: option requires an argument -- ");
+    sayErrByte(home, bad);
+    sayErr(home, "\n");
+  }
+  if (bvAssign(bs, env, nameAt, nameLen, bsNameAt(bs), gotName) != 0L) {
+    sayErrMissing(home, "sh: getopts: ", nameAt, nameLen, ": readonly variable\n");
+    return 1L;
+  }
+  if (optArgLen >= 0L) {
+    bvAssign(bs, env, scratchAt(work), putText(scratchAt(work), 0L, "OPTARG"), bsOptArgAt(bs), optArgLen);
+  }
+  if (code == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+/* 涓€涓俊鍙锋搷浣滄暟鏀朵笅淇″彿鍙凤紝鍐欓敊灏辨姤閿欍€?*/
+deRfun boSig(long home, long addr, long count, long* number): long {
+  if (bcSigOperand(addr, count, number) == 0L) {
+    sayErrMissing(home, "sh: trap: ", addr, count, ": invalid signal\n");
+    return 1L;
+  }
+  if (*number == 9L) {
+    sayErr(home, "sh: trap: SIGKILL cannot be trapped\n");
+    return 1L;
+  }
+  return 0L;
+}
+
+
+deRfun boTrapList(long home, long bs, long work): long {
+  long sig = 0L;
+  while (sig <= 31L) {
+    if (bsTrapState(bs, sig) != 0L) {
+      long at = bcQuote(scratchAt(work), bsTrapActionAt(bs, sig), bsTrapActionLen(bs, sig));
+      say(home, work, "trap -- ");
+      saySpan(home, work, scratchAt(work), at);
+      say(home, work, " ");
+      long num = bcPutDec(scratchAt(work) + 2048L, sig);
+      saySpan(home, work, scratchAt(work) + 2048L, num);
+      say(home, work, "\n");
+    }
+    sig = sig + 1L;
+  }
+  return 0L;
+}
+
+
+deRfun boTrap(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  if (cmdArgc(cmd) <= command + 2L) {
+    return boTrapList(home, bs, work);
+  }
+  long action = cmdArgAt(cmd, command + 1L);
+  long actionLen = cmdArgLen(cmd, command + 1L);
+  long state2 = 2L;
+  if (actionLen == 1L && bcU8(action) == 45L) {
+    state2 = 0L;
+    actionLen = 0L;
+  } else if (actionLen == 0L) {
+    state2 = 1L;
+  }
+  long code = 0L;
+  long index = command + 2L;
+  while (index < cmdArgc(cmd)) {
+    long number = 0L;
+    if (boSig(home, cmdArgAt(cmd, index), cmdArgLen(cmd, index), &number) != 0L) {
+      code = 1L;
+    } else if (bsTrapSet(bs, number, state2, action, actionLen) != 0L) {
+      sayErr(home, "sh: trap: cannot set action\n");
+      code = 1L;
+    }
+    index = index + 1L;
+  }
+  return code;
+}

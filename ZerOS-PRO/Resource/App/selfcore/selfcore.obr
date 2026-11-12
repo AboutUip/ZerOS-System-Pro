@@ -1,0 +1,12 @@
+#DYN
+/* 诊断：退出码 = 本任务所在核号。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  memory::store64(obr::os::core(), home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

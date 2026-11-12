@@ -51,6 +51,7 @@ export namespace ZerOS {
       const traceSpanBegin = TracePageRoot.Hardware.Diagnostics.traceSpanBegin;
       const traceSpanEnd = TracePageRoot.Hardware.Diagnostics.traceSpanEnd;
       const traceSpanEvent = TracePageRoot.Hardware.Diagnostics.traceSpanEvent;
+      const traceInstant = TracePageRoot.Hardware.Diagnostics.traceInstant;
       const traceMem = TracePageRoot.Hardware.Diagnostics.traceMem;
       const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
       const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
@@ -393,6 +394,8 @@ export namespace ZerOS {
       /** 栈指针那个字。在栈数据前一个字，不占用窗口起点的调用参数。 */
       let KeptSp = 68173760n;
       let KeptSpEnd = 68173824n;
+      /* 最近一次已知的 kSp 字节；clear/plant 后用它保证 kept 里永远有 kSp。 */
+      let lastSpBytes: Uint8Array | null = null;
       /** 堆指针那个字。造字符串时每次都要读它。 */
       let KeptHeapPtr = 70795264n;
       let KeptHeapPtrEnd = 70795328n;
@@ -770,9 +773,14 @@ export namespace ZerOS {
           }
           return { kind: "store", register, base, width, value };
         }
+        /* 窗口任务的 kSp 单元（窗口起点 + 0x1000）必须由解释器吸收：
+           批量读只看主板内存，而入口 stub 的写入可能还在私有窗口里，
+           恢复点又可能正好落在入口函数的 load 上。 */
+        const flatCell = boundLength === 4194304n ? boundOrigin + 4096n : null;
+        const spLoad = flatCell !== null && address === flatCell && width === 8;
         for (let index = 0; index < width; index += 1) {
           const key = base + BigInt(index);
-          if (!keptOctets.has(key) && !hasRead(key)) {
+          if (!keptOctets.has(key) && !hasRead(key) && !spLoad) {
             return { kind: "leave" };
           }
         }
@@ -809,12 +817,14 @@ export namespace ZerOS {
           const outside = regionEnd(plan.base * 8n) === null;
           const ringBit = plan.base * 8n;
           const ringStore = ringBit >= SharedKeyRing && ringBit + BigInt(plan.width * 8) <= SharedKeyRingEnd;
+          /* 旧布局的 kSp 单元同时写进脏表：私有缓存被清掉后，内存里仍有有效栈顶。 */
+          const spStore = ringBit >= KeptSp && ringBit + BigInt(plan.width * 8) <= KeptSpEnd;
           for (let index = 0; index < plan.width; index += 1) {
             const key = plan.base + BigInt(index);
             keptOctets.set(key, Number(rest & 0xffn));
             if (ringStore) {
               keyRingDirty.add(key);
-            } else if (outside) {
+            } else if (outside || spStore) {
               dirtyOctets.add(key);
             } else {
               dirtyOctets.delete(key);
@@ -824,6 +834,26 @@ export namespace ZerOS {
           }
           /* 6528 的次数是发布点。槽里的两个字已经先写进脏表，这里一次送出。 */
           const countKey = SharedKeyRing / 8n;
+          if (spStore) {
+            const spBase = KeptSp / 8n;
+            let spWord = 0n;
+            let spPresent = true;
+            for (let index = 0; index < 8; index += 1) {
+              const key = spBase + BigInt(index);
+              if (!keptOctets.has(key)) {
+                spPresent = false;
+                break;
+              }
+              spWord |= BigInt(keptOctets.get(key) ?? 0) << BigInt(index * 8);
+            }
+            if (!spPresent || spWord === 0n) {
+              traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 225, spWord === 0n ? 1 : 2);
+            }
+            const savedSp = readKeptSp();
+            if (savedSp !== null) {
+              lastSpBytes = savedSp.slice();
+            }
+          }
           if (ringStore && plan.base >= countKey && plan.base < countKey + 8n) {
             publishKeyRingEager();
           }
@@ -834,6 +864,23 @@ export namespace ZerOS {
           const key = plan.base + BigInt(index);
           const octet = keptOctets.has(key) ? keptOctets.get(key) : recallRead(key);
           loaded = (loaded << 8n) | BigInt(octet ?? 0);
+        }
+        if ((plan.base & 0xffffn) === 24n) {
+        }
+        /* 窗口任务的 kSp 读到 0：用窗口里的 kStack 顶（起点 + 0x2000）补回。
+           入口 stub 的 store 可能在上下文恢复时被清掉，内存仍是 0。 */
+        const flatCell = boundLength === 4194304n ? boundOrigin + 4096n : null;
+        if (flatCell !== null && plan.width === 8
+          && plan.base === flatCell / 8n && loaded === 0n) {
+          const top = flatCell + 4096n;
+          let rest = top;
+          for (let index = 0; index < 8; index += 1) {
+            const key = plan.base + BigInt(index);
+            keptOctets.set(key, Number(rest & 0xffn));
+            readCache.delete(key);
+            rest >>= 8n;
+          }
+          loaded = top;
         }
         if (plan.width > 1) {
           const sign = modulus >> 1n;
@@ -894,6 +941,9 @@ export namespace ZerOS {
       }
 
       function liveQuery(seat: number, field: number): boolean {
+        if (seat === 0) {
+          return field >= 3 && field <= 6;
+        }
         if (seat === 1) {
           return field === 5 || field === 6 || field === 7;
         }
@@ -941,6 +991,18 @@ export namespace ZerOS {
         if (guestCore && (seat !== 1 || field < 0 || field > 12 || (field >= 5 && index !== selfOrdinal))) {
           return { kind: "fault", message: "[ZerOS.Hardware.Cpu.CpuRuntime] privileged instruction" };
         }
+        /* 本核的窗口字段直接读实时 bound。指标页是异步发布的：刚 install/bound
+           完就读页，可能拿到上一个任务的窗口（甚至 0），驱动把 home 记成 0，
+           导出/scratch 就会写到低地址。 */
+        if (seat === 1 && index === selfOrdinal && (field === 8 || field === 9)) {
+          const live = field === 8
+            ? boundOrigin
+            : (boundLength < 0n ? BigInt(ConfigRoot.Hardware.Cpu.Config.LineBits) : boundLength);
+          /* bound 0 是“核被释放/还没定界”，不能当成 home；回退指标页拿上一次有效值。 */
+          if (live !== 0n) {
+            return { kind: "hit", register: destination, value: live };
+          }
+        }
         const published = readMetric(seat, field, index);
         if (published.kind === "missing") {
           if (published.reason === "port") {
@@ -952,6 +1014,8 @@ export namespace ZerOS {
           return { kind: "fault", message: "[ZerOS.Hardware.Cpu.CpuRuntime] core ordinal is outside the declared range" };
         }
         if (published.kind === "value") {
+          if (guestCore && seat === 1 && (field === 8 || field === 9)) {
+          }
           return { kind: "hit", register: destination, value: published.value };
         }
         const hit = queryCache.get(queryKey(seat, field, index));
@@ -2132,6 +2196,7 @@ export namespace ZerOS {
       }
 
       function finishSpan(ok: boolean, message: string): void {
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 99, 0);
         spanActive = false;
         const payload = spanBytes;
         spanBytes = null;
@@ -2375,7 +2440,7 @@ export namespace ZerOS {
         }
         const bits = accessBits(opcode);
         if (hitsBound(address, bits, checkBound)) {
-          return { kind: "fault", message: `${address.toString()}+${String(bits)}`, hostFault: "bound" };
+          return { kind: "fault", message: `${address.toString()}+${String(bits)} len=${program === null ? -1 : program.length}`, hostFault: "bound" };
         }
         const data = writing ? readRegister(register) : 0n;
         if (writing) {
@@ -2773,10 +2838,12 @@ export namespace ZerOS {
       }
 
       function finishAccess(ok: boolean, message: string, hostFault: string): void {
+        if (selfOrdinal !== 0) traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 62, 0);
         if (ok && keyRingDirty.size > 0 && !ringPublish && !depositActive) {
           const boardPort = board;
           const spans = collectKeyRingSpans();
           if (boardPort !== null && spans.length > 0) {
+            traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 63, 0);
             ringFinish = { ok, message, hostFault };
             ringPublish = true;
             if (spans.length === 1) {
@@ -3348,6 +3415,7 @@ export namespace ZerOS {
 
       /** 落盘应答。客程序的窗口外写入走 dirty-published，原生写入仍走 stored。 */
       function finishDeposit(ok: boolean, message: string): void {
+        traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 96, 0);
         const cpuPort = cpu;
         if (dirtyLeft !== null) {
           if (!ok) {
@@ -3521,6 +3589,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "store-span-result" && depositActive) {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 95, 1);
           depositActive = false;
           const payload = depositBytes;
           const bit = depositBit;
@@ -3550,6 +3619,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "store-spans-result" && depositActive) {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 95, 2);
           depositActive = false;
           const parts = depositParts;
           const addresses = depositAddresses;
@@ -3606,6 +3676,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "load-span-result" && spanActive) {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 98, 0);
           const spanOk = record?.["ok"] !== false;
           const chunk = record?.["bytes"];
           const spanMessage = record?.["message"];
@@ -4638,6 +4709,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "access") {
+          if (selfOrdinal !== 0) traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 61, 0);
           const port = cpu;
           if (port === null) {
             return;
@@ -4775,6 +4847,20 @@ export namespace ZerOS {
           return;
         }
         if (kind === "cache-clear") {
+          const spBase = KeptSp / 8n;
+          let spWord = 0n;
+          let spPresent = true;
+          for (let index = 0; index < 8; index += 1) {
+            const key = spBase + BigInt(index);
+            if (!keptOctets.has(key)) {
+              spPresent = false;
+              break;
+            }
+            spWord |= BigInt(keptOctets.get(key) ?? 0) << BigInt(index * 8);
+          }
+          if (!spPresent || spWord === 0n) {
+            traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 227, spPresent ? 1 : 2);
+          }
           clearPrivate();
           const clearPort = cpu;
           if (clearPort !== null) {
@@ -4787,6 +4873,31 @@ export namespace ZerOS {
           const plantCachePort = cpu;
           if (plantCachePort !== null) {
             plantCachePort.postMessage({ kind: "cache-planted", ok: plantedOk });
+          }
+          return;
+        }
+        if (kind === "cache-seed") {
+          const seedAddress = record["address"];
+          const seedBytes = record["bytes"];
+          const seedPort = cpu;
+          if (typeof seedAddress === "bigint" && seedAddress >= 0n
+            && seedAddress % 8n === 0n && seedBytes instanceof Uint8Array
+            && seedBytes.length > 0 && seedBytes.length <= 8) {
+            const seedBase = seedAddress / 8n;
+            for (let index = 0; index < seedBytes.length; index += 1) {
+              const key = seedBase + BigInt(index);
+              keptOctets.set(key, seedBytes[index] ?? 0);
+              dirtyOctets.delete(key);
+              readCache.delete(key);
+            }
+            if (seedAddress === KeptSp && seedBytes.length === 8) {
+              lastSpBytes = seedBytes.slice();
+            }
+            if (seedPort !== null) {
+              seedPort.postMessage({ kind: "cache-seeded", ok: true });
+            }
+          } else if (seedPort !== null) {
+            seedPort.postMessage({ kind: "cache-seeded", ok: false });
           }
           return;
         }
@@ -4830,6 +4941,8 @@ export namespace ZerOS {
             return;
           }
           const spans = collectDirtySpans();
+          if (spans.length > 0) {
+          }
           if (spans.length === 0) {
             publishPort.postMessage({ kind: "dirty-published", ok: true, message: "" });
             return;
@@ -4840,6 +4953,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "store-span") {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 94, 1);
           const address = record["address"];
           const bytes = record["bytes"];
           const storePort = cpu;
@@ -4864,6 +4978,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "store-spans") {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 94, 2);
           const addresses = record["addresses"];
           const parts = record["parts"];
           const storePort = cpu;
@@ -4893,6 +5008,7 @@ export namespace ZerOS {
           return;
         }
         if (kind === "span") {
+          traceInstant(TraceOp.HostEvent, TraceLayer.Host, selfOrdinal, 97, 0);
           const address = record["address"];
           const length = record["length"];
           const spanPort = cpu;
@@ -4941,6 +5057,14 @@ export namespace ZerOS {
             return;
           }
           fillPort.postMessage({ kind: "filled", ok: true });
+          return;
+        }
+        /* 作废读缓存（M2-(d) reap）：系统调用返回前监督核可能已经改过窗口，
+           缓存留着就是陈旧值。svc/换人边界各发一次。 */
+        if (kind === "forget-reads") {
+          readCache.clear();
+          readBlockIndex.clear();
+          readSpans.length = 0;
           return;
         }
         if (kind === "pass" || kind === "take") {
@@ -5148,8 +5272,32 @@ export namespace ZerOS {
         };
       }
 
+      function readKeptSp(): Uint8Array | null {
+        const base = KeptSp / 8n;
+        const bytes = new Uint8Array(8);
+        for (let index = 0; index < 8; index += 1) {
+          const key = base + BigInt(index);
+          if (!keptOctets.has(key)) {
+            return null;
+          }
+          bytes[index] = keptOctets.get(key) ?? 0;
+        }
+        return bytes;
+      }
+
+      function writeKeptSp(bytes: Uint8Array): void {
+        const base = KeptSp / 8n;
+        for (let index = 0; index < 8; index += 1) {
+          const key = base + BigInt(index);
+          keptOctets.set(key, bytes[index] ?? 0);
+          dirtyOctets.delete(key);
+          readCache.delete(key);
+        }
+      }
+
       /** 新映像或卸下之后，上一份程序的栈、静态区和帧字都不再留下。 */
       function clearPrivate(): void {
+        const saved = readKeptSp() ?? lastSpBytes;
         keptOctets.clear();
         dirtyOctets.clear();
         readCache.clear();
@@ -5157,6 +5305,10 @@ export namespace ZerOS {
         readSpans.length = 0;
         scratchWords.fill(0n);
         frameWord = null;
+        if (saved !== null) {
+          lastSpBytes = saved.slice();
+          writeKeptSp(saved);
+        }
       }
 
       /**
@@ -5226,6 +5378,12 @@ export namespace ZerOS {
           scratchWords[index] = words[index] ?? 0n;
         }
         frameWord = frameHeld ? frame : null;
+        const plantedSp = readKeptSp();
+        if (plantedSp !== null && plantedSp.some((value) => value !== 0)) {
+          lastSpBytes = plantedSp.slice();
+        } else if (lastSpBytes !== null) {
+          writeKeptSp(lastSpBytes);
+        }
         return true;
       }
 

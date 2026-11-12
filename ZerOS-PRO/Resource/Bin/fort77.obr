@@ -1,0 +1,55 @@
+/* POSIX.1-2017 fort77（utilities/fort77.html）。本平台没有 Fortran 前端。
+   形式：fort77 [-c] [-g] [-O] [-L dir] [-l library] [-o outfile] [-S] [-w] [operand...]
+   完整处理选项与操作数（-c -g -O -S -w、-L/-l/-o 带参、operand 为 .f/.o/.a），
+   校验形状后明确报告：fort77: no Fortran compiler on this platform，退出 127。
+   缺操作数写 fort77: missing operand，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 fort77:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long c = 1L;
+      while (c < len) {
+        long o = byteAt(at + c * 8L);
+        if (o == 99L || o == 103L || o == 79L || o == 83L || o == 119L) {
+          c = c + 1L;
+        } else if (o == 76L || o == 108L || o == 111L) {
+          c = c + 1L;
+          if (c >= len) {
+            index = index + 1L;
+            if (index >= count) {
+              writeErr(home, "fort77: option requires an argument\n");
+              return finish(home, 1L);
+            }
+          }
+          c = len;
+        } else {
+          writeErr(home, "fort77: invalid option\n");
+          return finish(home, 1L);
+        }
+      }
+    } else {
+      operands = operands + 1L;
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "fort77: missing operand\n");
+    return finish(home, 1L);
+  }
+  writeErr(home, "fort77: no Fortran compiler on this platform\n");
+  return finish(home, 127L);
+}

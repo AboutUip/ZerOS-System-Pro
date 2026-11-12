@@ -1,7 +1,8 @@
 /**
- * 语料用的 /home 夹具。
+ * 语料用的 /temp/test 夹具。
  * 客根整棵不进版本库，所以每次跑语料前由这里种上。
- * 不依赖某台机器上已经有的 Root/home。
+ * 不依赖某台机器上已经有的 Root/temp/test。
+ * /home 留给未来用户家目录，测试一律不写。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -99,19 +100,19 @@ function writeFile(root, rel, contents) {
 export function plantCorpusHome(root) {
   const text = Buffer.from("Hello\nworld\n");
   const compressed = compressZ(Buffer.from("hi\n"));
-  writeFile(root, "home/test.txt", text);
-  writeFile(root, "home/cz.txt", Buffer.from("hi\n"));
-  writeFile(root, "home/gone.txt", Buffer.from("gone\n"));
-  writeFile(root, "home/perf/a.txt", Buffer.from("k a\n"));
-  writeFile(root, "home/perf/b.txt", Buffer.from("k b\n"));
-  writeFile(root, "home/c.c", Buffer.from("int main()\n"));
-  writeFile(root, "home/ts.txt", Buffer.from("a b\n"));
-  writeFile(root, "home/what.txt", Buffer.from("@(#)zeros\n"));
-  writeFile(root, "home/msg.src", Buffer.from("$set 1\n1 hello\n"));
-  writeFile(root, "home/zz.Z", compressed);
-  writeFile(root, "home/uz.Z", compressed);
-  writeFile(root, "home/lib.a", makeArchive());
-  writeFile(root, "home/sample.uu", Buffer.from("begin 666 /home/ud.out\n#:&D*\nend\n"));
-  writeFile(root, "home/fix.diff", Buffer.from("--- /home/test.txt\n+++ /home/test.txt\n@@ -1 +1 @@\n Hello\n"));
+  writeFile(root, "temp/test/test.txt", text);
+  writeFile(root, "temp/test/cz.txt", Buffer.from("hi\n"));
+  writeFile(root, "temp/test/gone.txt", Buffer.from("gone\n"));
+  writeFile(root, "temp/test/perf/a.txt", Buffer.from("k a\n"));
+  writeFile(root, "temp/test/perf/b.txt", Buffer.from("k b\n"));
+  writeFile(root, "temp/test/c.c", Buffer.from("int main()\n"));
+  writeFile(root, "temp/test/ts.txt", Buffer.from("a b\n"));
+  writeFile(root, "temp/test/what.txt", Buffer.from("@(#)zeros\n"));
+  writeFile(root, "temp/test/msg.src", Buffer.from("$set 1\n1 hello\n"));
+  writeFile(root, "temp/test/zz.Z", compressed);
+  writeFile(root, "temp/test/uz.Z", compressed);
+  writeFile(root, "temp/test/lib.a", makeArchive());
+  writeFile(root, "temp/test/sample.uu", Buffer.from("begin 666 /temp/test/ud.out\n#:&D*\nend\n"));
+  writeFile(root, "temp/test/fix.diff", Buffer.from("--- /temp/test/test.txt\n+++ /temp/test/test.txt\n@@ -1 +1 @@\n Hello\n"));
   writeFile(root, "share/man/ls", Buffer.from("ls\n"));
 }

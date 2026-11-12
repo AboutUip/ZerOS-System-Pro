@@ -1,14 +1,18 @@
 /* 壳工作区里整理用的位址。目录和上一行列数在 work。这里是暂存、子任务、管道和补全前缀。
    不读键盘，不解析命令，也不派生。 */
 #DYN
-#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /edit-check.obr
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
 import memory;
 import obr.oct;
 import obr.proc;
 import span;
 
 
+/* 空 __zap__ 块是内联护栏：导入调用只留在这一层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun u8(long addr): long {
+  __zap__ {
+  }
   return obr::oct::get(addr);
 }
 

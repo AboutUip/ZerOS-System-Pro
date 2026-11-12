@@ -1,0 +1,1051 @@
+/* POSIX.1-2017 lex（utilities/lex.html）选定子集。形式：
+   lex [-t] [-n|-v] [--] [file...]
+   选项全量：-t 输出到标准输出（缺省 lex.yy.c）；-n 不写统计；-v 写统计
+   （格式未定：本实现写 `lex: 规则 N 条，指令 M 条`；与 -t 同时给时写描述符 2）。
+   无操作数或 - 读标准输入；多文件拼接为一个 lex 程序。
+   语法子集（任务口径：诚实最小生成器，明确报告平台子集）：
+   Definitions %% Rules %% UserSubroutines；定义行 name substitute（{name} 展开）；
+   %{ ... %} 与缩进行原文拷贝；%array %pointer 与 %p %n %a %e %k %o 表尺寸行接受登记；
+   规则行 ERE + 动作（动作可跨 { } 多行；空动作按 ECHO；特殊动作 | 继承下一条动作）。
+   ERE 子集：字面量、"引号串"、.、[..] [^..]（含区间与转义）、\ 转义（\n \t \\ \ddd \x 等）、
+   * + ? 、连接、| 、( )、行首 ^（仅开头）与行尾 $（仅结尾）。
+   未支持+原因（如实报错退出 1）：区间 {m,n}、尾随上下文 r/x、REJECT、BEGIN 与
+   %s/%x 开始条件——本生成器子集外；平台无 C 前端，生成的 lex.yy.c 需 c99 编译。
+   生成的扫描器：模式编成三元组字节码（CHAR/ANY/CLASS/SPLIT/JMP/MATCH/BOL/EOL），
+   配一个按最长匹配取最大回溯的匹配函数与 yylex/yytext/yyleng/ECHO 默认动作。
+   缺 %% 写 lex: no rules section，退出 1。容量：模式指令 1024 条、类 32 个、
+   规则 64 条、源 64KB，超出写 lex: out of memory。
+   诊断英文 ASCII，描述符 2，前缀 lex:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun isNameChar(long o): long {
+  if (o >= 48L && o <= 57L) {
+    return 1L;
+  }
+  if (o >= 65L && o <= 90L) {
+    return 1L;
+  }
+  if (o >= 97L && o <= 122L) {
+    return 1L;
+  }
+  if (o == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isHex(long o): long {
+  if (o >= 48L && o <= 57L) {
+    return 1L;
+  }
+  if (o >= 97L && o <= 102L) {
+    return 1L;
+  }
+  if (o >= 65L && o <= 70L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun hexVal(long o): long {
+  if (o >= 48L && o <= 57L) {
+    return o - 48L;
+  }
+  if (o >= 97L && o <= 102L) {
+    return o - 87L;
+  }
+  return o - 55L;
+}
+
+/* 状态块：+0 输入长度 +64 规则数 +128 指令数 +192 类数 +256 错误码
+   +320 用户段偏移 +384 用户段长度 +448 定义段偏移 +512 定义段长度
+   规则起始 pc 表 1024 起（64 字）
+   指令块 16384 起：每条 3 字（op a b），上限 1024
+   类块 262144 起：32 个 × 256 位 = 32 × 2048 单位
+   展开暂存 327680 起（8KB 八位组）
+   动作表 393216 起：64 条 × 128（起 64、长 64） */
+deRfun rulePc(long st, long i): long {
+  return st + 1024L + i * 64L;
+}
+
+deRfun instAt(long st, long pc): long {
+  return st + 16384L + pc * 192L;
+}
+
+deRfun classAt(long st, long i): long {
+  return st + 262144L + i * 2048L;
+}
+
+deRfun actAt(long st, long i): long {
+  return st + 393216L + i * 128L;
+}
+
+deRfun emit(long st, long op, long a, long b): long {
+  long pc = memory::load64(st + 128L);
+  if (pc >= 1024L) {
+    memory::store64(1L, st + 256L);
+    return 0L;
+  }
+  memory::store64(op, instAt(st, pc));
+  memory::store64(a, instAt(st, pc) + 64L);
+  memory::store64(b, instAt(st, pc) + 128L);
+  memory::store64(pc + 1L, st + 128L);
+  return pc;
+}
+
+deRfun patch(long st, long pc, long slot, long val): void {
+  memory::store64(val, instAt(st, pc) + slot * 64L);
+}
+
+deRfun setClassBit(long st, long idx, long bit, long on): void {
+  long word = memory::load64(classAt(st, idx) + (bit / 64L) * 64L);
+  long shift = 1L;
+  long k = 0L;
+  while (k < bit % 64L) {
+    shift = shift * 2L;
+    k = k + 1L;
+  }
+  if (on == 1L) {
+    memory::store64(word + shift, classAt(st, idx) + (bit / 64L) * 64L);
+  } else {
+    if (word >= shift && (long)(word / shift % 2L) == 1L) {
+      memory::store64(word - shift, classAt(st, idx) + (bit / 64L) * 64L);
+    }
+  }
+}
+
+deRfun getClassBit(long st, long idx, long bit): long {
+  long word = memory::load64(classAt(st, idx) + (bit / 64L) * 64L);
+  long shift = 1L;
+  long k = 0L;
+  while (k < bit % 64L) {
+    shift = shift * 2L;
+    k = k + 1L;
+  }
+  return (long)(word / shift % 2L);
+}
+
+/* 转义：读 src[*ip] 起的转义，返回字节值并推进 *ip。-1 错。 */
+deRfun readEscape(long src, long srcLen, long* ip): long {
+  long o = byteAt(src + *ip * 8L);
+  *ip = *ip + 1L;
+  if (o == 110L) {
+    return 10L;
+  }
+  if (o == 116L) {
+    return 9L;
+  }
+  if (o == 114L) {
+    return 13L;
+  }
+  if (o == 98L) {
+    return 8L;
+  }
+  if (o == 102L) {
+    return 12L;
+  }
+  if (o == 97L) {
+    return 7L;
+  }
+  if (o == 118L) {
+    return 11L;
+  }
+  if (o >= 48L && o <= 55L) {
+    long value = o - 48L;
+    long used = 1L;
+    while (used < 3L && *ip < srcLen && byteAt(src + *ip * 8L) >= 48L && byteAt(src + *ip * 8L) <= 55L) {
+      value = value * 8L + byteAt(src + *ip * 8L) - 48L;
+      *ip = *ip + 1L;
+      used = used + 1L;
+    }
+    return value % 256L;
+  }
+  if (o == 120L) {
+    long value = 0L;
+    long used = 0L;
+    while (used < 2L && *ip < srcLen && isHex(byteAt(src + *ip * 8L)) == 1L) {
+      value = value * 16L + hexVal(byteAt(src + *ip * 8L));
+      *ip = *ip + 1L;
+      used = used + 1L;
+    }
+    return value % 256L;
+  }
+  return o;
+}
+
+
+deRfun scanPiece(long src, long end, long* ip): long {
+  if (*ip >= end) {
+    return -1L;
+  }
+  long o = byteAt(src + *ip * 8L);
+  if (o == 40L) {
+    *ip = *ip + 1L;
+    long depth = 1L;
+    while (*ip < end && depth > 0L) {
+      long c = byteAt(src + *ip * 8L);
+      if (c == 92L) {
+        *ip = *ip + 1L;
+      } else if (c == 40L) {
+        depth = depth + 1L;
+      } else if (c == 41L) {
+        depth = depth - 1L;
+      }
+      *ip = *ip + 1L;
+    }
+    if (depth != 0L) {
+      return -1L;
+    }
+    return 0L;
+  }
+  if (o == 91L) {
+    *ip = *ip + 1L;
+    if (*ip < end && byteAt(src + *ip * 8L) == 94L) {
+      *ip = *ip + 1L;
+    }
+    if (*ip < end && byteAt(src + *ip * 8L) == 93L) {
+      *ip = *ip + 1L;
+    }
+    while (*ip < end && byteAt(src + *ip * 8L) != 93L) {
+      if (byteAt(src + *ip * 8L) == 92L) {
+        *ip = *ip + 1L;
+      }
+      *ip = *ip + 1L;
+    }
+    if (*ip >= end) {
+      return -1L;
+    }
+    *ip = *ip + 1L;
+    return 0L;
+  }
+  if (o == 46L) {
+    *ip = *ip + 1L;
+    return 0L;
+  }
+  if (o == 34L) {
+    *ip = *ip + 1L;
+    while (*ip < end && byteAt(src + *ip * 8L) != 34L) {
+      if (byteAt(src + *ip * 8L) == 92L) {
+        *ip = *ip + 1L;
+      }
+      *ip = *ip + 1L;
+    }
+    if (*ip >= end) {
+      return -1L;
+    }
+    *ip = *ip + 1L;
+    return 0L;
+  }
+  if (o == 92L) {
+    *ip = *ip + 2L;
+    return 0L;
+  }
+  if (o == 94L || o == 36L) {
+    *ip = *ip + 1L;
+    return 0L;
+  }
+  if (o == 42L || o == 43L || o == 63L || o == 124L || o == 41L) {
+    return -1L;
+  }
+  *ip = *ip + 1L;
+  return 0L;
+}
+
+/* 单函数编译器：kind 0=分支 1=连接 2=原子（含后缀） 3=部件。
+   自递归代替前向声明（.obr 不允许函数头声明）。 */
+deRfun compileNode(long st, long src, long end, long* ip, long depth, long kind): long {
+  if (depth > 24L) {
+    return -1L;
+  }
+  if (kind == 0L) {
+    long njmp = 0L;
+    while (1L == 1L) {
+      long split = emit(st, 3L, 0L, 0L);
+      patch(st, split, 1L, memory::load64(st + 128L));
+      if (compileNode(st, src, end, ip, depth + 1L, 1L) != 0L) {
+        return -1L;
+      }
+      if (*ip < end && byteAt(src + *ip * 8L) == 124L) {
+        long jmp = emit(st, 4L, 0L, 0L);
+        memory::store64(jmp, st + 458752L + njmp * 64L);
+        njmp = njmp + 1L;
+        patch(st, split, 2L, memory::load64(st + 128L));
+        *ip = *ip + 1L;
+        continue;
+      }
+      patch(st, split, 2L, memory::load64(st + 128L));
+      break;
+    }
+    long endPc = memory::load64(st + 128L);
+    long i = 0L;
+    while (i < njmp) {
+      patch(st, memory::load64(st + 458752L + i * 64L), 1L, endPc);
+      i = i + 1L;
+    }
+    return 0L;
+  }
+  if (kind == 1L) {
+    if (*ip < end && (byteAt(src + *ip * 8L) == 42L || byteAt(src + *ip * 8L) == 43L || byteAt(src + *ip * 8L) == 63L)) {
+      memory::store64(3L, st + 256L);
+      return -1L;
+    }
+    while (*ip < end && byteAt(src + *ip * 8L) != 124L) {
+      if (compileNode(st, src, end, ip, depth + 1L, 2L) != 0L) {
+        return -1L;
+      }
+      if (*ip < end) {
+        long o3 = byteAt(src + *ip * 8L);
+        if (o3 == 42L || o3 == 43L || o3 == 63L) {
+          memory::store64(3L, st + 256L);
+          return -1L;
+        }
+      }
+    }
+    return 0L;
+  }
+  if (kind == 2L) {
+    long start = *ip;
+    long probe = *ip;
+    if (scanPiece(src, end, &probe) != 0L) {
+      memory::store64(3L, st + 256L);
+      return -1L;
+    }
+    long suf = 0L;
+    if (probe < end) {
+      long o2 = byteAt(src + probe * 8L);
+      if (o2 == 42L || o2 == 43L || o2 == 63L) {
+        suf = o2;
+      } else if (o2 == 123L) {
+        memory::store64(2L, st + 256L);
+        return -1L;
+      }
+    }
+    if (suf == 42L) {
+      long split = emit(st, 3L, 0L, 0L);
+      patch(st, split, 1L, memory::load64(st + 128L));
+      *ip = start;
+      if (compileNode(st, src, end, ip, depth + 1L, 3L) != 0L) {
+        return -1L;
+      }
+      *ip = probe + 1L;
+      long jmp = emit(st, 4L, split, 0L);
+      patch(st, split, 2L, memory::load64(st + 128L));
+      return 0L;
+    }
+    if (suf == 63L) {
+      long split = emit(st, 3L, 0L, 0L);
+      patch(st, split, 1L, memory::load64(st + 128L));
+      *ip = start;
+      if (compileNode(st, src, end, ip, depth + 1L, 3L) != 0L) {
+        return -1L;
+      }
+      *ip = probe + 1L;
+      patch(st, split, 2L, memory::load64(st + 128L));
+      return 0L;
+    }
+    long segPc = memory::load64(st + 128L);
+    *ip = start;
+    if (compileNode(st, src, end, ip, depth + 1L, 3L) != 0L) {
+      return -1L;
+    }
+    if (suf == 43L) {
+      *ip = probe + 1L;
+      long split = emit(st, 3L, segPc, 0L);
+      patch(st, split, 2L, memory::load64(st + 128L));
+      return 0L;
+    }
+    *ip = probe;
+    return 0L;
+  }
+  /* kind 3：部件。 */
+  if (*ip >= end) {
+    return -1L;
+  }
+  long o = byteAt(src + *ip * 8L);
+  if (o == 40L) {
+    long probe = *ip;
+    if (scanPiece(src, end, &probe) != 0L) {
+      return -1L;
+    }
+    long innerEnd = probe - 1L;
+    *ip = *ip + 1L;
+    if (compileNode(st, src, innerEnd, ip, depth + 1L, 0L) != 0L) {
+      return -1L;
+    }
+    if (*ip != innerEnd) {
+      memory::store64(3L, st + 256L);
+      return -1L;
+    }
+    *ip = probe;
+    return 0L;
+  }
+  if (o == 91L) {
+    *ip = *ip + 1L;
+    long classes = memory::load64(st + 192L);
+    if (classes >= 32L) {
+      memory::store64(1L, st + 256L);
+      return -1L;
+    }
+    memory::store64(classes + 1L, st + 192L);
+    long negate = 0L;
+    if (*ip < end && byteAt(src + *ip * 8L) == 94L) {
+      negate = 1L;
+      *ip = *ip + 1L;
+    }
+    long b = 0L;
+    while (b < 256L) {
+      setClassBit(st, classes, b, negate);
+      b = b + 1L;
+    }
+    long prev = -1L;
+    long mode = 0L;
+    while (*ip < end && byteAt(src + *ip * 8L) != 93L) {
+      long c = 0L;
+      long raw = byteAt(src + *ip * 8L);
+      if (raw == 45L && prev >= 0L && mode == 0L && *ip + 1L < end && byteAt(src + (*ip + 1L) * 8L) != 93L) {
+        mode = 1L;
+        *ip = *ip + 1L;
+        continue;
+      }
+      if (raw == 92L) {
+        *ip = *ip + 1L;
+        if (*ip >= end) {
+          return -1L;
+        }
+        c = readEscape(src, end, ip);
+      } else {
+        *ip = *ip + 1L;
+        c = raw;
+      }
+      if (c < 0L) {
+        return -1L;
+      }
+      if (mode == 1L) {
+        long k = prev;
+        while (k <= c) {
+          setClassBit(st, classes, k, 1L - negate);
+          k = k + 1L;
+        }
+        mode = 0L;
+      } else {
+        setClassBit(st, classes, c, 1L - negate);
+      }
+      prev = c;
+    }
+    if (*ip >= end) {
+      memory::store64(3L, st + 256L);
+      return -1L;
+    }
+    *ip = *ip + 1L;
+    emit(st, 2L, classes, 0L);
+    return 0L;
+  }
+  if (o == 46L) {
+    *ip = *ip + 1L;
+    emit(st, 1L, 0L, 0L);
+    return 0L;
+  }
+  if (o == 34L) {
+    *ip = *ip + 1L;
+    while (*ip < end && byteAt(src + *ip * 8L) != 34L) {
+      long c = byteAt(src + *ip * 8L);
+      if (c == 92L) {
+        *ip = *ip + 1L;
+        if (*ip >= end) {
+          return -1L;
+        }
+        c = readEscape(src, end, ip);
+      } else {
+        *ip = *ip + 1L;
+      }
+      if (c < 0L) {
+        return -1L;
+      }
+      emit(st, 0L, c, 0L);
+    }
+    if (*ip >= end) {
+      return -1L;
+    }
+    *ip = *ip + 1L;
+    return 0L;
+  }
+  if (o == 92L) {
+    *ip = *ip + 1L;
+    if (*ip >= end) {
+      return -1L;
+    }
+    long c = readEscape(src, end, ip);
+    if (c < 0L) {
+      return -1L;
+    }
+    emit(st, 0L, c, 0L);
+    return 0L;
+  }
+  if (o == 94L) {
+    *ip = *ip + 1L;
+    emit(st, 6L, 0L, 0L);
+    return 0L;
+  }
+  if (o == 36L) {
+    *ip = *ip + 1L;
+    emit(st, 7L, 0L, 0L);
+    return 0L;
+  }
+  if (o == 42L || o == 43L || o == 63L || o == 124L || o == 41L) {
+    memory::store64(3L, st + 256L);
+    return -1L;
+  }
+  *ip = *ip + 1L;
+  emit(st, 0L, o, 0L);
+  return 0L;
+}
+
+deRfun lexRun(long home, long st, long src, long srcLen, long toStdout, long quiet, long stats): int {
+  long err = 0L;
+  /* 分节：找两处 %% 行。 */
+  long sec1 = -1L;
+  long sec2 = -1L;
+  long pos = 0L;
+  while (pos < srcLen) {
+    long start = pos;
+    while (pos < srcLen && byteAt(src + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    if (pos - start == 2L && byteAt(src + start * 8L) == 37L && byteAt(src + (start + 1L) * 8L) == 37L) {
+      if (sec1 < 0L) {
+        sec1 = start;
+      } else if (sec2 < 0L) {
+        sec2 = start;
+      }
+    }
+    pos = pos + 1L;
+  }
+  if (sec1 < 0L) {
+    writeErr(home, "lex: no rules section\n");
+    return finish(home, 1L);
+  }
+  if (sec2 < 0L) {
+    sec2 = srcLen;
+  }
+  /* 定义段：宏与 %{ %} 块。宏表在 st+462000：每条 2560（名长 64、值长 64、名 256、值 2048）。 */
+  long defs = 0L;
+  memory::store64(0L, st + 461952L);
+  long outDefs = obr::proc::alloc(home, 131072L);
+  long outDefsLen = 0L;
+  long p = 0L;
+  while (p < sec1) {
+    long lineStart = p;
+    while (p < sec1 && byteAt(src + p * 8L) != 10L) {
+      p = p + 1L;
+    }
+    long lineLen = p - lineStart;
+    p = p + 1L;
+    if (lineLen >= 2L && byteAt(src + lineStart * 8L) == 37L && byteAt(src + (lineStart + 1L) * 8L) == 123L) {
+      /* %{ 块原样拷贝。 */
+      while (p < sec1) {
+        long s2 = p;
+        while (p < sec1 && byteAt(src + p * 8L) != 10L) {
+          p = p + 1L;
+        }
+        long l2 = p - lineStart;
+        l2 = p - s2;
+        if (l2 == 2L && byteAt(src + s2 * 8L) == 37L && byteAt(src + (s2 + 1L) * 8L) == 125L) {
+          p = p + 1L;
+          break;
+        }
+        copySpan(src + s2 * 8L, outDefs + outDefsLen * 8L, l2 + 1L);
+        outDefsLen = outDefsLen + l2 + 1L;
+        p = p + 1L;
+      }
+      continue;
+    }
+    if (lineLen < 1L) {
+      continue;
+    }
+    long o = byteAt(src + lineStart * 8L);
+    if (o == 32L || o == 9L) {
+      copySpan(src + lineStart * 8L, outDefs + outDefsLen * 8L, lineLen + 1L);
+      outDefsLen = outDefsLen + lineLen + 1L;
+      continue;
+    }
+    if (o == 37L) {
+      /* %array %pointer %p n ... 接受登记；%s/%x 不支持。 */
+      if (lineLen >= 2L && (byteAt(src + (lineStart + 1L) * 8L) == 115L || byteAt(src + (lineStart + 1L) * 8L) == 120L)) {
+        writeErr(home, "lex: start conditions are not supported on this platform\n");
+        return finish(home, 1L);
+      }
+      continue;
+    }
+    /* name substitute */
+    long nend = lineStart;
+    while (nend < lineStart + lineLen && isNameChar(byteAt(src + nend * 8L)) == 1L) {
+      nend = nend + 1L;
+    }
+    long subStart = nend;
+    while (subStart < lineStart + lineLen && (byteAt(src + subStart * 8L) == 32L || byteAt(src + subStart * 8L) == 9L)) {
+      subStart = subStart + 1L;
+    }
+    long subLen = lineStart + lineLen - subStart;
+    if (nend == lineStart || subLen < 1L) {
+      writeErr(home, "lex: bad definition\n");
+      return finish(home, 1L);
+    }
+    long dcount = memory::load64(st + 461952L);
+    if (dcount >= 32L) {
+      writeErr(home, "lex: out of memory\n");
+      return finish(home, 1L);
+    }
+    long at = st + 462000L + dcount * 2560L;
+    memory::store64(nend - lineStart, at);
+    memory::store64(subLen, at + 64L);
+    copySpan(src + lineStart * 8L, at + 128L, nend - lineStart);
+    copySpan(src + subStart * 8L, at + 640L, subLen);
+    memory::store64(dcount + 1L, st + 461952L);
+  }
+  /* 规则段。 */
+  long scratch = 327680L;
+  memory::store64(0L, st + 64L);
+  long p2 = sec1 + 3L;
+  long pendingAct = -1L;
+  long prologue = obr::proc::alloc(home, 65536L);
+  long prologueLen = 0L;
+  while (p2 < sec2) {
+    long lineStart = p2;
+    while (p2 < sec2 && byteAt(src + p2 * 8L) != 10L) {
+      p2 = p2 + 1L;
+    }
+    long lineLen = p2 - lineStart;
+    p2 = p2 + 1L;
+    if (lineLen < 1L) {
+      continue;
+    }
+    long o = byteAt(src + lineStart * 8L);
+    if (o == 32L || o == 9L) {
+      copySpan(src + lineStart * 8L, prologue + prologueLen * 8L, lineLen + 1L);
+      prologueLen = prologueLen + lineLen + 1L;
+      continue;
+    }
+    /* 模式：到未转义空白（引号/类/转义内除外）。 */
+    long q = lineStart;
+    long patEnd = -1L;
+    while (q < lineStart + lineLen) {
+      long c = byteAt(src + q * 8L);
+      if (c == 92L) {
+        q = q + 2L;
+        continue;
+      }
+      if (c == 34L) {
+        q = q + 1L;
+        while (q < lineStart + lineLen && byteAt(src + q * 8L) != 34L) {
+          if (byteAt(src + q * 8L) == 92L) {
+            q = q + 1L;
+          }
+          q = q + 1L;
+        }
+        q = q + 1L;
+        continue;
+      }
+      if (c == 91L) {
+        q = q + 1L;
+        while (q < lineStart + lineLen && byteAt(src + q * 8L) != 93L) {
+          if (byteAt(src + q * 8L) == 92L) {
+            q = q + 1L;
+          }
+          q = q + 1L;
+        }
+        q = q + 1L;
+        continue;
+      }
+      if (c == 32L || c == 9L) {
+        patEnd = q;
+        break;
+      }
+      q = q + 1L;
+    }
+    if (patEnd < 0L) {
+      patEnd = lineStart + lineLen;
+    }
+    long actStart = patEnd;
+    while (actStart < lineStart + lineLen && (byteAt(src + actStart * 8L) == 32L || byteAt(src + actStart * 8L) == 9L)) {
+      actStart = actStart + 1L;
+    }
+    long actEnd = lineStart + lineLen;
+    if (actStart < actEnd && byteAt(src + actStart * 8L) == 123L) {
+      /* 多行动作：到配对 }。 */
+      long d2 = 1L;
+      long r = actStart + 1L;
+      while (r < srcLen && d2 > 0L) {
+        long c2 = byteAt(src + r * 8L);
+        if (c2 == 123L) {
+          d2 = d2 + 1L;
+        } else if (c2 == 125L) {
+          d2 = d2 - 1L;
+        }
+        r = r + 1L;
+      }
+      actEnd = r - 1L;
+      actStart = actStart + 1L;
+      p2 = r + 1L;
+      if (p2 < srcLen && byteAt(src + p2 * 8L) == 10L) {
+        p2 = p2 + 1L;
+      }
+    }
+    /* 模式里 {name} 展开到 scratch。 */
+    long expLen = 0L;
+    long m = lineStart;
+    while (m < patEnd) {
+      long c = byteAt(src + m * 8L);
+      if (c == 92L && m + 1L < patEnd) {
+        memory::storeOctet(c, st + scratch + expLen * 8L);
+        expLen = expLen + 1L;
+        memory::storeOctet(byteAt(src + (m + 1L) * 8L), st + scratch + expLen * 8L);
+        expLen = expLen + 1L;
+        m = m + 2L;
+        continue;
+      }
+      if (c == 123L) {
+        long nStart = m + 1L;
+        long nEnd = nStart;
+        while (nEnd < patEnd && byteAt(src + nEnd * 8L) != 125L) {
+          nEnd = nEnd + 1L;
+        }
+        if (nEnd < patEnd) {
+          long found = 0L;
+          long dcount2 = memory::load64(st + 461952L);
+          long d = 0L;
+          while (d < dcount2 && found == 0L) {
+            long at = st + 462000L + d * 2560L;
+            if (memory::load64(at) == nEnd - nStart) {
+              long same = 1L;
+              long c3 = 0L;
+              while (c3 < nEnd - nStart) {
+                if (byteAt(at + 128L + c3 * 8L) != byteAt(src + (nStart + c3) * 8L)) {
+                  same = 0L;
+                }
+                c3 = c3 + 1L;
+              }
+              if (same == 1L) {
+                memory::storeOctet(40L, st + scratch + expLen * 8L);
+                expLen = expLen + 1L;
+                copySpan(at + 640L, st + scratch + expLen * 8L, memory::load64(at + 64L));
+                expLen = expLen + memory::load64(at + 64L);
+                memory::storeOctet(41L, st + scratch + expLen * 8L);
+                expLen = expLen + 1L;
+                found = 1L;
+              }
+            }
+            d = d + 1L;
+          }
+          if (found == 0L) {
+            writeErr(home, "lex: unknown definition\n");
+            return finish(home, 1L);
+          }
+          m = nEnd + 1L;
+          continue;
+        }
+      }
+      memory::storeOctet(c, st + scratch + expLen * 8L);
+      expLen = expLen + 1L;
+      m = m + 1L;
+    }
+    if (expLen > 8000L) {
+      writeErr(home, "lex: out of memory\n");
+      return finish(home, 1L);
+    }
+    /* 动作：| 继承下一条。 */
+    long ruleCount = memory::load64(st + 64L);
+    if (ruleCount >= 64L) {
+      writeErr(home, "lex: out of memory\n");
+      return finish(home, 1L);
+    }
+    memory::store64(memory::load64(st + 128L), rulePc(st, ruleCount));
+    long ip = 0L;
+    if (compileNode(st, st + scratch, expLen, &ip, 0L, 0L) != 0L || ip != expLen) {
+      writeErr(home, "lex: bad pattern\n");
+      return finish(home, 1L);
+    }
+    emit(st, 5L, 0L, 0L);
+    long share = 0L;
+    if (actEnd - actStart == 1L && byteAt(src + actStart * 8L) == 124L) {
+      share = 1L;
+    }
+    if (share == 1L && pendingAct < 0L) {
+      pendingAct = ruleCount;
+    } else {
+      memory::store64(actStart, actAt(st, ruleCount));
+      memory::store64(actEnd - actStart, actAt(st, ruleCount) + 64L);
+    }
+    memory::store64(ruleCount + 1L, st + 64L);
+    if (share == 0L && pendingAct >= 0L) {
+      memory::store64(actStart, actAt(st, pendingAct));
+      memory::store64(actEnd - actStart, actAt(st, pendingAct) + 64L);
+      pendingAct = -1L;
+    }
+  }
+  if (memory::load64(st + 256L) != 0L) {
+    writeErr(home, "lex: pattern too complex\n");
+    return finish(home, 1L);
+  }
+  long ruleCount = memory::load64(st + 64L);
+  long instCount = memory::load64(st + 128L);
+  if (stats == 1L && quiet == 0L) {
+    long sfd = 1L;
+    if (toStdout == 1L) {
+      sfd = 2L;
+    }
+    writeStr(home, sfd, "lex: rules ");
+    writeNum(home, sfd, ruleCount);
+    writeStr(home, sfd, ", instructions ");
+    writeNum(home, sfd, instCount);
+    writeStr(home, sfd, "\n");
+  }
+  return lexGenerate(home, st, src, sec2, srcLen, outDefs, outDefsLen, prologue, prologueLen, toStdout);
+}
+
+
+deRfun lexGenerate(long home, long st, long src, long sec2, long srcLen, long defs, long defsLen, long prologue, long prologueLen, long toStdout): int {
+  long fd = 1L;
+  if (toStdout == 0L) {
+    plant(home, prologue, 0L);
+    long name = obr::proc::bytes(home);
+    putText(name, 0L, "lex.yy.c");
+    plant(home, name, 8L);
+    if (obr::proc::open(home, 1L) != 0L) {
+      writeErr(home, "lex: cannot open lex.yy.c\n");
+      return finish(home, 1L);
+    }
+    fd = obr::proc::slot(home, 192L);
+  }
+  long off = 0L;
+  writeStr(home, fd, "/* generated by lex (ZerOS minimal subset) */\n");
+  writeStr(home, fd, "#include <stdio.h>\n#include <string.h>\n");
+  writeStr(home, fd, "static char yytext[8192];\nint yyleng = 0;\nFILE *yyin = 0;\n");
+  writeSpan(home, fd, 0L, defs, defsLen);
+  writeSpan(home, fd, 0L, prologue, prologueLen);
+  long ruleCount = memory::load64(st + 64L);
+  long instCount = memory::load64(st + 128L);
+  long classCount = memory::load64(st + 192L);
+  long rn = ruleCount;
+  long pn = instCount;
+  long kn = classCount;
+  if (rn < 1L) {
+    rn = 1L;
+  }
+  if (pn < 1L) {
+    pn = 1L;
+  }
+  if (kn < 1L) {
+    kn = 1L;
+  }
+  writeStr(home, fd, "static const int yyrulepc[");
+  writeNum(home, fd, rn + 1L);
+  writeStr(home, fd, "] = {");
+  long i = 0L;
+  while (i < ruleCount) {
+    writeNum(home, fd, memory::load64(rulePc(st, i)));
+    writeStr(home, fd, ",");
+    i = i + 1L;
+  }
+  writeNum(home, fd, instCount);
+  writeStr(home, fd, "};\n");
+  writeStr(home, fd, "static const int yypat[");
+  writeNum(home, fd, pn);
+  writeStr(home, fd, "][3] = {");
+  i = 0L;
+  while (i < instCount) {
+    writeStr(home, fd, "{");
+    writeNum(home, fd, memory::load64(instAt(st, i)));
+    writeStr(home, fd, ",");
+    writeNum(home, fd, memory::load64(instAt(st, i) + 64L));
+    writeStr(home, fd, ",");
+    writeNum(home, fd, memory::load64(instAt(st, i) + 128L));
+    writeStr(home, fd, "},");
+    i = i + 1L;
+  }
+  writeStr(home, fd, "{0,0,0}};\n");
+  writeStr(home, fd, "static const unsigned char yyclass[");
+  writeNum(home, fd, kn);
+  writeStr(home, fd, "][32] = {");
+  i = 0L;
+  while (i < classCount) {
+    writeStr(home, fd, "{");
+    long b = 0L;
+    while (b < 32L) {
+      writeNum(home, fd, memory::load64(classAt(st, i) + b * 64L) % 256L);
+      writeStr(home, fd, ",");
+      b = b + 1L;
+    }
+    writeStr(home, fd, "},");
+    i = i + 1L;
+  }
+  writeStr(home, fd, "{0}};\n");
+  writeStr(home, fd, "static int yymatch(int pc, const unsigned char *s, int n, int pos, int depth) {\n");
+  writeStr(home, fd, "  int op, a, b, r1, r2;\n");
+  writeStr(home, fd, "  if (depth > 4096) return -1;\n");
+  writeStr(home, fd, "  op = yypat[pc][0]; a = yypat[pc][1]; b = yypat[pc][2];\n");
+  writeStr(home, fd, "  if (op == 5) return pos;\n");
+  writeStr(home, fd, "  if (op == 4) return yymatch(a, s, n, pos, depth + 1);\n");
+  writeStr(home, fd, "  if (op == 3) { r1 = yymatch(a, s, n, pos, depth + 1); r2 = yymatch(b, s, n, pos, depth + 1); return r1 > r2 ? r1 : r2; }\n");
+  writeStr(home, fd, "  if (op == 6) { if (pos == 0 || s[pos - 1] == 10) return yymatch(pc + 1, s, n, pos, depth + 1); return -1; }\n");
+  writeStr(home, fd, "  if (op == 7) { if (pos == n || s[pos] == 10) return yymatch(pc + 1, s, n, pos, depth + 1); return -1; }\n");
+  writeStr(home, fd, "  if (pos >= n) return -1;\n");
+  writeStr(home, fd, "  if (op == 0) { if (s[pos] == a) return yymatch(pc + 1, s, n, pos + 1, depth + 1); return -1; }\n");
+  writeStr(home, fd, "  if (op == 1) { if (s[pos] != 10) return yymatch(pc + 1, s, n, pos + 1, depth + 1); return -1; }\n");
+  writeStr(home, fd, "  if (op == 2) { if (yyclass[a][s[pos] >> 3] & (1 << (s[pos] & 7))) return yymatch(pc + 1, s, n, pos + 1, depth + 1); return -1; }\n");
+  writeStr(home, fd, "  return -1;\n}\n");
+  writeStr(home, fd, "static unsigned char yybuf[1048576];\nstatic int yylen = 0;\nstatic int yypos = 0;\n");
+  writeStr(home, fd, "static void yyload(void) {\n  if (yyin == 0) yyin = stdin;\n  yylen = (int)fread(yybuf, 1, sizeof yybuf, yyin);\n  yypos = 0;\n}\n");
+  writeStr(home, fd, "int yylex(void) {\n  int best, bestRule, r, e;\n  if (yylen == 0) yyload();\n");
+  writeStr(home, fd, "  while (yypos < yylen) {\n    best = -1; bestRule = -1;\n");
+  writeStr(home, fd, "    for (r = 0; r < ");
+  writeNum(home, fd, ruleCount);
+  writeStr(home, fd, "; r += 1) {\n      e = yymatch(yyrulepc[r], yybuf, yylen, yypos, 0);\n      if (e > best) { best = e; bestRule = r; }\n    }\n");
+  writeStr(home, fd, "    if (best >= 0) {\n      yyleng = best - yypos;\n      memcpy(yytext, yybuf + yypos, (size_t)yyleng);\n      yytext[yyleng] = 0;\n      yypos = best;\n      switch (bestRule) {\n");
+  i = 0L;
+  while (i < ruleCount) {
+    writeStr(home, fd, "      case ");
+    writeNum(home, fd, i);
+    writeStr(home, fd, ": ");
+    long aAt = memory::load64(actAt(st, i));
+    long aLen = memory::load64(actAt(st, i) + 64L);
+    if (aLen < 1L) {
+      writeStr(home, fd, "{ fwrite(yytext, 1, (size_t)yyleng, stdout); }");
+    } else {
+      writeStr(home, fd, "{ ");
+      writeSpan(home, fd, 0L, aAt, aLen);
+      writeStr(home, fd, " }");
+    }
+    writeStr(home, fd, " break;\n");
+    i = i + 1L;
+  }
+  writeStr(home, fd, "      default: break;\n      }\n");
+  writeStr(home, fd, "    } else {\n      putchar(yybuf[yypos]);\n      yypos += 1;\n    }\n  }\n  return 0;\n}\n");
+  /* 用户子程序段。 */
+  long u = sec2 + 3L;
+  if (u < srcLen) {
+    writeSpan(home, fd, 0L, src + u * 8L, srcLen - u);
+    writeStr(home, fd, "\n");
+  }
+  /* 没有 main 时给一个。 */
+  long hasMain = 0L;
+  long scan = u;
+  while (scan + 4L < srcLen) {
+    if (byteAt(src + scan * 8L) == 109L && byteAt(src + (scan + 1L) * 8L) == 97L && byteAt(src + (scan + 2L) * 8L) == 105L && byteAt(src + (scan + 3L) * 8L) == 110L) {
+      hasMain = 1L;
+    }
+    scan = scan + 1L;
+  }
+  if (hasMain == 0L) {
+    writeStr(home, fd, "int main(void) { yylex(); return 0; }\n");
+  }
+  if (fd != 1L) {
+    obr::proc::close(home, fd);
+  }
+  return finish(home, 0L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 786432L);
+  long src = obr::proc::alloc(home, 524288L);
+  if (st == 0L || src == 0L) {
+    writeErr(home, "lex: out of memory\n");
+    return finish(home, 1L);
+  }
+  memory::store64(0L, st + 256L);
+  memory::store64(0L, st + 128L);
+  memory::store64(0L, st + 192L);
+  memory::store64(0L, st + 64L);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long toStdout = 0L;
+  long quiet = 0L;
+  long stats = 0L;
+  long srcLen = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long c = 1L;
+      while (c < len) {
+        long o = byteAt(at + c * 8L);
+        if (o == 116L) {
+          toStdout = 1L;
+        } else if (o == 110L) {
+          quiet = 1L;
+        } else if (o == 118L) {
+          stats = 1L;
+        } else {
+          writeErr(home, "lex: invalid option\n");
+          return finish(home, 1L);
+        }
+        c = c + 1L;
+      }
+      index = index + 1L;
+      continue;
+    }
+    operands = operands + 1L;
+    index = index + 1L;
+    if (len == 1L && byteAt(at) == 45L) {
+      continue;
+    }
+    plant(home, at, len);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "lex: ");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, ": No such file or directory\n");
+      return finish(home, 1L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    while (srcLen < 65536L) {
+      if (obr::proc::read(home, fd, srcLen, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), src + srcLen * 8L, got);
+      srcLen = srcLen + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+  }
+  /* 标准输入（无操作数或 -）。 */
+  if (operands == 0L) {
+    while (srcLen < 65536L) {
+      if (obr::proc::read(home, 0L, srcLen, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), src + srcLen * 8L, got);
+      srcLen = srcLen + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+  }
+  return lexRun(home, st, src, srcLen, toStdout, quiet, stats);
+}

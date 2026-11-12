@@ -1,0 +1,18 @@
+/* Plan 2 M1：强转检查失败就停机，rax 是 -1（M3 落地失败值后改为抛出）。
+   运行时失败例，不用 bad- 前缀。*/
+#VERSION 2
+
+class Base {
+  int x;
+  deRfun Base(): void { x = 1; }
+}
+
+class Sub : Base {
+  deRfun Sub(): void { x = 2; }
+}
+
+deRfun main(): int {
+  Base b = new Base();
+  Sub s = (Sub*)b;
+  return 0;
+}

@@ -1,0 +1,230 @@
+/* POSIX.1-2017 apply（utilities/apply.html）的选定子集：
+   apply [-a c] [--] utility argument...
+   对每个参数各派生一次命令。
+   utility 里没有替换符时，这一次的命令是 utility 该参数（参数作为最后一个操作数）。
+   有替换符时（缺省 %，-a c 更换为别的单字节），utility 里每个替换符换成该参数，
+   结果按空格拆成程序与参数（最多 8 个词；词里不支持引号、重定向与管道——
+   本平台子集，如实记录）。utility 与词 0 都按 PATH 找（缺省 /bin:/os:/kernel），
+   与 nohup 相同。找不到写 apply: 名字: No such file or directory；
+   派生失败写 apply: 名字: cannot execute。一次命令的子进程退出码非 0 也算失败。
+   退出码是失败次数（上限 255），全成功是 0。缺操作数写 apply: missing operand，
+   退出 1。诊断英文 ASCII，描述符 2，前缀 apply:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun sayMiss(long home, long addr, long count): void {
+  writeErr(home, "apply: ");
+  writeSpan(home, 2L, 0L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun sayExec(long home, long addr, long count): void {
+  writeErr(home, "apply: ");
+  writeSpan(home, 2L, 0L, addr, count);
+  writeErr(home, ": cannot execute\n");
+}
+
+/* utility 跨度里有没有替换符。 */
+deRfun hasMark(long addr, long count, long mark): long {
+  long index = 0L;
+  while (index < count) {
+    if (byteAt(addr + index * 8L) == mark) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 替换：utility 里的每个替名符换成 [argAt,argLen]，写进 work（隔 8 位）。
+   返回写出的八位组数；超 8192 返回 -1。 */
+deRfun substitute(long util, long utilLen, long argAt, long argLen, long mark, long work): long {
+  long next = 0L;
+  long index = 0L;
+  while (index < utilLen) {
+    long octet = byteAt(util + index * 8L);
+    if (octet == mark) {
+      if (next + argLen > 8192L) {
+        return -1L;
+      }
+      copySpan(argAt, work + next * 8L, argLen);
+      next = next + argLen;
+    } else {
+      if (next >= 8192L) {
+        return -1L;
+      }
+      memory::storeOctet(octet, work + next * 8L);
+      next = next + 1L;
+    }
+    index = index + 1L;
+  }
+  return next;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long saved = obr::proc::alloc(home, 139520L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  long work = obr::proc::alloc(home, 66560L);
+  if (saved == 0L || scratch == 0L || work == 0L) {
+    writeErr(home, "apply: out of memory\n");
+    return finish(home, 1L);
+  }
+  if (saveWindow(home, saved) != 0L) {
+    writeErr(home, "apply: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = savedCount(saved);
+  long mark = 37L;
+  long index = 1L;
+  long util = -1L;
+  while (index < count) {
+    long at = savedArgPtr(saved, index);
+    long len = savedArgLen(saved, index);
+    if (util < 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      index = index + 1L;
+      util = -2L;
+      continue;
+    }
+    if (util == -2L) {
+      util = index;
+      break;
+    }
+    if (util < 0L && len == 2L && spanSame(at, len, "-a") == 1L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "apply: option requires an argument\n");
+        return finish(home, 1L);
+      }
+      if (savedArgLen(saved, index) != 1L) {
+        writeErr(home, "apply: invalid substitution character\n");
+        return finish(home, 1L);
+      }
+      mark = byteAt(savedArgPtr(saved, index));
+      index = index + 1L;
+      continue;
+    }
+    if (util < 0L && len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "apply: invalid option\n");
+      return finish(home, 1L);
+    }
+    util = index;
+    break;
+  }
+  if (util < 0L) {
+    writeErr(home, "apply: missing operand\n");
+    return finish(home, 1L);
+  }
+  long utilAt = savedArgPtr(saved, util);
+  long utilLen = savedArgLen(saved, util);
+  if (util + 1L >= count) {
+    writeErr(home, "apply: missing operand\n");
+    return finish(home, 1L);
+  }
+  long failed = 0L;
+  long marker = hasMark(utilAt, utilLen, mark);
+  index = util + 1L;
+  while (index < count) {
+    long argAt = savedArgPtr(saved, index);
+    long argLen = savedArgLen(saved, index);
+    long nameAt = utilAt;
+    long nameLen = utilLen;
+    long words = 1L;
+    long word0At = utilAt;
+    long word0Len = utilLen;
+    if (marker == 1L) {
+      long made = substitute(utilAt, utilLen, argAt, argLen, mark, work);
+      if (made < 0L) {
+        writeErr(home, "apply: command too long\n");
+        failed = failed + 1L;
+        index = index + 1L;
+        continue;
+      }
+      /* 按空格拆词到 work 开头的词表（每词偏移与长度各 8 位组字）。 */
+      words = 0L;
+      long cursor = 0L;
+      while (cursor < made) {
+        while (cursor < made && byteAt(work + cursor * 8L) == 32L) {
+          cursor = cursor + 1L;
+        }
+        long start = cursor;
+        while (cursor < made && byteAt(work + cursor * 8L) != 32L) {
+          cursor = cursor + 1L;
+        }
+        if (cursor > start) {
+          if (words >= 8L) {
+            writeErr(home, "apply: too many words\n");
+            words = -1L;
+            break;
+          }
+          memory::store64(start, work + 65536L + words * 64L);
+          memory::store64(cursor - start, work + 65536L + 512L + words * 64L);
+          if (words == 0L) {
+            word0At = work + start * 8L;
+            word0Len = cursor - start;
+          }
+          words = words + 1L;
+        }
+      }
+      if (words < 1L) {
+        writeErr(home, "apply: empty command\n");
+        failed = failed + 1L;
+        index = index + 1L;
+        continue;
+      }
+    }
+    long pathLen = 0L;
+    if (resolve(home, scratch, word0At, word0Len, &pathLen) == 0L) {
+      sayMiss(home, word0At, word0Len);
+      failed = failed + 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (argsBegin(home, saved) != 0L) {
+      writeErr(home, "apply: out of memory\n");
+      return finish(home, 1L);
+    }
+    if (marker == 1L) {
+      long w = 0L;
+      while (w < words) {
+        long start = memory::load64(work + 65536L + w * 64L);
+        long wlen = memory::load64(work + 65536L + 512L + w * 64L);
+        if (argsPush(home, work + start * 8L, wlen) != 0L) {
+          writeErr(home, "apply: argument list too long\n");
+          return finish(home, 1L);
+        }
+        w = w + 1L;
+      }
+    } else {
+      if (argsPush(home, utilAt, utilLen) != 0L || argsPush(home, argAt, argLen) != 0L) {
+        writeErr(home, "apply: argument list too long\n");
+        return finish(home, 1L);
+      }
+    }
+    if (argsDone(home) != 0L) {
+      writeErr(home, "apply: argument list too long\n");
+      return finish(home, 1L);
+    }
+    plant(home, scratch, pathLen);
+    if (obr::proc::spawn(home, 0L) != 0L) {
+      sayExec(home, word0At, word0Len);
+      failed = failed + 1L;
+      index = index + 1L;
+      continue;
+    }
+    long pid = obr::proc::slot(home, 192L);
+    obr::proc::wait(home, pid);
+    long code = obr::proc::slot(home, 192L);
+    if (code != 0L) {
+      failed = failed + 1L;
+    }
+    index = index + 1L;
+  }
+  if (failed > 255L) {
+    failed = 255L;
+  }
+  return finish(home, failed);
+}

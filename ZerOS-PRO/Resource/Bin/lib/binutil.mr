@@ -1,0 +1,55 @@
+/* Bin 命令共享辅助模块 binutil 的接口。实现见 binutil.obr。
+   只被 Resource/Bin 下的新命令 import；老命令不引用，构建上零变化。
+   各函数不与 arg、obr.proc 导出的名字冲突。 */
+/* 按服务 28 交退出码并结束，不再返回。 */
+deRfun finish(long home, long code): int;
+/* 读隔 8 位布局里 addr 处的一个八位组。 */
+deRfun byteAt(long addr): long;
+/* 八位组从 from 搬到 to，相邻隔 8 位。 */
+deRfun copySpan(long from, long to, long count): void;
+/* 字符串按 UTF-8 写成隔 8 位八位组，返回下一个偏移。 */
+deRfun putText(long addr, long at, string text): long;
+/* 十进制整数写成隔 8 位八位组（负数带减号），返回下一个偏移。 */
+deRfun putNum(long addr, long at, long value): long;
+/* 解析十进制整数（可带 +、-）。0 成功，7 不合法。 */
+deRfun spanNum(long addr, long count, long* value): long;
+/* 跨度与字符串逐字节比较。相同返回 1。 */
+deRfun spanSame(long addr, long count, string text): long;
+/* 字符串写到 fd，调用方控制在 4096 八位组以内。 */
+deRfun writeStr(long home, long fd, string text): void;
+/* 诊断字符串写描述符 2。 */
+deRfun writeErr(long home, string text): void;
+/* 隔 8 位跨度写 fd，每次最多 4096。成功 0，写失败 1。 */
+deRfun writeSpan(long home, long fd, long offset, long addr, long count): long;
+/* 十进制整数写 fd。 */
+deRfun writeNum(long home, long fd, long value): void;
+/* 十六进制写 fd，位数不足补 0，digits 在 1 到 16。 */
+deRfun writeHex(long home, long fd, long value, long digits): void;
+/* 把跨度装进服务请求路径（长度字在起点，八位组从 +64 起）。 */
+deRfun plant(long home, long addr, long count): void;
+/* stat 已 plant 的路径，返回种类；不存在或失败返回 -1。 */
+deRfun fileKind(long home): long;
+/* 跨度里有斜杠返回 1。 */
+deRfun hasSlash(long addr, long count): long;
+/* 按 PATH 找程序（缺省 /bin:/os:/kernel）。命中时路径在 scratch 开头，*outLen 是长度。
+   scratch 至少 65728 八位组。返回 1 命中，0 没有。 */
+deRfun resolve(long home, long scratch, long name, long nameLen, long* outLen): long;
+/* 把参数与环境窗口整份抄到 saved（至少 139520 八位组）。失败 1。 */
+deRfun saveWindow(long home, long saved): long;
+/* 环境写回本任务窗口，参数换成 saved 下标 begin 起的那些，供 spawn 抄给子任务。失败 1。 */
+deRfun publish(long home, long saved, long begin): long;
+/* saved 里的参数个数。 */
+deRfun savedCount(long saved): long;
+/* saved 里下标 index 的参数长度。 */
+deRfun savedArgLen(long saved, long index): long;
+/* saved 里下标 index 的参数起点（隔 8 位八位组）。 */
+deRfun savedArgPtr(long saved, long index): long;
+/* 把 saved 的参数整份换成单个参数 arg0，环境不动，供 spawn 抄给子任务。失败 1。 */
+deRfun setSolo(long home, long saved, string arg0): long;
+/* 逐个构造子任务参数：argsBegin 开始（环境不动），argsPush 加一个隔 8 位跨度参数，
+   argsDone 收尾。个数上限 64、八位组上限 8192。失败 1。 */
+deRfun argsBegin(long home, long saved): long;
+deRfun argsPush(long home, long addr, long count): long;
+deRfun argsDone(long home): long;
+/* 把命令文本交 /os/sh 执行（管道喂命令与 exit 两行）。返回子进程退出码，失败 2。 */
+deRfun shellRun(long home, long cmdAt, long cmdLen): long;

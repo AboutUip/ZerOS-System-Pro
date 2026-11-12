@@ -1,0 +1,15 @@
+/* Plan 2 M2：带析构的所有权变量的函数里不能写 goto（会跳过析构）。编译应当失败：有析构变量的函数里不能写 goto main。 */
+#VERSION 2
+
+class A {
+  int x;
+  deRfun A(): void { x = 1; }
+  @Destruct deRfun cleanup(): void { x = 0; }
+}
+
+deRfun main(): int {
+  A a = new A();
+  goto done;
+  done:
+  return 0;
+}

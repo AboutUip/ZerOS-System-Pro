@@ -1,0 +1,17 @@
+/* 网卡 API。函数体编成 /lib/nic.zdll。
+   驱动拥有完整的网络栈；这一层只把原始以太网帧交给内核网卡核心。 */
+namespace nic {
+/* 探测网卡。0 是服务可达，2 是未就绪，7 是参数不合法。 */
+deRfun probe(): long;
+/* 发送一帧原始以太网报文。成功返回 0，失败返回负数状态。 */
+deRfun send(long address, long length): long;
+/* 接收一帧原始以太网报文。成功返回帧长，失败返回负数状态；-1 是空。 */
+deRfun recv(long address, long capacity): long;
+/* 自检。0 是服务可达且能力字合法。 */
+deRfun selfCheck(): long;
+/* 读取能力。frameMax 是帧上界，queueDepth 是参考队列深度，wireKind 是线的种类。 */
+deRfun info(long* frameMax, long* queueDepth, long* wireKind): long;
+/* 配置线。mode 0 是 loopback，1 是 udp。address 是 IPv4 的 32 位值，
+   port 是 16 位端口。loopback 时后两项忽略。0 是成功。 */
+deRfun configure(long mode, long address, long port): long;
+}

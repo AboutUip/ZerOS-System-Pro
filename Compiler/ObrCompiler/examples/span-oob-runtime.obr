@@ -1,0 +1,9 @@
+/* M-B 运行时负例：span 下标越界没有归宿——失败值未接住，按 Plan 2 归宿链终止，rax = -code（= -1）。
+   这是运行时失败：编译通过，运行以 rax = -1 停机（regress 基线记录 run exit=-1）。 */
+#VERSION 2
+
+deRfun main(): long {
+  var[span[byte]] s = span[byte](1048576, 2L);
+  var[byte] x = s[5];
+  return 0;
+}

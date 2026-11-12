@@ -1,0 +1,71 @@
+/* 任务窗口分配器。
+   客核 3–7 的旧布局任务占 8–17MiB；低 8MiB 和高 17–32MiB 是空闲的。
+   每个窗口 512KiB；每核低 16 个、高 30 个，共 46 个，5 核 230 个。
+   位图放在监督核窗口 +1MiB，一个窗口一个八位组。 */
+import window;
+import memory;
+import proc;
+
+deRfun windowBits(): long {
+  return 4194304L;
+}
+
+deRfun windowHeapOffset(): long {
+  return 720896L;
+}
+
+deRfun windowTag(): long {
+  return 4294967296L;
+}
+
+deRfun windowTagged(long cap): long {
+  /* 2^32 是窗口任务的标记；旧任务的能力位都远小于它。 */
+  if (cap >= 4294967296L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun windowMap(): long {
+  return kSupervisor() + 1048576L;
+}
+
+deRfun windowOrigin(long index): long {
+  long core = index / 46L;
+  long within = index % 46L;
+  long base = kArena(3L + core);
+  if (within < 16L) {
+    return base + within * 4194304L;
+  }
+  return base + 142606336L + (within - 16L) * 4194304L;
+}
+
+deRfun windowTake(): long {
+  long index = 0L;
+  while (index < 230L) {
+    /* 每核 0 号窗口保留给旧布局任务（/kernel/idle、/kernel/init 等）。
+       它们的栈/帧在 kArena(core) 起始的旧布局区，会和窗口 0 重叠。 */
+    if (index % 46L == 0L) {
+      index = index + 1L;
+      continue;
+    }
+    long used = memory::loadOctet(windowMap() + index * 8L);
+    if (used == 0L) {
+      memory::storeOctet(1L, windowMap() + index * 8L);
+      return windowOrigin(index);
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun windowFree(long origin): void {
+  long index = 0L;
+  while (index < 230L) {
+    if (windowOrigin(index) == origin) {
+      memory::storeOctet(0L, windowMap() + index * 8L);
+      return;
+    }
+    index = index + 1L;
+  }
+}

@@ -8,6 +8,7 @@ import memory;
 import obr.oct;
 import obr.os;
 import obr.proc;
+import time;
 import arg;
 
 deRfun u8(long addr): long {
@@ -284,7 +285,7 @@ deRfun emitHeader(long home, long fd, long* off, long nameAt, long nameLen, long
   if (nameLen < 16L) {
     memory::storeOctet(47L, obr::proc::bytes(home) + nameLen * 8L);
   }
-  obr::proc::clock(home);
+  time::clock(home);
   long now = obr::proc::slot(home, 128L) / 1000L;
   putNum(obr::proc::bytes(home) + 16L * 8L, 12L, now, 10L, 32L);
   long pos = 28L;

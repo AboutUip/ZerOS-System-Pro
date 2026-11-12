@@ -1,0 +1,169 @@
+/* POSIX.1-2017 qstat（utilities/qstat.html，批量作业族）。选定子集：
+   qstat [-f] [-J] [-p] [-t] [-x] [--] [job_identifier... | destination...]
+   列出 /var/spool/nqs/ 作业。缺省：每行 `job id 状态 所有者 作业名`；
+   -f 全格式（列出全部键值头与脚本行数）；-J 显示作业号列（缺省已有，接受）；
+   -p 显示优先级列；-t 显示时间列（登记的 atime）；-x 显示扩展（= -f）。
+   job_identifier 子集：纯数字作业号（可带 .queue 后缀，忽略后缀）；
+   destination 形态（无数字）按队列名筛选（本平台队列字段 queue）。
+   无匹配时静默退出 0。诊断英文 ASCII，描述符 2，前缀 qstat:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import nqslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/nqs");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long full = 0L;
+  long showP = 0L;
+  long showT = 0L;
+  long filter = obr::proc::alloc(home, 8192L * 8L);
+  long filterLen = 0L;
+  long filtIsJob = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 102L || o == 120L) {
+        full = 1L;
+      } else if (o == 74L || o == 116L && len == 2L) {
+        /* -J 接受；-t 时间列。 */
+        if (o == 116L) {
+          showT = 1L;
+        }
+      } else if (o == 112L) {
+        showP = 1L;
+      } else {
+        writeErr(home, "qstat: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      filterLen = len;
+      copySpan(at, filter, len);
+      if (len >= 48L && byteAt(at) >= 48L && byteAt(at) <= 57L) {
+        filtIsJob = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  plant(home, dir, dirLen);
+  nqsEnsure(home, dir, dirLen);
+  long d = 0L;
+  while (d < 512L) {
+    if (obr::proc::readdir(home, d, 512L) != 0L) {
+      break;
+    }
+    long nlen = obr::proc::slot(home, 256L);
+    if (nlen < 1L) {
+      break;
+    }
+    long nameAt = obr::proc::bytes(home);
+    if (nlen > 4L && byteAt(nameAt) == 106L && byteAt(nameAt + 8L) == 111L && byteAt(nameAt + 16L) == 98L && byteAt(nameAt + 24L) == 46L) {
+      long path = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(dir, path, dirLen);
+      memory::storeOctet(47L, path + dirLen * 8L);
+      copySpan(nameAt, path + (dirLen + 1L) * 8L, nlen);
+      long plen = dirLen + 1L + nlen;
+      if (nqsLoad(home, st, buf, path, plen) == 0L) {
+        long jobName = nameAt + 32L;
+        long jobLen = nlen - 4L;
+        /* 过滤。 */
+        long hit = 1L;
+        if (filterLen > 0L) {
+          if (filtIsJob == 1L) {
+            hit = 0L;
+            if (filterLen == jobLen) {
+              long same = 1L;
+              long c = 0L;
+              while (c < jobLen) {
+                if (byteAt(filter + c * 8L) != byteAt(jobName + c * 8L)) {
+                  same = 0L;
+                }
+                c = c + 1L;
+              }
+              hit = same;
+            }
+          } else {
+            long qAt = 0L;
+            long qLen = 0L;
+            if (nqsGet(st, "queue", &qAt, &qLen) == 1L && qLen == filterLen) {
+              long same = 1L;
+              long c = 0L;
+              while (c < qLen) {
+                if (byteAt(filter + c * 8L) != byteAt(qAt + c * 8L)) {
+                  same = 0L;
+                }
+                c = c + 1L;
+              }
+              hit = same;
+            } else {
+              hit = 0L;
+            }
+          }
+        }
+        if (hit == 1L) {
+          writeStr(home, 1L, "job ");
+          writeSpan(home, 1L, 0L, jobName, jobLen);
+          writeStr(home, 1L, "  ");
+          long vAt = 0L;
+          long vLen = 0L;
+          if (nqsGet(st, "state", &vAt, &vLen) == 1L) {
+            writeSpan(home, 1L, 0L, vAt, vLen);
+          } else {
+            writeStr(home, 1L, "?");
+          }
+          writeStr(home, 1L, "  ");
+          if (nqsGet(st, "owner", &vAt, &vLen) == 1L) {
+            writeSpan(home, 1L, 0L, vAt, vLen);
+          }
+          writeStr(home, 1L, "  ");
+          if (nqsGet(st, "name", &vAt, &vLen) == 1L) {
+            writeSpan(home, 1L, 0L, vAt, vLen);
+          }
+          if (showP == 1L) {
+            writeStr(home, 1L, "  pri=");
+            if (nqsGet(st, "priority", &vAt, &vLen) == 1L) {
+              writeSpan(home, 1L, 0L, vAt, vLen);
+            }
+          }
+          if (showT == 1L) {
+            writeStr(home, 1L, "  at=");
+            if (nqsGet(st, "atime", &vAt, &vLen) == 1L) {
+              writeSpan(home, 1L, 0L, vAt, vLen);
+            }
+          }
+          writeStr(home, 1L, "\n");
+          if (full == 1L) {
+            long rows = memory::load64(st);
+            long i = 0L;
+            while (i < rows) {
+              long e = st + 1024L + i * 2048L;
+              writeStr(home, 1L, "  ");
+              writeSpan(home, 1L, 0L, e + 64L, memory::load64(e));
+              writeStr(home, 1L, ": ");
+              writeSpan(home, 1L, 0L, e + 256L, memory::load64(e + 192L));
+              writeStr(home, 1L, "\n");
+              i = i + 1L;
+            }
+            writeStr(home, 1L, "  script-bytes: ");
+            writeNum(home, 1L, memory::load64(st + 128L));
+            writeStr(home, 1L, "\n");
+          }
+        }
+      }
+    }
+    d = d + 1L;
+  }
+  return finish(home, 0L);
+}

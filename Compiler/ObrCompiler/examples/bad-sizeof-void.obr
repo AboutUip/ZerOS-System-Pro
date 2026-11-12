@@ -1,0 +1,7 @@
+/* sizeof(void) 是非法形态（void 没有存储跨度），编译应当失败。 */
+#VERSION 2
+
+deRfun main(): int {
+  var[long] bad = sizeof(void);
+  return 0;
+}

@@ -1,0 +1,72 @@
+/* M-B：span[T] 切片——构造、.data/.count、下标读写、sub 子切片、按值传参/返回，
+   以及下标/子切片越界的 Plan 2 失败值被 try 接住（code 1 = 下标越界）。结果 0。 */
+#VERSION 2
+
+deRfun echo(span[byte] buf): span[byte] {
+  return buf;
+}
+
+deRfun main(): long {
+  var[span[byte]] s = span[byte](1048576, 4L);
+  /* 构造 + .data/.count 读两字。 */
+  if (s.data != 1048576L) return 1;
+  if (s.count != 4L) return 2;
+  if (sizeof(span[byte]) != 128L) return 3;
+  if (alignof(span[byte]) != 64L) return 4;
+  /* 下标读写：byte 元素步长 8 位，读出 0..255。 */
+  s[0] = (byte)65;
+  s[3] = (byte)67;
+  if ((long)s[0] != 65L) return 5;
+  if ((long)s[3] != 67L) return 6;
+  /* sub 子切片：两字新值（data + 起 × 步长、个数）。 */
+  var[span[byte]] t = s.sub(1L, 2L);
+  if (t.data != s.data + 8L) return 7;
+  if (t.count != 2L) return 8;
+  t[1] = (byte)66;
+  if ((long)s[2] != 66L) return 9;
+  /* 按值传参 + 按值返回（retSlot 隐藏目的槽）。 */
+  var[span[byte]] u = echo(t);
+  if (u.data != t.data) return 10;
+  if (u.count != t.count) return 11;
+  /* 两字拷贝赋值。 */
+  var[span[byte]] v = span[byte](0L, 0L);
+  v = s;
+  if (v.data != s.data) return 12;
+  if (v.count != 4L) return 13;
+  /* 长元素步长 64 位：写两字、按位地址读回。 */
+  var[span[long]] ls = span[long](2097152L, 2L);
+  ls[0] = 7L;
+  ls[1] = 9L;
+  if (ls[0] + ls[1] != 16L) return 14;
+  var[long*] p = (long*)ls.data;
+  if (*p != 7L) return 15;
+  /* 越界下标 = 失败值（code 1），try 接住后不终止。 */
+  try {
+    var[byte] x = s[4];
+    return 16;
+  } catch (fail e) {
+    if (e.code != 1L) return 17;
+  }
+  /* 写越界同样失败值。 */
+  try {
+    s[9] = (byte)1;
+    return 18;
+  } catch (fail e) {
+    if (e.code != 1L) return 19;
+  }
+  /* sub 越界（起 + 个数 > .count）失败值。 */
+  try {
+    var[span[byte]] bad = s.sub(2L, 3L);
+    return 20;
+  } catch (fail e) {
+    if (e.code != 1L) return 21;
+  }
+  /* 负下标也算越界。 */
+  try {
+    var[byte] y = s[0L - 1L];
+    return 22;
+  } catch (fail e) {
+    if (e.code != 1L) return 23;
+  }
+  return 0;
+}

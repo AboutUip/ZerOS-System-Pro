@@ -1,0 +1,21 @@
+/* .zo 驱动管理器。op 从 +64 读：1 load、2 stop、3 restart、4 rollback、5 list。
+   回滚元数据（上一份/当前路径）放在调用者窗口 +81920 和 +98368。 */
+deRfun drvManage(long caller, long home): long;
+/* handover 状态缓冲。op 在 +64：1 写、2 读、3 清。写长度在 +128，
+   正文在 +131072；读回复字节数，正文到 +131072。 */
+deRfun drvHandover(long caller, long home): long;
+/* 键盘事件镜像：控制台每入队一个输入字节就调一次；驱动用服务 58 取走。 */
+deRfun drvInputPush(long value): void;
+deRfun drvInputRead(long home): long;
+deRfun drvInputHead(): long;
+/* 键盘驱动实时状态：op 1 发布（4 个字在 +131072 起），op 2 读取（回字节数）。 */
+deRfun drvKbdPublish(long caller, long home): long;
+deRfun drvKbdRead(long caller, long home): long;
+/* 真实鼠标：op 1 消费一个设备事件；op 2/3 发布/读取驱动实时状态。 */
+deRfun drvPointerPoll(long home): long;
+deRfun drvPointerSnapshot(long home): long;
+deRfun drvMousePublish(long caller, long home): long;
+deRfun drvMouseRead(long caller, long home): long;
+deRfun drvMousePacked(long caller, long home): long;
+deRfun drvGpuPublish(long caller, long home): long;
+deRfun drvGpuRead(long caller, long home): long;

@@ -457,6 +457,10 @@ Live liveOf(const std::string& line) {
   const View view = viewOf(line);
   if (!view.ok) return live;
   const std::string& head = view.head;
+  /* M-D：vld./vst. 是 volatile 访问的未登记助记符面——同未知助记符待遇（Keep+Clobber）。
+     takeLoad 重复 load 合并、holds 常量删读、rememberStore store→load 转发对
+     volatile 访问全屏蔽；常量指针折叠在 Fold::knownAddr_ 关（volatile 不进 remember）。 */
+  if (head.rfind("vld.", 0) == 0 || head.rfind("vst.", 0) == 0) return live;
   if (head == "call") return live;
   if (head == "jz" || head == "jnz" || head == "jmp") {
     live.kind = LiveKind::Keep;
@@ -646,6 +650,14 @@ void forward(const std::vector<Line>& input, std::vector<Line>& output) {
     if (head == "yield" || head == "dwell") {
       output.push_back(line);
       machine.clearMem();
+      continue;
+    }
+    /* M-D：volatile 访问面（vld./vst.）原位保留并清空全部已知状态（同未知助记符待遇）：
+       load 合并/常量删读/store→load 转发/常量指针折叠四个危险面在这一行全断，
+       连续的 volatile 访问逐条保留（内联展开并块后同样逐条）。 */
+    if (head.rfind("vld.", 0) == 0 || head.rfind("vst.", 0) == 0) {
+      output.push_back(line);
+      machine.clearAll();
       continue;
     }
     if (head == "jz" || head == "jnz" || head == "jmp" || head == "rsp.bias" || head == "rsp.restore") {

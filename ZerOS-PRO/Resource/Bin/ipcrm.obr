@@ -1,0 +1,58 @@
+/* POSIX.1-2017 ipcrm（utilities/ipcrm.html，XSI）。形式：
+   ipcrm [-q|-m|-s] id...
+   本内核没有 System V IPC（无队列/信号量/共享内存对象），没有任何对象可删：
+   完整处理选项与 id 后写 ipcrm: id: invalid id，退出 1，不假装成功。
+   选项全量：-q 按消息队列 id、-m 按共享内存 id、-s 按信号量 id；缺省按三者任一解释。
+   id 必须是正十进制整数，否则写 ipcrm: invalid id，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 ipcrm:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long mode = 0L;
+  long operands = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len == 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 113L || o == 109L || o == 115L) {
+        if (mode != 0L) {
+          writeErr(home, "ipcrm: only one of -q -m -s\n");
+          return finish(home, 1L);
+        }
+        mode = o;
+      } else {
+        writeErr(home, "ipcrm: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      long value = 0L;
+      if (spanNum(at, len, &value) != 0L || value < 1L) {
+        writeErr(home, "ipcrm: invalid id\n");
+        failed = 1L;
+      } else {
+        writeErr(home, "ipcrm: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": invalid id\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "ipcrm: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

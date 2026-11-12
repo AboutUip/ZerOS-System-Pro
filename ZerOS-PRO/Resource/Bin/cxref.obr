@@ -1,0 +1,481 @@
+/* POSIX.1-2017 cxref（utilities/cxref.html，XSI）。形式：
+   cxref [-cs] [-o file] [-w num] [-D name[=def]]... [-I dir]... [-U name]... [--] file...
+   选项全量：-c 合并全部文件的交叉引用；-s 静默（不打文件名）；-o file 输出到文件；
+   -w num 输出宽度（缺省 80，小于 51 按 51）；-D name[=def]、-I dir、-U name 与 c99
+   同义且顺序有意义——本工具是文本级交叉引用（见下）：-D 把 name 记为宏符号（=def
+   仅登记不展开）、-I dir 仅登记（不做 include 展开）、-U name 撤销先前 -D 登记。
+   平台口径：没有 C 预处理器与类型信息，扫描是词法级：跳过 // 与 /* *\/ 注释、字符与
+   字符串常量，收集标识符（#define 行的名一并进符号表，规范要求）与行号；函数名=
+   顶层标识符后紧跟 ( 且此前未见 ;（启发式）；每符号首次出现即声明引用，行号前置 *。
+   输出格式规范未定：每行 `名  函数 行号[ *]...`，超 -w 宽度时续行缩进 4 格；
+   按名字排序（当前 locale 即字节序）。
+   无文件写 cxref: missing operand，退出 1；打不开写 cxref: 文件: No such file or
+   directory，退出 1，继续处理其余文件，最终退出 1。容量：符号 256 个、每符号
+   引用 48 处、函数上下文 16 个，超出静默截断（如实注明）。
+   诊断英文 ASCII，描述符 2，前缀 cxref:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun isAlpha(long o): long {
+  if (o >= 65L && o <= 90L) {
+    return 1L;
+  }
+  if (o >= 97L && o <= 122L) {
+    return 1L;
+  }
+  if (o == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isAlnum(long o): long {
+  if (o >= 48L && o <= 57L) {
+    return 1L;
+  }
+  return isAlpha(o);
+}
+
+/* 符号条目 4096 单位：名长 0、宏 64、函数号+1 128、引用数 192、名 256（64 八位组）、
+   引用 1024（48 字：行号 + 声明标志*1048576）。函数表在 tbl+1048576：
+   每条名长 64 位 + 名 256 八位组（2048 单位），共 16 条。 */
+deRfun symAt(long tbl, long i): long {
+  return tbl + i * 4096L;
+}
+
+deRfun funLenAt(long tbl, long i): long {
+  /* 1048576 拆成 1024*1024：位置无关装入会把 ≥1048576 的立即数当数据地址重定位。 */
+  return tbl + 1024L * 1024L + i * 2048L;
+}
+
+deRfun funNameAt(long tbl, long i): long {
+  return tbl + 1024L * 1024L + i * 2048L + 64L;
+}
+
+deRfun swapSym(long tbl, long i): long {
+  long a = symAt(tbl, i);
+  long b = symAt(tbl, i + 1L);
+  long c = 0L;
+  while (c < 4096L) {
+    long tmp = memory::load64(a + c);
+    memory::store64(memory::load64(b + c), a + c);
+    memory::store64(tmp, b + c);
+    c = c + 64L;
+  }
+  return 0L;
+}
+
+deRfun symCmp(long tbl, long i, long j): long {
+  long a = symAt(tbl, i);
+  long b = symAt(tbl, j);
+  long la = memory::load64(a);
+  long lb = memory::load64(b);
+  long n = la;
+  if (lb < n) {
+    n = lb;
+  }
+  long c = 0L;
+  while (c < n) {
+    long ca = byteAt(a + 256L + c * 8L);
+    long cb = byteAt(b + 256L + c * 8L);
+    if (ca != cb) {
+      if (ca > cb) {
+        return 1L;
+      }
+      return 0L;
+    }
+    c = c + 1L;
+  }
+  if (la > lb) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  /* 1200000 拆成 1200*1000（同上，大立即数不能直写）。 */
+  long tbl = obr::proc::alloc(home, 1200L * 1000L);
+  long text = obr::proc::alloc(home, 524288L);
+  if (tbl == 0L || text == 0L) {
+    writeErr(home, "cxref: out of memory\n");
+    return finish(home, 1L);
+  }
+  memory::store64(0L, tbl + 1040384L);
+  memory::store64(0L, tbl + 1040448L);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long combined = 0L;
+  long silent = 0L;
+  long width = 80L;
+  long outAt = 0L;
+  long outLen = 0L;
+  long operands = 0L;
+  long failed = 0L;
+  long firstFile = 1L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 99L && len == 2L) {
+        combined = 1L;
+      } else if (o == 115L && len == 2L) {
+        silent = 1L;
+      } else if (o == 111L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "cxref: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        outAt = argPtr(home, index);
+        outLen = argLen(home, index);
+        index = index + 1L;
+        continue;
+      } else if (o == 119L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "cxref: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        long v = 0L;
+        if (spanNum(argPtr(home, index), argLen(home, index), &v) != 0L || v < 1L) {
+          writeErr(home, "cxref: invalid width\n");
+          return finish(home, 1L);
+        }
+        width = v;
+        if (width < 51L) {
+          width = 51L;
+        }
+        index = index + 1L;
+        continue;
+      } else if (o == 68L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "cxref: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        /* -D name[=def]：把 name 记为宏符号（=def 仅登记不展开）。 */
+        long dat = argPtr(home, index);
+        long dlen = argLen(home, index);
+        long nlen = 0L;
+        while (nlen < dlen && byteAt(dat + nlen * 8L) != 61L) {
+          nlen = nlen + 1L;
+        }
+        if (nlen > 0L && nlen <= 64L) {
+          long scount = memory::load64(tbl + 1040384L);
+          if (scount < 256L) {
+            long e = symAt(tbl, scount);
+            memory::store64(nlen, e);
+            memory::store64(1L, e + 64L);
+            memory::store64(0L, e + 128L);
+            memory::store64(0L, e + 192L);
+            copySpan(dat, e + 256L, nlen);
+            memory::store64(scount + 1L, tbl + 1040384L);
+          }
+        }
+        index = index + 1L;
+        continue;
+      } else if ((o == 73L || o == 85L) && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "cxref: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        if (o == 85L) {
+          /* -U name：撤销先前 -D 登记（删除该符号）。 */
+          long dat = argPtr(home, index);
+          long dlen = argLen(home, index);
+          long scount = memory::load64(tbl + 1040384L);
+          long s = 0L;
+          while (s < scount) {
+            long e = symAt(tbl, s);
+            if (memory::load64(e + 64L) == 1L && memory::load64(e) == dlen) {
+              long same = 1L;
+              long c = 0L;
+              while (c < dlen) {
+                if (byteAt(e + 256L + c * 8L) != byteAt(dat + c * 8L)) {
+                  same = 0L;
+                }
+                c = c + 1L;
+              }
+              if (same == 1L) {
+                long t2 = s;
+                while (t2 + 1L < scount) {
+                  swapSym(tbl, t2);
+                  t2 = t2 + 1L;
+                }
+                memory::store64(scount - 1L, tbl + 1040384L);
+                s = scount;
+              }
+            }
+            s = s + 1L;
+          }
+        }
+        index = index + 1L;
+        continue;
+      } else {
+        writeErr(home, "cxref: invalid option\n");
+        return finish(home, 1L);
+      }
+      index = index + 1L;
+      continue;
+    }
+    operands = operands + 1L;
+    index = index + 1L;
+    plant(home, at, len);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "cxref: ");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, ": No such file or directory\n");
+      failed = 1L;
+      index = index + 1L;
+      continue;
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long total = 0L;
+    while (total < 65536L) {
+      if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), text + total * 8L, got);
+      total = total + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+    if (combined == 0L && silent == 0L) {
+      if (firstFile == 0L) {
+        writeStr(home, 1L, "\n");
+      }
+      writeSpan(home, 1L, 0L, at, len);
+      writeStr(home, 1L, "\n");
+      firstFile = 0L;
+    }
+    long line = 1L;
+    long pos = 0L;
+    long paren = 0L;
+    long sawSemi = 1L;
+    long curFunc = 0L;
+    while (pos < total) {
+      long o = byteAt(text + pos * 8L);
+      if (o == 10L) {
+        line = line + 1L;
+        pos = pos + 1L;
+        continue;
+      }
+      if (o == 47L && pos + 1L < total && byteAt(text + (pos + 1L) * 8L) == 47L) {
+        while (pos < total && byteAt(text + pos * 8L) != 10L) {
+          pos = pos + 1L;
+        }
+        continue;
+      }
+      if (o == 47L && pos + 1L < total && byteAt(text + (pos + 1L) * 8L) == 42L) {
+        pos = pos + 2L;
+        while (pos + 1L < total && !(byteAt(text + pos * 8L) == 42L && byteAt(text + (pos + 1L) * 8L) == 47L)) {
+          if (byteAt(text + pos * 8L) == 10L) {
+            line = line + 1L;
+          }
+          pos = pos + 1L;
+        }
+        pos = pos + 2L;
+        continue;
+      }
+      if (o == 34L || o == 39L) {
+        long quote = o;
+        pos = pos + 1L;
+        while (pos < total && byteAt(text + pos * 8L) != quote) {
+          if (byteAt(text + pos * 8L) == 92L) {
+            pos = pos + 1L;
+          }
+          if (pos < total && byteAt(text + pos * 8L) == 10L) {
+            line = line + 1L;
+          }
+          pos = pos + 1L;
+        }
+        pos = pos + 1L;
+        continue;
+      }
+      if (isAlpha(o) == 1L) {
+        long start = pos;
+        while (pos < total && isAlnum(byteAt(text + pos * 8L)) == 1L) {
+          pos = pos + 1L;
+        }
+        long nlen = pos - start;
+        if (nlen == 6L && spanSame(text + start * 8L, 6L, "define") == 1L) {
+          long p2 = pos;
+          while (p2 < total && (byteAt(text + p2 * 8L) == 32L || byteAt(text + p2 * 8L) == 9L)) {
+            p2 = p2 + 1L;
+          }
+          long dstart = p2;
+          while (p2 < total && isAlnum(byteAt(text + p2 * 8L)) == 1L) {
+            p2 = p2 + 1L;
+          }
+          if (p2 > dstart) {
+            start = dstart;
+            nlen = p2 - dstart;
+            pos = p2;
+          }
+        }
+        long p3 = pos;
+        while (p3 < total && (byteAt(text + p3 * 8L) == 32L || byteAt(text + p3 * 8L) == 9L)) {
+          p3 = p3 + 1L;
+        }
+        long isFunc = 0L;
+        if (p3 < total && byteAt(text + p3 * 8L) == 40L && paren == 0L && sawSemi == 1L) {
+          isFunc = 1L;
+        }
+        long found = -1L;
+        long scount = memory::load64(tbl + 1040384L);
+        long s = 0L;
+        while (s < scount && found < 0L) {
+          long e = symAt(tbl, s);
+          if (memory::load64(e) == nlen) {
+            long same = 1L;
+            long c = 0L;
+            while (c < nlen) {
+              if (byteAt(e + 256L + c * 8L) != byteAt(text + (start + c) * 8L)) {
+                same = 0L;
+              }
+              c = c + 1L;
+            }
+            if (same == 1L) {
+              found = s;
+            }
+          }
+          s = s + 1L;
+        }
+        if (found < 0L && scount < 256L) {
+          found = scount;
+          long e = symAt(tbl, found);
+          memory::store64(nlen, e);
+          memory::store64(0L, e + 64L);
+          memory::store64(0L, e + 128L);
+          memory::store64(0L, e + 192L);
+          copySpan(text + start * 8L, e + 256L, nlen);
+          memory::store64(scount + 1L, tbl + 1040384L);
+        }
+        if (found >= 0L) {
+          long e = symAt(tbl, found);
+          long refs = memory::load64(e + 192L);
+          long fn = curFunc;
+          if (isFunc == 1L) {
+            fn = memory::load64(tbl + 1040448L) + 1L;
+            if (memory::load64(tbl + 1040448L) < 16L) {
+              long fi = memory::load64(tbl + 1040448L);
+              memory::store64(nlen, funLenAt(tbl, fi));
+              copySpan(text + start * 8L, funNameAt(tbl, fi), nlen);
+              memory::store64(fi + 1L, tbl + 1040448L);
+            } else {
+              fn = 0L;
+            }
+            curFunc = fn;
+          }
+          if (refs < 48L) {
+            long decl = 0L;
+            if (refs == 0L) {
+              decl = 1L;
+            }
+            memory::store64(line + decl * 1024L * 1024L, e + 1024L + refs * 64L);
+            if (memory::load64(e + 128L) == 0L) {
+              memory::store64(fn, e + 128L);
+            }
+            memory::store64(refs + 1L, e + 192L);
+          }
+        }
+        continue;
+      }
+      if (o == 40L) {
+        paren = paren + 1L;
+      } else if (o == 41L) {
+        if (paren > 0L) {
+          paren = paren - 1L;
+        }
+      } else if (o == 59L) {
+        sawSemi = 1L;
+      } else if (o == 123L) {
+        sawSemi = 0L;
+      }
+      pos = pos + 1L;
+    }
+  }
+  if (operands == 0L) {
+    writeErr(home, "cxref: missing operand\n");
+    return finish(home, 1L);
+  }
+  long outFd = 1L;
+  if (outLen > 0L) {
+    plant(home, outAt, outLen);
+    if (obr::proc::open(home, 1L) != 0L) {
+      writeErr(home, "cxref: cannot open output\n");
+      return finish(home, 1L);
+    }
+    outFd = obr::proc::slot(home, 192L);
+  }
+  long scount = memory::load64(tbl + 1040384L);
+  /* 按名排序（冒泡，升序）。 */
+  long a = 1L;
+  while (a < scount) {
+    long b = a;
+    while (b > 0L && symCmp(tbl, b - 1L, b) == 1L) {
+      swapSym(tbl, b - 1L);
+      b = b - 1L;
+    }
+    a = a + 1L;
+  }
+  long s = 0L;
+  while (s < scount) {
+    long e = symAt(tbl, s);
+    writeSpan(home, outFd, 0L, e + 256L, memory::load64(e));
+    writeStr(home, outFd, "  ");
+    long fn = memory::load64(e + 128L);
+    if (fn > 0L && fn <= 16L && memory::load64(funLenAt(tbl, fn - 1L)) > 0L) {
+      writeSpan(home, outFd, 0L, funNameAt(tbl, fn - 1L), memory::load64(funLenAt(tbl, fn - 1L)));
+    } else {
+      writeStr(home, outFd, "-");
+    }
+    long refs = memory::load64(e + 192L);
+    long col = 40L;
+    long r = 0L;
+    long declUnit = 1024L * 1024L;
+    while (r < refs) {
+      long word = memory::load64(e + 1024L + r * 64L);
+      long decl = word / declUnit;
+      long ln = word % declUnit;
+      if (col + 10L > width) {
+        writeStr(home, outFd, "\n    ");
+        col = 4L;
+      }
+      writeStr(home, outFd, " ");
+      if (decl == 1L) {
+        writeStr(home, outFd, "*");
+      }
+      writeNum(home, outFd, ln);
+      col = col + 8L;
+      r = r + 1L;
+    }
+    writeStr(home, outFd, "\n");
+    s = s + 1L;
+  }
+  if (outFd != 1L) {
+    obr::proc::close(home, outFd);
+  }
+  return finish(home, failed);
+}

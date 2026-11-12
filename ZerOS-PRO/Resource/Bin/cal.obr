@@ -9,6 +9,7 @@ import memory;
 import obr.oct;
 import obr.os;
 import obr.proc;
+import time;
 import arg;
 
 deRfun u8(long addr): long {
@@ -276,7 +277,7 @@ deRfun main(): int {
   long month = 0L;
   long showYear = 0L;
   if (count == 1L) {
-    if (obr::proc::clock(home) != 0L) {
+    if (time::clock(home) != 0L) {
       writeErr(home, "cal: cannot read clock\n");
       return finish(home, 1L);
     }

@@ -6,5 +6,21 @@ deRfun get(long addr): long;
 deRfun put(long addr, long index, long value): void;
 deRfun copy(long from, long to, long count): void;
 deRfun eq(long addr, long count, string text): long;
+/* M-B：span 形态（两字切片：元素位地址 + 元素个数）。存量 (address, count) 签名不改不删；
+   copy/eq 的旧签名转调 span 新实现，get/put 的单地址形态保留原实现（负下标语义不同）。
+   get/put 的下标越界是 Plan 2 失败值（code 1，@Fails 可接）。 */
+deRfun get(span[byte] buf, long index): long;
+deRfun put(span[byte] buf, long index, long value): void;
+deRfun copy(span[byte] from, span[byte] to): long;
+deRfun eq(span[byte] buf, string text): long;
 }
+}
+
+/* memory::* 的 (address, count) 包装层 span 形态（M-B）：八位组区的批量操作，
+   实现就在 memory::loadOctet/storeOctet 之上。memory.mr 本体是指令声明头
+   （ZerOS-PRO/Hardware/Memory），包装层先落 lib 侧；声明面并入 memory.mr 属迁移余量。 */
+namespace memory {
+deRfun copy(span[byte] from, span[byte] to): long;
+deRfun fill(span[byte] buf, long octet): long;
+deRfun eq(span[byte] a, span[byte] b): long;
 }

@@ -1,2 +1,5 @@
 /* 系统调用的回复。进程和文件在等待结束时调用，入口自己也调用。 */
 deRfun reply(long caller, long value): void;
+/* 分发一条取到的调用（入口 start.obr 实现）。M2-(d) reap：清扫变体换上核前
+   先把保持位里同核兄弟的调用派发完，避免调用窗口被变体盖掉。 */
+deRfun dispatch(long caller, long service): void;

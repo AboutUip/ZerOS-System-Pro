@@ -1,0 +1,13 @@
+/* M-C 反例：字面量当 out 实参——out/ref 实参必须是可赋值左值（变量/字段/下标/*指针），
+   复用赋值目标同一形状；字面量和表达式结果拒绝。
+   编译应当失败：out/ref 形参的实参必须是可赋值左值。*/
+#VERSION 2
+
+deRfun setOut(out long v): void {
+  v = 7;
+}
+
+deRfun main(): long {
+  setOut(5);
+  return 0;
+}

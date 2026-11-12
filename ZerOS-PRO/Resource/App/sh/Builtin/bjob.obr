@@ -1,0 +1,45 @@
+/* 作业控制：bg fg jobs wait。
+   本壳每条命令同步派生、同步收割，没有作业表，也没有停止/继续的进程状态。
+   bg/fg/jobs 明确报不支持，不假装成功。wait 无参回 0（没有挂起的子任务），
+   带 pid 就交给内核等，等不到按 POSIX 报 127。 */
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
+import memory;
+import obr.proc;
+import bcore;
+import span;
+import parse;
+import draw;
+import bjob;
+
+
+deRfun bjWait(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long at = command + 1L;
+  if (at >= cmdArgc(cmd)) {
+    return 0L;
+  }
+  long code = 0L;
+  while (at < cmdArgc(cmd)) {
+    long pid = 0L;
+    if (bcDec(cmdArgAt(cmd, at), cmdArgLen(cmd, at), &pid) != 0L) {
+      sayErrMissing(home, "sh: wait: ", cmdArgAt(cmd, at), cmdArgLen(cmd, at), ": numeric argument required\n");
+      return 2L;
+    }
+    long waited = obr::proc::wait(home, pid);
+    if (waited < 1L) {
+      sayErrMissing(home, "sh: wait: ", cmdArgAt(cmd, at), cmdArgLen(cmd, at), ": not a child of this shell\n");
+      code = 127L;
+    } else {
+      long got = obr::proc::slot(home, 192L);
+      if (got < 0L) {
+        got = 0L;
+      }
+      if (got > 255L) {
+        got = got % 256L;
+      }
+      code = got;
+    }
+    at = at + 1L;
+  }
+  return code;
+}

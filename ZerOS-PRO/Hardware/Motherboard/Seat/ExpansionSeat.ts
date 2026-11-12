@@ -25,8 +25,8 @@ import { ZerOS as PointerRoot } from "../../Pointer/ActiveProvider/Provider";
 import { ZerOS as PointerConfigRoot } from "../../Pointer/Config/PointerConfig";
 import { ZerOS as NasRoot } from "../../Nas/ActiveProvider/Provider";
 import { ZerOS as NasConfigRoot } from "../../Nas/Config/NasConfig";
-import { ZerOS as SandboxRoot } from "../../Sandbox/ActiveProvider/Provider";
-import { ZerOS as SandboxConfigRoot } from "../../Sandbox/Config/SandboxConfig";
+import { ZerOS as NicRoot } from "../../Nic/ActiveProvider/Provider";
+import { ZerOS as NicConfigRoot } from "../../Nic/Config/NicConfig";
 import { ZerOS as ConfigRoot } from "../Config/ExpansionConfig";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 
@@ -42,8 +42,8 @@ export namespace ZerOS {
       const Boot = PortRoot.Hardware.Motherboard.Slot.Boot;
       const OfficialPort = KeyboardConfigRoot.Hardware.Keyboard.KeyboardConfig.OfficialPort;
       const ActiveKeyboardProvider = KeyboardRoot.Hardware.Keyboard.ActiveKeyboardProvider;
-      const SandboxPort = SandboxConfigRoot.Hardware.Sandbox.SandboxConfig.OfficialPort;
-      const ActiveSandboxProvider = SandboxRoot.Hardware.Sandbox.ActiveSandboxProvider;
+      const NicPort = NicConfigRoot.Hardware.Nic.NicConfig.OfficialPort;
+      const ActiveNicProvider = NicRoot.Hardware.Nic.ActiveNicProvider;
       const NasPort = NasConfigRoot.Hardware.Nas.NasConfig.OfficialPort;
       const ActiveNasProvider = NasRoot.Hardware.Nas.ActiveNasProvider;
       const PointerPort = PointerConfigRoot.Hardware.Pointer.PointerConfig.OfficialPort;
@@ -58,8 +58,13 @@ export namespace ZerOS {
         if (Get(OfficialPort) === null) {
           Bind(OfficialPort, ActiveKeyboardProvider);
         }
-        if (Get(SandboxPort) === null) {
-          Bind(SandboxPort, ActiveSandboxProvider);
+        /*
+         * 沙盒（口 1，ZSP1）暂时不绑定，口 1 让给网卡（ZNC1）。
+         * 恢复沙盒时重新引入 Sandbox/ActiveProvider/Provider 和
+         * Sandbox/Config/SandboxConfig，并把这里的 Bind 换回 SandboxPort。
+         */
+        if (Get(NicPort) === null) {
+          Bind(NicPort, ActiveNicProvider);
         }
         if (Get(NasPort) === null) {
           Bind(NasPort, ActiveNasProvider);

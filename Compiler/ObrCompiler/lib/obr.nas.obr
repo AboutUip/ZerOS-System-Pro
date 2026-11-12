@@ -547,19 +547,21 @@ deRfun obr::nas::close(long handle): long {
   return 0L;
 }
 
-deRfun obr::nas::read(long handle, long offset, long address, long count, long* got): long {
+/* M-B：read 的 span 形态（缓冲 = span[byte] 两字：元素位地址 + 元素个数）。
+   存量 (address, count) 签名不改不删，转调 span 新实现（逐字节一致）。 */
+deRfun obr::nas::read(long handle, long offset, span[byte] buf, long* got): long {
   *got = 0L;
   if (handle < 1L || handle > 65535L) {
     return 5L;
   }
-  if (count < 0L || offset < 0L || offset > 4294967295L) {
+  if (buf.count < 0L || offset < 0L || offset > 4294967295L) {
     return 13L;
   }
-  if (count > 268435456L) {
+  if (buf.count > 268435456L) {
     return 7L;
   }
   /* 句柄、窗口、执行和拉回都在宿主里一次做完。长度可以到搬运上界。 */
-  long n = carry(2L, handle, offset, address, count);
+  long n = carry(2L, handle, offset, buf.data, buf.count);
   if (n < 0L) {
     return 0L - n;
   }
@@ -567,23 +569,28 @@ deRfun obr::nas::read(long handle, long offset, long address, long count, long* 
   return 0L;
 }
 
+deRfun obr::nas::read(long handle, long offset, long address, long count, long* got): long {
+  return obr::nas::read(handle, offset, span[byte](address, count), got);
+}
+
 /* 一次执行的成功长度只有 16 位，所以每截至多 65535。更长的请求拆开重复，合计仍不得超过搬运上界。
-   后面一截失败时，前面已经落下的留在 *wrote 里，这次调用返回 0，调用者按短写重试。 */
-deRfun obr::nas::write(long handle, long offset, long address, long count, long* wrote): long {
+   后面一截失败时，前面已经落下的留在 *wrote 里，这次调用返回 0，调用者按短写重试。
+   M-B：write 的 span 形态；存量 (address, count) 签名转调新实现（逐字节一致）。 */
+deRfun obr::nas::write(long handle, long offset, span[byte] buf, long* wrote): long {
   *wrote = 0L;
   if (handle < 1L || handle > 65535L) {
     return 5L;
   }
-  if (count < 0L || offset < 0L || offset > 4294967295L) {
+  if (buf.count < 0L || offset < 0L || offset > 4294967295L) {
     return 13L;
   }
-  if (count > 268435456L) {
+  if (buf.count > 268435456L) {
     return 7L;
   }
   nasDrop();
   long done = 0L;
-  while (done < count) {
-    long piece = count - done;
+  while (done < buf.count) {
+    long piece = buf.count - done;
     if (piece > 65535L) {
       piece = 65535L;
     }
@@ -610,7 +617,7 @@ deRfun obr::nas::write(long handle, long offset, long address, long count, long*
       }
       return nasFinish(ranged);
     }
-    long staged = nasStage(address + done * 8L, piece);
+    long staged = nasStage(buf.data + done * 8L, piece);
     if (staged != 0L) {
       if (done > 0L) {
         nasFinish(0L);
@@ -638,6 +645,10 @@ deRfun obr::nas::write(long handle, long offset, long address, long count, long*
   return 0L;
 }
 
+deRfun obr::nas::write(long handle, long offset, long address, long count, long* wrote): long {
+  return obr::nas::write(handle, offset, span[byte](address, count), wrote);
+}
+
 deRfun obr::nas::readdirKind(): long {
   nasArm();
   return memory::load64(nasMeta(5L));
@@ -658,9 +669,10 @@ deRfun obr::nas::statStamp(): long {
   return memory::load64(nasMeta(7L));
 }
 
-deRfun obr::nas::readdir(string path, long index, long address, long capacity, long* got): long {
+/* M-B：目录项名字缓冲的 span 形态；存量 (address, capacity) 签名转调新实现（逐字节一致）。 */
+deRfun obr::nas::readdir(string path, long index, span[byte] name, long* got): long {
   *got = 0L;
-  if (index < 0L || index > 4294967295L || capacity < 0L) {
+  if (index < 0L || index > 4294967295L || name.count < 0L) {
     return 13L;
   }
   long count = length(path);
@@ -668,7 +680,7 @@ deRfun obr::nas::readdir(string path, long index, long address, long capacity, l
     return 7L;
   }
   if (nasDirHitString(path, index) == 1L) {
-    return nasTake(index, address, capacity, got);
+    return nasTake(index, name.data, name.count, got);
   }
   nasHead(9L, 0L, index, 65535L);
   long end = nasPutString(8L, path);
@@ -680,7 +692,11 @@ deRfun obr::nas::readdir(string path, long index, long address, long capacity, l
   if (stored != 0L) {
     return stored;
   }
-  return nasTake(index, address, capacity, got);
+  return nasTake(index, name.data, name.count, got);
+}
+
+deRfun obr::nas::readdir(string path, long index, long address, long capacity, long* got): long {
+  return obr::nas::readdir(path, index, span[byte](address, capacity), got);
 }
 
 deRfun nasVerbString(long verb, string path): long {
@@ -777,20 +793,25 @@ deRfun nasIndexHit(long index): long {
   return 1L;
 }
 
-deRfun obr::nas::readdirCached(long index, long address, long capacity, long* got): long {
+/* M-B：readdirCached/readdirAt 的 span 形态；存量 (address, capacity) 签名转调新实现。 */
+deRfun obr::nas::readdirCached(long index, span[byte] name, long* got): long {
   *got = 0L;
-  if (index < 0L || index > 4294967295L || capacity < 0L) {
+  if (index < 0L || index > 4294967295L || name.count < 0L) {
     return 13L;
   }
   if (nasIndexHit(index) != 1L) {
     return 1L;
   }
-  return nasTake(index, address, capacity, got);
+  return nasTake(index, name.data, name.count, got);
 }
 
-deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, long* got): long {
+deRfun obr::nas::readdirCached(long index, long address, long capacity, long* got): long {
+  return obr::nas::readdirCached(index, span[byte](address, capacity), got);
+}
+
+deRfun obr::nas::readdirAt(long path, long index, span[byte] name, long* got): long {
   *got = 0L;
-  if (index < 0L || index > 4294967295L || capacity < 0L) {
+  if (index < 0L || index > 4294967295L || name.count < 0L) {
     return 13L;
   }
   long raw = memory::load64(path);
@@ -799,7 +820,7 @@ deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, l
   }
   long bytes = path + 64L;
   if (nasDirHit(bytes, raw, index) == 1L) {
-    return nasTake(index, address, capacity, got);
+    return nasTake(index, name.data, name.count, got);
   }
   nasHead(9L, 0L, index, 65535L);
   long end = nasPutCounted(8L, bytes, raw);
@@ -811,7 +832,11 @@ deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, l
   if (stored != 0L) {
     return stored;
   }
-  return nasTake(index, address, capacity, got);
+  return nasTake(index, name.data, name.count, got);
+}
+
+deRfun obr::nas::readdirAt(long path, long index, long address, long capacity, long* got): long {
+  return obr::nas::readdirAt(path, index, span[byte](address, capacity), got);
 }
 
 deRfun obr::nas::mkdirAt(long path): long {

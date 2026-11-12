@@ -1,0 +1,35 @@
+#DYN
+/* 鼠标 continuity 检查：服务 83 的 (events<<32)|base。
+   成功 exit 42：base>0 且 events>=base；250 = base<1；251 = events<base。
+   轮询最多 10 秒；退出码同时写调用者窗口和本核 bound 窗口。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  long code = 251L;
+  long rounds = 0L;
+  while (rounds < 200L) {
+    long packed = obr::os::svc(83L);
+    long base = packed & 4294967295L;
+    long events = packed >> 32L;
+    if (base > 0L) {
+      code = events >= base ? 42L : 251L;
+      if (code == 42L) {
+        break;
+      }
+    } else {
+      code = 250L;
+    }
+    obr::os::dwell(50L);
+    rounds = rounds + 1L;
+  }
+  long home = obr::os::svc(65L);
+  memory::store64(code, home + 128L);
+  long bound = query(1L, 8L, obr::os::core());
+  if (bound != 0L && bound != home) {
+    memory::store64(code, bound + 128L);
+  }
+  obr::os::svc(28L);
+  return 0;
+}

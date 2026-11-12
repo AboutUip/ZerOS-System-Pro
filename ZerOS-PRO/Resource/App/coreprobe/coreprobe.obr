@@ -1,0 +1,15 @@
+#DYN
+/* 诊断：服务 53 读核 4 的当前任务。退出码 = 20 + 打包值。
+   打包：state(0-7) + why×8 + held×32 + running×64。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  memory::store64(3L, home + 448L);
+  long packed = obr::os::svc(53L);
+  memory::store64(20L + packed, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

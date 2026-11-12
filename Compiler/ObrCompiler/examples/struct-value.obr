@@ -1,0 +1,43 @@
+/* Plan 2 收口：结构体值传递。参数展平成字传、返回走隐藏目的、集合元素装箱副本；
+   赋值/初值/取回全部按值拷贝，互不影响。结果 0。*/
+#VERSION 2
+
+struct Pair {
+  long a;
+  long b;
+}
+
+deRfun sum(Pair p): long { return p.a + p.b; }
+
+deRfun make(long x): Pair {
+  Pair p;
+  p.a = x;
+  p.b = x + 1;
+  return p;
+}
+
+deRfun main(): int {
+  Pair p;
+  p.a = 3;
+  p.b = 4;
+  if (sum(p) != 7L) return 1;
+  p.a = 10;
+  if (sum(p) != 14L) return 2;
+  Pair q = make(5);
+  if (q.a != 5L || q.b != 6L) return 3;
+  Pair r;
+  r = make(1);
+  if (r.a != 1L || r.b != 2L) return 4;
+  list[Pair] xs = new list[Pair]();
+  xs.push(p);
+  p.a = 9;
+  Pair got = xs.pop();
+  if (got.a != 10L) return 5;
+  if (p.a != 9L) return 6;
+  var[long] sum2 = 0L;
+  xs.push(p);
+  for (var[Pair] item in xs) {
+    sum2 = sum2 + item.a;
+  }
+  return sum2 == 9L ? 0 : 7;
+}

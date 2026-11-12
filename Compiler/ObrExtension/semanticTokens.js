@@ -16,7 +16,10 @@ const TYPE_KEYWORDS = new Set([
   "float",
   "double",
   "char",
-  "string"
+  "string",
+  "fail",
+  "span",
+  "volatile"
 ]);
 
 const STMT_KEYWORDS = new Set([
@@ -50,11 +53,18 @@ const STMT_KEYWORDS = new Set([
   "public",
   "private",
   "static",
+  "try",
+  "catch",
+  "throw",
   "true",
   "false",
   "null",
   "undefined"
 ]);
+
+/* M-A：sizeof/offsetof/alignof 编译期内建调用，按内建函数名着色（与 tmLanguage 的
+   support.function.builtin 同一面）。名字保留给编译器，不做用户符号解析。 */
+const LAYOUT_BUILTINS = new Set(["sizeof", "offsetof", "alignof"]);
 
 function stripBlockComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -126,7 +136,7 @@ function readFunctionHeader(lines, startLine) {
 
 function parseFunctionFromHeader(headerText, namespaceStack) {
   const fn = headerText.match(
-    /^deRfun\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*\(([^)]*)\)\s*:\s*([A-Za-z_]\w*)\s*([;{])/
+    /^deRfun\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*(?:\[[^\]]*\])?\s*\(([^)]*)\)\s*:\s*([A-Za-z_]\w*(?:\[[^\]]*\])?)\s*([;{])/
   );
   if (!fn) return null;
   const rawName = fn[1];
@@ -155,8 +165,10 @@ function parseParams(raw) {
     .map((part) => part.trim())
     .filter(Boolean)
     .map((part, idx) => {
-      const m = part.match(/^\[([A-Za-z_]\w*)\]\s*([A-Za-z_]\w*)$/);
-      if (m) return { type: m[1], name: m[2] };
+      /* M-C：`[T] 名字`、`T 名字`、`名字* 名字`，都可带 out/ref 修饰词。
+         M-D：类型前还可带 volatile（`volatile T* 名字`）。 */
+      const m = part.match(/^(?:(out|ref)\s+)?(?:(volatile)\s+)?(?:\[([A-Za-z_]\w*(?:\[[^\]]*\])?)\]|([A-Za-z_]\w*(?:\[[^\]]*\])?\*?))\s+([A-Za-z_]\w*)$/);
+      if (m) return { type: (m[1] ? `${m[1]} ` : "") + (m[2] ? `${m[2]} ` : "") + (m[3] || m[4]), name: m[5] };
       return { type: "any", name: `arg${idx + 1}` };
     });
 }
@@ -249,10 +261,10 @@ function buildSemanticTokens(vscode, document, obrIndex, legend) {
           const inner = merged.match(/\(([^)]*)\)/);
           if (inner) {
             const pr = inner[1];
-            const re = /\[([A-Za-z_]\w*)\]\s*([A-Za-z_]\w*)/g;
+            const re = /(?:(?:out|ref)\s+)?(?:(volatile)\s+)?(?:\[([A-Za-z_]\w*(?:\[[^\]]*\])?)\]|([A-Za-z_]\w*(?:\[[^\]]*\])?\*?))\s+([A-Za-z_]\w*)/g;
             let pm;
             while ((pm = re.exec(pr)) !== null) {
-              const name = pm[2];
+              const name = pm[4] || pm[3];
               const sub = hdrLine.indexOf(name);
               if (sub >= 0) {
                 pushRange(i, sub, sub + name.length, T.parameter, DECL);
@@ -314,10 +326,10 @@ function buildSemanticTokens(vscode, document, obrIndex, legend) {
       const inner = merged.match(/\(([^)]*)\)/);
       if (inner) {
         const pr = inner[1];
-        const re = /\[([A-Za-z_]\w*)\]\s*([A-Za-z_]\w*)/g;
+        const re = /(?:(?:out|ref)\s+)?(?:(volatile)\s+)?(?:\[([A-Za-z_]\w*(?:\[[^\]]*\])?)\]|([A-Za-z_]\w*(?:\[[^\]]*\])?\*?))\s+([A-Za-z_]\w*)/g;
         let pm;
         while ((pm = re.exec(pr)) !== null) {
-          const name = pm[2];
+          const name = pm[4] || pm[3];
           const li = i;
           const hl = lines[li];
           const sub = hl.indexOf(name);
@@ -373,6 +385,13 @@ function buildSemanticTokens(vscode, document, obrIndex, legend) {
             while ((im = idRe.exec(masked)) !== null) {
               const nm = im[1];
               const col = im.index;
+              if (LAYOUT_BUILTINS.has(nm)) {
+                const rest = masked.slice(col + nm.length);
+                if (/^\s*\(/.test(rest)) {
+                  pushRange(li, col, col + nm.length, T.function, 0);
+                }
+                continue;
+              }
               if (STMT_KEYWORDS.has(nm) || TYPE_KEYWORDS.has(nm)) continue;
 
               if (paramSet.has(nm)) {

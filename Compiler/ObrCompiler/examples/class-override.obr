@@ -1,0 +1,30 @@
+/* Plan 2 M1：@Overwrite 覆盖标注与方法表派发。经基类引用、方法内裸调用、
+   具体类型调用都要进最深的覆盖实现；不标注的同名方法保持静态。结果 0。*/
+#VERSION 2
+
+class Base {
+  deRfun v(): int { return 1; }
+  deRfun twice(): int { return v() + v(); }
+}
+
+class Sub : Base {
+  @Overwrite deRfun v(): int { return 2; }
+}
+
+class SubSub : Sub {
+  @Overwrite deRfun v(): int { return 3; }
+}
+
+deRfun use(Base b): int { return b.v(); }
+
+deRfun main(): int {
+  SubSub x = new SubSub();
+  if (use(x) != 3) return 1;
+  Sub s = new SubSub();
+  if (s.v() != 3) return 2;
+  if (x.v() != 3) return 3;
+  if (x.twice() != 6) return 4;
+  Sub plain = new Sub();
+  if (use(plain) != 2) return 5;
+  return 0;
+}

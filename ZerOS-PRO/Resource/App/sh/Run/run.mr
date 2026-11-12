@@ -1,8 +1,16 @@
-/* run 给壳里其它文件用的函数。 */
+/* run 给壳里其它文件用的函数 */
 deRfun argHome(long home): long;
 deRfun hdSlot(long out, long index): long;
 deRfun hdCount(long out): long;
 deRfun hdDelimLen(long out, long index): long;
 deRfun hdDelimAt(long out, long index): long;
 deRfun absorbLine(long state, long out, long body, long index, long* tooBig): long;
-deRfun runParsed(long home, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long;
+/* 按 PATH 或斜杠找可执行文件，写进 destAt(work)，返回长度。bs 里的 hash 表先查。 */
+deRfun resolve(long home, long bs, long work, long env, long name, long nameLen): long;
+/* 重新解析一段文本并执行。eval、. 和别名展开都走这里。 */
+deRfun runText(long home, long bs, long state, long work, long env, long envTmp, long text, long textLen, long status, long* leaving): long;
+/* 派生或执行一条已经拆好的命令。useAlias 为 0 时不做别名展开（command、exec 用）。 */
+deRfun runWord(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving, long useAlias): long;
+/* 文本和引号暂存共用一块。 */
+deRfun runScratch(long home, long work): long;
+deRfun runParsed(long home, long bs, long state, long work, long out, long env, long envTmp, long previous, long body, long* leaving): long;

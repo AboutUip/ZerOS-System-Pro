@@ -1,0 +1,59 @@
+#DYN
+/* 诊断 GPU handover：写 3 字节到 /temp/gpudiag.cont：
+   before(69 frames), svc57 长度, svc57 值。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun write3(long home, long a, long b, long c): void {
+  setPath(home, "/temp/gpudiag.cont");
+  memory::store64(1L, home + 128L);
+  if (obr::os::svc(5L) != 0L) {
+    return;
+  }
+  long fd = memory::load64(home + 192L);
+  memory::storeOctet(a % 256L, home + 131072L);
+  memory::storeOctet(b % 256L, home + 131080L);
+  memory::storeOctet(c % 256L, home + 131088L);
+  memory::store64(fd, home + 128L);
+  memory::store64(0L, home + 192L);
+  memory::store64(3L, home + 256L);
+  obr::os::svc(8L);
+  memory::store64(fd, home + 128L);
+  obr::os::svc(6L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  memory::store64(2L, home + 64L);
+  long got = obr::os::svc(69L);
+  long before = 0L;
+  if (got == 16L) {
+    before = memory::load64(home + 131072L);
+  }
+  home = obr::proc::home();
+  memory::store64(0L, home + 128L);
+  memory::store64(8L, home + 64L);
+  obr::os::svc(56L);
+  obr::os::dwell(600L);
+  home = obr::proc::home();
+  memory::store64(2L, home + 64L);
+  long handed = obr::os::svc(57L);
+  long value = 0L;
+  if (handed == 8L) {
+    value = memory::load64(home + 131072L);
+  }
+  home = obr::proc::home();
+  write3(home, before, handed, value);
+  return 0;
+}

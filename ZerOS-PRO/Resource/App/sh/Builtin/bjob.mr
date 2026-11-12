@@ -1,0 +1,2 @@
+/* 作业类内建给 run 分发用的入口。参数面同 bflow.mr。 */
+deRfun bjWait(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long;

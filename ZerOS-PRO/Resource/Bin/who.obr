@@ -9,6 +9,7 @@ import memory;
 import obr.oct;
 import obr.os;
 import obr.proc;
+import time;
 import arg;
 
 deRfun u8(long addr): long {
@@ -170,7 +171,7 @@ deRfun main(): int {
     writeErr(home, "who: invalid option\n");
     return finish(home, 1L);
   }
-  if (obr::proc::clock(home) != 0L) {
+  if (time::clock(home) != 0L) {
     writeErr(home, "who: cannot read clock\n");
     return finish(home, 1L);
   }

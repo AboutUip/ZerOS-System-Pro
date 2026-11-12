@@ -1,0 +1,11 @@
+[package]
+name = "zeros-nic"
+version = "0.1.0"
+edition = "2021"
+description = "ZerOS ZNC1 reference NIC: a dumb raw Ethernet frame pipe"
+
+[[bin]]
+name = "zeros-nic"
+path = "src/main.rs"
+
+[dependencies]

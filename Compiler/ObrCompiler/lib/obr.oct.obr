@@ -1,4 +1,7 @@
-/* 八位组缓冲的实现。编成 /lib/obr.oct.zdll。 */
+/* 八位组缓冲的实现。编成 /lib/obr.oct.zdll。
+   M-B：copy/get/put/eq 加 span 形态（span[byte] = 元素位地址 + 元素个数 两字）。
+   存量 (address, count) 签名不改不删；copy/eq 的旧签名转调 span 新实现（逐字节一致），
+   get/put 的单地址形态保留原实现（负下标语义不同，转调会把内存越界写收成失败值）。 */
 import memory;
 import obr.oct;
 
@@ -19,26 +22,82 @@ export deRfun obr::oct::put(long addr, long index, long value): void {
 }
 
 export deRfun obr::oct::copy(long from, long to, long count): void {
-  long index = 0L;
-  while (index < count) {
-    memory::storeOctet(raw(from + index * 8L), to + index * 8L);
-    index = index + 1L;
-  }
+  obr::oct::copy(span[byte](from, count), span[byte](to, count));
+  return;
 }
 
 export deRfun obr::oct::eq(long addr, long count, string text): long {
+  return obr::oct::eq(span[byte](addr, count), text);
+}
+
+/* span 形态：元素步长 8 位（byte 的值宽度 = alignof），下标越界是 Plan 2 失败值。
+   get/put 标 @Fails——越界失败沿返回通道交给调用方接（code 1 = 下标越界）。 */
+
+@Fails export deRfun obr::oct::get(span[byte] buf, long index): long {
+  return (long)buf[index];
+}
+
+@Fails export deRfun obr::oct::put(span[byte] buf, long index, long value): void {
+  buf[index] = (byte)value;
+}
+
+export deRfun obr::oct::copy(span[byte] from, span[byte] to): long {
+  long n = from.count;
+  if (to.count < n) {
+    n = to.count;
+  }
+  long index = 0L;
+  while (index < n) {
+    to[index] = from[index];
+    index = index + 1L;
+  }
+  return n;
+}
+
+export deRfun obr::oct::eq(span[byte] buf, string text): long {
   int rawLen = length(text);
   long need = rawLen;
-  if (need != count) {
+  if (need != buf.count) {
     return 0L;
   }
   int index = 0;
   while (index < rawLen) {
     long value = text[index];
-    if (raw(addr + index * 8L) != value) {
+    if ((long)buf[index] != value) {
       return 0L;
     }
     index = index + 1;
+  }
+  return 1L;
+}
+
+/* memory:: 的 (address, count) 包装层 span 形态：八位组区批量操作，
+   就建在 memory::loadOctet/storeOctet 之上（指令面不动，ABI 零变化）。 */
+
+export deRfun memory::copy(span[byte] from, span[byte] to): long {
+  return obr::oct::copy(from, to);
+}
+
+export deRfun memory::fill(span[byte] buf, long octet): long {
+  long count = buf.count;
+  long index = 0L;
+  while (index < count) {
+    buf[index] = (byte)octet;
+    index = index + 1L;
+  }
+  return count;
+}
+
+export deRfun memory::eq(span[byte] a, span[byte] b): long {
+  if (a.count != b.count) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < a.count) {
+    if (a[index] != b[index]) {
+      return 0L;
+    }
+    index = index + 1L;
   }
   return 1L;
 }

@@ -1,0 +1,14 @@
+/* Plan 2 M1：@Overwrite 必须覆盖基类已有的同名方法。编译应当失败：没有可覆盖的方法 Sub::v。 */
+#VERSION 2
+
+class Base {
+  deRfun w(): int { return 1; }
+}
+
+class Sub : Base {
+  @Overwrite deRfun v(): int { return 2; }
+}
+
+deRfun main(): int {
+  return 0;
+}

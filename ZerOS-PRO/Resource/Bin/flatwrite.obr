@@ -1,0 +1,34 @@
+#DYN
+/* 启动 flat 文件写测试。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long me = obr::os::core();
+  long target = 3L;
+  if (me == 3L) {
+    target = 5L;
+  }
+  memory::store64(target, home + 448L);
+  obr::os::svc(54L);
+  home = obr::proc::home();
+  setPath(home, "/drivers/flatwrite.zo");
+  memory::store64(0L, home + 576L);
+  obr::os::svc(46L);
+  home = obr::proc::home();
+  memory::store64(0L, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

@@ -1,0 +1,83 @@
+/* M2 触发点 (d) 端到端探针的受害任务：
+   持有带析构的所有权对象后挂起（读空管道），被弃弃时由 __dtor_sweep 清扫。
+   挂起开关走参数：argv 含 "hold"（dtorreap 派生时放的）才挂起；语料里单跑没有参数，
+   走正常退出——析构照样在退出触发点跑，写同一份见证。参数检查不做 I/O，
+   入口先让出一个时间片：同核派生的父任务靠子任务让出才换回（系统调用阻塞会扣住核）。
+   析构把见证写进 /temp/test/reap.txt 两个八位组：
+     八位组 0 = LIFO 累积值（上界 255，防超界值触发内存哨兵、打断现场）；
+     八位组 1 = 析构调用次数。清扫正确时应为 21、2。 */
+#VERSION 2
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+class Witness {
+  long sum;
+  long calls;
+  deRfun Witness(): void { sum = 0L; calls = 0L; }
+}
+class Res {
+  Witness w;
+  long tag;
+  deRfun Res(Witness x, long t): void { w = x; tag = t; }
+  @Destruct deRfun cleanup(): void {
+    w.sum = w.sum * 10L + tag;
+    w.calls = w.calls + 1L;
+    noteSum(w);
+  }
+}
+
+deRfun noteSum(Witness w): void {
+  long home = obr::proc::home();
+  long base = obr::proc::bytes(home);
+  memory::storeOctet(w.sum < 256L ? w.sum : 255L, base);
+  memory::storeOctet(w.calls < 256L ? w.calls : 255L, base + 8L);
+  plantText(home, "/temp/test/reap.txt");
+  /* fd 在 home+192（open 的返回是状态，全语料同一约定）。 */
+  if (obr::proc::open(home, 1L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    memory::store64(fd, home + 128L);
+    memory::store64(0L, home + 192L);
+    memory::store64(2L, home + 256L);
+    obr::os::svc(8L);
+    obr::proc::close(home, fd);
+  }
+}
+
+deRfun plantText(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  memory::store64(count, obr::proc::path(home));
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::path(home) + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Witness w = new Witness();
+  Res a = new Res(w, 1L);
+  Res b = new Res(w, 2L);
+  /* argv 含第二个参数（dtorreap 派生时继承 "hold"）才挂起；
+     语料里单跑没有参数，走正常退出——析构照样在退出触发点跑，写同一份见证。 */
+  if (argc(home) < 2L) {
+    return 0;
+  }
+  /* 构造完、挂起前先让出一个时间片：同核派生的父任务在槽里等 spawn 回复，
+     靠子任务让出才换回。让出点必须在构造之后：被 kill 时记录链已经在，
+     清扫才有见证。 */
+  __zap__ {
+    yield
+  }
+  /* 挂起：读空管道，永远不返回。 */
+  if (obr::proc::pipe(home) != 0L) {
+    return 1;
+  }
+  long reader = obr::proc::slot(home, 128L);
+  obr::proc::read(home, reader, 0L, 1L);
+  return 0;
+}

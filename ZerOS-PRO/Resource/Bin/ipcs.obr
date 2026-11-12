@@ -1,0 +1,72 @@
+/* POSIX.1-2017 ipcs（utilities/ipcs.html，XSI）。形式：ipcs [-qms]
+   本内核没有 System V IPC（无消息队列/信号量/共享内存服务，任务结构与 ABI 不动）：
+   三张表恒为空。ipcs 如实打印三段表头（各带空行与列头），不编造条目，退出 0。
+   选项全量：-q 只看队列、-m 只看共享内存、-s 只看信号量（可组合）；缺省三段都看。
+   输出格式规范未定：每段先标题行 `Message Queues:`/`Shared Memory:`/
+   `Semaphore Arrays:`，再列头 `key id owner ...`，本平台无条目即止。
+   诊断英文 ASCII，描述符 2，前缀 ipcs:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun head(long home, string title): void {
+  writeStr(home, 1L, "\n");
+  writeStr(home, 1L, title);
+  writeStr(home, 1L, "\n");
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long q = 0L;
+  long m = 0L;
+  long s = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long c = 1L;
+      while (c < len) {
+        long o = byteAt(at + c * 8L);
+        if (o == 113L) {
+          q = 1L;
+        } else if (o == 109L) {
+          m = 1L;
+        } else if (o == 115L) {
+          s = 1L;
+        } else {
+          writeErr(home, "ipcs: invalid option\n");
+          return finish(home, 1L);
+        }
+        c = c + 1L;
+      }
+    } else {
+      writeErr(home, "ipcs: too many operands\n");
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  if (q == 0L && m == 0L && s == 0L) {
+    q = 1L;
+    m = 1L;
+    s = 1L;
+  }
+  if (q == 1L) {
+    head(home, "Message Queues");
+    writeStr(home, 1L, "key        id      owner\n");
+  }
+  if (m == 1L) {
+    head(home, "Shared Memory");
+    writeStr(home, 1L, "key        id      owner\n");
+  }
+  if (s == 1L) {
+    head(home, "Semaphores");
+    writeStr(home, 1L, "key        id      owner\n");
+  }
+  return finish(home, 0L);
+}

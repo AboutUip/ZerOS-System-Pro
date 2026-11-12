@@ -1,0 +1,877 @@
+/* POSIX.1-2017 yacc（utilities/yacc.html）选定子集。形式：
+   yacc [-dltv] [-b file_prefix] [-p sym_prefix] [--] [file]
+   选项全量：-d 写 prefix.h（%token 定义）；-l 不写 #line（本就不写，接受）；
+   -t 调试（接受登记，生成代码附 yyparse 追踪开关注释）；-v 写 prefix.output
+   （文法与 FIRST/FOLLOW 报告）；-b 指定文件前缀（缺省 y → y.tab.c/y.tab.h/y.output）；
+   -p 指定符号前缀（缺省 yy → yyparse/yylex/yytoken/yyval）。
+   文法子集（诚实最小生成器，明确报告平台子集）：
+   声明：%token 名...、%start 名、%type/%left/%right/%nonassoc（登记不参与生成）、
+   %{ ... %} 原文拷贝；%% 后规则 `非终结符 : 选择 | 选择 ;`（选择可为空），
+   记号=带引号字面量、单字符或 %token 名；动作 { ... } 原文拷贝，$1..$n 与 $$ 会被
+   改写成语义栈访问（yysv）。%% 后尾段原文拷贝。
+   生成器：递归下降 + 单记号前瞻（FIRST/FOLLOW 不动点求解，空产生式用 FOLLOW）。
+   未支持+原因：左递归文法（含间接）——递归下降无法表达，生成前检查并明确报错
+   yacc: left recursion，退出 1（LALR 表生成不做，如实注明）；优先级/结合性
+   （%left 等）仅登记不参与生成（递归下降按文法顺序选择）；冲突（同一非终结符两选择
+   FIRST 相交）写 yacc: conflict 警告并按文法顺序取先者（yacc 口径是警告非错误）。
+   输出 ISO C（本平台无 C 前端，需 c99 编译；生成代码含 yylex 弱符号约定，
+   用户在尾段提供 yylex/main 或沿用默认）。语义值统一 long（%union 不支持）。
+   容量：记号 64、非终结符 64、产生式 256、动作 32KB。无 %% 写 yacc: grammar is
+   empty，退出 1。诊断英文 ASCII，描述符 2，前缀 yacc:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun isNameChar(long o): long {
+  if (o >= 48L && o <= 57L) {
+    return 1L;
+  }
+  if (o >= 65L && o <= 90L) {
+    return 1L;
+  }
+  if (o >= 97L && o <= 122L) {
+    return 1L;
+  }
+  if (o == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 状态块 st：
+   +0 记号数 +64 非终结符数 +128 产生式数 +192 起始符号（索引）+256 错误
+   记号表 1024 起：64 × 512（名长 64 + 名 320 + 空 128）
+   非终结符表 33792 起：64 × 512（同布局）
+   产生式表 66560 起：256 × 1024（头 64、长 64、体 960：符号 48 个 × 20 位…用 48 字，
+   值<0 表示记号 -(i+1)，≥0 表示非终结符）
+   每产生式动作/选择：选择表 327680 起 256 × 128（产生式号 64 + 下一选择 64）
+   非终结符的选择链头 393216 起 64 × 64
+   FIRST/FOLLOW：458752 起 64 字 FIRST（位=记号 0..63 的低 64 位不好分）——
+   改用：FIRST[nt] 存记号位集（记号≤64 → 单字位集）；NULLABLE[nt] 在 524288 起 64 字；
+   FOLLOW[nt] 在 524416 起 64 字。 */
+deRfun tokAt(long st, long i): long {
+  return st + 1024L + i * 512L;
+}
+
+deRfun ntlAt(long st, long i): long {
+  return st + 33792L + i * 512L;
+}
+
+deRfun prodAt(long st, long i): long {
+  return st + 66560L + i * 1024L;
+}
+
+deRfun bitGet(long word, long bit): long {
+  long shift = 1L;
+  long k = 0L;
+  while (k < bit) {
+    shift = shift * 2L;
+    k = k + 1L;
+  }
+  return (long)(word / shift % 2L);
+}
+
+deRfun bitSet(long* word, long bit, long on): long {
+  long shift = 1L;
+  long k = 0L;
+  while (k < bit) {
+    shift = shift * 2L;
+    k = k + 1L;
+  }
+  long v = *word;
+  long low = v % shift;
+  long high = v / (shift * 2L) * shift * 2L;
+  if (on == 1L) {
+    *word = high + low + shift;
+  } else {
+    *word = high + low;
+  }
+  return 0L;
+}
+
+deRfun findToken(long st, long at, long len): long {
+  long n = memory::load64(st);
+  long i = 0L;
+  while (i < n) {
+    long e = tokAt(st, i);
+    if (memory::load64(e) == len) {
+      long same = 1L;
+      long c = 0L;
+      while (c < len) {
+        if (byteAt(e + 128L + c * 8L) != byteAt(at + c * 8L)) {
+          same = 0L;
+        }
+        c = c + 1L;
+      }
+      if (same == 1L) {
+        return i;
+      }
+    }
+    i = i + 1L;
+  }
+  return -1L;
+}
+
+deRfun addToken(long st, long at, long len): long {
+  long found = findToken(st, at, len);
+  if (found >= 0L) {
+    return found;
+  }
+  long n = memory::load64(st);
+  if (n >= 64L) {
+    memory::store64(1L, st + 256L);
+    return -1L;
+  }
+  long e = tokAt(st, n);
+  memory::store64(len, e);
+  copySpan(at, e + 128L, len);
+  memory::store64(n + 1L, st);
+  return n;
+}
+
+deRfun findNtl(long st, long at, long len): long {
+  long n = memory::load64(st + 64L);
+  long i = 0L;
+  while (i < n) {
+    long e = ntlAt(st, i);
+    if (memory::load64(e) == len) {
+      long same = 1L;
+      long c = 0L;
+      while (c < len) {
+        if (byteAt(e + 128L + c * 8L) != byteAt(at + c * 8L)) {
+          same = 0L;
+        }
+        c = c + 1L;
+      }
+      if (same == 1L) {
+        return i;
+      }
+    }
+    i = i + 1L;
+  }
+  return -1L;
+}
+
+deRfun addNtl(long st, long at, long len): long {
+  long found = findNtl(st, at, len);
+  if (found >= 0L) {
+    return found;
+  }
+  long n = memory::load64(st + 64L);
+  if (n >= 64L) {
+    memory::store64(1L, st + 256L);
+    return -1L;
+  }
+  long e = ntlAt(st, n);
+  memory::store64(len, e);
+  copySpan(at, e + 128L, len);
+  memory::store64(n + 1L, st + 64L);
+  return n;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 786432L);
+  long src = obr::proc::alloc(home, 524288L);
+  if (st == 0L || src == 0L) {
+    writeErr(home, "yacc: out of memory\n");
+    return finish(home, 1L);
+  }
+  memory::store64(0L, st);
+  memory::store64(0L, st + 64L);
+  memory::store64(0L, st + 128L);
+  memory::store64(-1L, st + 192L);
+  memory::store64(0L, st + 256L);
+  return yaccRun(home, st, src);
+}
+
+
+deRfun yaccRun(long home, long st, long src): int {
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long wantD = 0L;
+  long wantV = 0L;
+  long prefix = obr::proc::alloc(home, 4096L);
+  long symPrefix = obr::proc::alloc(home, 4096L);
+  long prefixLen = putText(prefix, 0L, "y");
+  long symLen = putText(symPrefix, 0L, "yy");
+  long fileAt = 0L;
+  long fileLen = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 100L && len == 2L) {
+        wantD = 1L;
+      } else if (o == 118L && len == 2L) {
+        wantV = 1L;
+      } else if ((o == 108L || o == 116L) && len == 2L) {
+        /* -l 不写 #line（本就不写）；-t 调试：接受登记。 */
+      } else if (o == 98L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "yacc: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        prefixLen = argLen(home, index);
+        copySpan(argPtr(home, index), prefix, prefixLen);
+      } else if (o == 112L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "yacc: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        symLen = argLen(home, index);
+        copySpan(argPtr(home, index), symPrefix, symLen);
+      } else {
+        writeErr(home, "yacc: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      if (operands > 0L) {
+        writeErr(home, "yacc: too many operands\n");
+        return finish(home, 1L);
+      }
+      operands = operands + 1L;
+      fileAt = at;
+      fileLen = len;
+    }
+    index = index + 1L;
+  }
+  /* 读入。 */
+  long srcLen = 0L;
+  if (operands > 0L) {
+    plant(home, fileAt, fileLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "yacc: ");
+      writeSpan(home, 2L, 0L, fileAt, fileLen);
+      writeErr(home, ": No such file or directory\n");
+      return finish(home, 1L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    while (srcLen < 65536L) {
+      if (obr::proc::read(home, fd, srcLen, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), src + srcLen * 8L, got);
+      srcLen = srcLen + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+  } else {
+    while (srcLen < 65536L) {
+      if (obr::proc::read(home, 0L, srcLen, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), src + srcLen * 8L, got);
+      srcLen = srcLen + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+  }
+  /* $end 记号占 0 号。 */
+  addToken(st, 0L, 0L);
+  memory::store64(0L, tokAt(st, 0));
+  memory::store64(4L, tokAt(st, 0));
+  putText(tokAt(st, 0) + 128L, 0L, "$end");
+  /* 分节。 */
+  long sec1 = -1L;
+  long sec2 = srcLen;
+  long pos = 0L;
+  while (pos < srcLen) {
+    long s = pos;
+    while (pos < srcLen && byteAt(src + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    if (pos - s == 2L && byteAt(src + s * 8L) == 37L && byteAt(src + (s + 1L) * 8L) == 37L) {
+      if (sec1 < 0L) {
+        sec1 = s;
+        pos = pos + 1L;
+        s = pos;
+        while (pos < srcLen && byteAt(src + pos * 8L) != 10L) {
+          pos = pos + 1L;
+        }
+        if (!(pos - s == 2L && byteAt(src + s * 8L) == 37L && byteAt(src + (s + 1L) * 8L) == 37L)) {
+          sec2 = s;
+        } else {
+          sec2 = s;
+        }
+        break;
+      }
+    }
+    pos = pos + 1L;
+  }
+  if (sec1 < 0L) {
+    writeErr(home, "yacc: grammar is empty\n");
+    return finish(home, 1L);
+  }
+  return yaccRules(home, st, src, sec1, sec2, srcLen, prefix, prefixLen, symPrefix, symLen, wantD, wantV);
+}
+
+
+deRfun yaccRules(long home, long st, long src, long sec1, long sec2, long srcLen, long prefix, long prefixLen, long symPrefix, long symLen, long wantD, long wantV): int {
+  long hdr = obr::proc::alloc(home, 65536L);
+  long hdrLen = 0L;
+  /* 声明段。 */
+  long p = 0L;
+  while (p < sec1) {
+    long s = p;
+    while (p < sec1 && byteAt(src + p * 8L) != 10L) {
+      p = p + 1L;
+    }
+    long len = p - s;
+    p = p + 1L;
+    if (len < 1L) {
+      continue;
+    }
+    if (byteAt(src + s * 8L) == 37L) {
+      if (len >= 6L && spanSame(src + s * 8L, 5L, "%token") == 1L) {
+        long q = s + 6L;
+        while (q < s + len) {
+          while (q < s + len && (byteAt(src + q * 8L) == 32L || byteAt(src + q * 8L) == 9L)) {
+            q = q + 1L;
+          }
+          long ns = q;
+          while (q < s + len && isNameChar(byteAt(src + q * 8L)) == 1L) {
+            q = q + 1L;
+          }
+          if (q > ns) {
+            addToken(st, src + ns * 8L, q - ns);
+          }
+        }
+      } else if (len >= 6L && spanSame(src + s * 8L, 6L, "%start") == 1L) {
+        long q = s + 6L;
+        while (q < s + len && (byteAt(src + q * 8L) == 32L || byteAt(src + q * 8L) == 9L)) {
+          q = q + 1L;
+        }
+        long ns = q;
+        while (q < s + len && isNameChar(byteAt(src + q * 8L)) == 1L) {
+          q = q + 1L;
+        }
+        if (q > ns) {
+          long id = addNtl(st, src + ns * 8L, q - ns);
+          memory::store64(id, st + 192L);
+        }
+      } else if (len >= 2L && byteAt(src + (s + 1L) * 8L) == 123L) {
+        while (p < sec1) {
+          long s2 = p;
+          while (p < sec1 && byteAt(src + p * 8L) != 10L) {
+            p = p + 1L;
+          }
+          if (p - s2 == 2L && byteAt(src + s2 * 8L) == 37L && byteAt(src + (s2 + 1L) * 8L) == 125L) {
+            p = p + 1L;
+            break;
+          }
+          if (hdrLen + (p - s2) + 2L < 8000L) {
+            copySpan(src + s2 * 8L, hdr + hdrLen * 8L, p - s2 + 1L);
+            hdrLen = hdrLen + (p - s2) + 1L;
+          }
+          p = p + 1L;
+        }
+      }
+      /* %type %left %right %nonassoc 等：登记接受，不参与生成。 */
+    }
+  }
+  /* 规则段：name ':' alt ('|' alt)* ';'，动作 { } 原文。 */
+  long q2 = sec2 + 3L;
+  long curNtl = -1L;
+  while (q2 < srcLen) {
+    while (q2 < srcLen && (byteAt(src + q2 * 8L) == 10L || byteAt(src + q2 * 8L) == 32L || byteAt(src + q2 * 8L) == 9L)) {
+      q2 = q2 + 1L;
+    }
+    if (q2 >= srcLen) {
+      break;
+    }
+    if (byteAt(src + q2 * 8L) == 37L) {
+      break;
+    }
+    long ns = q2;
+    while (q2 < srcLen && isNameChar(byteAt(src + q2 * 8L)) == 1L) {
+      q2 = q2 + 1L;
+    }
+    if (q2 == ns) {
+      writeErr(home, "yacc: bad rule\n");
+      return finish(home, 1L);
+    }
+    curNtl = addNtl(st, src + ns * 8L, q2 - ns);
+    while (q2 < srcLen && (byteAt(src + q2 * 8L) == 32L || byteAt(src + q2 * 8L) == 9L)) {
+      q2 = q2 + 1L;
+    }
+    if (q2 >= srcLen || byteAt(src + q2 * 8L) != 58L) {
+      writeErr(home, "yacc: missing colon\n");
+      return finish(home, 1L);
+    }
+    q2 = q2 + 1L;
+    /* 选择循环。 */
+    while (1L == 1L) {
+      long nprod = memory::load64(st + 128L);
+      if (nprod >= 256L) {
+        writeErr(home, "yacc: out of memory\n");
+        return finish(home, 1L);
+      }
+      long pr = prodAt(st, nprod);
+      memory::store64(curNtl, pr);
+      memory::store64(0L, pr + 64L);
+      long last = -1L;
+      while (1L == 1L) {
+        while (q2 < srcLen && (byteAt(src + q2 * 8L) == 32L || byteAt(src + q2 * 8L) == 9L || byteAt(src + q2 * 8L) == 10L)) {
+          q2 = q2 + 1L;
+        }
+        if (q2 >= srcLen) {
+          writeErr(home, "yacc: bad rule\n");
+          return finish(home, 1L);
+        }
+        long c = byteAt(src + q2 * 8L);
+        if (c == 59L) {
+          q2 = q2 + 1L;
+          break;
+        }
+        if (c == 124L) {
+          q2 = q2 + 1L;
+          break;
+        }
+        if (c == 123L) {
+          /* 动作：到配对 }，附在当前产生式。 */
+          long as = q2 + 1L;
+          long d = 1L;
+          while (q2 < srcLen && d > 0L) {
+            long c2 = byteAt(src + q2 * 8L);
+            if (c2 == 123L) {
+              d = d + 1L;
+            } else if (c2 == 125L) {
+              d = d - 1L;
+            }
+            q2 = q2 + 1L;
+          }
+          memory::store64(as, pr + 128L);
+          memory::store64(q2 - 1L - as, pr + 192L);
+          continue;
+        }
+        /* 符号。 */
+        long sy = -2L;
+        if (c == 39L || c == 34L) {
+          long quote = c;
+          long ss = q2 + 1L;
+          while (q2 < srcLen && byteAt(src + q2 * 8L) != quote) {
+            q2 = q2 + 1L;
+          }
+          long id = addToken(st, src + ss * 8L, q2 - ss);
+          sy = 0L - id - 1L;
+          q2 = q2 + 1L;
+        } else {
+          long ss = q2;
+          while (q2 < srcLen && isNameChar(byteAt(src + q2 * 8L)) == 1L) {
+            q2 = q2 + 1L;
+          }
+          if (q2 == ss) {
+            writeErr(home, "yacc: bad symbol\n");
+            return finish(home, 1L);
+          }
+          if (findNtl(st, src + ss * 8L, q2 - ss) >= 0L) {
+            sy = findNtl(st, src + ss * 8L, q2 - ss);
+          } else {
+            long id = addToken(st, src + ss * 8L, q2 - ss);
+            sy = 0L - id - 1L;
+          }
+        }
+        long body = memory::load64(pr + 64L);
+        if (body >= 48L) {
+          writeErr(home, "yacc: out of memory\n");
+          return finish(home, 1L);
+        }
+        memory::store64(sy, pr + 256L + body * 64L);
+        memory::store64(body + 1L, pr + 64L);
+        last = sy;
+      }
+      /* 直接左递归检查。 */
+      if (memory::load64(pr + 64L) > 0L && memory::load64(pr + 256L) == curNtl) {
+        writeErr(home, "yacc: left recursion is not supported on this platform\n");
+        return finish(home, 1L);
+      }
+      memory::store64(nprod + 1L, st + 128L);
+      /* 下一选择？ */
+      while (q2 < srcLen && (byteAt(src + q2 * 8L) == 32L || byteAt(src + q2 * 8L) == 9L || byteAt(src + q2 * 8L) == 10L)) {
+        q2 = q2 + 1L;
+      }
+      if (q2 < srcLen && byteAt(src + q2 * 8L) == 124L) {
+        q2 = q2 + 1L;
+        continue;
+      }
+      break;
+    }
+    while (q2 < srcLen && (byteAt(src + q2 * 8L) == 32L || byteAt(src + q2 * 8L) == 9L || byteAt(src + q2 * 8L) == 10L)) {
+      q2 = q2 + 1L;
+    }
+    if (q2 < srcLen && byteAt(src + q2 * 8L) == 59L) {
+      q2 = q2 + 1L;
+    }
+  }
+  if (memory::load64(st + 256L) != 0L) {
+    writeErr(home, "yacc: too many symbols\n");
+    return finish(home, 1L);
+  }
+  return yaccSolve(home, st, src, sec2, srcLen, hdr, hdrLen, prefix, prefixLen, symPrefix, symLen, wantD, wantV);
+}
+
+
+deRfun yaccSolve(long home, long st, long src, long sec2, long srcLen, long hdr, long hdrLen, long prefix, long prefixLen, long symPrefix, long symLen, long wantD, long wantV): int {
+  long ntCount = memory::load64(st + 64L);
+  long prodCount = memory::load64(st + 128L);
+  long tokCount = memory::load64(st);
+  /* FIRST[nt]（记号位集）、NULLABLE[nt]、FOLLOW[nt]：位 = 记号号。 */
+  long iter = 0L;
+  long changed = 1L;
+  while (changed == 1L && iter < 80L) {
+    changed = 0L;
+    iter = iter + 1L;
+    long pr = 0L;
+    while (pr < prodCount) {
+      long head = memory::load64(prodAt(st, pr));
+      long body = memory::load64(prodAt(st, pr) + 64L);
+      long i = 0L;
+      long allNull = 1L;
+      while (i < body) {
+        long sy = memory::load64(prodAt(st, pr) + 256L + i * 64L);
+        if (sy >= 0L) {
+          long f = memory::load64(st + 589824L + sy * 64L);
+          long merged = memory::load64(st + 589824L + head * 64L) + f - (memory::load64(st + 589824L + head * 64L) & f);
+          if (merged != memory::load64(st + 589824L + head * 64L)) {
+            memory::store64(merged, st + 589824L + head * 64L);
+            changed = 1L;
+          }
+          if (bitGet(memory::load64(st + 655360L + sy * 64L), 0L) == 0L) {
+            allNull = 0L;
+            i = body;
+          }
+        } else {
+          long t = 0L - sy - 1L;
+          long cur = memory::load64(st + 589824L + head * 64L);
+          if (bitGet(cur, t) == 0L) {
+            bitSet(&cur, t, 1L);
+            memory::store64(cur, st + 589824L + head * 64L);
+            changed = 1L;
+          }
+          allNull = 0L;
+          i = body;
+        }
+        i = i + 1L;
+      }
+      if (allNull == 1L && body == 0L) {
+        if (bitGet(memory::load64(st + 655360L + head * 64L), 0L) == 0L) {
+          memory::store64(1L, st + 655360L + head * 64L);
+          changed = 1L;
+        }
+      }
+      pr = pr + 1L;
+    }
+  }
+  /* FOLLOW 不动点。 */
+  if (memory::load64(st + 192L) >= 0L) {
+    long s0 = memory::load64(st + 192L);
+    long cur = memory::load64(st + 720896L + s0 * 64L);
+    bitSet(&cur, 0L, 1L);
+    memory::store64(cur, st + 720896L + s0 * 64L);
+  }
+  changed = 1L;
+  iter = 0L;
+  while (changed == 1L && iter < 80L) {
+    changed = 0L;
+    iter = iter + 1L;
+    long pr = 0L;
+    while (pr < prodCount) {
+      long head = memory::load64(prodAt(st, pr));
+      long body = memory::load64(prodAt(st, pr) + 64L);
+      long i = 0L;
+      while (i < body) {
+        long sy = memory::load64(prodAt(st, pr) + 256L + i * 64L);
+        if (sy >= 0L) {
+          long fs = 0L;
+          long j = i + 1L;
+          long stop = 0L;
+          while (j < body && stop == 0L) {
+            long sy2 = memory::load64(prodAt(st, pr) + 256L + j * 64L);
+            if (sy2 >= 0L) {
+              fs = fs + memory::load64(st + 589824L + sy2 * 64L) - (fs & memory::load64(st + 589824L + sy2 * 64L));
+              if (bitGet(memory::load64(st + 655360L + sy2 * 64L), 0L) == 0L) {
+                stop = 1L;
+              }
+            } else {
+              if (bitGet(fs, 0L - sy2 - 1L) == 0L) {
+                bitSet(&fs, 0L - sy2 - 1L, 1L);
+              }
+              stop = 1L;
+            }
+            j = j + 1L;
+          }
+          if (stop == 0L) {
+            fs = fs + memory::load64(st + 720896L + head * 64L) - (fs & memory::load64(st + 720896L + head * 64L));
+          }
+          long cur = memory::load64(st + 720896L + sy * 64L);
+          long merged = cur + fs - (cur & fs);
+          if (merged != cur) {
+            memory::store64(merged, st + 720896L + sy * 64L);
+            changed = 1L;
+          }
+        }
+        i = i + 1L;
+      }
+      pr = pr + 1L;
+    }
+  }
+  return yaccGen(home, st, src, sec2, srcLen, hdr, hdrLen, prefix, prefixLen, symPrefix, symLen, wantD, wantV);
+}
+
+deRfun altFirst(long st, long pr, long* outBits, long* nullableAlt): long {
+  long body = memory::load64(prodAt(st, pr) + 64L);
+  long bits = 0L;
+  long allNull = 1L;
+  long i = 0L;
+  while (i < body) {
+    long sy = memory::load64(prodAt(st, pr) + 256L + i * 64L);
+    if (sy >= 0L) {
+      bits = bits + memory::load64(st + 589824L + sy * 64L) - (bits & memory::load64(st + 589824L + sy * 64L));
+      if (bitGet(memory::load64(st + 655360L + sy * 64L), 0L) == 0L) {
+        allNull = 0L;
+        i = body;
+      }
+    } else {
+      if (bitGet(bits, 0L - sy - 1L) == 0L) {
+        bitSet(&bits, 0L - sy - 1L, 1L);
+      }
+      allNull = 0L;
+      i = body;
+    }
+    i = i + 1L;
+  }
+  *outBits = bits;
+  *nullableAlt = allNull;
+  return 0L;
+}
+
+deRfun emitAction(long home, long fd, long src, long at, long len, long symLen): void {
+  long i = 0L;
+  while (i < len) {
+    long c = byteAt(src + (at + i) * 8L);
+    if (c == 36L && i + 1L < len) {
+      long c2 = byteAt(src + (at + i + 1L) * 8L);
+      if (c2 == 36L) {
+        writeStr(home, fd, "yyval");
+        i = i + 2L;
+        continue;
+      }
+      if (c2 >= 48L && c2 <= 57L) {
+        long v = 0L;
+        long j = i + 1L;
+        while (j < len && byteAt(src + (at + j) * 8L) >= 48L && byteAt(src + (at + j) * 8L) <= 57L) {
+          v = v * 10L + byteAt(src + (at + j) * 8L) - 48L;
+          j = j + 1L;
+        }
+        writeStr(home, fd, "yysv[base + ");
+        writeNum(home, fd, v - 1L);
+        writeStr(home, fd, "]");
+        i = j;
+        continue;
+      }
+    }
+    memory::storeOctet(c, obr::proc::bytes(home));
+    obr::proc::write(home, fd, 0L, 1L);
+    i = i + 1L;
+  }
+}
+
+
+deRfun yaccGen(long home, long st, long src, long sec2, long srcLen, long hdr, long hdrLen, long prefix, long prefixLen, long symPrefix, long symLen, long wantD, long wantV): int {
+  /* 输出文件名：<prefix>.tab.c 等。 */
+  long name = obr::proc::alloc(home, 4096L);
+  long out = 1L;
+  copySpan(prefix, name, prefixLen);
+  putText(name, prefixLen, ".tab.c");
+  plant(home, name, prefixLen + 5L);
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "yacc: cannot open output\n");
+    return finish(home, 1L);
+  }
+  out = obr::proc::slot(home, 192L);
+  long ntCount = memory::load64(st + 64L);
+  long prodCount = memory::load64(st + 128L);
+  writeStr(home, out, "/* generated by yacc (ZerOS minimal subset) */\n");
+  writeStr(home, out, "#include <stdio.h>\n");
+  writeStr(home, out, "static long yysv[512];\nstatic int yysp = 0;\nstatic long yyval = 0;\nstatic int yytok = -1;\nstatic long yylval = 0;\n");
+  writeStr(home, out, "extern int yylex(void);\nstatic void yycache(void) { if (yytok < 0) { yytok = yylex(); } }\n");
+  writeSpan(home, out, 0L, hdr, hdrLen);
+  /* 前置声明。 */
+  long n = 0L;
+  while (n < ntCount) {
+    writeStr(home, out, "static int parse_");
+    writeNum(home, out, n);
+    writeStr(home, out, "(void);\n");
+    n = n + 1L;
+  }
+  n = 0L;
+  while (n < ntCount) {
+    writeStr(home, out, "static int parse_");
+    writeNum(home, out, n);
+    writeStr(home, out, "(void) {\n  int base = yysp;\n  yycache();\n  switch (yytok) {\n");
+    long pr = 0L;
+    while (pr < prodCount) {
+      if (memory::load64(prodAt(st, pr)) == n) {
+        long bits = 0L;
+        long nullableAlt = 0L;
+        altFirst(st, pr, &bits, &nullableAlt);
+        if (nullableAlt == 1L) {
+          bits = bits + memory::load64(st + 720896L + n * 64L) - (bits & memory::load64(st + 720896L + n * 64L));
+        }
+        long t = 0L;
+        long tokCount = memory::load64(st);
+        while (t < tokCount) {
+          if (bitGet(bits, t) == 1L) {
+            writeStr(home, out, "  case ");
+            writeNum(home, out, t);
+            writeStr(home, out, ": ");
+          }
+          t = t + 1L;
+        }
+        writeStr(home, out, "\n");
+        /* 体。 */
+        long body = memory::load64(prodAt(st, pr) + 64L);
+        long i = 0L;
+        while (i < body) {
+          long sy = memory::load64(prodAt(st, pr) + 256L + i * 64L);
+          if (sy >= 0L) {
+            writeStr(home, out, "    if (parse_");
+            writeNum(home, out, sy);
+            writeStr(home, out, "()) return 1;\n");
+          } else {
+            long tid = 0L - sy - 1L;
+            writeStr(home, out, "    yycache();\n    if (yytok != ");
+            writeNum(home, out, tid);
+            writeStr(home, out, ") { fprintf(stderr, \"yacc: syntax error\\n\"); return 1; }\n");
+            writeStr(home, out, "    yysv[yysp] = yylval; yysp += 1; yytok = -1;\n");
+          }
+          i = i + 1L;
+        }
+        writeStr(home, out, "    yyval = (base < yysp) ? yysv[base] : 0;\n");
+        if (memory::load64(prodAt(st, pr) + 192L) > 0L) {
+          writeStr(home, out, "    ");
+          emitAction(home, out, src, memory::load64(prodAt(st, pr) + 128L), memory::load64(prodAt(st, pr) + 192L), symLen);
+          writeStr(home, out, "\n");
+        }
+        writeStr(home, out, "    yysv[base] = yyval; yysp = base + 1; return 0;\n");
+      }
+      pr = pr + 1L;
+    }
+    writeStr(home, out, "  default:\n    fprintf(stderr, \"yacc: syntax error\\n\");\n    return 1;\n  }\n}\n");
+    n = n + 1L;
+  }
+  /* yyparse 入口（-p 前缀）。 */
+  writeSpan(home, out, 0L, symPrefix, symLen);
+  writeStr(home, out, "parse(void) {\n  yysp = 0;\n  yytok = -1;\n  if (parse_");
+  long startNt = memory::load64(st + 192L);
+  if (startNt < 0L) {
+    startNt = 0L;
+  }
+  writeNum(home, out, startNt);
+  writeStr(home, out, "()) return 1;\n  yycache();\n  if (yytok != 0) { fprintf(stderr, \"yacc: syntax error\\n\"); return 1; }\n  return 0;\n}\n");
+  /* 尾段与默认 yylex/main。 */
+  long epStart = sec2 + 3L;
+  long hasLex = 0L;
+  long hasMain = 0L;
+  long scan = epStart;
+  while (scan + 4L < srcLen) {
+    if (byteAt(src + scan * 8L) == 121L && byteAt(src + (scan + 1L) * 8L) == 121L && byteAt(src + (scan + 2L) * 8L) == 108L && byteAt(src + (scan + 3L) * 8L) == 101L) {
+      hasLex = 1L;
+    }
+    if (byteAt(src + scan * 8L) == 109L && byteAt(src + (scan + 1L) * 8L) == 97L && byteAt(src + (scan + 2L) * 8L) == 105L && byteAt(src + (scan + 3L) * 8L) == 110L) {
+      hasMain = 1L;
+    }
+    scan = scan + 1L;
+  }
+  if (epStart < srcLen) {
+    writeSpan(home, out, 0L, src + epStart * 8L, srcLen - epStart);
+    writeStr(home, out, "\n");
+  }
+  if (hasLex == 0L) {
+    writeStr(home, out, "int yylex(void) { return 0; }\n");
+  }
+  if (hasMain == 0L) {
+    writeStr(home, out, "int main(void) { return ");
+    writeSpan(home, out, 0L, symPrefix, symLen);
+    writeStr(home, out, "parse(); }\n");
+  }
+  obr::proc::close(home, out);
+  /* -d 头文件。 */
+  if (wantD == 1L) {
+    copySpan(prefix, name, prefixLen);
+    putText(name, prefixLen, ".tab.h");
+    plant(home, name, prefixLen + 5L);
+    if (obr::proc::open(home, 1L) == 0L) {
+      long h = obr::proc::slot(home, 192L);
+      long t = 0L;
+      while (t < memory::load64(st)) {
+        writeStr(home, h, "#define ");
+        writeSpan(home, h, 0L, tokAt(st, t) + 128L, memory::load64(tokAt(st, t)));
+        writeStr(home, h, " ");
+        writeNum(home, h, t);
+        writeStr(home, h, "\n");
+        t = t + 1L;
+      }
+      obr::proc::close(home, h);
+    }
+  }
+  /* -v 报告。 */
+  if (wantV == 1L) {
+    copySpan(prefix, name, prefixLen);
+    putText(name, prefixLen, ".output");
+    plant(home, name, prefixLen + 7L);
+    if (obr::proc::open(home, 1L) == 0L) {
+      long v = obr::proc::slot(home, 192L);
+      long pr = 0L;
+      while (pr < prodCount) {
+        writeStr(home, v, "nt");
+        writeNum(home, v, memory::load64(prodAt(st, pr)));
+        writeStr(home, v, " :");
+        long i = 0L;
+        while (i < memory::load64(prodAt(st, pr) + 64L)) {
+          long sy = memory::load64(prodAt(st, pr) + 256L + i * 64L);
+          writeStr(home, v, " ");
+          if (sy >= 0L) {
+            writeStr(home, v, "nt");
+            writeNum(home, v, sy);
+          } else {
+            writeStr(home, v, "t");
+            writeNum(home, v, 0L - sy - 1L);
+          }
+          i = i + 1L;
+        }
+        writeStr(home, v, "\n");
+        pr = pr + 1L;
+      }
+      obr::proc::close(home, v);
+    }
+  }
+  return finish(home, 0L);
+}

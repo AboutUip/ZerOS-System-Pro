@@ -1,0 +1,394 @@
+/* 鍛戒护绫诲父瑙勫唴寤猴細alias unalias command type hash pwd echo fc銆?   alias 琛ㄣ€乭ash 琛ㄥ湪 bstate锛涙煡璺緞鐢?run 鐨?resolve锛沞cho/pwd 瀵归綈 /bin 鍚屽悕宸ュ叿鐨勮緭鍑哄拰閫€鍑虹爜銆?   true/false 鍦?run 鐨勫垎鍙戣〃閲岀洿鎺ュ洖鐘舵€併€俴ill 鍜?newgrp 涓嶅湪杩欓噷锛氭淳鐢?/bin 鍚屽悕宸ュ叿锛岃涓哄嵆宸ュ叿琛屼负銆?*/
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
+import memory;
+import obr.proc;
+import obr.line;
+import bcore;
+import bstate;
+import bvar;
+import builtin;
+import env;
+import span;
+import parse;
+import draw;
+import run;
+import bcmd;
+
+
+deRfun bcEcho(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long index = command + 1L;
+  while (index < cmdArgc(cmd)) {
+    if (index > command + 1L) {
+      say(home, work, " ");
+    }
+    saySpan(home, work, cmdArgAt(cmd, index), cmdArgLen(cmd, index));
+    index = index + 1L;
+  }
+  say(home, work, "\n");
+  return 0L;
+}
+
+
+deRfun bcAlias(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  if (cmdArgc(cmd) <= command + 1L) {
+    long count = bsAliasCount(bs);
+    long index = 0L;
+    while (index < count) {
+      bvSayVar(home, work, "alias ", bsAliasNameAt(bs, index), bsAliasNameLen(bs, index), bsAliasValueAt(bs, index), bsAliasValueLen(bs, index));
+      index = index + 1L;
+    }
+    return 0L;
+  }
+  long code = 0L;
+  long at = command + 1L;
+  while (at < cmdArgc(cmd)) {
+    long word = cmdArgAt(cmd, at);
+    long len = cmdArgLen(cmd, at);
+    long nameLen = 0L;
+    long value = 0L;
+    long valueLen = 0L;
+    if (isAssign(word, len, &nameLen) == 1L) {
+      value = word + (nameLen + 1L) * 8L;
+      valueLen = len - nameLen - 1L;
+      if (bcName(word, nameLen) == 0L || bsAliasSet(bs, word, nameLen, value, valueLen) != 0L) {
+        sayErrMissing(home, "sh: alias: ", word, nameLen, ": cannot define\n");
+        code = 1L;
+      }
+    } else {
+      long index = bsAliasFind(bs, word, len);
+      if (index < 0L) {
+        sayErrMissing(home, "sh: alias: ", word, len, ": not found\n");
+        code = 1L;
+      } else {
+        bvSayVar(home, work, "alias ", bsAliasNameAt(bs, index), bsAliasNameLen(bs, index), bsAliasValueAt(bs, index), bsAliasValueLen(bs, index));
+      }
+    }
+    at = at + 1L;
+  }
+  return code;
+}
+
+
+deRfun bcUnalias(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long code = 0L;
+  long at = command + 1L;
+  if (at < cmdArgc(cmd) && cmdArgLen(cmd, at) == 2L && bcU8(cmdArgAt(cmd, at)) == 45L && bcU8(cmdArgAt(cmd, at) + 8L) == 97L) {
+    while (bsAliasCount(bs) > 0L) {
+      bsAliasDel(bs, bsAliasNameAt(bs, 0L), bsAliasNameLen(bs, 0L));
+    }
+    return 0L;
+  }
+  while (at < cmdArgc(cmd)) {
+    if (bsAliasDel(bs, cmdArgAt(cmd, at), cmdArgLen(cmd, at)) != 0L) {
+      sayErrMissing(home, "sh: unalias: ", cmdArgAt(cmd, at), cmdArgLen(cmd, at), ": not found\n");
+      code = 1L;
+    }
+    at = at + 1L;
+  }
+  return code;
+}
+
+
+/* 鎶ュ憡涓€涓悕瀛楁€庝箞瑙ｉ噴銆傝繑鍥?1 鏄病鎵惧埌銆俶ode 0 鏄?type/-V 鐨勬暣鍙ワ紝1 鏄?-v 鐨勭畝鐭舰銆?*/
+deRfun bcmdSayWhat(long home, long bs, long work, long env, long name, long nameLen, long mode): long {
+  long index = bsAliasFind(bs, name, nameLen);
+  if (index >= 0L) {
+    if (mode == 1L) {
+      bvSayVar(home, work, "alias ", bsAliasNameAt(bs, index), bsAliasNameLen(bs, index), bsAliasValueAt(bs, index), bsAliasValueLen(bs, index));
+    } else {
+      saySpan(home, work, name, nameLen);
+      say(home, work, " is an alias for ");
+      long at = bcQuote(scratchAt(work), bsAliasValueAt(bs, index), bsAliasValueLen(bs, index));
+      saySpan(home, work, scratchAt(work), at);
+      say(home, work, "\n");
+    }
+    return 0L;
+  }
+  if (builtinId(name, nameLen) != 0L) {
+    if (mode == 1L) {
+      saySpan(home, work, name, nameLen);
+      say(home, work, "\n");
+    } else {
+      saySpan(home, work, name, nameLen);
+      say(home, work, " is a shell builtin\n");
+    }
+    return 0L;
+  }
+  long got = resolve(home, bs, work, env, name, nameLen);
+  if (got >= 1L) {
+    if (mode == 1L) {
+      saySpan(home, work, destAt(work), got);
+      say(home, work, "\n");
+    } else {
+      saySpan(home, work, name, nameLen);
+      say(home, work, " is ");
+      saySpan(home, work, destAt(work), got);
+      say(home, work, "\n");
+    }
+    return 0L;
+  }
+  sayErrMissing(home, "sh: type: ", name, nameLen, ": not found\n");
+  return 1L;
+}
+
+
+deRfun bcType(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  if (cmdArgc(cmd) <= command + 1L) {
+    sayErr(home, "sh: type: usage: type name ...\n");
+    return 2L;
+  }
+  long code = 0L;
+  long at = command + 1L;
+  while (at < cmdArgc(cmd)) {
+    if (bcmdSayWhat(home, bs, work, env, cmdArgAt(cmd, at), cmdArgLen(cmd, at), 0L) != 0L) {
+      code = 1L;
+    }
+    at = at + 1L;
+  }
+  return code;
+}
+
+
+/* command [-p] [-v|-V] 鍚嶅瓧 [鍙傛暟...]銆?   -v/-V 鎶ュ憡瑙ｉ噴锛屽叾浣欎笉甯﹀埆鍚嶃€佷笉甯﹀嚱鏁扮洿鎺ユ淳鐢熷懡浠わ紙鍐呭缓浠嶆寜鍐呭缓璺戯級銆?*/
+deRfun bcCommand(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long mode = 0L;
+  long forcePath = 0L;
+  long at = command + 1L;
+  while (at < cmdArgc(cmd)) {
+    long word = cmdArgAt(cmd, at);
+    long len = cmdArgLen(cmd, at);
+    if (len < 2L || bcU8(word) != 45L || bcU8(word + 8L) == 45L) {
+      break;
+    }
+    long index = 1L;
+    while (index < len) {
+      long letter = bcU8(word + index * 8L);
+      if (letter == 118L) {
+        mode = 1L;
+      } else if (letter == 86L) {
+        mode = 2L;
+      } else if (letter == 112L) {
+        forcePath = 1L;
+      } else {
+        sayErrByte(home, letter);
+        sayErr(home, "sh: command: invalid option\n");
+        return 2L;
+      }
+      index = index + 1L;
+    }
+    at = at + 1L;
+  }
+  if (at >= cmdArgc(cmd)) {
+    return 0L;
+  }
+  if (mode != 0L) {
+    return bcmdSayWhat(home, bs, work, env, cmdArgAt(cmd, at), cmdArgLen(cmd, at), mode - 1L);
+  }
+  if (forcePath == 1L) {
+    copyEnv(env, envTmp);
+    envSet(envTmp, scratchAt(work), putText(scratchAt(work), 0L, "PATH"),
+           scratchAt(work) + 256L, putText(scratchAt(work) + 256L, 0L, "/bin:/os:/kernel"));
+  }
+  return runWord(home, bs, state, work, out, env, envTmp, body, cmd, at, status, leaving, 0L);
+}
+
+
+deRfun bcHash(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long code = 0L;
+  long at = command + 1L;
+  if (at < cmdArgc(cmd) && cmdArgLen(cmd, at) == 2L && bcU8(cmdArgAt(cmd, at)) == 45L && bcU8(cmdArgAt(cmd, at) + 8L) == 114L) {
+    bsHashReset(bs);
+    at = at + 1L;
+  }
+  if (at >= cmdArgc(cmd)) {
+    long count = bsHashCount(bs);
+    long index = 0L;
+    while (index < count) {
+      saySpan(home, work, bsHashNameAt(bs, index), bsHashNameLen(bs, index));
+      say(home, work, "=");
+      saySpan(home, work, bsHashPathAt(bs, index), bsHashPathLen(bs, index));
+      say(home, work, "\n");
+      index = index + 1L;
+    }
+    return 0L;
+  }
+  while (at < cmdArgc(cmd)) {
+    long name = cmdArgAt(cmd, at);
+    long nameLen = cmdArgLen(cmd, at);
+    long got = resolve(home, bs, work, env, name, nameLen);
+    if (got < 1L) {
+      sayErrMissing(home, "sh: hash: ", name, nameLen, ": not found\n");
+      code = 1L;
+    } else if (bsHashPut(bs, name, nameLen, destAt(work), got) != 0L) {
+      sayErr(home, "sh: hash: table full\n");
+      code = 1L;
+    }
+    at = at + 1L;
+  }
+  return code;
+}
+
+
+/* ---- pwd锛氬榻?/bin/pwd銆?L 鏄己鐪侊紝PWD 瑕佹槸骞插噣鐨勭粷瀵硅矾寰勬墠鐢紝鍚﹀垯璧?getcwd銆?---- */
+
+deRfun bcReadCwd(long home, long dest): long {
+  if (obr::proc::getcwd(home) != 0L) {
+    return -1L;
+  }
+  long count = obr::proc::slot(home, 256L);
+  if (count < 1L || count > 8192L) {
+    return -1L;
+  }
+  copySpan(obr::proc::bytes(home), dest, count);
+  return count;
+}
+
+
+deRfun bcLogicalOk(long addr, long count): long {
+  if (count < 1L || bcU8(addr) != 47L) {
+    return 0L;
+  }
+  if (count == 1L) {
+    return 1L;
+  }
+  long index = 1L;
+  long start = 1L;
+  while (index <= count) {
+    long boundary = 0L;
+    if (index == count || bcU8(addr + index * 8L) == 47L) {
+      boundary = 1L;
+    }
+    if (boundary == 1L) {
+      long len = index - start;
+      if (len < 1L) {
+        return 0L;
+      }
+      if (len == 1L && bcU8(addr + start * 8L) == 46L) {
+        return 0L;
+      }
+      if (len == 2L && bcU8(addr + start * 8L) == 46L && bcU8(addr + (start + 1L) * 8L) == 46L) {
+        return 0L;
+      }
+      start = index + 1L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+
+deRfun bcPwd(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long physical = work + 42000L;
+  long other = work + 52000L;
+  long physicalLen = bcReadCwd(home, physical);
+  if (physicalLen < 1L) {
+    sayErr(home, "sh: pwd: cannot get current directory\n");
+    return 1L;
+  }
+  long logical = 1L;
+  long at = command + 1L;
+  while (at < cmdArgc(cmd)) {
+    long word = cmdArgAt(cmd, at);
+    long len = cmdArgLen(cmd, at);
+    if (len < 1L || bcU8(word) != 45L || (len == 2L && bcU8(word + 8L) == 45L)) {
+      if (len == 2L && bcU8(word + 8L) == 45L) {
+        at = at + 1L;
+      }
+      break;
+    }
+    long index = 1L;
+    while (index < len) {
+      long letter = bcU8(word + index * 8L);
+      if (letter == 76L) {
+        logical = 1L;
+      } else if (letter == 80L) {
+        logical = 0L;
+      } else {
+        sayErr(home, "sh: pwd: invalid option\n");
+        return 1L;
+      }
+      index = index + 1L;
+    }
+    at = at + 1L;
+  }
+  if (at < cmdArgc(cmd)) {
+    sayErr(home, "sh: pwd: too many arguments\n");
+    return 1L;
+  }
+  long out2 = physical;
+  long outLen = physicalLen;
+  if (logical == 1L) {
+    long value = 0L;
+    long valueLen = 0L;
+    if (envByName(env, work, "PWD", &value, &valueLen) == 1L && bcLogicalOk(value, valueLen) == 1L) {
+      plantRaw(home, value, valueLen);
+      if (obr::proc::chdir(home) == 0L) {
+        long seen = bcReadCwd(home, other);
+        plantRaw(home, physical, physicalLen);
+        if (obr::proc::chdir(home) != 0L) {
+          sayErr(home, "sh: pwd: cannot restore current directory\n");
+          return 1L;
+        }
+        if (seen == physicalLen && bcSame(other, seen, physical, physicalLen) == 1L) {
+          out2 = value;
+          outLen = valueLen;
+        }
+      }
+    }
+  }
+  saySpan(home, work, out2, outLen);
+  say(home, work, "\n");
+  return 0L;
+}
+
+
+/* fc锛氬彧鍋?-l 鍒楀巻鍙诧紙鍙甫璧锋鍙凤級銆傝璧风紪杈戝櫒鐨勫舰鎬佹槑纭姤涓嶆敮鎸併€?*/
+deRfun bcFc(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long at = command + 1L;
+  long first = 0L;
+  long last = 0L;
+  if (at < cmdArgc(cmd) && cmdArgLen(cmd, at) == 2L && bcU8(cmdArgAt(cmd, at)) == 45L && bcU8(cmdArgAt(cmd, at) + 8L) == 108L) {
+    at = at + 1L;
+    if (at < cmdArgc(cmd)) {
+      if (bcDec(cmdArgAt(cmd, at), cmdArgLen(cmd, at), &first) != 0L) {
+        sayErr(home, "sh: fc: numeric argument required\n");
+        return 2L;
+      }
+      at = at + 1L;
+      last = first;
+      if (at < cmdArgc(cmd)) {
+        if (bcDec(cmdArgAt(cmd, at), cmdArgLen(cmd, at), &last) != 0L) {
+          sayErr(home, "sh: fc: numeric argument required\n");
+          return 2L;
+        }
+        at = at + 1L;
+      }
+    }
+    if (at < cmdArgc(cmd)) {
+      sayErr(home, "sh: fc: too many arguments\n");
+      return 2L;
+    }
+    long count = obr::line::editHistCount(state);
+    long index = 0L;
+    while (index < count) {
+      long number = index + 1L;
+      if (first == 0L || (number >= first && number <= last)) {
+        long got = 0L;
+        if (obr::line::editHist(state, index, paintAt(work), &got) == 0L) {
+          if (number >= 10L) {
+            sayByte(home, work, 48L + number / 10L);
+          }
+          sayByte(home, work, 48L + number % 10L);
+          say(home, work, "\t");
+          saySpan(home, work, paintAt(work), got);
+          say(home, work, "\n");
+        }
+      }
+      index = index + 1L;
+    }
+    return 0L;
+  }
+  sayErr(home, "sh: fc: only -l is supported\n");
+  return 1L;
+}

@@ -1,0 +1,50 @@
+/* POSIX.1-2017 ln（utilities/ln.html）。
+   形式是 ln [-f] [-s] source target 与 ln [-f] [-s] source... directory。
+   选项认 -f（强制）和 -s（符号链接），可以连写，-- 结束选项；其余字母
+   写 ln: invalid option，退出 1。操作数至少两个，缺一写 ln: missing operand。
+   本系统 VFS 没有链接服务（nlink 恒为 1，内核未派发 link 类系统调用），
+   硬链接与符号链接都无法创建。完整处理完操作数后写
+   ln: link creation is not supported on this platform 到描述符 2，退出 1。
+   不假装成功，也不改任何文件。诊断英文 ASCII，前缀 ln:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operands = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (len >= 2L && byteAt(at) == 45L) {
+      long cursor = 1L;
+      while (cursor < len) {
+        long octet = byteAt(at + cursor * 8L);
+        if (octet != 102L && octet != 115L) {
+          writeErr(home, "ln: invalid option\n");
+          return finish(home, 1L);
+        }
+        cursor = cursor + 1L;
+      }
+    } else {
+      ended = 1L;
+    }
+    index = index + 1L;
+  }
+  while (index < count) {
+    operands = operands + 1L;
+    index = index + 1L;
+  }
+  if (operands < 2L) {
+    writeErr(home, "ln: missing operand\n");
+    return finish(home, 1L);
+  }
+  writeErr(home, "ln: link creation is not supported on this platform\n");
+  return finish(home, 1L);
+}

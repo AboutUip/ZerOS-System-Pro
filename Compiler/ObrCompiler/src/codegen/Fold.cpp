@@ -11,6 +11,9 @@ int Generator::locate(int slot) const {
   }
 
 bool Generator::constantPtr(const Expr& expr, long long& addr) const {
+    /* M-D：volatile 指针不进常量折叠——MMIO/共享字的地址不能被 Peephole/Fold
+       当成常量指针转发（takeLoad/holds/rememberStore/knownAddr 四面全关的前提）。 */
+    if (expr.volatilePointee) return false;
     if (expr.kind == Expr::Kind::Cast && expr.type == TypeKind::Ptr && expr.kids[0].kind == Expr::Kind::LitInt) {
       addr = expr.kids[0].integer;
       return true;
@@ -27,7 +30,8 @@ bool Generator::constantPtr(const Expr& expr, long long& addr) const {
 void Generator::remember(int slot, const Expr& value) {
     long long addr = 0;
     const int located = locate(slot);
-    if (constantPtr(value, addr)) knownAddr_[located] = addr;
+    /* M-D：volatile 指针不进 remember（knownAddr_ 里永远没有 volatile 地址）。 */
+    if (!value.volatilePointee && constantPtr(value, addr)) knownAddr_[located] = addr;
     else knownAddr_.erase(located);
   }
 

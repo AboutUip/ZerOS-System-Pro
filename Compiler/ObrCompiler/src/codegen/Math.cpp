@@ -3,6 +3,11 @@
 namespace obr {
 
 void Generator::emitLibrary(const Expr& expr, const Function& target) {
+  if (target.name.rfind("obr::atomic::", 0) == 0 || target.name == "memory::fence") {
+    /* M-E：atomic/fence 的编译期面（运行时动作是余量，发射见 LowerAtomic.cpp）。 */
+    emitAtomic(expr, target);
+    return;
+  }
   if (target.name.rfind("obr::ui::", 0) == 0) {
     emitUi(expr, target);
     return;

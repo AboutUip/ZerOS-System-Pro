@@ -1,0 +1,255 @@
+/* POSIX.1-2017 ex（vi 的 ex 模式；utilities/ex 由 vi 页给出）。
+   选项（POSIX 选项集）：ex [-|-s] [-l] [-L] [-R] [-r] [-t tagstring] [-v] [-V] [-x]
+   [--] [file]；另按 vi 口径收 -c command（装入后执行）。
+   - 与 -s：ex 模式与静默（本平台不回显），无行为差别。
+   -l -L -V：编辑器选项设置类，按 tabs 口径校验后接受，不改行为（本子集无 lisp
+   缩进、无列表换行选项、无杂项输出）。
+   -R 只读：缓冲可改但写文件命令报 ex: file is readonly。
+   -t tagstring：在 ./tags（ctags 格式）里查 tag，改开该文件并落到对应行；
+     找不到写 ex: tag not found，退出 1。
+   -v：等同 vi——派生 /bin/vi（同一文件操作数）并以它的退出码退出。
+   -r 无恢复文件、-x 无加密子系统：写明 ex: option -r/-x: ... not supported on this
+   platform，退出 1，不假装。
+   从描述符 0 逐行读命令；命令行可带一个前导 :（多了报错）。
+   命令集与 ed 同款，走共享引擎 editlib：a c d i p n w q Q s m t r j =；
+   地址：行号、.、$、逗号范围；s 用 / 定界，BRE 是 editlib 记录的子集。
+   本平台补充映射：wq = 先 w 再 q（不带路径）；q! = Q；x = 修改过才 w，再 q。
+   不做 e E g G H h l P V v z 与 ! 子 shell，写 ex: ? unsupported。
+   q 在已修改且未写时第一次只写 ?，第二次才退出（与 ed 相同）。
+   仅当命令流以错误结束时退出 1；EOF 时缓冲已改则写
+   ex: no write since last change 并退出 1，否则退出 0。
+   诊断英文 ASCII，描述符 2，前缀 ex:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import editlib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Ed ed;
+  if (initEditor(&ed, home, 0L) != 1L) {
+    writeErr(home, "ex: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operand = -1L;
+  long readOnly = 0L;
+  long cmdAt = 0L;
+  long cmdLen = 0L;
+  long tagAt = 0L;
+  long tagLen = 0L;
+  long wantVi = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len == 1L && byteAt(at) == 45L) {
+      /* 单独的 - 是 ex 模式操作数：本程序就是 ex，无行为差别。 */
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-s") == 1L) {
+      /* 本平台不回显，-s 无行为差别。 */
+    } else if (ended == 0L && len == 2L && (spanSame(at, len, "-l") == 1L || spanSame(at, len, "-L") == 1L || spanSame(at, len, "-V") == 1L)) {
+      /* lisp 缩进、列表换行、杂项输出三个编辑器选项：本子集不实现这些行为，
+         按 tabs 口径校验后接受，不改行为。 */
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-R") == 1L) {
+      readOnly = 1L;
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-r") == 1L) {
+      writeErr(home, "ex: option -r: no recovery files on this platform\n");
+      return finish(home, 1L);
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-x") == 1L) {
+      writeErr(home, "ex: option -x: no encryption subsystem on this platform\n");
+      return finish(home, 1L);
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-v") == 1L) {
+      wantVi = 1L;
+    } else if (ended == 0L && len == 2L && (spanSame(at, len, "-c") == 1L || spanSame(at, len, "-t") == 1L)) {
+      long isTag = 0L;
+      if (spanSame(at, len, "-t") == 1L) {
+        isTag = 1L;
+      }
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "ex: option requires an argument\n");
+        return finish(home, 1L);
+      }
+      if (isTag == 1L) {
+        tagAt = argPtr(home, index);
+        tagLen = argLen(home, index);
+      } else {
+        cmdAt = argPtr(home, index);
+        cmdLen = argLen(home, index);
+      }
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "ex: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      if (operand >= 0L) {
+        writeErr(home, "ex: too many operands\n");
+        return finish(home, 1L);
+      }
+      operand = index;
+    }
+    index = index + 1L;
+  }
+  if (wantVi == 1L) {
+    /* ex -v 等同 vi：派生 /bin/vi 并传递它的退出码。 */
+    long saved = obr::proc::alloc(home, 139520L);
+    long scratch = obr::proc::alloc(home, 65728L);
+    if (saved == 0L || scratch == 0L || saveWindow(home, saved) != 0L) {
+      writeErr(home, "ex: out of memory\n");
+      return finish(home, 1L);
+    }
+    putText(scratch, 0L, "vi");
+    long pathLen = 0L;
+    if (resolve(home, scratch + 8192L * 8L, scratch, 2L, &pathLen) == 0L) {
+      writeErr(home, "ex: vi: No such file or directory\n");
+      return finish(home, 127L);
+    }
+    if (argsBegin(home, saved) != 0L || argsPush(home, scratch, 2L) != 0L) {
+      writeErr(home, "ex: out of memory\n");
+      return finish(home, 1L);
+    }
+    /* 操作数从 saved 副本读：argsBegin 之后活窗口的长度表已被清掉。 */
+    if (operand >= 0L && argsPush(home, savedArgPtr(saved, operand), savedArgLen(saved, operand)) != 0L) {
+      writeErr(home, "ex: out of memory\n");
+      return finish(home, 1L);
+    }
+    if (argsDone(home) != 0L) {
+      writeErr(home, "ex: missing operand\n");
+      return finish(home, 1L);
+    }
+    plant(home, scratch + 8192L * 8L, pathLen);
+    if (obr::proc::spawn(home, 0L) != 0L) {
+      writeErr(home, "ex: vi: cannot execute\n");
+      return finish(home, 126L);
+    }
+    long pid = obr::proc::slot(home, 192L);
+    obr::proc::wait(home, pid);
+    long code = obr::proc::slot(home, 192L);
+    if (code < 0L) {
+      code = 0L;
+    }
+    if (code > 255L) {
+      code = code % 256L;
+    }
+    return finish(home, code);
+  }
+  if (operand >= 0L) {
+    if (loadFile(&ed, argPtr(home, operand), argLen(home, operand)) != 1L) {
+      edErr(&ed, "cannot open");
+    }
+  }
+  if (tagLen > 0L) {
+    long tagBuf = obr::proc::alloc(home, 65536L);
+    long fileLen = 0L;
+    long line = 0L;
+    if (tagBuf == 0L || findTag(home, tagAt, tagLen, tagBuf, &fileLen, &line) != 1L) {
+      writeErr(home, "ex: tag not found\n");
+      return finish(home, 1L);
+    }
+    if (loadFile(&ed, tagBuf, fileLen) != 1L) {
+      edErr(&ed, "cannot open");
+    } else {
+      ed.cur = line - 1L;
+      if (ed.cur >= ed.count) {
+        ed.cur = ed.count - 1L;
+      }
+      if (ed.cur < 0L) {
+        ed.cur = 0L;
+      }
+    }
+  }
+  if (cmdLen > 0L) {
+    if (runCmd(&ed, cmdAt, cmdLen) == 2L) {
+      if (ed.hadErr != 0L) {
+        return finish(home, 1L);
+      }
+      return finish(home, 0L);
+    }
+  }
+  long cmdBuf = obr::proc::alloc(home, 4096L * 8L);
+  long cmdOff = 0L;
+  long eof = 0L;
+  while (eof == 0L) {
+    long cmdLen = 0L;
+    while (cmdLen < 4096L) {
+      if (obr::proc::read(home, 0L, cmdOff, 1L) != 0L) {
+        eof = 1L;
+        break;
+      }
+      long n = obr::proc::slot(home, 320L);
+      if (n < 1L) {
+        eof = 1L;
+        break;
+      }
+      cmdOff = cmdOff + n;
+      long bit = byteAt(obr::proc::bytes(home));
+      if (bit == 10L) {
+        break;
+      }
+      memory::storeOctet(bit, cmdBuf + cmdLen * 8L);
+      cmdLen = cmdLen + 1L;
+    }
+    if (cmdLen < 1L && eof == 1L) {
+      break;
+    }
+    /* 命令行可带一个前导 :。 */
+    long at = cmdBuf;
+    long len = cmdLen;
+    if (len >= 1L && byteAt(at) == 58L) {
+      at = at + 8L;
+      len = len - 1L;
+      if (len >= 1L && byteAt(at) == 58L) {
+        edErr(&ed, "unexpected");
+        continue;
+      }
+    }
+    if (readOnly == 1L && len >= 1L && (byteAt(at) == 119L || byteAt(at) == 120L)) {
+      edErr(&ed, "file is readonly");
+      continue;
+    }
+    if (len == 2L && byteAt(at) == 119L && byteAt(at + 8L) == 113L) {
+      memory::storeOctet(119L, cmdBuf);
+      if (runCmd(&ed, cmdBuf, 1L) != 0L) {
+        /* w 失败时不退出。 */
+      }
+      memory::storeOctet(113L, cmdBuf);
+      if (runCmd(&ed, cmdBuf, 1L) == 2L) {
+        break;
+      }
+      continue;
+    }
+    if (len == 1L && byteAt(at) == 120L) {
+      if (ed.dirty == 1L) {
+        memory::storeOctet(119L, cmdBuf);
+        if (runCmd(&ed, cmdBuf, 1L) != 1L) {
+          continue;
+        }
+      }
+      memory::storeOctet(113L, cmdBuf);
+      if (runCmd(&ed, cmdBuf, 1L) == 2L) {
+        break;
+      }
+      continue;
+    }
+    if (len == 2L && byteAt(at) == 113L && byteAt(at + 8L) == 33L) {
+      memory::storeOctet(81L, cmdBuf);
+      runCmd(&ed, cmdBuf, 1L);
+      break;
+    }
+    if (runCmd(&ed, at, len) == 2L) {
+      break;
+    }
+  }
+  if (eof == 1L && ed.dirty == 1L) {
+    writeErr(home, "ex: no write since last change\n");
+    return finish(home, 1L);
+  }
+  if (ed.hadErr != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

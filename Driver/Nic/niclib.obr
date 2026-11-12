@@ -1,0 +1,65 @@
+/* 网卡 API 的用户侧实现。编成 /lib/nic.zdll。
+   只把参数放进调用者窗口再发系统调用；不解析以太网，也不建 TCP/IP。 */
+import nic;
+import board;
+import memory;
+import obr.os;
+
+deRfun nic::home(): long {
+  return query(1L, 8L, obr::os::core());
+}
+
+export deRfun nic::probe(): long {
+  return obr::os::svc(41L);
+}
+
+export deRfun nic::send(long address, long length): long {
+  long home = nic::home();
+  memory::store64(length, home + 128L);
+  memory::store64(address, home + 192L);
+  return obr::os::svc(42L);
+}
+
+export deRfun nic::recv(long address, long capacity): long {
+  long home = nic::home();
+  memory::store64(capacity, home + 128L);
+  memory::store64(address, home + 192L);
+  return obr::os::svc(43L);
+}
+
+export deRfun nic::selfCheck(): long {
+  return obr::os::svc(44L);
+}
+
+export deRfun nic::info(long* frameMax, long* queueDepth, long* wireKind): long {
+  long status = nic::probe();
+  long home = nic::home();
+  *frameMax = memory::load64(home + 192L);
+  *queueDepth = memory::load64(home + 256L);
+  *wireKind = memory::load64(home + 320L);
+  return status;
+}
+
+export deRfun nic::configure(long mode, long address, long port): long {
+  /* 不小于 1048576 的立即数在动态库里会被当成数据地址。
+     2^16 起全部用运行时相乘得到。 */
+  long base16 = 65536L;
+  long base24 = base16 * 256L;
+  long base32 = base16 * base16;
+  long base40 = base32 * 256L;
+  long base48 = base32 * base16;
+  long base56 = base48 * 256L;
+  if ((mode != 0L && mode != 1L) || address < 0L || address > base32 - 1L || port < 0L || port > 65535L) {
+    return 7L;
+  }
+  long a = (address / base24) % 256L;
+  long b = (address / base16) % 256L;
+  long c = (address / 256L) % 256L;
+  long d = address % 256L;
+  long high = (port / 256L) % 256L;
+  long low = port % 256L;
+  long word = 1L + mode * 256L + a * base16 + b * base24 + c * base32 + d * base40 + high * base48 + low * base56;
+  long home = nic::home();
+  memory::store64(word, home + 128L);
+  return obr::os::svc(45L);
+}

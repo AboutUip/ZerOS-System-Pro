@@ -1,0 +1,9 @@
+/* 150 任务运行红测的 flat 工作负载。
+   先让出一次（证明窗口上下文能被 capture/restore），然后返回 main。
+   返回后的 halt 由 schedSweep 在干净停机点收尾，核可以 release 回空闲态。 */
+import obr.os;
+
+deRfun main(): int {
+  obr::os::yield();
+  return 0;
+}

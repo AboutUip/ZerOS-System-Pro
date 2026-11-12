@@ -1,0 +1,12 @@
+/* Plan 2 M5：泛型实参数量必须和模板一致。编译应当失败：泛型实参数量不对 Stack<int,string>。 */
+#VERSION 2
+
+class Stack[T] {
+  T value;
+  deRfun Stack(T v): void { value = v; }
+}
+
+deRfun main(): int {
+  Stack[int, string] s = new Stack[int, string](1, "x");
+  return 0;
+}

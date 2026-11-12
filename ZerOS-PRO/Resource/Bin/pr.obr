@@ -19,6 +19,7 @@ import memory;
 import obr.oct;
 import obr.os;
 import obr.proc;
+import time;
 import arg;
 
 struct Opt {
@@ -343,7 +344,7 @@ deRfun monthName(long index): string {
 }
 
 deRfun writeDate(long home, long* outAt, long* filled): void {
-  obr::proc::clock(home);
+  time::clock(home);
   long ms = obr::proc::slot(home, 128L);
   long sec = ms / 1000L;
   long minute = sec / 60L;

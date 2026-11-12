@@ -1,0 +1,15 @@
+#DYN
+/* 退出码 = core 3 上一个旧布局绑定任务的 pid 低 8 位。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  memory::store64(3L, home + 128L);
+  long pid = obr::os::svc(80L);
+  home = obr::proc::home();
+  memory::store64(pid % 256L, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

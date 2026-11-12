@@ -1,0 +1,14 @@
+/* Plan 2 M1：@Overwrite 必须和基类方法签名完全一致。编译应当失败：覆盖签名不一致 Sub::v。 */
+#VERSION 2
+
+class Base {
+  deRfun v(int n): int { return 1; }
+}
+
+class Sub : Base {
+  @Overwrite deRfun v(): int { return 2; }
+}
+
+deRfun main(): int {
+  return 0;
+}

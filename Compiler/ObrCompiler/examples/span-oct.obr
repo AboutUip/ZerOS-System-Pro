@@ -1,0 +1,130 @@
+/* M-B：obr.oct 的 span 形态与旧 (address, count) 实现逐字节一致。
+   旧实现是迁移前 obr.oct.obr 的原文（memory::* 直调）；span 实现与 lib/obr.oct.obr 一致。
+   两套在两片互不相交的八位组区跑同一序列，逐字节对拍 + 返回值对拍。结果 0。 */
+#VERSION 2
+import octmem;
+
+/* ---- 旧实现（迁移前 obr.oct.obr 原文） ---- */
+
+deRfun oldRaw(long addr): long {
+  long value = memory::loadOctet(addr);
+  if (value < 0L) {
+    value = value + 256L;
+  }
+  return value;
+}
+
+deRfun oldGet(long addr): long {
+  return oldRaw(addr);
+}
+
+deRfun oldPut(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+deRfun oldCopy(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(oldRaw(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun oldEq(long addr, long count, string text): long {
+  int rawLen = length(text);
+  long need = rawLen;
+  if (need != count) {
+    return 0L;
+  }
+  int index = 0;
+  while (index < rawLen) {
+    long value = text[index];
+    if (oldRaw(addr + index * 8L) != value) {
+      return 0L;
+    }
+    index = index + 1;
+  }
+  return 1L;
+}
+
+/* ---- span 形态（与 lib/obr.oct.obr 一致） ---- */
+
+@Fails deRfun newGet(span[byte] buf, long index): long {
+  return (long)buf[index];
+}
+
+@Fails deRfun newPut(span[byte] buf, long index, long value): void {
+  buf[index] = (byte)value;
+}
+
+deRfun newCopy(span[byte] from, span[byte] to): long {
+  long n = from.count;
+  if (to.count < n) {
+    n = to.count;
+  }
+  long index = 0L;
+  while (index < n) {
+    to[index] = from[index];
+    index = index + 1L;
+  }
+  return n;
+}
+
+deRfun newEq(span[byte] buf, string text): long {
+  int rawLen = length(text);
+  long need = rawLen;
+  if (need != buf.count) {
+    return 0L;
+  }
+  int index = 0;
+  while (index < rawLen) {
+    long value = text[index];
+    if ((long)buf[index] != value) {
+      return 0L;
+    }
+    index = index + 1;
+  }
+  return 1L;
+}
+
+deRfun main(): long {
+  long a = 1048576L;
+  long b = 12582912L;
+  long len = 16L;
+  /* 同一图案两套 put（含 200 这种高位八位组）。 */
+  long i = 0L;
+  while (i < len) {
+    oldPut(a, i, i * 7L + 3L);
+    newPut(span[byte](b, len), i, i * 7L + 3L);
+    i = i + 1L;
+  }
+  oldPut(a, 3L, 200L);
+  newPut(span[byte](b, len), 3L, 200L);
+  /* get 逐字节对拍。 */
+  i = 0L;
+  while (i < len) {
+    if (oldGet(a + i * 8L) != newGet(span[byte](b, len), i)) return 1;
+    i = i + 1L;
+  }
+  if (oldGet(a + 24L) != 200L) return 2;
+  if (newGet(span[byte](b, len), 3L) != 200L) return 3;
+  /* copy 对拍：两套各拷一份，逐字节比两片结果。 */
+  oldCopy(a, a + 4096L, len);
+  if (newCopy(span[byte](b, len), span[byte](b + 4096L, len)) != len) return 4;
+  i = 0L;
+  while (i < len) {
+    if (oldGet(a + 4096L + i * 8L) != newGet(span[byte](b + 4096L, len), i)) return 5;
+    if (oldGet(a + 4096L + i * 8L) != oldGet(a + i * 8L)) return 6;
+    i = i + 1L;
+  }
+  /* eq 对拍：相同的两段都判 1，长度不齐都判 0。 */
+  oldPut(a, 0L, 72L);
+  oldPut(a, 1L, 105L);
+  newPut(span[byte](b, len), 0L, 72L);
+  newPut(span[byte](b, len), 1L, 105L);
+  if (oldEq(a, 2L, "Hi") != 1L) return 7;
+  if (newEq(span[byte](b, 2L), "Hi") != 1L) return 8;
+  if (oldEq(a, 3L, "Hi") != newEq(span[byte](b, 3L), "Hi")) return 9;
+  if (oldEq(a, 1L, "Hi") != newEq(span[byte](b, 1L), "Hi")) return 10;
+  return 0;
+}

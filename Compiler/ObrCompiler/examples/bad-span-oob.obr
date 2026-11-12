@@ -1,0 +1,10 @@
+/* M-B 反例：span 下标越界是 Plan 2 失败值，`?` 必须有归宿（最近的 try 或 @Fails 返回通道）。
+   编译应当失败：失败没有归宿：把函数标成 @Fails 或用 try 接住。
+   归宿链另一端是运行时的：没有归宿的越界失败终止，rax = -code（见 span-oob-runtime.obr）。 */
+#VERSION 2
+
+deRfun main(): long {
+  var[span[byte]] s = span[byte](1048576, 2L);
+  var[byte] x = s[5]?;
+  return 0;
+}

@@ -1,0 +1,158 @@
+/* POSIX.1-2017 mkfifo（utilities/mkfifo.html）。
+   形式是 mkfifo [-m mode] name...。-- 结束选项，-m 后跟八进制或符号 mode。
+   缺 name 写 mkfifo: missing operand，退出 1；无选项或多于一个 -m 写
+   mkfifo: invalid option，退出 1。mode 不合法写 mkfifo: invalid mode。
+   本系统 VFS 没有 FIFO 结点（只有普通文件、目录和设备），命名管道无法创建。
+   完整处理完操作数后写 mkfifo: FIFO nodes are not supported on this platform
+   到描述符 2，退出 1。不假装成功，也不创建任何文件。
+   诊断英文 ASCII，前缀 mkfifo:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+/* 符号 mode：逗号分隔的类段，类是 u g o a 组合，动作 = + -，权限 r w x。
+   返回解析出的保留权限位（0 到 511）；不合法返回 -1。 */
+deRfun parseSymbolic(long addr, long count): long {
+  long allowed = 0L;
+  long index = 0L;
+  if (count < 1L) {
+    return -1L;
+  }
+  while (index < count) {
+    long classes = 0L;
+    while (index < count) {
+      long octet = byteAt(addr + index * 8L);
+      if (octet == 117L) {
+        classes = classes + 1L;
+      } else if (octet == 103L) {
+        classes = classes + 2L;
+      } else if (octet == 111L) {
+        classes = classes + 4L;
+      } else if (octet == 97L) {
+        classes = classes + 7L;
+      } else {
+        break;
+      }
+      index = index + 1L;
+    }
+    if (index >= count) {
+      return -1L;
+    }
+    long octet = byteAt(addr + index * 8L);
+    if (octet != 61L && octet != 43L && octet != 45L) {
+      return -1L;
+    }
+    long action = octet;
+    index = index + 1L;
+    if (classes == 0L) {
+      classes = 7L;
+    }
+    long perms = 0L;
+    while (index < count) {
+      long bit = byteAt(addr + index * 8L);
+      if (bit == 114L) {
+        perms = perms + 4L;
+      } else if (bit == 119L) {
+        perms = perms + 2L;
+      } else if (bit == 120L) {
+        perms = perms + 1L;
+      } else {
+        break;
+      }
+      index = index + 1L;
+    }
+    long shift = 0L;
+    long base = 0L;
+    if ((long)(classes & 1L) != 0L) {
+      base = base + perms * 64L;
+      shift = shift + 448L;
+    }
+    if ((long)(classes & 2L) != 0L) {
+      base = base + perms * 8L;
+      shift = shift + 56L;
+    }
+    if ((long)(classes & 4L) != 0L) {
+      base = base + perms;
+      shift = shift + 7L;
+    }
+    if (action == 61L) {
+      allowed = (allowed & (511L - shift)) + base;
+    } else if (action == 43L) {
+      allowed = allowed + (base & (511L - allowed));
+    } else {
+      allowed = allowed & (511L - base);
+    }
+    if (index < count) {
+      if (byteAt(addr + index * 8L) != 44L) {
+        return -1L;
+      }
+      index = index + 1L;
+      if (index >= count) {
+        return -1L;
+      }
+    }
+  }
+  return allowed;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operands = 0L;
+  long sawMode = 0L;
+  while (index < count && ended == 0L) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (len == 2L && spanSame(at, len, "-m") == 1L) {
+      if (sawMode == 1L) {
+        writeErr(home, "mkfifo: too many -m options\n");
+        return finish(home, 1L);
+      }
+      sawMode = 1L;
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "mkfifo: option requires an argument\n");
+        return finish(home, 1L);
+      }
+      long modeAt = argPtr(home, index);
+      long modeLen = argLen(home, index);
+      long modeOk = 0L;
+      if (modeLen >= 1L && modeLen <= 4L) {
+        long cursor = 0L;
+        modeOk = 1L;
+        while (cursor < modeLen) {
+          long octet = byteAt(modeAt + cursor * 8L);
+          if (octet < 48L || octet > 55L) {
+            modeOk = 0L;
+          }
+          cursor = cursor + 1L;
+        }
+      }
+      if (modeOk == 0L && (modeLen < 1L || parseSymbolic(modeAt, modeLen) < 0L)) {
+        writeErr(home, "mkfifo: invalid mode\n");
+        return finish(home, 1L);
+      }
+    } else if (len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "mkfifo: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      ended = 1L;
+    }
+    index = index + 1L;
+  }
+  while (index < count) {
+    operands = operands + 1L;
+    index = index + 1L;
+  }
+  if (operands < 1L) {
+    writeErr(home, "mkfifo: missing operand\n");
+    return finish(home, 1L);
+  }
+  writeErr(home, "mkfifo: FIFO nodes are not supported on this platform\n");
+  return finish(home, 1L);
+}

@@ -1,0 +1,42 @@
+/* M-C：接口方法带 out 形参的派发——itable 按地址字传位置（含 out 总字数 ≤5 上限不变），
+   实现签名与接口逐位一致（out/ref/无修饰互不相同，反例见 bad-out-iface）。
+   多返回值 = 状态返回 + out 出参。结果 0。*/
+#VERSION 2
+
+interface Meter {
+  deRfun read(out long value): long;
+}
+
+class Counter implements Meter {
+  long n;
+  deRfun Counter(): void {
+    n = 41;
+  }
+  deRfun read(out long value): long {
+    n = n + 1;
+    value = n;
+    return 0;
+  }
+}
+
+class Fixed implements Meter {
+  deRfun Fixed(): void {
+  }
+  deRfun read(out long value): long {
+    value = 9;
+    return 1;
+  }
+}
+
+deRfun main(): long {
+  var[Meter] a = new Counter();
+  var[Meter] b = new Fixed();
+  long v = 0;
+  if (a.read(v) != 0L) return 1;
+  if (v != 42L) return 2;
+  if (b.read(v) != 1L) return 3;
+  if (v != 9L) return 4;
+  if (a.read(v) != 0L) return 5;
+  if (v != 43L) return 6;
+  return 0;
+}

@@ -1,0 +1,179 @@
+/* POSIX.1-2017 uux（utilities/uux.html）。选定子集：
+   uux [-] [-a address] [-b] [-C] [-g grade] [-j] [-n] [-p] [-r] [-s file]
+       [-S file] [-x debug] [-X] [--] command-string
+   在 /var/spool/uucp/ 排一条命令执行请求（本平台无 uucico/守护：
+   排队到队列，由 -X 手动 runner 交 /os/sh 执行，与 qsub -X 同口径）。
+   command-string 子集：整串原样记录并在 runner 时交 /os/sh；
+   `system!cmd` 形态忽略 system 段（本平台单机，注明）。
+   选项：-a/-g/-s/-S/-x 登记忽略、-b/-C/-j/-n/-p/-r 登记接受、
+   - 扩展名兼容接受。
+   平台扩展 -X：执行 state:Q 的 uux 作业（脚本交 shellRun，置 state:D
+   并删除作业记录）。
+   成功打印 job <N>。缺 command-string 写 uux: missing operand，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 uux:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/uucp");
+  long count = argc(home);
+  long index = 1L;
+  long cmdAt = 0L;
+  long cmdLen = 0L;
+  long grade = 78L;
+  long runner = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && spanSame(at, len, "--") == 1L) {
+      index = index + 1L;
+      continue;
+    }
+    if (cmdAt == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 88L && len == 2L) {
+        runner = 1L;
+      } else if (o == 103L) {
+        index = index + 1L;
+        if (index < count) {
+          grade = byteAt(argPtr(home, index));
+        }
+      } else if (o == 97L || o == 115L || o == 83L || o == 120L) {
+        index = index + 1L;
+        /* 值登记忽略。 */
+      } else if (o == 98L || o == 67L || o == 106L || o == 110L || o == 112L || o == 114L || o == 45L) {
+        /* 登记接受（含单个 -）。 */
+      } else {
+        writeErr(home, "uux: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      cmdAt = at;
+      cmdLen = len;
+    }
+    index = index + 1L;
+  }
+  if (cmdAt == 0L) {
+    writeErr(home, "uux: missing operand\n");
+    return finish(home, 1L);
+  }
+  /* 跳过 system! 前缀。 */
+  long i = 0L;
+  while (i < cmdLen && byteAt(cmdAt + i * 8L) != 33L) {
+    i = i + 1L;
+  }
+  if (i < cmdLen) {
+    cmdAt = cmdAt + (i + 1L) * 8L;
+    cmdLen = cmdLen - i - 1L;
+  }
+  if (runner == 1L) {
+    /* 手动 runner：执行队列里 uux 作业（state:Q）。 */
+    plant(home, dir, dirLen);
+    long d = 0L;
+    while (d < 256L) {
+      if (obr::proc::readdir(home, d, 512L) != 0L) {
+        break;
+      }
+      long nlen = obr::proc::slot(home, 256L);
+      if (nlen < 1L) {
+        break;
+      }
+      long nameAt = obr::proc::bytes(home);
+      if (nlen > 8L && byteAt(nameAt) == 117L && byteAt(nameAt + 8L) == 117L && byteAt(nameAt + 16L) == 120L && byteAt(nameAt + 24L) == 46L) {
+        long p = obr::proc::alloc(home, 8192L * 8L);
+        copySpan(dir, p, dirLen);
+        memory::storeOctet(47L, p + dirLen * 8L);
+        copySpan(nameAt, p + (dirLen + 1L) * 8L, nlen);
+        plant(home, p, dirLen + 1L + nlen);
+        if (obr::proc::open(home, 0L) == 0L) {
+          long fd = obr::proc::slot(home, 192L);
+          long text = obr::proc::alloc(home, 16384L);
+          long total = 0L;
+          while (total < 8192L) {
+            if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+              break;
+            }
+            long got = obr::proc::slot(home, 320L);
+            if (got <= 0L) {
+              break;
+            }
+            if (got > 4096L) {
+              got = 4096L;
+            }
+            copySpan(obr::proc::bytes(home), text + total * 8L, got);
+            total = total + got;
+            if (got < 4096L) {
+              break;
+            }
+          }
+          obr::proc::close(home, fd);
+          shellRun(home, text, total);
+          plant(home, p, dirLen + 1L + nlen);
+          obr::proc::unlink(home);
+        }
+      }
+      d = d + 1L;
+    }
+    return finish(home, 0L);
+  }
+  /* 入队：/var/spool/uucp/ux.<N>。 */
+  long p = obr::proc::alloc(home, 8192L * 8L);
+  putText(p, 0L, "/var");
+  plant(home, p, 4L);
+  obr::proc::mkdir(home);
+  putText(p, 0L, "/var/spool");
+  plant(home, p, 10L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  copySpan(dir, p, dirLen);
+  putText(p, dirLen, "/.uxnext");
+  long job = 1L;
+  plant(home, p, dirLen + 7L);
+  if (obr::proc::open(home, 0L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::read(home, fd, 0L, 8L);
+    long v = memory::load64(obr::proc::bytes(home));
+    if (v >= 1L && v < 1000000L) {
+      job = v;
+    }
+    obr::proc::close(home, fd);
+  }
+  plant(home, p, dirLen + 7L);
+  if (obr::proc::open(home, 1L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    memory::store64(job + 1L, obr::proc::bytes(home));
+    obr::proc::write(home, fd, 0L, 8L);
+    obr::proc::close(home, fd);
+  }
+  copySpan(dir, p, dirLen);
+  putText(p, dirLen, "/ux.");
+  long plen = putNum(p, dirLen + 4L, job);
+  plant(home, p, plen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "uux: cannot queue job\n");
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long o = obr::proc::bytes(home);
+  long n = putText(o, 0L, "state: Q\n");
+  n = putText(o, n, "grade: ");
+  memory::storeOctet(grade, o + n * 8L);
+  n = n + 1L;
+  memory::storeOctet(10L, o + n * 8L);
+  n = n + 1L;
+  memory::storeOctet(10L, o + n * 8L);
+  n = n + 1L;
+  obr::proc::write(home, fd, 0L, n);
+  writeSpan(home, fd, n, cmdAt, cmdLen);
+  obr::proc::close(home, fd);
+  writeStr(home, 1L, "job ");
+  writeNum(home, 1L, job);
+  writeStr(home, 1L, "\n");
+  return finish(home, 0L);
+}

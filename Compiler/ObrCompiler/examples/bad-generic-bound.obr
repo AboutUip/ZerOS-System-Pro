@@ -1,0 +1,18 @@
+/* Plan 2 收口：T : Base 约束要求实参是该类或其派生。编译应当失败：泛型实参不满足约束 describe<Rock>：T : Animal。 */
+#VERSION 2
+
+class Animal {
+  deRfun Animal(): void { }
+  deRfun speak(): int { return 1; }
+}
+
+class Rock {
+  deRfun Rock(): void { }
+}
+
+deRfun describe[T : Animal](T a): int { return a.speak(); }
+
+deRfun main(): int {
+  Rock r = new Rock();
+  return describe[Rock](r);
+}

@@ -1,0 +1,125 @@
+/* POSIX.1-2017 sccs（utilities/sccs.html，SCCS 族前端）。选定子集：
+   sccs [-r] [-p path] [--] command [args...]
+   把 command 映射到 SCCS 工具并派生 /bin/<command>（admin/branch/check/clean/
+   cdc/comb/delta/edit/enter/get/info/istat/ldiff/log/prs/rmdel/sact/sccsdiff/
+   tell/unget/uncheck/val/valact/what）——本平台只提供 admin/get/delta/prs/
+   rmdel/sact/unget/val 八个；其余写 sccs: unknown command，退出 127。
+   路径口径：把 args 里不含 / 的操作数改写为 <path>/s.<name>（缺省 path=SCCS）；
+   -r 等价 -p .（当前目录找 s. 文件）。
+   command 缺失写 sccs: missing operand，退出 1。派生失败退出 127。
+   诊断英文 ASCII，描述符 2，前缀 sccs:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun knownCmd(long at, long len): long {
+  if (spanSame(at, len, "admin") == 1L) return 1L;
+  if (spanSame(at, len, "get") == 1L) return 1L;
+  if (spanSame(at, len, "delta") == 1L) return 1L;
+  if (spanSame(at, len, "prs") == 1L) return 1L;
+  if (spanSame(at, len, "rmdel") == 1L) return 1L;
+  if (spanSame(at, len, "sact") == 1L) return 1L;
+  if (spanSame(at, len, "unget") == 1L) return 1L;
+  if (spanSame(at, len, "val") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long pathBuf = obr::proc::alloc(home, 4096L * 8L);
+  long pathLen = putText(pathBuf, 0L, "SCCS");
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-r") == 1L) {
+      pathLen = putText(pathBuf, 0L, ".");
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-p") == 1L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "sccs: option requires an argument\n");
+        return finish(home, 1L);
+      }
+      pathLen = argLen(home, index);
+      copySpan(argPtr(home, index), pathBuf, pathLen);
+    } else {
+      break;
+    }
+    index = index + 1L;
+  }
+  if (index >= count) {
+    writeErr(home, "sccs: missing operand\n");
+    return finish(home, 1L);
+  }
+  long cmdAt = argPtr(home, index);
+  long cmdLen = argLen(home, index);
+  if (knownCmd(cmdAt, cmdLen) == 0L) {
+    writeErr(home, "sccs: unknown command\n");
+    return finish(home, 127L);
+  }
+  index = index + 1L;
+  /* 派生 /bin/<command>，改写操作数路径。 */
+  long saved = obr::proc::alloc(home, 139520L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  if (saved == 0L || scratch == 0L || saveWindow(home, saved) != 0L) {
+    writeErr(home, "sccs: out of memory\n");
+    return finish(home, 1L);
+  }
+  /* /bin/<command> 先落 scratch：cmdAt 指向活窗口，argsBegin/argsPush 会冲掉它。 */
+  putText(scratch, 0L, "/bin/");
+  copySpan(cmdAt, scratch + 5L * 8L, cmdLen);
+  if (argsBegin(home, saved) != 0L || argsPush(home, scratch + 5L * 8L, cmdLen) != 0L) {
+    writeErr(home, "sccs: out of memory\n");
+    return finish(home, 1L);
+  }
+  long ok = 0L;
+  /* 操作数从 saved 副本读：argsBegin/argsPush 已在改写本任务窗口，
+     从活窗口读会拿到被清掉的长度（曾把 /home/perf/s.cc 截成 13 个八位组）。 */
+  long total = savedCount(saved);
+  while (index < total && ok == 0L) {
+    long at = savedArgPtr(saved, index);
+    long len = savedArgLen(saved, index);
+    if (len >= 2L && byteAt(at) == 45L) {
+      /* 选项透传。 */
+      ok = argsPush(home, at, len);
+    } else if (hasSlash(at, len) == 1L) {
+      ok = argsPush(home, at, len);
+    } else {
+      /* <path>/s.<name> */
+      long g = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(pathBuf, g, pathLen);
+      memory::storeOctet(47L, g + pathLen * 8L);
+      memory::storeOctet(115L, g + (pathLen + 1L) * 8L);
+      memory::storeOctet(46L, g + (pathLen + 2L) * 8L);
+      copySpan(at, g + (pathLen + 3L) * 8L, len);
+      ok = argsPush(home, g, pathLen + 3L + len);
+    }
+    index = index + 1L;
+  }
+  if (ok != 0L || argsDone(home) != 0L) {
+    writeErr(home, "sccs: out of memory\n");
+    return finish(home, 1L);
+  }
+  plant(home, scratch, 5L + cmdLen);
+  if (obr::proc::spawn(home, 0L) != 0L) {
+    writeErr(home, "sccs: cannot execute\n");
+    return finish(home, 127L);
+  }
+  long pid = obr::proc::slot(home, 192L);
+  obr::proc::wait(home, pid);
+  long code = obr::proc::slot(home, 192L);
+  if (code < 0L) {
+    code = 0L;
+  }
+  if (code > 255L) {
+    code = code % 256L;
+  }
+  return finish(home, code);
+}

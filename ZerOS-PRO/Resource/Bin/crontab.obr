@@ -1,0 +1,318 @@
+/* POSIX.1-2017 crontab（utilities/crontab.html）选定子集。库：/var/spool/cron/。
+   形式：crontab [-u user] [-l | -e | -r | -X] [file]
+   表文件存 /var/spool/cron/<user>（缺省 root）：每行 `分 时 日 月 周 命令`。
+   -l 列当前表（无表写 crontab: no crontab for <user> 并退出 1）；
+   -r 删除表；file 安装表（缺省 file 时从描述符 0 读）；
+   -e 传统编辑器模式：把当前表拷到临时文件、派生 /bin/vi 编辑后装回（真执行）；
+   -u user 指定用户（本平台单用户 root：非 root 写 crontab: cannot set user，退出 1）。
+   平台扩展 -X：手动 runner——把表里全部条目交 /os/sh 执行（无守护进程，
+   不做分时匹配，手动触发语义如实注明）。
+   表行校验：前五个字段是 * 或十进制（子集：不支持步长 /），命令非空；
+   不合法行写 crontab: bad line N，退出 1 不安装。
+   诊断英文 ASCII，描述符 2，前缀 crontab:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun validField(long at, long len): long {
+  if (len == 1L && byteAt(at) == 42L) {
+    return 1L;
+  }
+  if (len < 1L || len > 5L) {
+    return 0L;
+  }
+  long i = 0L;
+  while (i < len) {
+    long c = byteAt(at + i * 8L);
+    if (c < 48L || c > 57L) {
+      return 0L;
+    }
+    i = i + 1L;
+  }
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 8192L);
+  long dirLen = putText(dir, 0L, "/var/spool/cron");
+  long path = obr::proc::alloc(home, 8192L * 8L);
+  long user = obr::proc::alloc(home, 4096L);
+  long userLen = putText(user, 0L, "root");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long mode = 0L;
+  long fileAt = 0L;
+  long fileLen = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 108L && len == 2L) {
+        mode = 108L;
+      } else if (o == 114L && len == 2L) {
+        mode = 114L;
+      } else if (o == 101L && len == 2L) {
+        mode = 101L;
+      } else if (o == 88L && len == 2L) {
+        mode = 88L;
+      } else if (o == 117L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "crontab: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        if (spanSame(argPtr(home, index), argLen(home, index), "root") == 0L) {
+          writeErr(home, "crontab: cannot set user\n");
+          return finish(home, 1L);
+        }
+      } else {
+        writeErr(home, "crontab: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      if (fileLen > 0L) {
+        writeErr(home, "crontab: too many operands\n");
+        return finish(home, 1L);
+      }
+      fileAt = at;
+      fileLen = len;
+    }
+    index = index + 1L;
+  }
+  copySpan(dir, path, dirLen);
+  memory::storeOctet(47L, path + dirLen * 8L);
+  copySpan(user, path + (dirLen + 1L) * 8L, userLen);
+  long plen = dirLen + 1L + userLen;
+  if (mode == 114L) {
+    plant(home, path, plen);
+    if (obr::proc::unlink(home) != 0L) {
+      writeErr(home, "crontab: no crontab for root\n");
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  if (mode == 108L) {
+    plant(home, path, plen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "crontab: no crontab for root\n");
+      return finish(home, 1L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long off = 0L;
+    while (1L == 1L) {
+      if (obr::proc::read(home, fd, off, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      writeSpan(home, 1L, 0L, obr::proc::bytes(home), got);
+      off = off + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+    return finish(home, 0L);
+  }
+  if (mode == 88L) {
+    /* 手动 runner：全部条目逐行交 /os/sh。 */
+    plant(home, path, plen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "crontab: no crontab for root\n");
+      return finish(home, 1L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long text = obr::proc::alloc(home, 65536L);
+    long total = 0L;
+    while (total < 65536L) {
+      if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), text + total * 8L, got);
+      total = total + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+    /* 每行前五字段跳过后把命令拼成脚本交执行。 */
+    long script = obr::proc::alloc(home, 65536L);
+    long slen = 0L;
+    long p = 0L;
+    while (p < total) {
+      long f = 0L;
+      while (f < 5L) {
+        while (p < total && byteAt(text + p * 8L) == 32L) {
+          p = p + 1L;
+        }
+        while (p < total && byteAt(text + p * 8L) != 32L) {
+          p = p + 1L;
+        }
+        f = f + 1L;
+      }
+      while (p < total && byteAt(text + p * 8L) == 32L) {
+        p = p + 1L;
+      }
+      while (p < total && byteAt(text + p * 8L) != 10L && slen < 65000L) {
+        memory::storeOctet(byteAt(text + p * 8L), script + slen * 8L);
+        slen = slen + 1L;
+        p = p + 1L;
+      }
+      if (slen < 65000L) {
+        memory::storeOctet(10L, script + slen * 8L);
+        slen = slen + 1L;
+      }
+      p = p + 1L;
+    }
+    shellRun(home, script, slen);
+    return finish(home, 0L);
+  }
+  if (mode == 101L) {
+    /* -e：临时文件 + /bin/vi + 装回。 */
+    long tmp = obr::proc::alloc(home, 8192L * 8L);
+    putText(tmp, 0L, "/var/spool/cron/.edit");
+    plant(home, tmp, 19L);
+    if (obr::proc::open(home, 1L) != 0L) {
+      writeErr(home, "crontab: cannot open editor file\n");
+      return finish(home, 1L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::close(home, fd);
+    /* 派生 /bin/vi 编辑该文件。 */
+    long win = obr::proc::alloc(home, 139520L);
+    long scratch = obr::proc::alloc(home, 65728L);
+    if (win == 0L || scratch == 0L || saveWindow(home, win) != 0L) {
+      return finish(home, 1L);
+    }
+    if (argsBegin(home, win) != 0L || argsPush(home, tmp, 19L) != 0L || argsDone(home) != 0L) {
+      return finish(home, 1L);
+    }
+    putText(scratch, 0L, "/bin/vi");
+    plant(home, scratch, 7L);
+    if (obr::proc::spawn(home, 0L) != 0L) {
+      writeErr(home, "crontab: cannot run editor\n");
+      return finish(home, 1L);
+    }
+    long pid = obr::proc::slot(home, 192L);
+    obr::proc::wait(home, pid);
+    fileAt = tmp;
+    fileLen = 19L;
+  }
+  /* 安装：校验每行后写入。 */
+  plant(home, fileAt, fileLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    if (fileLen == 0L) {
+      /* 无 file 无 -e：读标准输入。 */
+    } else {
+      writeErr(home, "crontab: cannot read input\n");
+      return finish(home, 1L);
+    }
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long text = obr::proc::alloc(home, 65536L);
+  long total = 0L;
+  if (fileLen > 0L) {
+    while (total < 65536L) {
+      if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), text + total * 8L, got);
+      total = total + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+  } else {
+    while (total < 65536L) {
+      if (obr::proc::read(home, 0L, total, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), text + total * 8L, got);
+      total = total + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+  }
+  /* 校验行。 */
+  long line = 1L;
+  long p = 0L;
+  while (p < total) {
+    long f = 0L;
+    while (f < 5L && p < total) {
+      while (p < total && byteAt(text + p * 8L) == 32L) {
+        p = p + 1L;
+      }
+      long s = p;
+      while (p < total && byteAt(text + p * 8L) != 32L && byteAt(text + p * 8L) != 10L) {
+        p = p + 1L;
+      }
+      if (validField(text + s * 8L, p - s) == 0L) {
+        writeErr(home, "crontab: bad line ");
+        writeNum(home, 2L, line);
+        writeErr(home, "\n");
+        return finish(home, 1L);
+      }
+      f = f + 1L;
+    }
+    while (p < total && byteAt(text + p * 8L) == 32L) {
+      p = p + 1L;
+    }
+    if (p >= total || byteAt(text + p * 8L) == 10L) {
+      writeErr(home, "crontab: bad line ");
+      writeNum(home, 2L, line);
+      writeErr(home, "\n");
+      return finish(home, 1L);
+    }
+    while (p < total && byteAt(text + p * 8L) != 10L) {
+      p = p + 1L;
+    }
+    p = p + 1L;
+    line = line + 1L;
+  }
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  plant(home, path, plen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "crontab: cannot install\n");
+    return finish(home, 1L);
+  }
+  fd = obr::proc::slot(home, 192L);
+  writeSpan(home, fd, 0L, text, total);
+  obr::proc::close(home, fd);
+  return finish(home, 0L);
+}

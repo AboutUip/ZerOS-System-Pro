@@ -1,0 +1,16 @@
+/* Plan 2 M1：基类只有带参构造、派生构造漏写链式调用。编译应当失败：派生构造没有调用基类构造，基类也没有无参构造 Sub::Sub。 */
+#VERSION 2
+
+class Base {
+  int y;
+  deRfun Base(int v): void { y = v; }
+}
+
+class Sub : Base {
+  deRfun Sub(): void { }
+}
+
+deRfun main(): int {
+  Sub s = new Sub();
+  return 0;
+}

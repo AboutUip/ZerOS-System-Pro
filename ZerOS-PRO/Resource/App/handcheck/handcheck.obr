@@ -1,0 +1,63 @@
+#DYN
+/* handover 端到端检查：在同一个进程里 load → state(1) → restart → state(2)
+   → restart → state(3)。成功返回 0，失败返回阶段号。 */
+import memory;
+import obr.os;
+import obr.print;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16448L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun state(long home): long {
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(57L);
+  if (count != 8L) {
+    return -1L;
+  }
+  return memory::load64(home + 131072L);
+}
+
+deRfun restart(long home): long {
+  setPath(home, "/drivers/handover.zo");
+  memory::store64(0L, home + 128L);
+  memory::store64(3L, home + 64L);
+  return obr::os::svc(56L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  setPath(home, "/drivers/handover.zo");
+  memory::store64(1L, home + 64L);
+  if (obr::os::svc(56L) != 0L) {
+    return 1;
+  }
+  obr::os::dwell(150L);
+  if (state(home) != 1L) {
+    return 2;
+  }
+  if (restart(home) != 0L) {
+    return 3;
+  }
+  obr::os::dwell(150L);
+  if (state(home) != 2L) {
+    return 4;
+  }
+  if (restart(home) != 0L) {
+    return 5;
+  }
+  obr::os::dwell(150L);
+  if (state(home) != 3L) {
+    return 6;
+  }
+  obr::print::text(home, "handover 1-2-3 ok\n");
+  obr::print::flush(home);
+  return 0;
+}

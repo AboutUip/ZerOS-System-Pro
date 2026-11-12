@@ -134,7 +134,9 @@ runner 以提示符事件为完成信号，不用固定等待时间判断命令�
 
 ### 3.3 全命令语料
 
-仓库内语料是 `Compiler/Debugger/Tools/ztrace-corpus.json`，覆盖 `Resource/Bin` 下除 `arg.obr` 外的全部命令。条数跟着命令源走，不再写死。runner 会先校验语料与目录一致，少一条或多一条都直接失败。开跑前在客根种下 `/home` 和语料要用的文件；客根不进版本库。
+仓库内语料是 `Compiler/Debugger/Tools/ztrace-corpus.json`，覆盖 `Resource/Bin` 下除 `arg.obr` 外的全部命令。条数跟着命令源走，不再写死。runner 会先校验语料与目录一致，少一条或多一条都直接失败。开跑前在客根种下 `/temp/test` 和语料要用的文件；客根不进版本库。
+
+**客根目录政策**：根目录只放系统目录（`app bin boot drivers font home kernel lib os share var` + `temp`），禁止散乱文件；**`/home` 留给未来用户家目录（`/home/<用户>`），测试一律不许写**；**`/temp/test` 是全部测试夹具与测试输出的集中地**（可整体清空，不伤真实数据）；`/var` 放系统状态（`/var/spool/{lp,nqs,uucp}` 等），logger 系统日志默认落 `/var/log/syslog`。该政策由 `Toolchain/repo-checks.mjs` 的目录政策检查守门：语料与 Resource 测试面出现 `/home/` 引用即失败。
 
 ```powershell
 node Compiler\Debugger\Tools\ztrace-corpus.mjs --url "http://localhost:5180/" --out dev\Debug\ztrace-corpus --key-delay 200 --timeout 60000
@@ -144,7 +146,24 @@ node Compiler\Debugger\Tools\ztrace-corpus.mjs --url "http://localhost:5180/" --
 
 v1.1 或 v2 要验证退出码时加 `--require-exit-codes`；v1.0 历史完成基线不加。退出码优先走宿主侧 `ProcessExit`：CPU 在服务 28 调用点直接读 `home+128`。全量曾停在 46/54，最后 8 条没有 `17 spawn`/`28 exit`，根因是 VFS 固定路径缓存耗尽；VFS 已扩到 512 项并加满时回收，最终全量 **54/54**、门禁 **8/8**，该开关可作为发布门禁。
 
-语料对会永久运行或读标准输入的命令使用有界调用：`xargs echo < /home/test.txt` 用输入重定向制造 EOF，`yes --help` 走非法选项退出。它们验证的是命令入口和退出路径，不验证无限输出本身。
+语料对会永久运行或读标准输入的命令使用有界调用：`xargs echo < /temp/test/test.txt` 用输入重定向制造 EOF，`yes --help` 走非法选项退出。它们验证的是命令入口和退出路径，不验证无限输出本身。
+
+### 3.5 单条端到端（reap 收口的固定跑法）
+
+M2-(d) reap 收口与以后的析构/清扫回归都用单条语料跑，vite 与 NAS 双服务先按 §1 预检就位：
+
+```powershell
+# 见证文件先清掉，避免读到上一轮残留
+Remove-Item 'ZerOS-PRO\Hardware\Nas\Root\temp\test\reap.txt' -ErrorAction SilentlyContinue
+node Compiler\Debugger\Tools\ztrace-corpus.mjs --only dtorreap --require-exit-codes --timeout 30000 --out dev\Debug\ztrace-reap
+# 见证应为两个八位组 21,2（LIFO 累积 21、析构调用次数 2）
+node -e "const b=require('fs').readFileSync('ZerOS-PRO/Hardware/Nas/Root/temp/test/reap.txt');console.log(b.length, Array.from(b).join(','))"
+```
+
+`--only <名字>` 只跑语料表里的一条（名字取自 `ztrace-corpus.json` 的 `name` 字段），`--require-exit-codes`
+要求每条命令的退出码与语料声明一致。`dtorreap` 派生 `/bin/dtorvictim`、kill(9) 弃弃、等清扫交回后核对
+`/temp/test/reap.txt`：两八位组 `21,2` 且退出 0 才算收口；退出码即析构次数（0 读成 5），直接暴露现场。
+内核 `.obr` 有改动时先 `node ZerOS-PRO/Hardware/Nas/Server/build-guest.mjs` 重建客根再跑。
 
 ### 3.4 结构对比与门禁
 

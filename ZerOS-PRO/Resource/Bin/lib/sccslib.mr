@@ -1,0 +1,17 @@
+/* SCCS 族共享模块 sccslib 的接口。实现见 sccslib.obr。
+   SCCS s 文件格式子集（^A=1）：^AI 注释、^As 统计、^Ad delta 表、^At、^Au/^AU
+   用户段、^Af/^AT 标志段、^AI <sid> 正文段到 ^AE。SID 只支持 1.n 递增。
+   状态块 st 由各命令自备（至少 110000 位），正文缓冲自备（64KB）。 */
+/* 读 s 文件到 buf 并解析进 st。0 成功，1 打不开，2+ 格式错误码。 */
+deRfun sccsLoad(long home, long st, long buf, long pathAt, long pathLen): long;
+/* 找 sid（文本）的 delta 序号；空 sid 取最新；找不到 -1。 */
+deRfun sccsFind(long st, long sidAt, long sidLen): long;
+/* 拼接目标 delta 及以前插入段的正文到 out，返回长度；-1 出错。 */
+deRfun sccsBody(long st, long buf, long index, long out): long;
+/* 从 buf 与 st 重写 s 文件。0 成功。 */
+deRfun sccsSave(long home, long st, long buf, long pathAt, long pathLen): long;
+/* 校验形状：0 有效，非 0 错误码（val 用）。 */
+deRfun sccsCheck(long st): long;
+
+/* 当前时钟写成 SCCS 时间字段 yy/mm/dd hh:mm:ss 到 out（16 八位组），返回 17。 */
+deRfun sccsNow(long home, long out): long;

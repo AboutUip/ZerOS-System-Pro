@@ -1,0 +1,22 @@
+/* 用户侧时间驱动。时间单位为 Unix 纪元毫秒，访问能力由 time.zdll 提供。 */
+namespace time {
+/* 读取墙上时间，写入毫秒指针；返回 0 表示成功。 */
+deRfun now(long* milliseconds): long;
+/* 兼容窗口式系统调用：把墙上时间写到 home + 128。 */
+deRfun clock(long home): long;
+/* 读取单调毫秒并写到 home + 128，仅用于测量经过时间。 */
+deRfun monotonic(long home): long;
+/* 设置墙上时间。仅 euid 0 可以成功；milliseconds 是 signed-64 Unix 纪元毫秒。 */
+deRfun set(long milliseconds): long;
+/* 窗口式版本：读取时间后用毫秒设置。 */
+deRfun setAt(long home, long milliseconds): long;
+/* Gregorian 日历运算。 */
+deRfun isLeapYear(long year): long;
+deRfun monthLength(long year, long month): long;
+deRfun daysFromCivil(long year, long month, long day): long;
+/* fields 依次为 year, month, day, hour, minute, second, weekday(0=Sunday), yearday(0-based). */
+deRfun utcFields(long milliseconds, long* fields): void;
+/* 读取 IANA TZif 区域名八位组。fields[0..7] 与 utcFields 相同，随后是 epoch-day、offset-seconds、isDst。
+   abbreviation 是按八位组寻址的输出区，写入 NUL 结尾的时区缩写。 */
+deRfun zoneFields(long milliseconds, long zone, long zoneLength, long* fields, long abbreviation, long capacity): long;
+}

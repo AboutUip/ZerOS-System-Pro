@@ -29,6 +29,8 @@ Compiler/ObrExtension/*.vsix
 Compiler/**/obrc
 # obrc -o beside an example. The .obr and .mr sources stay tracked.
 Compiler/ObrCompiler/examples/*
+Compiler/ObrCompiler/.vs/
+Compiler/ObrCompiler/tools/
 !Compiler/ObrCompiler/examples/*.obr
 !Compiler/ObrCompiler/examples/*.mr
 !Compiler/ObrCompiler/examples/*.md
@@ -47,16 +49,29 @@ Toolchain/Zap/
 # Font sources stay under ZerOS-PRO/Resource/.
 ZerOS-PRO/Hardware/Nas/Root/
 
+# Rust NIC build products
+ZerOS-PRO/Hardware/Nic/Server/target/
+
 # Vite dependency cache
 **/.vite/
 
 # Local workspace. The whole tree stays untracked. Do not force-add a file from it.
 dev/
 @dev/
+.tmp-cx/
+/.*
 
 # Local ztrace captures and generated source maps.
 # `build-guest.mjs --debug-maps` writes .debug beside the guest images; those are never source.
 ztrace-out/
 **/*.debug
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
+# tzdata package markers are not part of the runtime TZif database.
+ZerOS-PRO/Resource/TimeZone/zoneinfo/__init__.py
+ZerOS-PRO/Resource/TimeZone/zoneinfo/**/__init__.py
 
 node_modules/

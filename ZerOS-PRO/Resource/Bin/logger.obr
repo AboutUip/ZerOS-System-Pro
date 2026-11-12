@@ -1,6 +1,6 @@
 /* POSIX.1-2017 logger（utilities/logger.html）。形式是 logger [-i] [-p priority] [-t tag] [-f file] [message...]。
    没有 syslog 守护进程。
-   本系统选定：-f file 把一行追加到该文件；没有 -f 则追加到 /home/syslog。
+   本系统选定：-f file 把一行追加到该文件；没有 -f 则追加到 /var/log/syslog。
    行内含优先级（-p，缺省 user.notice）、可选 tag（-t）和消息正文。
    格式是 priority、空格、tag 或 logger、可选 [pid]、冒号、空格、消息、换行。
    -i 在 tag 后写 [pid]；pid 用服务 33 找地址空间起点等于本任务界限的任务。
@@ -286,7 +286,7 @@ deRfun main(): int {
   }
   putByte(home, lineBuf, &filled, 10L);
   if (hasFile == 0L) {
-    if (obr::text::put(pathBlock, "/home/syslog") != 0L) {
+    if (obr::text::put(pathBlock, "/var/log/syslog") != 0L) {
       writeErr(home, "logger: cannot open log file\n");
       obr::proc::free(home, hold, 65536L);
       return finish(home, 1L);

@@ -1,0 +1,277 @@
+/* POSIX.1-2017 stty（utilities/stty.html）。形式是 stty [-a|-g] 与 stty operand...。
+   本系统没有 termios：控制台是网格设备，没有可查可设的终端属性。
+   与 tabs 同口径：参数合法时退出 0，不向任何描述符写八位组，不改状态；
+   参数不合法时写 stty: invalid argument 到描述符 2，退出 1。
+   -a 写全部当前设置：本平台无设置可写，静默退出 0（口径如 tabs）。
+   -g 写可回灌的保存形式：输出 sane（组合模式操作数，回灌 round-trip 如实）。
+   操作数覆盖 POSIX 全集（认识即接受）：
+   控制 parenb parodd cs5 cs6 cs7 cs8 hupcl hup cstopb cread clocal（含负形），
+     number（波特率，纯十进制），ispeed number，ospeed number；
+   输入 ignbrk brkint ignpar parmrk inpck istrip inlcr igncr icrnl ixon ixany ixoff（含负形）；
+   输出 opost（含负形），XSI onlcr ocrnl onocr onlret ofill ofdel tabs（含负形），
+     cr0-cr3 nl0-nl1 tab0-tab3 bs0-bs1 ff0-ff1 vt0-vt1；
+   本地 isig icanon iexten echo echoe echok echonl noflsh tostop（含负形）；
+   控制字符赋值 eof eol erase intr kill quit susp start stop 加值：单个可打印字符、
+     ^X（^c 表：a-z A-Z [ \\ ] ^ _ ?）、^- 或 undef；
+   min number，time number；
+   组合模式 evenp parity oddp -parity -evenp -oddp nl -nl ek raw -raw cooked sane
+     （sane 亦是 -g 的输出，回灌被接受）。
+   另收 GNU 扩展 rows、cols（各带数值；注明扩展）。
+   -- 结束选项；单独一个 - 是标准输入操作数，最多一次。
+   诊断英文 ASCII，描述符 2，前缀 stty:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun isDigit(long o): long {
+  if (o >= 48L && o <= 57L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun isDecimal(long addr, long count): long {
+  if (count < 1L || count > 9L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    if (isDigit(byteAt(addr + index * 8L)) == 0L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+/* 单字符、^X（按 ^c 表）、^- 或 undef。 */
+deRfun validCcValue(long addr, long count): long {
+  if (count == 1L) {
+    long o = byteAt(addr);
+    if (o >= 32L && o <= 126L) {
+      return 1L;
+    }
+    return 0L;
+  }
+  if (count == 3L && spanSame(addr, count, "undef") == 1L) {
+    return 1L;
+  }
+  if (count == 2L && byteAt(addr) == 94L) {
+    long o = byteAt(addr + 8L);
+    if (o == 45L) {
+      return 1L;
+    }
+    if (o >= 97L && o <= 122L) {
+      return 1L;
+    }
+    if (o >= 65L && o <= 90L) {
+      return 1L;
+    }
+    if (o == 91L || o == 92L || o == 93L || o == 94L || o == 95L || o == 63L) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun controlModes(long addr, long count): long {
+  if (count >= 2L && byteAt(addr) == 45L) {
+    addr = addr + 8L;
+    count = count - 1L;
+  }
+  if (spanSame(addr, count, "parenb") == 1L) return 1L;
+  if (spanSame(addr, count, "parodd") == 1L) return 1L;
+  if (spanSame(addr, count, "hupcl") == 1L) return 1L;
+  if (spanSame(addr, count, "hup") == 1L) return 1L;
+  if (spanSame(addr, count, "cstopb") == 1L) return 1L;
+  if (spanSame(addr, count, "cread") == 1L) return 1L;
+  if (spanSame(addr, count, "clocal") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun csCodes(long addr, long count): long {
+  if (spanSame(addr, count, "cs5") == 1L) return 1L;
+  if (spanSame(addr, count, "cs6") == 1L) return 1L;
+  if (spanSame(addr, count, "cs7") == 1L) return 1L;
+  if (spanSame(addr, count, "cs8") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun inputModes(long addr, long count): long {
+  if (count >= 2L && byteAt(addr) == 45L) {
+    addr = addr + 8L;
+    count = count - 1L;
+  }
+  if (spanSame(addr, count, "ignbrk") == 1L) return 1L;
+  if (spanSame(addr, count, "brkint") == 1L) return 1L;
+  if (spanSame(addr, count, "ignpar") == 1L) return 1L;
+  if (spanSame(addr, count, "parmrk") == 1L) return 1L;
+  if (spanSame(addr, count, "inpck") == 1L) return 1L;
+  if (spanSame(addr, count, "istrip") == 1L) return 1L;
+  if (spanSame(addr, count, "inlcr") == 1L) return 1L;
+  if (spanSame(addr, count, "igncr") == 1L) return 1L;
+  if (spanSame(addr, count, "icrnl") == 1L) return 1L;
+  if (spanSame(addr, count, "ixon") == 1L) return 1L;
+  if (spanSame(addr, count, "ixany") == 1L) return 1L;
+  if (spanSame(addr, count, "ixoff") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun outputModes(long addr, long count): long {
+  if (count >= 2L && byteAt(addr) == 45L) {
+    addr = addr + 8L;
+    count = count - 1L;
+  }
+  if (spanSame(addr, count, "opost") == 1L) return 1L;
+  if (spanSame(addr, count, "onlcr") == 1L) return 1L;
+  if (spanSame(addr, count, "ocrnl") == 1L) return 1L;
+  if (spanSame(addr, count, "onocr") == 1L) return 1L;
+  if (spanSame(addr, count, "onlret") == 1L) return 1L;
+  if (spanSame(addr, count, "ofill") == 1L) return 1L;
+  if (spanSame(addr, count, "ofdel") == 1L) return 1L;
+  if (spanSame(addr, count, "tabs") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun delayCodes(long addr, long count): long {
+  if (spanSame(addr, count, "cr0") == 1L) return 1L;
+  if (spanSame(addr, count, "cr1") == 1L) return 1L;
+  if (spanSame(addr, count, "cr2") == 1L) return 1L;
+  if (spanSame(addr, count, "cr3") == 1L) return 1L;
+  if (spanSame(addr, count, "nl0") == 1L) return 1L;
+  if (spanSame(addr, count, "nl1") == 1L) return 1L;
+  if (spanSame(addr, count, "tab0") == 1L) return 1L;
+  if (spanSame(addr, count, "tab1") == 1L) return 1L;
+  if (spanSame(addr, count, "tab2") == 1L) return 1L;
+  if (spanSame(addr, count, "tab3") == 1L) return 1L;
+  if (spanSame(addr, count, "bs0") == 1L) return 1L;
+  if (spanSame(addr, count, "bs1") == 1L) return 1L;
+  if (spanSame(addr, count, "ff0") == 1L) return 1L;
+  if (spanSame(addr, count, "ff1") == 1L) return 1L;
+  if (spanSame(addr, count, "vt0") == 1L) return 1L;
+  if (spanSame(addr, count, "vt1") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun localModes(long addr, long count): long {
+  if (count >= 2L && byteAt(addr) == 45L) {
+    addr = addr + 8L;
+    count = count - 1L;
+  }
+  if (spanSame(addr, count, "isig") == 1L) return 1L;
+  if (spanSame(addr, count, "icanon") == 1L) return 1L;
+  if (spanSame(addr, count, "iexten") == 1L) return 1L;
+  if (spanSame(addr, count, "echo") == 1L) return 1L;
+  if (spanSame(addr, count, "echoe") == 1L) return 1L;
+  if (spanSame(addr, count, "echok") == 1L) return 1L;
+  if (spanSame(addr, count, "echonl") == 1L) return 1L;
+  if (spanSame(addr, count, "noflsh") == 1L) return 1L;
+  if (spanSame(addr, count, "tostop") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun combos(long addr, long count): long {
+  if (spanSame(addr, count, "evenp") == 1L) return 1L;
+  if (spanSame(addr, count, "parity") == 1L) return 1L;
+  if (spanSame(addr, count, "oddp") == 1L) return 1L;
+  if (spanSame(addr, count, "-parity") == 1L) return 1L;
+  if (spanSame(addr, count, "-evenp") == 1L) return 1L;
+  if (spanSame(addr, count, "-oddp") == 1L) return 1L;
+  if (spanSame(addr, count, "nl") == 1L) return 1L;
+  if (spanSame(addr, count, "-nl") == 1L) return 1L;
+  if (spanSame(addr, count, "ek") == 1L) return 1L;
+  if (spanSame(addr, count, "raw") == 1L) return 1L;
+  if (spanSame(addr, count, "-raw") == 1L) return 1L;
+  if (spanSame(addr, count, "cooked") == 1L) return 1L;
+  if (spanSame(addr, count, "sane") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun ccNames(long addr, long count): long {
+  if (spanSame(addr, count, "eof") == 1L) return 1L;
+  if (spanSame(addr, count, "eol") == 1L) return 1L;
+  if (spanSame(addr, count, "erase") == 1L) return 1L;
+  if (spanSame(addr, count, "intr") == 1L) return 1L;
+  if (spanSame(addr, count, "kill") == 1L) return 1L;
+  if (spanSame(addr, count, "quit") == 1L) return 1L;
+  if (spanSame(addr, count, "susp") == 1L) return 1L;
+  if (spanSame(addr, count, "start") == 1L) return 1L;
+  if (spanSame(addr, count, "stop") == 1L) return 1L;
+  return 0L;
+}
+
+/* 各带一个数值操作数的设置名（min time ispeed ospeed + GNU rows cols）。 */
+deRfun numNames(long addr, long count): long {
+  if (spanSame(addr, count, "min") == 1L) return 1L;
+  if (spanSame(addr, count, "time") == 1L) return 1L;
+  if (spanSame(addr, count, "ispeed") == 1L) return 1L;
+  if (spanSame(addr, count, "ospeed") == 1L) return 1L;
+  if (spanSame(addr, count, "rows") == 1L) return 1L;
+  if (spanSame(addr, count, "cols") == 1L) return 1L;
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long dashSeen = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L && (len != 2L || byteAt(at + 8L) != 45L)) {
+      if (spanSame(at, len, "-a") == 1L || spanSame(at, len, "-all") == 1L || spanSame(at, len, "--all") == 1L) {
+        /* 本平台无可写设置：-a 静默成功。 */
+        return finish(home, 0L);
+      }
+      if (spanSame(at, len, "-g") == 1L) {
+        /* 保存形式：平台状态恒定，输出可回灌的操作数 sane。 */
+        writeStr(home, 1L, "sane\n");
+        return finish(home, 0L);
+      }
+      writeErr(home, "stty: invalid option\n");
+      return finish(home, 1L);
+    } else if (len == 1L && byteAt(at) == 45L) {
+      if (dashSeen == 1L) {
+        writeErr(home, "stty: too many operands\n");
+        return finish(home, 1L);
+      }
+      dashSeen = 1L;
+    } else if (isDecimal(at, len) == 1L) {
+      /* 纯十进制 = 波特率。 */
+    } else if (numNames(at, len) == 1L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "stty: invalid argument\n");
+        return finish(home, 1L);
+      }
+      if (isDecimal(argPtr(home, index), argLen(home, index)) == 0L) {
+        writeErr(home, "stty: invalid argument\n");
+        return finish(home, 1L);
+      }
+    } else if (ccNames(at, len) == 1L) {
+      index = index + 1L;
+      if (index >= count || validCcValue(argPtr(home, index), argLen(home, index)) == 0L) {
+        writeErr(home, "stty: invalid argument\n");
+        return finish(home, 1L);
+      }
+    } else if (controlModes(at, len) == 1L) {
+      /* 合法设置按 tabs 口径静默接受。 */
+    } else if (csCodes(at, len) == 1L) {
+    } else if (inputModes(at, len) == 1L) {
+    } else if (outputModes(at, len) == 1L) {
+    } else if (delayCodes(at, len) == 1L) {
+    } else if (localModes(at, len) == 1L) {
+    } else if (combos(at, len) == 1L) {
+    } else {
+      writeErr(home, "stty: invalid argument\n");
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+  }
+  return finish(home, 0L);
+}

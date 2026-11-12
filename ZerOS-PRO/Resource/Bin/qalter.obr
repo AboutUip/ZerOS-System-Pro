@@ -1,0 +1,131 @@
+/* POSIX.1-2017 qalter（utilities/qalter.html，批量作业族）。选定子集：
+   qalter [-a date_time] [-A account_string] [-c interval] [-e path_name]
+          [-h u|h] [-j join] [-k keep] [-l resource_list] [-m mail_options]
+          [-M mail_list] [-N job_name] [-o path_name] [-p priority]
+          [-P project] [-r y|n] [-S path_name] [-u user_list]
+          [-v variable_list] [--] job_identifier...
+   改作业属性（键值头登记；值语义与 qsub 同口径——登记不解释，如实注明）。
+   -h u|h 改 hold 字段。job_identifier 子集：纯数字作业号（可带 .queue 后缀）。
+   不存在写 qalter: job: nonexistent job，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 qalter:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import nqslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/nqs");
+  nqsEnsure(home, dir, dirLen);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  long pend = obr::proc::alloc(home, 65536L);
+  long pendLen = 0L;
+  /* pend 记 (字母, 值偏移, 值长) 三元组，处理每个作业时重放。 */
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      long known = 0L;
+      if (o == 97L || o == 65L || o == 99L || o == 101L || o == 104L || o == 106L || o == 107L || o == 108L || o == 109L || o == 77L || o == 78L || o == 111L || o == 112L || o == 80L || o == 114L || o == 83L || o == 117L || o == 118L) {
+        known = 1L;
+      }
+      if (known == 0L) {
+        writeErr(home, "qalter: invalid option\n");
+        return finish(home, 1L);
+      }
+      long vAt = at + 16L;
+      long vLen = len - 2L;
+      if (vLen == 0L) {
+        index = index + 1L;
+        if (index < count) {
+          vAt = argPtr(home, index);
+          vLen = argLen(home, index);
+        } else {
+          vAt = 0L;
+          vLen = 0L;
+        }
+      }
+      if (pendLen + 48L < 8000L) {
+        memory::storeOctet(o, pend + pendLen * 8L);
+        memory::store64(vAt, pend + (pendLen + 8L) * 8L);
+        memory::store64(vLen, pend + (pendLen + 16L) * 8L);
+        pendLen = pendLen + 24L;
+      }
+    } else {
+      operands = operands + 1L;
+      long idLen = 0L;
+      while (idLen < len && byteAt(at + idLen * 8L) != 46L) {
+        idLen = idLen + 1L;
+      }
+      long path = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(dir, path, dirLen);
+      putText(path, dirLen, "/job.");
+      copySpan(at, path + (dirLen + 5L) * 8L, idLen);
+      long plen = dirLen + 5L + idLen;
+      if (nqsLoad(home, st, buf, path, plen) != 0L) {
+        writeErr(home, "qalter: ");
+        writeSpan(home, 2L, 0L, at, idLen);
+        writeErr(home, ": nonexistent job\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long p = 0L;
+      while (p < pendLen) {
+        long o = byteAt(pend + p * 8L);
+        long vAt = memory::load64(pend + (p + 8L) * 8L);
+        long vLen = memory::load64(pend + (p + 16L) * 8L);
+        /* 选项 → 字段映射（与 qsub 同口径）。 */
+        if (o == 78L) {
+          nqsSet(st, "name", vAt, vLen);
+        } else if (o == 111L) {
+          nqsSet(st, "outfile", vAt, vLen);
+        } else if (o == 101L) {
+          nqsSet(st, "errfile", vAt, vLen);
+        } else if (o == 112L) {
+          nqsSet(st, "priority", vAt, vLen);
+        } else if (o == 65L) {
+          nqsSet(st, "account", vAt, vLen);
+        } else if (o == 80L) {
+          nqsSet(st, "project", vAt, vLen);
+        } else if (o == 77L) {
+          nqsSet(st, "mail", vAt, vLen);
+        } else if (o == 114L) {
+          nqsSet(st, "rerun", vAt, vLen);
+        } else if (o == 97L) {
+          nqsSet(st, "atime", vAt, vLen);
+        } else if (o == 83L) {
+          nqsSet(st, "shell", vAt, vLen);
+        } else if (o == 104L) {
+          nqsSet(st, "hold", vAt, vLen);
+        } else {
+          /* 其余（-c -j -k -l -u -v）登记进 opt_<字母> 语义的 opt 键。 */
+          nqsSet(st, "opt", vAt, vLen);
+        }
+        p = p + 24L;
+      }
+      if (nqsSave(home, st, buf, path, plen) != 0L) {
+        writeErr(home, "qalter: cannot write job\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "qalter: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

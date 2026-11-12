@@ -1,0 +1,18 @@
+/* POSIX.1-2017 sync（utilities/sync.html）。
+   本系统文件写穿到 NAS：内核的写入直接走 obr::nas::write，没有待刷的缓冲。
+   选定：没有操作数时什么都不做，退出 0。
+   有操作数时写 sync: too many operands 到描述符 2，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 sync:。结束用 binutil::finish（服务 28）。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  if (argc(home) != 1L) {
+    writeErr(home, "sync: too many operands\n");
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

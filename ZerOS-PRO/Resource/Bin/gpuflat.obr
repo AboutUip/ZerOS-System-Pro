@@ -1,0 +1,55 @@
+#DYN
+/* 启动 flat GPU continuity checker；把 svc46 的 status/pid/core 写入文件。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun write3(long home, long a, long b, long c): void {
+  setPath(home, "/temp/gpuflat.spawn");
+  memory::store64(1L, home + 128L);
+  if (obr::os::svc(5L) != 0L) {
+    return;
+  }
+  long fd = memory::load64(home + 192L);
+  memory::storeOctet(a % 256L, home + 131072L);
+  memory::storeOctet(b % 256L, home + 131080L);
+  memory::storeOctet(c % 256L, home + 131088L);
+  memory::store64(fd, home + 128L);
+  memory::store64(0L, home + 192L);
+  memory::store64(3L, home + 256L);
+  obr::os::svc(8L);
+  memory::store64(fd, home + 128L);
+  obr::os::svc(6L);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long me = obr::os::core();
+  long target = 3L;
+  if (me == 3L) {
+    target = 5L;
+  }
+  memory::store64(target, home + 448L);
+  obr::os::svc(54L);
+  home = obr::proc::home();
+  setPath(home, "/drivers/gpuflat.zo");
+  memory::store64(0L, home + 576L);
+  long status = obr::os::svc(46L);
+  long pid = memory::load64(home + 192L);
+  long core = memory::load64(home + 256L);
+  home = obr::proc::home();
+  write3(home, status, pid, core);
+  memory::store64(0L, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

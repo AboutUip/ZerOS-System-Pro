@@ -1,0 +1,744 @@
+/* 墙上时钟用户 API。硬件读写和权限判定由内核服务完成。 */
+import time;
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun floorDiv(long value, long divisor): long {
+  long quotient = value / divisor;
+  if (value % divisor < 0L) {
+    quotient = quotient - 1L;
+  }
+  return quotient;
+}
+
+deRfun timeTzByte(long address, long offset): long {
+  return memory::loadOctet(address + offset * 8L) & 255L;
+}
+
+deRfun timeTz32(long address, long offset): long {
+  long value = timeTzByte(address, offset) * 16777216L
+    + timeTzByte(address, offset + 1L) * 65536L
+    + timeTzByte(address, offset + 2L) * 256L
+    + timeTzByte(address, offset + 3L);
+  if (value >= 2147483648L) {
+    value = value - 4294967296L;
+  }
+  return value;
+}
+
+deRfun timeTz64(long address, long offset): long {
+  long high = timeTz32(address, offset);
+  long low = timeTzByte(address, offset + 4L) * 16777216L
+    + timeTzByte(address, offset + 5L) * 65536L
+    + timeTzByte(address, offset + 6L) * 256L
+    + timeTzByte(address, offset + 7L);
+  return high * 4294967296L + low;
+}
+
+deRfun timeTzCounts(long header, long* counts): void {
+  long output = (long)counts;
+  memory::store64(timeTz32(header, 20L), output);
+  memory::store64(timeTz32(header, 24L), output + 64L);
+  memory::store64(timeTz32(header, 28L), output + 128L);
+  memory::store64(timeTz32(header, 32L), output + 192L);
+  memory::store64(timeTz32(header, 36L), output + 256L);
+  memory::store64(timeTz32(header, 40L), output + 320L);
+}
+
+deRfun timeTzBlockSize(long counts, long timeWidth): long {
+  long gmtCount = memory::load64(counts);
+  long stdCount = memory::load64(counts + 64L);
+  long leapCount = memory::load64(counts + 128L);
+  long timeCount = memory::load64(counts + 192L);
+  long typeCount = memory::load64(counts + 256L);
+  long charCount = memory::load64(counts + 320L);
+  return timeCount * timeWidth + timeCount + typeCount * 6L + charCount
+    + leapCount * (timeWidth + 4L) + stdCount + gmtCount;
+}
+
+deRfun timeTzDigits(long buffer, long limit, long* cursor, long* value): long {
+  long pos = memory::load64((long)cursor);
+  long number = 0L;
+  long first = pos;
+  while (pos < limit) {
+    long bit = timeTzByte(buffer, pos);
+    if (bit < 48L || bit > 57L) {
+      break;
+    }
+    number = number * 10L + bit - 48L;
+    if (number > 100000L) {
+      return -1L;
+    }
+    pos = pos + 1L;
+  }
+  if (pos == first) {
+    return -1L;
+  }
+  memory::store64(pos, (long)cursor);
+  memory::store64(number, (long)value);
+  return 0L;
+}
+
+deRfun timeTzName(long buffer, long limit, long* cursor, long* nameStart, long* nameLength): long {
+  long pos = memory::load64((long)cursor);
+  long start = pos;
+  long count = 0L;
+  if (pos < limit && timeTzByte(buffer, pos) == 60L) {
+    pos = pos + 1L;
+    start = pos;
+    while (pos < limit && timeTzByte(buffer, pos) != 62L) {
+      pos = pos + 1L;
+    }
+    if (pos >= limit || pos == start) {
+      return -1L;
+    }
+    count = pos - start;
+    pos = pos + 1L;
+  } else {
+    while (pos < limit) {
+      long bit = timeTzByte(buffer, pos);
+      if ((bit < 65L || bit > 90L) && (bit < 97L || bit > 122L)) {
+        break;
+      }
+      pos = pos + 1L;
+    }
+    count = pos - start;
+    if (count < 3L) {
+      return -1L;
+    }
+  }
+  memory::store64(pos, (long)cursor);
+  memory::store64(start, (long)nameStart);
+  memory::store64(count, (long)nameLength);
+  return 0L;
+}
+
+deRfun timeTzOffset(long buffer, long limit, long* cursor, long* offset): long {
+  long pos = memory::load64((long)cursor);
+  long sign = 1L;
+  if (pos < limit && timeTzByte(buffer, pos) == 43L) {
+    pos = pos + 1L;
+  } else if (pos < limit && timeTzByte(buffer, pos) == 45L) {
+    sign = -1L;
+    pos = pos + 1L;
+  }
+  long hours = 0L;
+  if (timeTzDigits(buffer, limit, &pos, &hours) != 0L) {
+    return -1L;
+  }
+  long minutes = 0L;
+  long seconds = 0L;
+  if (pos < limit && timeTzByte(buffer, pos) == 58L) {
+    pos = pos + 1L;
+    if (timeTzDigits(buffer, limit, &pos, &minutes) != 0L || minutes > 59L) {
+      return -1L;
+    }
+    if (pos < limit && timeTzByte(buffer, pos) == 58L) {
+      pos = pos + 1L;
+      if (timeTzDigits(buffer, limit, &pos, &seconds) != 0L || seconds > 59L) {
+        return -1L;
+      }
+    }
+  }
+  if (hours > 167L) {
+    return -1L;
+  }
+  memory::store64(pos, (long)cursor);
+  memory::store64(-(sign * (hours * 3600L + minutes * 60L + seconds)), (long)offset);
+  return 0L;
+}
+
+deRfun timeTzRule(long buffer, long limit, long* cursor, long* month, long* week, long* weekday, long* atSeconds): long {
+  long pos = memory::load64((long)cursor);
+  if (pos >= limit || timeTzByte(buffer, pos) != 77L) {
+    return -1L;
+  }
+  pos = pos + 1L;
+  long mon = 0L;
+  long wk = 0L;
+  long day = 0L;
+  long when = 7200L;
+  if (timeTzDigits(buffer, limit, &pos, &mon) != 0L || pos >= limit || timeTzByte(buffer, pos) != 46L) {
+    return -1L;
+  }
+  pos = pos + 1L;
+  if (timeTzDigits(buffer, limit, &pos, &wk) != 0L || pos >= limit || timeTzByte(buffer, pos) != 46L) {
+    return -1L;
+  }
+  pos = pos + 1L;
+  if (timeTzDigits(buffer, limit, &pos, &day) != 0L
+    || mon < 1L || mon > 12L || wk < 1L || wk > 5L || day > 6L) {
+    return -1L;
+  }
+  if (pos < limit && timeTzByte(buffer, pos) == 47L) {
+    pos = pos + 1L;
+    long sign = 1L;
+    if (pos < limit && timeTzByte(buffer, pos) == 43L) {
+      pos = pos + 1L;
+    } else if (pos < limit && timeTzByte(buffer, pos) == 45L) {
+      sign = -1L;
+      pos = pos + 1L;
+    }
+    long hours = 0L;
+    long minutes = 0L;
+    long seconds = 0L;
+    if (timeTzDigits(buffer, limit, &pos, &hours) != 0L || hours > 167L) {
+      return -1L;
+    }
+    if (pos < limit && timeTzByte(buffer, pos) == 58L) {
+      pos = pos + 1L;
+      if (timeTzDigits(buffer, limit, &pos, &minutes) != 0L || minutes > 59L) {
+        return -1L;
+      }
+      if (pos < limit && timeTzByte(buffer, pos) == 58L) {
+        pos = pos + 1L;
+        if (timeTzDigits(buffer, limit, &pos, &seconds) != 0L || seconds > 59L) {
+          return -1L;
+        }
+      }
+    }
+    when = sign * (hours * 3600L + minutes * 60L + seconds);
+    if (pos < limit) {
+      long suffix = timeTzByte(buffer, pos);
+      if (suffix == 119L || suffix == 115L || suffix == 117L || suffix == 103L || suffix == 122L) {
+        pos = pos + 1L;
+      }
+    }
+  }
+  memory::store64(pos, (long)cursor);
+  memory::store64(mon, (long)month);
+  memory::store64(wk, (long)week);
+  memory::store64(day, (long)weekday);
+  memory::store64(when, (long)atSeconds);
+  return 0L;
+}
+
+deRfun timeTzRuleDay(long year, long month, long week, long weekday): long {
+  long firstDay = time::daysFromCivil(year, month, 1L);
+  long firstWeekday = (firstDay + 4L) % 7L;
+  if (firstWeekday < 0L) {
+    firstWeekday = firstWeekday + 7L;
+  }
+  long day = 1L + (weekday + 7L - firstWeekday) % 7L + (week - 1L) * 7L;
+  long monthLength = time::monthLength(year, month);
+  if (day > monthLength) {
+    day = day - 7L;
+  }
+  return time::daysFromCivil(year, month, day);
+}
+
+deRfun timeTzFooter(long buffer, long start, long end, long milliseconds, long* result): long {
+  long cursor = start;
+  long standardName = 0L;
+  long standardNameLength = 0L;
+  long standardOffset = 0L;
+  if (timeTzName(buffer, end, &cursor, &standardName, &standardNameLength) != 0L
+    || timeTzOffset(buffer, end, &cursor, &standardOffset) != 0L) {
+    return -1L;
+  }
+  long daylightName = 0L;
+  long daylightNameLength = 0L;
+  long daylightOffset = standardOffset + 3600L;
+  if (cursor < end) {
+    if (timeTzName(buffer, end, &cursor, &daylightName, &daylightNameLength) != 0L) {
+      return -1L;
+    }
+  }
+  if (daylightNameLength == 0L) {
+    daylightName = standardName;
+    daylightNameLength = standardNameLength;
+    long output = (long)result;
+    memory::store64(standardOffset, output);
+    memory::store64(0L, output + 64L);
+    memory::store64(daylightName, output + 128L);
+    memory::store64(daylightNameLength, output + 192L);
+    return 0L;
+  }
+  if (cursor < end && timeTzByte(buffer, cursor) != 44L) {
+    if (timeTzOffset(buffer, end, &cursor, &daylightOffset) != 0L) {
+      return -1L;
+    }
+  }
+  if (cursor >= end || timeTzByte(buffer, cursor) != 44L) {
+    return -1L;
+  }
+  cursor = cursor + 1L;
+  long startMonth = 0L;
+  long startWeek = 0L;
+  long startWeekday = 0L;
+  long startSeconds = 0L;
+  if (timeTzRule(buffer, end, &cursor, &startMonth, &startWeek, &startWeekday, &startSeconds) != 0L
+    || cursor >= end || timeTzByte(buffer, cursor) != 44L) {
+    return -1L;
+  }
+  cursor = cursor + 1L;
+  long endMonth = 0L;
+  long endWeek = 0L;
+  long endWeekday = 0L;
+  long endSeconds = 0L;
+  if (timeTzRule(buffer, end, &cursor, &endMonth, &endWeek, &endWeekday, &endSeconds) != 0L
+    || cursor != end) {
+    return -1L;
+  }
+  long days = milliseconds / 86400000L;
+  long timeOfDay = milliseconds % 86400000L;
+  if (timeOfDay < 0L) {
+    days = days - 1L;
+  }
+  long year = 0L;
+  long month = 0L;
+  long day = 0L;
+  civilFromDays(days, &year, &month, &day);
+  long startAt = timeTzRuleDay(year, startMonth, startWeek, startWeekday) * 86400L
+    + startSeconds - standardOffset;
+  long finish = timeTzRuleDay(year, endMonth, endWeek, endWeekday) * 86400L
+    + endSeconds - daylightOffset;
+  long seconds = milliseconds / 1000L;
+  if (milliseconds % 1000L < 0L) {
+    seconds = seconds - 1L;
+  }
+  long isDst = 0L;
+  if (startAt < finish) {
+    if (seconds >= startAt && seconds < finish) {
+      isDst = 1L;
+    }
+  } else if (seconds >= startAt || seconds < finish) {
+    isDst = 1L;
+  }
+  long output = (long)result;
+  if (isDst == 1L) {
+    memory::store64(daylightOffset, output);
+    memory::store64(1L, output + 64L);
+    memory::store64(daylightName, output + 128L);
+    memory::store64(daylightNameLength, output + 192L);
+  } else {
+    memory::store64(standardOffset, output);
+    memory::store64(0L, output + 64L);
+    memory::store64(standardName, output + 128L);
+    memory::store64(standardNameLength, output + 192L);
+  }
+  return 0L;
+}
+
+deRfun timeZonePath(long home, long zone, long count): long {
+  if (count < 1L || count > 255L || timeTzByte(zone, 0L) == 47L || timeTzByte(zone, count - 1L) == 47L) {
+    return -1L;
+  }
+  long segmentStart = 0L;
+  long index = 0L;
+  while (index <= count) {
+    if (index == count || timeTzByte(zone, index) == 47L) {
+      long segmentLength = index - segmentStart;
+      if (segmentLength == 0L
+        || (segmentLength == 1L && timeTzByte(zone, segmentStart) == 46L)
+        || (segmentLength == 2L && timeTzByte(zone, segmentStart) == 46L && timeTzByte(zone, segmentStart + 1L) == 46L)) {
+        return -1L;
+      }
+      segmentStart = index + 1L;
+    } else {
+      long bit = timeTzByte(zone, index);
+      if ((bit < 48L || bit > 57L) && (bit < 65L || bit > 90L)
+        && (bit < 97L || bit > 122L) && bit != 43L && bit != 45L && bit != 46L && bit != 95L) {
+        return -1L;
+      }
+    }
+    index = index + 1L;
+  }
+  long path = obr::proc::path(home);
+  string prefix = "/usr/share/zoneinfo/";
+  int prefixRaw = length(prefix);
+  long prefixLength = prefixRaw;
+  index = 0L;
+  while (index < prefixLength) {
+    memory::storeOctet((long)prefix[index], path + index * 8L);
+    index = index + 1L;
+  }
+  long zoneIndex = 0L;
+  while (zoneIndex < count) {
+    memory::storeOctet(timeTzByte(zone, zoneIndex), path + (prefixLength + zoneIndex) * 8L);
+    zoneIndex = zoneIndex + 1L;
+  }
+  memory::storeOctet(0L, path + (prefixLength + count) * 8L);
+  return 0L;
+}
+
+deRfun timeZoneType(long buffer, long length, long milliseconds, long* result): long {
+  if (length < 44L || timeTzByte(buffer, 0L) != 84L || timeTzByte(buffer, 1L) != 90L
+    || timeTzByte(buffer, 2L) != 105L || timeTzByte(buffer, 3L) != 102L) {
+    return -1L;
+  }
+  long counts = obr::proc::alloc(obr::proc::home(), 384L);
+  if (counts == 0L) {
+    return -1L;
+  }
+  timeTzCounts(buffer, (long*)counts);
+  long firstGmtCount = memory::load64(counts);
+  long firstStdCount = memory::load64(counts + 64L);
+  long firstLeapCount = memory::load64(counts + 128L);
+  long firstTimeCount = memory::load64(counts + 192L);
+  long firstTypeCount = memory::load64(counts + 256L);
+  long firstCharCount = memory::load64(counts + 320L);
+  if (firstGmtCount < 0L || firstGmtCount > 10000L
+    || firstStdCount < 0L || firstStdCount > 10000L
+    || firstLeapCount < 0L || firstLeapCount > 10000L
+    || firstTimeCount < 0L || firstTimeCount > 10000L
+    || firstTypeCount < 1L || firstTypeCount > 256L
+    || firstCharCount < 1L || firstCharCount > 65536L) {
+    obr::proc::free(obr::proc::home(), counts, 384L);
+    return -1L;
+  }
+  long firstBlockSize = timeTzBlockSize(counts, 4L);
+  long version = timeTzByte(buffer, 4L);
+  long header = 0L;
+  long timeWidth = 4L;
+  if (version == 50L || version == 51L || version == 52L) {
+    header = 44L + firstBlockSize;
+    if (header + 44L > length || timeTzByte(buffer, header) != 84L
+      || timeTzByte(buffer, header + 1L) != 90L || timeTzByte(buffer, header + 2L) != 105L
+      || timeTzByte(buffer, header + 3L) != 102L) {
+      obr::proc::free(obr::proc::home(), counts, 384L);
+      return -1L;
+    }
+    timeTzCounts(buffer + header * 8L, (long*)counts);
+    timeWidth = 8L;
+  }
+  long gmtCount = memory::load64(counts);
+  long stdCount = memory::load64(counts + 64L);
+  long leapCount = memory::load64(counts + 128L);
+  long timeCount = memory::load64(counts + 192L);
+  long typeCount = memory::load64(counts + 256L);
+  long charCount = memory::load64(counts + 320L);
+  if (typeCount < 1L || typeCount > 256L || timeCount < 0L || timeCount > 10000L
+    || charCount < 1L || charCount > 65536L || leapCount < 0L || leapCount > 10000L
+    || gmtCount < 0L || gmtCount > 10000L || stdCount < 0L || stdCount > 10000L) {
+    obr::proc::free(obr::proc::home(), counts, 384L);
+    return -1L;
+  }
+  long block = header + 44L;
+  long end = block + timeTzBlockSize(counts, timeWidth);
+  if (end > length) {
+    obr::proc::free(obr::proc::home(), counts, 384L);
+    return -1L;
+  }
+  long transitionTypes = block + timeCount * timeWidth;
+  long typeTable = transitionTypes + timeCount;
+  long abbreviations = typeTable + typeCount * 6L;
+  long seconds = milliseconds / 1000L;
+  if (milliseconds % 1000L < 0L) {
+    seconds = seconds - 1L;
+  }
+  long selected = 0L;
+  long index = 0L;
+  while (index < timeCount) {
+    long at = block + index * timeWidth;
+    long when = timeTz32(buffer, at);
+    if (timeWidth == 8L) {
+      when = timeTz64(buffer, at);
+    }
+    if (when > seconds) {
+      break;
+    }
+    selected = timeTzByte(buffer, transitionTypes + index);
+    index = index + 1L;
+  }
+  if (timeCount == 0L || index == timeCount) {
+    if (end < length && timeTzByte(buffer, end) == 10L) {
+      long footerStart = end + 1L;
+      long footerEnd = footerStart;
+      while (footerEnd < length && timeTzByte(buffer, footerEnd) != 10L) {
+        footerEnd = footerEnd + 1L;
+      }
+      if (footerEnd < length && footerEnd > footerStart
+        && timeTzFooter(buffer, footerStart, footerEnd, milliseconds, result) == 0L) {
+        obr::proc::free(obr::proc::home(), counts, 384L);
+        return 0L;
+      }
+    }
+  }
+  if (selected >= typeCount) {
+    obr::proc::free(obr::proc::home(), counts, 384L);
+    return -1L;
+  }
+  long info = typeTable + selected * 6L;
+  long offset = timeTz32(buffer, info);
+  long isDst = timeTzByte(buffer, info + 4L);
+  long abbreviationIndex = timeTzByte(buffer, info + 5L);
+  if (abbreviationIndex >= charCount) {
+    obr::proc::free(obr::proc::home(), counts, 384L);
+    return -1L;
+  }
+  long nameLength = 0L;
+  while (abbreviationIndex + nameLength < charCount && nameLength < 63L
+    && timeTzByte(buffer, abbreviations + abbreviationIndex + nameLength) != 0L) {
+    nameLength = nameLength + 1L;
+  }
+  if (abbreviationIndex + nameLength >= charCount
+    || timeTzByte(buffer, abbreviations + abbreviationIndex + nameLength) != 0L) {
+    obr::proc::free(obr::proc::home(), counts, 384L);
+    return -1L;
+  }
+  long output = (long)result;
+  memory::store64(offset, output);
+  memory::store64(isDst, output + 64L);
+  memory::store64(abbreviations + abbreviationIndex, output + 128L);
+  memory::store64(nameLength, output + 192L);
+  obr::proc::free(obr::proc::home(), counts, 384L);
+  return 0L;
+}
+
+export deRfun time::now(long* milliseconds): long {
+  long home = obr::proc::home();
+  long status = obr::os::svc(30L);
+  if (status != 0L) {
+    return status;
+  }
+  *milliseconds = memory::load64(home + 128L);
+  return 0L;
+}
+
+export deRfun time::clock(long home): long {
+  long status = obr::os::svc(30L);
+  if (status != 0L) {
+    memory::store64(0L, home + 128L);
+  }
+  return status;
+}
+
+export deRfun time::monotonic(long home): long {
+  long status = obr::os::svc(49L);
+  if (status != 0L) {
+    memory::store64(0L, home + 128L);
+  }
+  return status;
+}
+
+export deRfun time::set(long milliseconds): long {
+  long home = obr::proc::home();
+  memory::store64(milliseconds, home + 128L);
+  return obr::os::svc(50L);
+}
+
+export deRfun time::setAt(long home, long milliseconds): long {
+  memory::store64(milliseconds, home + 128L);
+  return obr::os::svc(50L);
+}
+
+export deRfun time::isLeapYear(long year): long {
+  if (year % 400L == 0L) {
+    return 1L;
+  }
+  if (year % 100L == 0L) {
+    return 0L;
+  }
+  if (year % 4L == 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+export deRfun time::monthLength(long year, long month): long {
+  if (month < 1L || month > 12L) {
+    return 0L;
+  }
+  if (month == 2L) {
+    if (time::isLeapYear(year) == 1L) {
+      return 29L;
+    }
+    return 28L;
+  }
+  if (month == 4L || month == 6L || month == 9L || month == 11L) {
+    return 30L;
+  }
+  return 31L;
+}
+
+export deRfun time::daysFromCivil(long year, long month, long day): long {
+  if (month <= 2L) {
+    year = year - 1L;
+  }
+  long era = floorDiv(year, 400L);
+  long yearOfEra = year - era * 400L;
+  long marchMonth = month + 9L;
+  if (month > 2L) {
+    marchMonth = month - 3L;
+  }
+  long dayOfYear = (153L * marchMonth + 2L) / 5L + day - 1L;
+  long dayOfEra = yearOfEra * 365L + yearOfEra / 4L - yearOfEra / 100L + dayOfYear;
+  return era * 146097L + dayOfEra - 719468L;
+}
+
+deRfun civilFromDays(long days, long* year, long* month, long* day): void {
+  long shifted = days + 719468L;
+  long era = floorDiv(shifted, 146097L);
+  long dayOfEra = shifted - era * 146097L;
+  long yearOfEra = (dayOfEra - dayOfEra / 1460L + dayOfEra / 36524L - dayOfEra / 146096L) / 365L;
+  long civilYear = yearOfEra + era * 400L;
+  long dayOfYear = dayOfEra - (365L * yearOfEra + yearOfEra / 4L - yearOfEra / 100L);
+  long marchMonth = (5L * dayOfYear + 2L) / 153L;
+  long civilDay = dayOfYear - (153L * marchMonth + 2L) / 5L + 1L;
+  long civilMonth = marchMonth + 3L;
+  if (marchMonth >= 10L) {
+    civilMonth = marchMonth - 9L;
+  }
+  if (civilMonth <= 2L) {
+    civilYear = civilYear + 1L;
+  }
+  *year = civilYear;
+  *month = civilMonth;
+  *day = civilDay;
+}
+
+export deRfun time::utcFields(long milliseconds, long* fields): void {
+  long days = milliseconds / 86400000L;
+  long timeOfDay = milliseconds % 86400000L;
+  if (timeOfDay < 0L) {
+    days = days - 1L;
+    timeOfDay = timeOfDay + 86400000L;
+  }
+  long year = 0L;
+  long month = 0L;
+  long day = 0L;
+  civilFromDays(days, &year, &month, &day);
+  long weekday = (days + 4L) % 7L;
+  if (weekday < 0L) {
+    weekday = weekday + 7L;
+  }
+  long yearDay = day - 1L;
+  long cursor = 1L;
+  while (cursor < month) {
+    yearDay = yearDay + time::monthLength(year, cursor);
+    cursor = cursor + 1L;
+  }
+  long output = (long)fields;
+  memory::store64(year, output);
+  memory::store64(month, output + 64L);
+  memory::store64(day, output + 128L);
+  memory::store64(timeOfDay / 3600000L, output + 192L);
+  memory::store64((timeOfDay / 60000L) % 60L, output + 256L);
+  memory::store64((timeOfDay / 1000L) % 60L, output + 320L);
+  memory::store64(weekday, output + 384L);
+  memory::store64(yearDay, output + 448L);
+}
+
+export deRfun time::zoneFields(long milliseconds, long zone, long zoneLength, long* fields, long abbreviation, long capacity): long {
+  if (capacity < 2L) {
+    return -1L;
+  }
+  long home = obr::proc::home();
+  if (timeZonePath(home, zone, zoneLength) != 0L
+    || obr::proc::stat(home) != 0L
+    || obr::proc::slot(home, 128L) != 1L) {
+    return -1L;
+  }
+  long fileSize = obr::proc::slot(home, 192L);
+  if (fileSize < 44L || fileSize > 1048576L) {
+    return -1L;
+  }
+  long bufferSize = fileSize * 8L;
+  long buffer = obr::proc::alloc(home, bufferSize);
+  if (buffer == 0L) {
+    return -1L;
+  }
+  if (obr::proc::open(home, 0L) != 0L) {
+    obr::proc::free(home, buffer, bufferSize);
+    return -1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long position = 0L;
+  long failed = 0L;
+  while (position < fileSize && failed == 0L) {
+    long chunk = fileSize - position;
+    if (chunk > 32768L) {
+      chunk = 32768L;
+    }
+    if (obr::proc::read(home, fd, position, chunk) != 0L) {
+      failed = 1L;
+    } else {
+      long got = obr::proc::slot(home, 320L);
+      if (got < 1L || got > chunk) {
+        failed = 1L;
+      } else {
+        long index = 0L;
+        while (index < got) {
+          memory::storeOctet(memory::loadOctet(obr::proc::bytes(home) + index * 8L) & 255L, buffer + (position + index) * 8L);
+          index = index + 1L;
+        }
+        position = position + got;
+      }
+    }
+  }
+  long closeStatus = obr::proc::close(home, fd);
+  if (failed != 0L || closeStatus != 0L) {
+    obr::proc::free(home, buffer, bufferSize);
+    return -1L;
+  }
+  long info = obr::proc::alloc(home, 320L);
+  if (info == 0L) {
+    obr::proc::free(home, buffer, bufferSize);
+    return -1L;
+  }
+  if (timeZoneType(buffer, fileSize, milliseconds, (long*)info) != 0L) {
+    obr::proc::free(home, info, 320L);
+    obr::proc::free(home, buffer, bufferSize);
+    return -1L;
+  }
+  long offset = memory::load64(info);
+  long isDst = memory::load64(info + 64L);
+  long nameStart = memory::load64(info + 128L);
+  long nameLength = memory::load64(info + 192L);
+  if (nameLength >= capacity) {
+    obr::proc::free(home, info, 320L);
+    obr::proc::free(home, buffer, bufferSize);
+    return -1L;
+  }
+  long nameIndex = 0L;
+  while (nameIndex < nameLength) {
+    memory::storeOctet(timeTzByte(buffer, nameStart + nameIndex), abbreviation + nameIndex * 8L);
+    nameIndex = nameIndex + 1L;
+  }
+  memory::storeOctet(0L, abbreviation + nameLength * 8L);
+  long days = milliseconds / 86400000L;
+  long timeOfDay = milliseconds % 86400000L;
+  if (timeOfDay < 0L) {
+    days = days - 1L;
+    timeOfDay = timeOfDay + 86400000L;
+  }
+  timeOfDay = timeOfDay + offset * 1000L;
+  if (timeOfDay < 0L) {
+    days = days - 1L;
+    timeOfDay = timeOfDay + 86400000L;
+  } else if (timeOfDay >= 86400000L) {
+    days = days + 1L;
+    timeOfDay = timeOfDay - 86400000L;
+  }
+  long year = 0L;
+  long month = 0L;
+  long day = 0L;
+  civilFromDays(days, &year, &month, &day);
+  long weekday = (days + 4L) % 7L;
+  if (weekday < 0L) {
+    weekday = weekday + 7L;
+  }
+  long yearDay = day - 1L;
+  long cursor = 1L;
+  while (cursor < month) {
+    yearDay = yearDay + time::monthLength(year, cursor);
+    cursor = cursor + 1L;
+  }
+  long output = (long)fields;
+  memory::store64(year, output);
+  memory::store64(month, output + 64L);
+  memory::store64(day, output + 128L);
+  memory::store64(timeOfDay / 3600000L, output + 192L);
+  memory::store64((timeOfDay / 60000L) % 60L, output + 256L);
+  memory::store64((timeOfDay / 1000L) % 60L, output + 320L);
+  memory::store64(weekday, output + 384L);
+  memory::store64(yearDay, output + 448L);
+  memory::store64(days, output + 512L);
+  memory::store64(offset, output + 576L);
+  memory::store64(isDst, output + 640L);
+  obr::proc::free(home, info, 320L);
+  obr::proc::free(home, buffer, bufferSize);
+  return 0L;
+}

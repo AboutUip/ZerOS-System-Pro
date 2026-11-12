@@ -1,0 +1,55 @@
+/* Plan 2 收口：接口方法与构造的 @Fails。接口派发与 new 都走同一失败值通道；
+   构造失败时销毁已建成的基类链（自类不析构）。结果 0。*/
+#VERSION 2
+
+interface Job {
+  @Fails deRfun run(): int;
+}
+
+class Good implements Job {
+  @Fails deRfun run(): int { return 7; }
+}
+
+class Bad implements Job {
+  @Fails deRfun run(): int { throw fail.of(4); }
+}
+
+class Witness {
+  int sum;
+  deRfun Witness(): void { sum = 0; }
+}
+
+class Base {
+  Witness w;
+  deRfun Base(Witness x): void { w = x; }
+  @Destruct deRfun gone(): void { w.sum = w.sum * 10 + 2; }
+}
+
+class Risky : Base {
+  @Fails deRfun Risky(Witness x, int n): void {
+    Base(x);
+    if (n < 0) throw fail.of(9);
+  }
+  @Destruct deRfun bye(): void { w.sum = w.sum * 10 + 7; }
+}
+
+deRfun main(): int {
+  try {
+    Job j = new Good();
+    if (j.run() != 7) return 1;
+    Job k = new Bad();
+    k.run();
+    return 2;
+  } catch (fail e) {
+    if (e.code != 4L) return 3;
+  }
+  Witness w = new Witness();
+  try {
+    Risky r = new Risky(w, -1);
+    return 4;
+  } catch (fail e) {
+    /* 构造失败：已建成的 Base 链销毁（gone: 2），Risky 自己不析构 */
+    if (e.code != 9L) return 5;
+    return w.sum == 2 ? 0 : 6;
+  }
+}

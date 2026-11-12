@@ -1,0 +1,48 @@
+/* POSIX.1-2017 talk（utilities/talk.html）。形式：talk person [terminal]
+   本平台没有套接字与多用户会话设施（无网络、单控制台），talk 无法建立会话。
+   完整处理操作数（person 必给；terminal 若给须是 console 或 /dev/con，与 write
+   同口径）后写 talk: talk is not supported on this platform，退出 1，不假装成功。
+   缺 person 写 talk: missing operand，退出 1；terminal 不对写 talk: no such
+   terminal，退出 1。诊断英文 ASCII，描述符 2，前缀 talk:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "talk: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      operands = operands + 1L;
+      if (operands == 2L) {
+        /* terminal 操作数：只收 console 或 /dev/con（write 同口径）。 */
+        if (spanSame(at, len, "console") == 0L && spanSame(at, len, "/dev/con") == 0L) {
+          writeErr(home, "talk: no such terminal\n");
+          return finish(home, 1L);
+        }
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands < 1L) {
+    writeErr(home, "talk: missing operand\n");
+    return finish(home, 1L);
+  }
+  if (operands > 2L) {
+    writeErr(home, "talk: too many operands\n");
+    return finish(home, 1L);
+  }
+  writeErr(home, "talk: talk is not supported on this platform\n");
+  return finish(home, 1L);
+}

@@ -1,0 +1,103 @@
+/* M-A：sizeof/offsetof/alignof 编译期内建（Sema 期折常量，零运行时）。单位是位。
+   三运算替代手算值做内核式布局访问：const 初值 / case 标签 / 枚举值三处常量上下文
+   与普通表达式同一结果；泛型函数内 sizeof(T) 实例化后求值。结果 0。 */
+#VERSION 2
+
+struct Pair {
+  long a;
+  long b;
+}
+
+struct Mixed {
+  byte flag;
+  int count;
+}
+
+class Node {
+  long value;
+  long next;
+}
+
+/* const 初值：sizeof 替代手算 128，offsetof 替代手算 64。 */
+const long PAIR_SPAN = sizeof(Pair);
+const long NODE_VALUE_OFF = offsetof(Node, value);
+const long BYTE_WIDTH = alignof(byte);
+
+/* 枚举值：常量表达式放开后 sizeof/offsetof 可写进枚举。
+   int 枚举（没写底层类型）与 long 枚举各一档。 */
+enum Sizes { SLOT = sizeof(long), PAIR = sizeof(Pair), AFTER_PAIR }
+enum Offsets: long { VALUE = offsetof(Node, value), AFTER_VALUE = VALUE + 1 }
+
+/* 泛型模板内 sizeof(T)/alignof(T) 经单态化替换，实例化后求值（布局已知）。 */
+deRfun slotOf[T](): long {
+  return sizeof(T);
+}
+
+deRfun widthOf[T](): long {
+  return alignof(T);
+}
+
+deRfun main(): int {
+  /* sizeof 是槽跨度（存储占位）：byte 的 sizeof 也是 64（一槽）。 */
+  if (sizeof(byte) != 64L) return 1;
+  if (sizeof(long) != 64L) return 2;
+  if (sizeof(string) != 64L) return 3;
+  if (sizeof(array[long]) != 64L) return 4;
+  if (sizeof(Pair*) != 64L) return 5;
+  /* alignof 是值自然宽度（八位组区）：byte 的 alignof 是 8。两者之别就是槽 vs 八位组区。 */
+  if (alignof(byte) != 8L) return 6;
+  if (alignof(short) != 16L) return 7;
+  if (alignof(int) != 32L) return 8;
+  if (alignof(char) != 32L) return 9;
+  if (alignof(boolean) != 8L) return 10;
+  if (alignof(long) != 64L) return 11;
+  if (alignof(float) != 64L) return 12;
+  if (alignof(double) != 64L) return 13;
+  /* struct = 字段数×64；class =（对象头 + 字段数）×64（#VERSION 2 含 1 字头）。 */
+  if (sizeof(Pair) != 128L) return 14;
+  if (sizeof(Mixed) != 128L) return 15;
+  if (sizeof(Node) != 192L) return 16;
+  if (alignof(Pair) != 64L) return 17;
+  if (alignof(Mixed) != 32L) return 18;
+  if (alignof(Node) != 64L) return 19;
+  /* offsetof = 字段位偏移；class 含对象头（首字段 64）。 */
+  if (offsetof(Pair, a) != 0L) return 20;
+  if (offsetof(Pair, b) != 64L) return 21;
+  if (offsetof(Mixed, flag) != 0L) return 22;
+  if (offsetof(Mixed, count) != 64L) return 23;
+  if (offsetof(Node, value) != 64L) return 24;
+  if (offsetof(Node, next) != 128L) return 25;
+  /* const 初值与手算值一致。 */
+  if (PAIR_SPAN != 128L) return 26;
+  if (NODE_VALUE_OFF != 64L) return 27;
+  if (BYTE_WIDTH != 8L) return 28;
+  /* 枚举值（int 档与 long 档）与自动递增。 */
+  if (Sizes::SLOT != 64) return 29;
+  if (Sizes::PAIR != 128) return 30;
+  if (Sizes::AFTER_PAIR != 129) return 31;
+  if (alignof(Sizes) != 32L) return 32;
+  if (Offsets::VALUE != 64L) return 33;
+  if (Offsets::AFTER_VALUE != 65L) return 34;
+  /* 泛型实例化后求值：同一 sizeof 按实参布局出不同结果。 */
+  if (slotOf[Pair]() != 128L) return 35;
+  if (slotOf[long]() != 64L) return 36;
+  if (slotOf[Node]() != 192L) return 37;
+  if (widthOf[Mixed]() != 32L) return 38;
+  /* 内核式布局访问：offsetof 替代手算偏移写字段（含对象头的类字段同样对上）。 */
+  var[Pair] p;
+  long base = (long)&p;
+  *(long*)(base + offsetof(Pair, b)) = 42L;
+  if (p.b != 42L) return 39;
+  Node n = new Node();
+  long nbase = (long)n;
+  *(long*)(nbase + offsetof(Node, value)) = 7L;
+  if (n.value != 7L) return 40;
+  /* case 标签：常量上下文与普通表达式同一结果。 */
+  var[long] hit = 0L;
+  switch (sizeof(long)) {
+    case alignof(Pair): hit = 1L;
+    default: hit = 2L;
+  }
+  if (hit != 1L) return 41;
+  return 0;
+}

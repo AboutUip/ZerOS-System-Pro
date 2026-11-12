@@ -1,0 +1,571 @@
+/* POSIX.1-2017 vi（utilities/vi.html）的最小可用子集，参考 ed.obr 的引擎（editlib）。
+   选项（POSIX 选项集）：vi [-rR] [-c command] [-t tagstring] [-w size] [--] [file]
+   `+command` 与 -c command 等价（`+` 亦作选项引导）；`+` 单独出现等同 +$。
+   -R 只读：缓冲可改但任何写文件命令报 vi: file is readonly。
+   -c command：装入第一个文件后执行一条 ex 命令；纯地址（数字、$）落行。
+   -t tagstring：在 ./tags（ctags 格式）里查 tag，改开该文件并落到对应行。
+   -w size：接受并校验数值；本平台单行就地重画口径下窗口恒 1，无行为差别（如实注明）。
+   -r：本平台无恢复文件，写 vi: option -r: no recovery files on this platform，退出 1。
+   模式：普通模式与插入模式。键（描述符 0 的原始字节）：
+   移动 j k h l（上下左右，方向键 ESC [ A/B/C/D 同义）、0 行首、$ 行尾、G 末行；
+   x 删光标处字符；dd 删当前行（两个 d 连按，其它键取消）；
+   i 在光标前进入插入，a 在光标后进入插入；
+   插入模式里可打印字节插入，换行（10）拆行，退格（8/127）删字或并行，ESC 回普通模式；
+   /模式 换行结束，BRE 子集向前搜索（回绕）；
+   :命令 换行结束：q、q!、w、w [path]、wq、x 走 editlib 的 ed 命令引擎，
+   其它命令原样交给引擎（a c d i p n s m t r j = 等可用）。
+   本平台控制台不解释 ANSI 序列，无法清屏或上移光标：显示按当前行单行就地
+   重画（回车重写整行并补空格），是本平台的最小可用口径，不假装全屏。
+   q 在缓冲已改且未写时第一次只写 ?，第二次才退出；EOF 时缓冲已改则写
+   vi: no write since last change 并退出 1，否则退出 0。
+   退出码：有错误结束 1，否则 0。诊断英文 ASCII，描述符 2，前缀 vi:。
+   结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import editlib;
+
+/* 就地重画当前行：行号/行数> 正文。prevLen 是上次画的长度，用来补空格。
+   返回这次画的长度（不含回车），供下次补空格。col 是光标在行内的八位组偏移。 */
+deRfun drawLine(Ed* ed, long col, long prevLen): long {
+  long home = ed.home;
+  long buf = obr::proc::bytes(home);
+  long at = 0L;
+  long content = 0L;
+  if (ed.count < 1L) {
+    content = 0L;
+  } else {
+    content = lineLen(ed, ed.cur);
+  }
+  memory::storeOctet(13L, buf + at * 8L);
+  at = at + 1L;
+  long statusAt = at;
+  at = putNum(buf, at, ed.cur + 1L);
+  memory::storeOctet(47L, buf + at * 8L);
+  at = at + 1L;
+  at = putNum(buf, at, ed.count);
+  at = putText(buf, at, "> ");
+  long bodyAt = at;
+  if (content > 0L) {
+    copySpan(lineData(ed, ed.cur), buf + at * 8L, content);
+    at = at + content;
+  }
+  while (at - 1L < prevLen) {
+    memory::storeOctet(32L, buf + at * 8L);
+    at = at + 1L;
+  }
+  /* 回车后重放状态与正文前缀，把光标落到 col 处。 */
+  memory::storeOctet(13L, buf + at * 8L);
+  at = at + 1L;
+  long replay = bodyAt - statusAt;
+  long index = 0L;
+  while (index < replay) {
+    memory::storeOctet(byteAt(buf + (statusAt + index) * 8L), buf + at * 8L);
+    at = at + 1L;
+    index = index + 1L;
+  }
+  long cursor = col;
+  if (cursor > content) {
+    cursor = content;
+  }
+  copySpan(buf + bodyAt * 8L, buf + at * 8L, cursor);
+  at = at + cursor;
+  obr::proc::write(home, 1L, 0L, at);
+  return bodyAt - statusAt + content;
+}
+
+deRfun lineSpan(Ed* ed): long {
+  if (ed.count < 1L) {
+    return 0L;
+  }
+  return lineLen(ed, ed.cur);
+}
+
+/* 在当前行 at 处插入一个八位组。行满 8192 返回 0。 */
+deRfun editInsert(Ed* ed, long at, long octet): long {
+  long old = lineData(ed, ed.cur);
+  long oldLen = lineLen(ed, ed.cur);
+  if (oldLen >= lineMax()) {
+    return 0L;
+  }
+  long block = obr::proc::alloc(ed.home, (oldLen + 1L) * 8L);
+  if (block == 0L) {
+    return 0L;
+  }
+  copySpan(old, block, at);
+  memory::storeOctet(octet, block + at * 8L);
+  copySpan(old + at * 8L, block + (at + 1L) * 8L, oldLen - at);
+  setLine(ed, ed.cur, oldLen + 1L, block);
+  if (oldLen > 0L) {
+    obr::proc::free(ed.home, old, oldLen * 8L);
+  }
+  return 1L;
+}
+
+/* 删当前行 at 处的八位组。 */
+deRfun editDelete(Ed* ed, long at): void {
+  long old = lineData(ed, ed.cur);
+  long oldLen = lineLen(ed, ed.cur);
+  if (at < 0L || at >= oldLen) {
+    return;
+  }
+  long block = 0L;
+  if (oldLen > 1L) {
+    block = obr::proc::alloc(ed.home, (oldLen - 1L) * 8L);
+    if (block == 0L) {
+      return;
+    }
+    copySpan(old, block, at);
+    copySpan(old + (at + 1L) * 8L, block + at * 8L, oldLen - at - 1L);
+  }
+  setLine(ed, ed.cur, oldLen - 1L, block);
+  obr::proc::free(ed.home, old, oldLen * 8L);
+}
+
+/* 在 col 处把当前行拆成两行。 */
+deRfun splitLine(Ed* ed, long col): long {
+  long old = lineData(ed, ed.cur);
+  long oldLen = lineLen(ed, ed.cur);
+  if (ed.count >= lineCap()) {
+    return 0L;
+  }
+  long head = obr::proc::alloc(ed.home, col * 8L + 8L);
+  long tail = obr::proc::alloc(ed.home, (oldLen - col) * 8L + 8L);
+  if (head == 0L || tail == 0L) {
+    return 0L;
+  }
+  copySpan(old, head, col);
+  copySpan(old + col * 8L, tail, oldLen - col);
+  setLine(ed, ed.cur, col, head);
+  insertAt(ed, ed.cur + 1L, oldLen - col, tail);
+  obr::proc::free(ed.home, old, oldLen * 8L);
+  return 1L;
+}
+
+/* col 为 0 时退格：把当前行并进上一行。成功 1。 */
+deRfun joinBack(Ed* ed): long {
+  if (ed.cur < 1L) {
+    return 0L;
+  }
+  long above = ed.cur - 1L;
+  long headLen = lineLen(ed, above);
+  long tailLen = lineLen(ed, ed.cur);
+  if (headLen + tailLen > lineMax()) {
+    return 0L;
+  }
+  long head = lineData(ed, above);
+  long tail = lineData(ed, ed.cur);
+  long block = obr::proc::alloc(ed.home, (headLen + tailLen) * 8L + 8L);
+  if (block == 0L) {
+    return 0L;
+  }
+  copySpan(head, block, headLen);
+  copySpan(tail, block + headLen * 8L, tailLen);
+  setLine(ed, above, headLen + tailLen, block);
+  if (headLen > 0L) {
+    obr::proc::free(ed.home, head, headLen * 8L);
+  }
+  deleteRange(ed, ed.cur, ed.cur);
+  ed.cur = above;
+  return headLen;
+}
+
+/* 从当前行下一行起向前找 pat（回绕一次）。命中把 cur 与 col 落到起点。 */
+deRfun doSearch(Ed* ed, long pat, long plen, long* col): void {
+  if (ed.count < 1L || plen < 1L) {
+    edErr(ed, "pattern not found");
+    return;
+  }
+  long step = 1L;
+  while (step <= ed.count) {
+    long line = (ed.cur + step) % ed.count;
+    long ms = 0L;
+    long me = 0L;
+    if (breMatch(lineData(ed, line), lineLen(ed, line), 0L, pat, plen, &ms, &me) == 1L) {
+      ed.cur = line;
+      *col = ms;
+      return;
+    }
+    step = step + 1L;
+  }
+  edErr(ed, "pattern not found");
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  Ed ed;
+  if (initEditor(&ed, home, 1L) != 1L) {
+    writeErr(home, "vi: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operand = -1L;
+  long readOnly = 0L;
+  long cmdAt = 0L;
+  long cmdLen = 0L;
+  long plusSeen = 0L;
+  long tagAt = 0L;
+  long tagLen = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-r") == 1L) {
+      writeErr(home, "vi: option -r: no recovery files on this platform\n");
+      return finish(home, 1L);
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-R") == 1L) {
+      readOnly = 1L;
+    } else if (ended == 0L && len == 2L && (spanSame(at, len, "-c") == 1L || spanSame(at, len, "-t") == 1L)) {
+      long wantTag = 0L;
+      if (spanSame(at, len, "-t") == 1L) {
+        wantTag = 1L;
+      }
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "vi: option requires an argument\n");
+        return finish(home, 1L);
+      }
+      if (wantTag == 1L) {
+        tagAt = argPtr(home, index);
+        tagLen = argLen(home, index);
+      } else {
+        cmdAt = argPtr(home, index);
+        cmdLen = argLen(home, index);
+      }
+    } else if (ended == 0L && len == 2L && spanSame(at, len, "-w") == 1L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "vi: option requires an argument\n");
+        return finish(home, 1L);
+      }
+      long value = 0L;
+      if (spanNum(argPtr(home, index), argLen(home, index), &value) != 0L || value < 1L) {
+        writeErr(home, "vi: invalid window size\n");
+        return finish(home, 1L);
+      }
+      /* 单行就地重画口径下窗口恒 1：接受 -w 但无行为差别。 */
+    } else if (ended == 0L && len >= 1L && byteAt(at) == 43L) {
+      cmdAt = at + 8L;
+      cmdLen = len - 1L;
+      if (cmdLen == 0L) {
+        plusSeen = 1L;
+      }
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "vi: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      if (operand >= 0L) {
+        writeErr(home, "vi: too many operands\n");
+        return finish(home, 1L);
+      }
+      operand = index;
+    }
+    index = index + 1L;
+  }
+  if (operand >= 0L) {
+    if (loadFile(&ed, argPtr(home, operand), argLen(home, operand)) != 1L) {
+      writeErr(home, "vi: cannot open\n");
+      return finish(home, 1L);
+    }
+  }
+  if (tagLen > 0L) {
+    long tagBuf = obr::proc::alloc(home, 65536L);
+    long fileLen = 0L;
+    long line = 0L;
+    if (tagBuf == 0L || findTag(home, tagAt, tagLen, tagBuf, &fileLen, &line) != 1L) {
+      writeErr(home, "vi: tag not found\n");
+      return finish(home, 1L);
+    }
+    if (loadFile(&ed, tagBuf, fileLen) != 1L) {
+      writeErr(home, "vi: cannot open\n");
+      return finish(home, 1L);
+    }
+    ed.cur = line - 1L;
+    if (ed.cur >= ed.count) {
+      ed.cur = ed.count - 1L;
+    }
+    if (ed.cur < 0L) {
+      ed.cur = 0L;
+    }
+  }
+  if (plusSeen == 1L || (cmdLen == 1L && spanSame(cmdAt, cmdLen, "$") == 1L)) {
+    ed.cur = ed.count - 1L;
+    if (ed.cur < 0L) {
+      ed.cur = 0L;
+    }
+  } else if (cmdLen > 0L) {
+    long value = 0L;
+    if (spanNum(cmdAt, cmdLen, &value) == 0L && value >= 1L) {
+      ed.cur = value - 1L;
+      if (ed.cur >= ed.count) {
+        ed.cur = ed.count - 1L;
+      }
+    } else {
+      runCmd(&ed, cmdAt, cmdLen);
+    }
+  }
+  long cmdbuf = obr::proc::alloc(home, 4096L * 8L);
+  long keyOff = 0L;
+  long eof = 0L;
+  long mode = 0L;
+  long col = 0L;
+  long prevLen = 0L;
+  long pending = 0L;
+  while (eof == 0L) {
+    /* 读一个键。 */
+    if (obr::proc::read(home, 0L, keyOff, 1L) != 0L) {
+      eof = 1L;
+      break;
+    }
+    long n = obr::proc::slot(home, 320L);
+    if (n < 1L) {
+      eof = 1L;
+      break;
+    }
+    keyOff = keyOff + n;
+    long key = byteAt(obr::proc::bytes(home));
+    if (mode == 1L) {
+      /* 插入模式。 */
+      if (key == 27L) {
+        mode = 0L;
+        if (col > lineSpan(&ed)) {
+          col = lineSpan(&ed);
+        }
+        prevLen = drawLine(&ed, col, prevLen);
+        continue;
+      }
+      if (key == 10L) {
+        if (splitLine(&ed, col) != 1L) {
+          edErr(&ed, "line too long");
+          mode = 0L;
+        } else {
+          ed.cur = ed.cur + 1L;
+          col = 0L;
+        }
+        prevLen = drawLine(&ed, col, prevLen);
+        continue;
+      }
+      if (key == 8L || key == 127L) {
+        if (col > 0L) {
+          editDelete(&ed, col - 1L);
+          col = col - 1L;
+        } else {
+          long keep = joinBack(&ed);
+          if (keep >= 0L) {
+            col = keep;
+          }
+        }
+        prevLen = drawLine(&ed, col, prevLen);
+        continue;
+      }
+      if (editInsert(&ed, col, key) == 1L) {
+        col = col + 1L;
+      } else {
+        edErr(&ed, "line too long");
+        mode = 0L;
+      }
+      prevLen = drawLine(&ed, col, prevLen);
+      continue;
+    }
+    /* 普通模式。 */
+    if (key == 27L) {
+      /* ESC：可能是方向键序列的开头。 */
+      if (obr::proc::read(home, 0L, keyOff, 1L) != 0L) {
+        eof = 1L;
+        break;
+      }
+      long n2 = obr::proc::slot(home, 320L);
+      if (n2 < 1L) {
+        eof = 1L;
+        break;
+      }
+      keyOff = keyOff + n2;
+      long mid = byteAt(obr::proc::bytes(home));
+      if (mid != 91L) {
+        pending = 0L;
+        continue;
+      }
+      if (obr::proc::read(home, 0L, keyOff, 1L) != 0L) {
+        eof = 1L;
+        break;
+      }
+      n2 = obr::proc::slot(home, 320L);
+      if (n2 < 1L) {
+        eof = 1L;
+        break;
+      }
+      keyOff = keyOff + n2;
+      key = byteAt(obr::proc::bytes(home));
+      if (key == 65L) {
+        key = 107L;
+      } else if (key == 66L) {
+        key = 106L;
+      } else if (key == 67L) {
+        key = 108L;
+      } else if (key == 68L) {
+        key = 104L;
+      } else {
+        continue;
+      }
+    }
+    if (pending == 1L) {
+      pending = 0L;
+      if (key == 100L) {
+        deleteRange(&ed, ed.cur, ed.cur);
+        if (ed.cur >= ed.count) {
+          ed.cur = ed.count - 1L;
+        }
+        if (ed.cur < 0L) {
+          ed.cur = 0L;
+        }
+        if (col > lineSpan(&ed)) {
+          col = lineSpan(&ed);
+        }
+        prevLen = drawLine(&ed, col, prevLen);
+        continue;
+      }
+      /* 不成 dd：这一键按普通键继续处理。 */
+    }
+    if (key == 106L) {
+      if (ed.cur + 1L < ed.count) {
+        ed.cur = ed.cur + 1L;
+      }
+    } else if (key == 107L) {
+      if (ed.cur > 0L) {
+        ed.cur = ed.cur - 1L;
+      }
+    } else if (key == 104L) {
+      if (col > 0L) {
+        col = col - 1L;
+      }
+    } else if (key == 108L) {
+      if (col < lineSpan(&ed)) {
+        col = col + 1L;
+      }
+    } else if (key == 48L) {
+      col = 0L;
+    } else if (key == 36L) {
+      col = lineSpan(&ed);
+    } else if (key == 71L) {
+      ed.cur = ed.count - 1L;
+      if (ed.cur < 0L) {
+        ed.cur = 0L;
+      }
+      col = lineSpan(&ed);
+    } else if (key == 120L) {
+      editDelete(&ed, col);
+      if (col > lineSpan(&ed)) {
+        col = lineSpan(&ed);
+      }
+    } else if (key == 100L) {
+      pending = 1L;
+    } else if (key == 105L) {
+      mode = 1L;
+    } else if (key == 97L) {
+      if (col < lineSpan(&ed)) {
+        col = col + 1L;
+      }
+      mode = 1L;
+    } else if (key == 47L) {
+      long plen = 0L;
+      while (plen < 4096L) {
+        if (obr::proc::read(home, 0L, keyOff, 1L) != 0L) {
+          eof = 1L;
+          break;
+        }
+        long n2 = obr::proc::slot(home, 320L);
+        if (n2 < 1L) {
+          eof = 1L;
+          break;
+        }
+        keyOff = keyOff + n2;
+        long bit = byteAt(obr::proc::bytes(home));
+        if (bit == 10L) {
+          break;
+        }
+        memory::storeOctet(bit, cmdbuf + plen * 8L);
+        plen = plen + 1L;
+      }
+      if (eof == 1L) {
+        break;
+      }
+      doSearch(&ed, cmdbuf, plen, &col);
+    } else if (key == 58L) {
+      long cmdLen = 0L;
+      while (cmdLen < 4096L) {
+        if (obr::proc::read(home, 0L, keyOff, 1L) != 0L) {
+          eof = 1L;
+          break;
+        }
+        long n2 = obr::proc::slot(home, 320L);
+        if (n2 < 1L) {
+          eof = 1L;
+          break;
+        }
+        keyOff = keyOff + n2;
+        long bit = byteAt(obr::proc::bytes(home));
+        if (bit == 10L) {
+          break;
+        }
+        memory::storeOctet(bit, cmdbuf + cmdLen * 8L);
+        cmdLen = cmdLen + 1L;
+      }
+      if (eof == 1L) {
+        break;
+      }
+      if (readOnly == 1L && cmdLen >= 1L && (byteAt(cmdbuf) == 119L || byteAt(cmdbuf) == 120L)) {
+        edErr(&ed, "file is readonly");
+        continue;
+      }
+      if (cmdLen == 2L && byteAt(cmdbuf) == 119L && byteAt(cmdbuf + 8L) == 113L) {
+        memory::storeOctet(119L, cmdbuf);
+        runCmd(&ed, cmdbuf, 1L);
+        memory::storeOctet(113L, cmdbuf);
+        if (runCmd(&ed, cmdbuf, 1L) == 2L) {
+          break;
+        }
+      } else if (cmdLen == 2L && byteAt(cmdbuf) == 113L && byteAt(cmdbuf + 8L) == 33L) {
+        memory::storeOctet(81L, cmdbuf);
+        runCmd(&ed, cmdbuf, 1L);
+        break;
+      } else if (cmdLen == 1L && byteAt(cmdbuf) == 120L) {
+        if (ed.dirty == 1L) {
+          memory::storeOctet(119L, cmdbuf);
+          if (runCmd(&ed, cmdbuf, 1L) != 1L) {
+            continue;
+          }
+        }
+        memory::storeOctet(113L, cmdbuf);
+        if (runCmd(&ed, cmdbuf, 1L) == 2L) {
+          break;
+        }
+      } else {
+        if (runCmd(&ed, cmdbuf, cmdLen) == 2L) {
+          break;
+        }
+      }
+      if (col > lineSpan(&ed)) {
+        col = lineSpan(&ed);
+      }
+    } else {
+      continue;
+    }
+    if (col > lineSpan(&ed)) {
+      col = lineSpan(&ed);
+    }
+    prevLen = drawLine(&ed, col, prevLen);
+  }
+  if (eof == 1L && ed.dirty == 1L) {
+    writeErr(home, "vi: no write since last change\n");
+    return finish(home, 1L);
+  }
+  if (ed.hadErr != 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

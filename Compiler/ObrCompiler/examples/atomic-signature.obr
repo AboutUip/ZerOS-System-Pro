@@ -1,0 +1,28 @@
+/* M-E 正例：obr::atomic 签名面（编译期校验）。三档内存序标注、cas/fetchAdd 返回旧值、
+   64 位对齐字宽。atomic.load/store 发 volatile 访存面（vld./vst.，运行时可跑）；
+   cas/fetchAdd 的信箱服务序列化与内存序的运行时动作本轮是余量（README 余量清单）——
+   调用收在 RUNTIME_READY 门后编译：签名/类型/编译期校验全部生效，信箱服务落地后改 1
+   即可原样跑通（运行时行为例随运行时批补）。 */
+#VERSION 2
+import obr.atomic;
+
+const long RUNTIME_READY = 0L;
+
+deRfun main(): long {
+  volatile long* p = (volatile long*)1048576L;
+  /* 三档内存序都可标注（Acquire/Release/SeqCst 是编译期常量，不进运行时）。 */
+  obr::atomic::store(p, 7L, obr::atomic::MemoryOrder::Release);
+  long got = obr::atomic::load(p, obr::atomic::MemoryOrder::Acquire);
+  if (got != 7L) return 1;
+  got = obr::atomic::load(p, obr::atomic::MemoryOrder::SeqCst);
+  if (got != 7L) return 2;
+  /* cas/fetchAdd 的签名面：长整型返回旧值；常量位址 64 位对齐（1048576 = 16384×64，
+     5952/6272/6336 等共享字位址同样是 64 的倍数）。 */
+  if (RUNTIME_READY == 1L) {
+    long old = obr::atomic::cas(p, 7L, 8L, obr::atomic::MemoryOrder::SeqCst);
+    if (old != 7L) return 3;
+    old = obr::atomic::fetchAdd(p, 1L, obr::atomic::MemoryOrder::Acquire);
+    if (old != 8L) return 4;
+  }
+  return 0;
+}

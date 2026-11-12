@@ -1,0 +1,111 @@
+/* POSIX.1-2017 prs（utilities/prs.html，SCCS 族）。选定子集：
+   prs [-r sid] [-d[dataspec]] [--] s.file...
+   打印 SCCS 文件的 delta 表与统计。缺省输出：每个 delta 一段——
+   D<sid> / date: <yymmdd hh:mm:ss> / user: <user> / serial: <n>
+   / pred: <pred> / 段落正文；-r sid 只打该 delta（缺省全部）。
+   未支持+原因：-d 关键字表（:D: :Dy: :MR: 等 20 余个）——子集输出固定格式，
+   -d 的 dataspec 仅登记接受（注明）。
+   校验失败写 prs: 文件: invalid SCCS file，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 prs:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long out = obr::proc::alloc(home, 524288L);
+  if (st == 0L || buf == 0L || out == 0L) {
+    writeErr(home, "prs: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long sidAt = 0L;
+  long sidLen = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      long vAt = at + 16L;
+      long vLen = len - 2L;
+      if (o == 114L) {
+        if (vLen == 0L) {
+          index = index + 1L;
+          if (index < count) {
+            vAt = argPtr(home, index);
+            vLen = argLen(home, index);
+          } else {
+            vAt = 0L;
+            vLen = 0L;
+          }
+        }
+        sidAt = vAt;
+        sidLen = vLen;
+      } else if (o == 100L) {
+        /* dataspec 登记接受（子集固定格式）。 */
+      } else {
+        writeErr(home, "prs: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      if (sccsLoad(home, st, buf, at, len) != 0L) {
+        writeErr(home, "prs: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": invalid SCCS file\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long n = memory::load64(st + 64L);
+      long i = 0L;
+      if (sidLen > 0L) {
+        i = sccsFind(st, sidAt, sidLen);
+        if (i < 0L) {
+          writeErr(home, "prs: nonexistent sid\n");
+          failed = 1L;
+          index = index + 1L;
+          continue;
+        }
+        n = i + 1L;
+      }
+      while (i < n) {
+        long e = st + 8192L + i * 1536L;
+        writeStr(home, 1L, "D");
+        writeSpan(home, 1L, 0L, e + 64L, memory::load64(e));
+        writeStr(home, 1L, "\ndate: ");
+        writeSpan(home, 1L, 0L, e + 192L, 16L);
+        writeStr(home, 1L, "\nuser: ");
+        writeSpan(home, 1L, 0L, e + 512L, memory::load64(e + 448L));
+        writeStr(home, 1L, "\nserial: ");
+        writeNum(home, 1L, memory::load64(e + 768L));
+        writeStr(home, 1L, "\npred: ");
+        writeSpan(home, 1L, 0L, e + 896L, memory::load64(e + 832L));
+        writeStr(home, 1L, "\n");
+        long blen = memory::load64(e + 1088L);
+        if (blen > 0L) {
+          writeSpan(home, 1L, 0L, buf + memory::load64(e + 1024L) * 8L, blen);
+        }
+        writeStr(home, 1L, "\n");
+        i = i + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "prs: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

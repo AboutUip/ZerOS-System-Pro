@@ -5,6 +5,8 @@
  * 入口是 -slot 2 的原生映像。会装到核心 4 至 7 的程序是 -pie -slot 0。
  * Resource/Bin 里带 main 的每个 .obr 编成 /bin/同名文件，并链上 arg.obr 与 obr.proc.obr。
  * obr.print、obr.oct、obr.path、obr.line 分别编成 /lib 下的同名 .zdll，不链进这些程序。
+ * Driver/Nic/niclib 编成 /lib/nic.zdll；Driver/Time/time 编成 /lib/time.zdll；
+ * Driver/Nic/niccore 链接进内核。离线时区数据库由 provision.mjs 安装。
  * Resource/App 的每个子目录是一个程序：带 main 的那份是入口，目录树里其余 .obr 都链进去。
  * sh 的客路径仍是 /os/sh。其它程序写成 /app/目录名。*-check.obr 只在宿主编过，不装进客根。
  * 不写 .zap。编完再跑 provision.mjs，已有的 /boot/display 和 /boot/debug 不覆盖。
@@ -26,6 +28,8 @@ const compiler = path.resolve(repo, "Compiler/ObrCompiler", process.platform ===
 const lib = path.resolve(repo, "Compiler/ObrCompiler/lib");
 const memory = path.resolve(product, "Hardware/Memory");
 const board = path.resolve(product, "Hardware/Motherboard");
+const nicDriver = path.resolve(repo, "Driver/Nic");
+const timeDriver = path.resolve(repo, "Driver/Time");
 const debugMaps = process.argv.includes("--debug-maps");
 const debugFiles = [
   path.resolve(root, "kernel/start.debug"),
@@ -79,6 +83,7 @@ compile(
     path.resolve(kernel, "Proc/pool.obr"),
     path.resolve(kernel, "Proc/sig.obr"),
     path.resolve(kernel, "Mm/mm.obr"),
+    path.resolve(kernel, "Mm/window.obr"),
     path.resolve(kernel, "Sched/sched.obr"),
     path.resolve(kernel, "Fs/vfs.obr"),
     path.resolve(kernel, "Fs/pipe.obr"),
@@ -87,6 +92,8 @@ compile(
     path.resolve(kernel, "Fs/frame.obr"),
     path.resolve(kernel, "Fs/comm.obr"),
     path.resolve(kernel, "Exec/exec.obr"),
+    path.resolve(kernel, "Exec/flat.obr"),
+    path.resolve(kernel, "Exec/drv.obr"),
     path.resolve(kernel, "Exec/boot.obr"),
     path.resolve(kernel, "Exec/spawn.obr"),
     path.resolve(product, "System/Loader/loader.obr"),
@@ -94,12 +101,13 @@ compile(
     path.resolve(kernel, "Text/utf8.obr"),
     path.resolve(kernel, "Test/suite.obr"),
     path.resolve(lib, "obr.nas.obr"),
+    path.resolve(nicDriver, "niccore.obr"),
   ],
   path.resolve(root, "kernel/start"),
-  [...(debugMaps ? ["-debug"] : []), "-slot", "2", ...kernelIncludes.flatMap((dir) => ["-I", dir]), "-I", path.resolve(product, "System/Loader"), "-I", memory, "-I", board],
+  [...(debugMaps ? ["-debug"] : []), "-slot", "2", ...kernelIncludes.flatMap((dir) => ["-I", dir]), "-I", path.resolve(product, "System/Loader"), "-I", memory, "-I", board, "-I", nicDriver],
 );
 
-const userIncludes = ["-pie", "-slot", "0", "-I", memory, "-I", board];
+const userIncludes = ["-pie", "-slot", "0", "-I", memory, "-I", board, "-I", nicDriver, "-I", timeDriver];
 const proc = path.resolve(lib, "obr.proc.obr");
 const text = path.resolve(lib, "obr.text.obr");
 const base = path.resolve(lib, "obr.base.obr");
@@ -210,6 +218,60 @@ for (const name of ["obr.oct", "obr.path", "obr.line"]) {
     ["-shared", "-slot", "0", "-I", memory, "-I", board],
   );
 }
+compile(
+  [path.resolve(nicDriver, "niclib.obr")],
+  path.resolve(root, "lib/nic"),
+  ["-shared", "-slot", "0", "-I", nicDriver, "-I", memory, "-I", board],
+);
+compile(
+  [path.resolve(nicDriver, "niclib.obr")],
+  path.resolve(root, "lib/nicflat"),
+  ["-shared", "-flat", "-slot", "0", "-I", nicDriver, "-I", memory, "-I", board],
+);
+compile(
+  [path.resolve(timeDriver, "time.obr"), proc],
+  path.resolve(root, "lib/time"),
+  ["-shared", "-slot", "0", "-I", timeDriver, "-I", memory, "-I", board],
+);
+/* 网卡热驱动测试程序。.zo 是标准 Obr PIE；版本放在文件名里。 */
+const zoDir = path.resolve(root, "drivers");
+fs.mkdirSync(zoDir, { recursive: true });
+const zoV1 = path.resolve(zoDir, "nic-v1.zo");
+const zoV2 = path.resolve(zoDir, "nic-v2.zo");
+compile([path.resolve(nicDriver, "niczo.obr")], zoV1, [...userIncludes, "-flat"]);
+fs.copyFileSync(zoV1, zoV2);
+fs.chmodSync(zoV1, 0o755);
+fs.chmodSync(zoV2, 0o755);
+compile(
+  [path.resolve(nicDriver, "flatmark.obr")],
+  path.resolve(zoDir, "flat-v1.zo"),
+  [...userIncludes, "-flat"],
+);
+fs.chmodSync(path.resolve(zoDir, "flat-v1.zo"), 0o755);
+/* 150 任务运行红测的工作负载：flat yield 循环，跑完即退。 */
+const zoLoop = path.resolve(zoDir, "flatloop.zo");
+compile([path.resolve(nicDriver, "flatloop.obr")], zoLoop, [...userIncludes, "-flat"]);
+fs.chmodSync(zoLoop, 0o755);
+compile([path.resolve(nicDriver, "handover.obr")], path.resolve(zoDir, "handover.zo"), [...userIncludes, "-flat"]);
+fs.chmodSync(path.resolve(zoDir, "handover.zo"), 0o755);
+compile([path.resolve(nicDriver, "holdover.obr")], path.resolve(zoDir, "holdover.zo"), [...userIncludes, "-flat"]);
+fs.chmodSync(path.resolve(zoDir, "holdover.zo"), 0o755);
+compile([path.resolve(nicDriver, "inputdev.obr")], path.resolve(zoDir, "inputdev.zo"), [...userIncludes, "-flat"]);
+fs.chmodSync(path.resolve(zoDir, "inputdev.zo"), 0o755);
+compile([path.resolve(nicDriver, "kbd.obr")], path.resolve(zoDir, "kbd.zo"), [...userIncludes, "-flat"]);
+fs.chmodSync(path.resolve(zoDir, "kbd.zo"), 0o755);
+compile([path.resolve(nicDriver, "mouse.obr")], path.resolve(zoDir, "mouse.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(nicDriver, "gpu.obr")], path.resolve(zoDir, "gpu.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(nicDriver, "gpuflat.obr")], path.resolve(zoDir, "gpuflat.zo"), [...userIncludes, "-flat"]);
+compile([path.resolve(nicDriver, "flatwrite.obr")], path.resolve(zoDir, "flatwrite.zo"), [...userIncludes, "-flat"]);
+fs.chmodSync(path.resolve(zoDir, "flatwrite.zo"), 0o755);
+fs.chmodSync(path.resolve(zoDir, "gpuflat.zo"), 0o755);
+fs.chmodSync(path.resolve(zoDir, "gpu.zo"), 0o755);
+fs.chmodSync(path.resolve(zoDir, "mouse.zo"), 0o755);
+for (const plain of ["plaina", "plainb", "plainc", "bad", "depbad", "capbad"]) {
+  compile([path.resolve(nicDriver, `${plain}.obr`)], path.resolve(zoDir, `${plain}.zo`), [...userIncludes, "-flat"]);
+  fs.chmodSync(path.resolve(zoDir, `${plain}.zo`), 0o755);
+}
 
 const bin = path.resolve(product, "Resource/Bin");
 const arg = path.resolve(bin, "arg.obr");
@@ -226,6 +288,24 @@ for (const name of names) {
   }
   if (source.includes("import obr.base")) {
     extra.push(base);
+  }
+  /* Bin/lib 下的公共源：按 import 追加，老命令不 import 就不进编译单元。
+     同一公共源可能被多条 import 规则命中（如 binutil+nqslib），去重防重复定义。 */
+  const binlib = path.resolve(bin, "lib", "binutil.obr");
+  if (source.includes("import binutil") || source.includes("import terminfo") || source.includes("import sccslib") || source.includes("import nqslib")) {
+    extra.push(binlib);
+  }
+  if (source.includes("import terminfo")) {
+    extra.push(path.resolve(bin, "lib", "terminfo.obr"));
+  }
+  if (source.includes("import nqslib")) {
+    extra.push(path.resolve(bin, "lib", "nqslib.obr"));
+  }
+  if (source.includes("import editlib")) {
+    extra.push(path.resolve(bin, "lib", "editlib.obr"));
+  }
+  if (source.includes("import sccslib")) {
+    extra.push(path.resolve(bin, "lib", "sccslib.obr"));
   }
   compile(
     [path.resolve(bin, name), arg, proc, ...extra],

@@ -82,6 +82,7 @@ int main(int argc, char** argv) {
     int languageVersion = 2;
     bool shared = false;
     bool pie = false;
+    bool flat = false;
     bool writeZap = false;
     bool debug = false;
     for (int index = 1; index < argc; index += 1) {
@@ -92,6 +93,10 @@ int main(int argc, char** argv) {
       }
       if (arg == "-pie") {
         pie = true;
+        continue;
+      }
+      if (arg == "-flat") {
+        flat = true;
         continue;
       }
       if (arg == "-zap") {
@@ -137,6 +142,7 @@ int main(int argc, char** argv) {
       std::cerr << "      -debug 在二进制旁边再写 .debug 对照表。二进制与不加 -debug 时逐字节相同。\n";
       std::cerr << "      -shared 编动态库，必须 -slot 0，并且不能有 main。二进制后缀是 .zdll。\n";
       std::cerr << "      -pie 编可重定位的可执行程序，必须 -slot 0。装入时再按目标核心挪数据地址。\n";
+      std::cerr << "      -flat 编任务窗口布局的程序：栈/静态/堆在窗口内，由 spawnFlat 分配窗口。\n";
       std::cerr << "      -o 以 .zap 结尾时，二进制写在去掉这个后缀的路径上。\n";
       return 2;
     }
@@ -187,7 +193,11 @@ int main(int argc, char** argv) {
     if (shared && slot != 0) obr::fail("动态库必须 -slot 0");
     if (pie && shared) obr::fail("动态库不要再写 -pie");
     if (pie && slot != 0) obr::fail("可重定位程序必须 -slot 0");
-    obr::applySlot(slot);
+    if (flat) {
+      obr::applyFlat();
+    } else {
+      obr::applySlot(slot);
+    }
     obr::Unit unit = obr::combine(std::move(sources), headers);
     unit.shared = shared;
     unit.pie = pie;

@@ -1,0 +1,23 @@
+/* M-C 反例：接口实现的 out 修饰词要一致——接口方法是 `read(out long value)`，
+   实现写成无修饰的 `read(long value)`，修饰词参与签名比对（out/ref/无修饰互不相同）。
+   编译应当失败：类 Bad 没有实现接口方法 Meter::read。*/
+#VERSION 2
+
+interface Meter {
+  deRfun read(out long value): long;
+}
+
+class Bad implements Meter {
+  deRfun Bad(): void {
+  }
+  deRfun read(long value): long {
+    value = 1;
+    return 0;
+  }
+}
+
+deRfun main(): long {
+  var[Meter] m = new Bad();
+  long v = 0;
+  return m.read(v);
+}

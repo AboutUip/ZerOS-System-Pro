@@ -71,17 +71,31 @@ deRfun reserveOne(): void;
 deRfun taskDrop(long core): void;
 deRfun nextPid(): long;
 deRfun taskSpawn(long core, long pid, long uid, long gid, long cap, long state): long;
+/* 这颗核当前占着核的任务。直接读运行槽，不在共享核上扫表猜。 */
+deRfun taskCurrent(long core): long;
+/* 窗口任务不向核心堆池领 heap。origin 是任务窗口，heap 是窗口内堆起点。 */
+deRfun taskSpawnWindow(long core, long pid, long uid, long gid, long cap, long state, long origin, long length, long heap): long;
 deRfun taskAllows(long core, long service): long;
 deRfun taskByPid(long pid): long;
 deRfun sigRaise(long caller, long pid, long sig): long;
 deRfun sigTake(long caller): long;
 deRfun sigPendingKill(long core): long;
 deRfun procExit(long core, long code): void;
+/* 按任务下标收：同核共享时受害任务可能在槽里，不挂在核上（schedSweep 的待杀扫描用）。 */
+deRfun procExitAt(long index, long code): void;
+/* M2 触发点 (d)（2026-11-06）：reap(task)——放弃任务前把上下文装回一次，从 __dtor_sweep 清扫。
+   清扫中的僵尸按未退出处理（sweepHolds），清扫完成由 procSwept 交回；清扫中的核不换人（sweepBusy）。 */
+deRfun procRelease(long index): long;
+deRfun procSwept(long core): void;
+deRfun sweepBusy(long core): long;
+deRfun sweepHolds(long index): long;
 /* 宿主观测：把一个任务事件写成 4416 的单个 64 位诊断字。地址记在 Bios.obr。不改任务结构。 */
 deRfun diagTask(long kind, long a, long b, long c): void;
 deRfun procWait(long caller, long home): long;
-/* 有人正等子进程时停掉那个子进程并返回 1，否则返回 0。退出码 130。 */
+/* 有人正等子进程时停掉那个子进程并返回 1，否则返回 0。退出码 130。
+   停掉之后先不叫醒外壳。控制台倒掉环里的输出，再调用 breakDeliver。 */
 deRfun procBreak(): long;
+deRfun breakDeliver(): void;
 deRfun procCollect(): void;
 /* 没有正在跑、也没有在槽里等着上的任务时返回 1。调度可以先不向宿主询问。 */
 deRfun schedIdle(): long;

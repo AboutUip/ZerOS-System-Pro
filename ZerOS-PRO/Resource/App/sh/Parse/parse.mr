@@ -10,4 +10,7 @@ deRfun cmdRedirLen(long cmd): long;
 deRfun cmdRedirAt(long cmd): long;
 deRfun cmdArgLen(long cmd, long index): long;
 deRfun cmdArgAt(long cmd, long index): long;
+deRfun cmdStride(): long;
+deRfun argFlagAt(long out, long cmdIndex, long argIndex): long;
+deRfun argLiteral(long out, long cmdIndex, long argIndex, long byteIndex): long;
 deRfun parseLine(long src, long count, long out, long status): long;

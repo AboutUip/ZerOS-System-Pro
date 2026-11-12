@@ -1,0 +1,18 @@
+/* q* 批处理族共享模块 nqslib 的接口。实现见 nqslib.obr。
+   NAS 脱机队列 /var/spool/nqs/：作业文件 job.<N> 头为 `key: value` 行、
+   空行后是脚本。无守护进程：入队/查询/改属性为文件操作，执行由平台扩展
+   runner 手动触发（qsub -X）。状态块 st 自备（至少 70000 位），buf 自备（64KB）。 */
+/* 读作业文件到 buf 并解析头到 st。0 成功，1 失败。 */
+deRfun nqsLoad(long home, long st, long buf, long pathAt, long pathLen): long;
+/* 取字段值（键为字符串）。1 找到并写 *valAt/*valLen（指向 st 内）。 */
+deRfun nqsGet(long st, string key, long* valAt, long* valLen): long;
+/* 设字段（替换或新增）。0 成功。 */
+deRfun nqsSet(long st, string key, long valAt, long valLen): long;
+/* 重写作业文件。0 成功。 */
+deRfun nqsSave(long home, long st, long buf, long pathAt, long pathLen): long;
+/* 取下一个作业号（<dir>/.next 自增）。 */
+deRfun nqsNext(long home, long dir, long dirLen): long;
+/* 作业路径 <dir>/job.<n> 写进 out，返回长度。 */
+deRfun nqsPath(long dir, long dirLen, long n, long out): long;
+/* 建队列目录链 /var、/var/spool、<dir>。 */
+deRfun nqsEnsure(long home, long dir, long dirLen): void;

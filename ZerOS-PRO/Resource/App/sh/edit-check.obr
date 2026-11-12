@@ -6,33 +6,51 @@ import obr.line;
 import obr.path;
 import parse;
 import builtin;
+import expand;
 
+/* 三块暂存挪到映像之后的高位。映像超过 512KiB 后，原来的 4194304 等位址落进了代码里。 */
 deRfun stateAt(): long {
-  return 4194304L;
+  return 33554432L;
 }
 
 deRfun outAt(): long {
-  return 4718592L;
+  return 33685504L;
 }
 
 deRfun blobAt(): long {
-  return 5242880L;
+  return 33947648L;
+}
+
+/* 三个计数先记在安全区。宿主认的三格落在映像代码里，跑完由 report 一次抄过去。 */
+deRfun casesBit(): long {
+  return 33488896L;
+}
+
+deRfun failsBit(): long {
+  return 33488960L;
+}
+
+deRfun firstBit(): long {
+  return 33489024L;
 }
 
 deRfun expect(boolean ok, long id): void {
-  static long cases = 0L;
-  static long fails = 0L;
-  static long first = 0L;
-  cases = cases + 1L;
+  memory::store64(memory::load64(casesBit()) + 1L, casesBit());
   if (!ok) {
-    if (first == 0L) {
-      first = id;
+    if (memory::load64(firstBit()) == 0L) {
+      memory::store64(id, firstBit());
     }
-    fails = fails + 1L;
+    memory::store64(memory::load64(failsBit()) + 1L, failsBit());
   }
-  memory::store64(cases, 2097152L);
-  memory::store64(fails, 2097216L);
-  memory::store64(first, 2097280L);
+}
+
+
+/* 编成原生映像后由宿主核对三格：用例数、失败数、第一处失败。
+   中途写这三格会盖住指令，全部用例跑完再抄。 */
+deRfun report(): void {
+  memory::store64(memory::load64(casesBit()), 2097152L);
+  memory::store64(memory::load64(failsBit()), 2097216L);
+  memory::store64(memory::load64(firstBit()), 2097280L);
 }
 
 deRfun plant(long addr, string text): long {
@@ -178,7 +196,7 @@ deRfun editCases(): void {
   obr::line::editInit(state);
   expect(obr::line::editFeed(state, 27L) == 0L && obr::line::editFeed(state, 65L) == 0L && obr::line::editLen(state) == 0L, 41L);
   long echoLen = plant(dest, "echo");
-  expect(builtinId(dest, echoLen) == 0L, 42L);
+  expect(builtinId(dest, echoLen) == 12L, 42L);
   obr::line::editInit(state);
   expect(feedText(state, "mid") == 0L, 43L);
   obr::line::editFeed(state, 1L);
@@ -229,7 +247,7 @@ deRfun parseCases(): void {
   expect(feedCmd("echo hi", 0L) == 0L && listCount(out) == 1L, 52L);
   long cmd = cmdOf(out, listCmd(out, 0L));
   expect(cmdArgc(cmd) == 2L && argIs(cmd, 0L, "echo") == 1L && argIs(cmd, 1L, "hi") == 1L, 53L);
-  expect(builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L)) == 0L, 54L);
+  expect(builtinId(cmdArgAt(cmd, 0L), cmdArgLen(cmd, 0L)) == 12L, 54L);
   expect(feedCmd("echo \"hi there\"", 0L) == 0L, 55L);
   cmd = cmdOf(out, listCmd(out, 0L));
   expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, "hi there") == 1L, 56L);
@@ -284,7 +302,7 @@ deRfun parseCases(): void {
   cmd = cmdOf(out, 0L);
   expect(cmdArgc(cmd) == 3L && argIs(cmd, 1L, "-n") == 1L && argIs(cmd, 2L, "hi") == 1L, 94L);
   expect(feedCmd("cd /os", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 2L) == 2L, 95L);
-  expect(feedCmd("pwd", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 3L) == 0L, 96L);
+  expect(feedCmd("pwd", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 3L) == 24L, 96L);
   expect(feedCmd("exit 2", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 4L) == 4L, 97L);
   expect(feedCmd("history", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 7L) == 5L, 98L);
   expect(feedCmd("clear", 0L) == 0L && builtinId(cmdArgAt(cmdOf(out, 0L), 0L), 5L) == 6L, 99L);
@@ -320,6 +338,52 @@ deRfun parseCases(): void {
   expect(feedCmd("cmd < file", 0L) == 0L, 149L);
   cmd = cmdOf(out, listCmd(out, 0L));
   expect(cmdRedir(cmd) == 3L && hdCount(out) == 0L, 150L);
+  expect(feedCmd("echo /temp/*", 0L) == 0L, 151L);
+  cmd = cmdOf(out, listCmd(out, 0L));
+  expect(cmdArgc(cmd) == 2L && argIs(cmd, 1L, "/temp/*") == 1L && argLiteral(out, 0L, 1L, 6L) == 0L, 152L);
+  expect(feedCmd("echo \"/temp/*\"", 0L) == 0L, 153L);
+  expect(argLiteral(out, 0L, 1L, 6L) == 1L, 154L);
+  expect(feedCmd("echo /temp/\\*", 0L) == 0L, 155L);
+  expect(argIs(cmdOf(out, 0L), 1L, "/temp/*") == 1L && argLiteral(out, 0L, 1L, 6L) == 1L && argLiteral(out, 0L, 1L, 0L) == 0L, 156L);
+  expect(feedCmd("echo \"/temp/\"*", 0L) == 0L, 157L);
+  expect(argIs(cmdOf(out, 0L), 1L, "/temp/*") == 1L && argLiteral(out, 0L, 1L, 0L) == 1L && argLiteral(out, 0L, 1L, 6L) == 0L, 158L);
+}
+
+
+deRfun setFlags(long addr, long count, long literal): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(literal, addr + index * 8L);
+    index = index + 1L;
+  }
+}
+
+
+deRfun matchIs(string pat, string name, long literal): long {
+  long base = blobAt();
+  long patLen = plant(base, pat);
+  long nameLen = plant(base + 1024L, name);
+  setFlags(base + 2048L, patLen, literal);
+  return globMatch(base + 1024L, nameLen, base, patLen, base + 2048L);
+}
+
+
+deRfun globCases(): void {
+  expect(matchIs("*", "abc", 0L) == 1L, 159L);
+  expect(matchIs("*", ".abc", 0L) == 0L, 160L);
+  expect(matchIs("a*", "abc", 0L) == 1L, 161L);
+  expect(matchIs("a*", "bc", 0L) == 0L, 162L);
+  expect(matchIs("?", "a", 0L) == 1L, 163L);
+  expect(matchIs("?", "ab", 0L) == 0L, 164L);
+  expect(matchIs("a?c", "abc", 0L) == 1L, 165L);
+  expect(matchIs("[a-c]", "b", 0L) == 1L, 166L);
+  expect(matchIs("[a-c]", "d", 0L) == 0L, 167L);
+  expect(matchIs("*", "abc", 1L) == 0L, 168L);
+  expect(matchIs("*", "*", 1L) == 1L, 169L);
+  expect(matchIs("*.txt", "a.txt", 0L) == 1L, 170L);
+  expect(matchIs("*.txt", "a.txt.bak", 0L) == 0L, 171L);
+  expect(matchIs("f*e", "file", 0L) == 1L, 172L);
+  expect(matchIs("f*e", "fe", 0L) == 1L, 173L);
 }
 
 deRfun pathIs(string cwd, string rel, string want): long {
@@ -363,6 +427,8 @@ deRfun pathCases(): void {
 deRfun main(): int {
   editCases();
   parseCases();
+  globCases();
   pathCases();
+  report();
   return 0;
 }

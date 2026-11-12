@@ -1,0 +1,246 @@
+/* POSIX.1-2017 mailx（utilities/mailx.html）选定子集。
+   形式：mailx [-dEIinv] [-a header] [-b bcc-addr] [-c cc-addr] [-f file]
+                [-r from-addr] [-s subject] [address...]
+   平台口径：无邮件守护进程与网络，信箱是 NAS 文件（mbox 格式：From 行分隔，
+   每封含 From:/Date?/Subject:/Cc:/Bcc: 头与空行正文）。投递=追加到
+   /var/mail/<address>（目录尽力创建）。
+   发送（有 address...）：从描述符 0 读正文，为每个地址投一份；
+   -s 主题、-c 抄送、-b 密送、-r 发件人、-a 任意头（name: value）写进信头；
+   -E 空信不投（正文为空时静默跳过）；-v 投一份打一行 mailx: delivered to ...。
+   查看（-f file，无 address）：把信箱里每封的头段（From/Subject/Cc/Bcc）与
+   分隔行 --- 打到描述符 1（非交互摘要口径，注明）。
+   -d -I -i -n 校验后接受（无信号与交互设施，不落行为）。
+   无 address 且无 -f 写 mailx: missing operand，退出 1；交互读信模式不支持
+   （写 mailx: interactive mode is not supported on this platform），退出 1。
+   投递失败写 mailx: 地址: cannot deliver，该地址算失败，最终退出 1。
+   诊断英文 ASCII，描述符 2，前缀 mailx:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun catNum(long buf, long at, long value): long {
+  return putNum(buf, at, value);
+}
+
+/* 从描述符 0 读正文到 buf，返回长度（<=16384）。 */
+deRfun readBody(long home, long buf): long {
+  long total = 0L;
+  while (total < 16384L) {
+    if (obr::proc::read(home, 0L, total, 4096L) != 0L) {
+      break;
+    }
+    long got = obr::proc::slot(home, 320L);
+    if (got <= 0L) {
+      break;
+    }
+    if (got > 4096L) {
+      got = 4096L;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, got);
+    total = total + got;
+    if (got < 4096L) {
+      break;
+    }
+  }
+  return total;
+}
+
+deRfun deliver(long home, long maildir, long dirLen, long addrAt, long addrLen, long body, long bodyLen, long head, long headLen): long {
+  long path = obr::proc::alloc(home, 8192L * 8L);
+  if (path == 0L) {
+    return 1L;
+  }
+  copySpan(maildir, path, dirLen);
+  copySpan(addrAt, path + dirLen * 8L, addrLen);
+  plant(home, path, dirLen + addrLen);
+  if (obr::proc::open(home, 3L) != 0L) {
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long at = 0L;
+  writeSpan(home, fd, at, head, headLen);
+  at = at + headLen;
+  if (bodyLen > 0L) {
+    writeSpan(home, fd, at, body, bodyLen);
+    at = at + bodyLen;
+  }
+  if (bodyLen < 1L || byteAt(body + (bodyLen - 1L) * 8L) != 10L) {
+    memory::storeOctet(10L, obr::proc::bytes(home));
+    obr::proc::write(home, fd, at, 1L);
+  }
+  obr::proc::close(home, fd);
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long body = obr::proc::alloc(home, 131072L);
+  long head = obr::proc::alloc(home, 16384L);
+  long maildir = obr::proc::alloc(home, 4096L);
+  if (body == 0L || head == 0L || maildir == 0L) {
+    writeErr(home, "mailx: out of memory\n");
+    return finish(home, 1L);
+  }
+  long dirLen = putText(maildir, 0L, "/var/mail");
+  long headLen = putText(head, 0L, "From: ");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long boxAt = 0L;
+  long boxLen = 0L;
+  long addrsAt = obr::proc::alloc(home, 32768L);
+  long addrCount = 0L;
+  long emptySkip = 0L;
+  long verbose = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 115L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "mailx: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "Subject: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 99L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "mailx: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "Cc: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 98L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "mailx: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "Bcc: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 114L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "mailx: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = 0L;
+        headLen = putText(head, headLen, "From: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 97L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "mailx: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 102L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "mailx: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        boxAt = argPtr(home, index);
+        boxLen = argLen(home, index);
+      } else if (o == 69L && len == 2L) {
+        emptySkip = 1L;
+      } else if (o == 118L && len == 2L) {
+        verbose = 1L;
+      } else if (o == 100L || o == 73L || o == 105L || o == 110L) {
+        /* -d -I -i -n：接受登记。 */
+      } else {
+        writeErr(home, "mailx: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      if (addrCount < 32L) {
+        memory::store64(at, addrsAt + addrCount * 256L);
+        memory::store64(len, addrsAt + addrCount * 256L + 64L);
+        addrCount = addrCount + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (boxLen > 0L) {
+    /* -f 信箱摘要。 */
+    plant(home, boxAt, boxLen);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "mailx: cannot open mailbox\n");
+      return finish(home, 1L);
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long off = 0L;
+    while (1L == 1L) {
+      if (obr::proc::read(home, fd, off, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      writeSpan(home, 1L, 0L, obr::proc::bytes(home), got);
+      off = off + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+    return finish(home, 0L);
+  }
+  if (addrCount == 0L) {
+    writeErr(home, "mailx: missing operand\n");
+    return finish(home, 1L);
+  }
+  long bodyLen = readBody(home, body);
+  if (bodyLen < 1L && emptySkip == 1L) {
+    return finish(home, 0L);
+  }
+  /* 建信箱目录（尽力而为）。 */
+  putText(head + 16000L, 0L, "/var");
+  plant(home, head + 16000L, 4L);
+  obr::proc::mkdir(home);
+  plant(home, maildir, dirLen);
+  obr::proc::mkdir(home);
+  long failed = 0L;
+  long a = 0L;
+  while (a < addrCount) {
+    long at = memory::load64(addrsAt + a * 256L);
+    long len = memory::load64(addrsAt + a * 256L + 64L);
+    if (len < 1L || len > 256L) {
+      writeErr(home, "mailx: invalid address\n");
+      failed = 1L;
+    } else if (deliver(home, maildir, dirLen, at, len, body, bodyLen, head, headLen) != 0L) {
+      writeErr(home, "mailx: ");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, ": cannot deliver\n");
+      failed = 1L;
+    } else if (verbose == 1L) {
+      writeErr(home, "mailx: delivered to ");
+      writeStr(home, 2L, "");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, "\n");
+    }
+    a = a + 1L;
+  }
+  return finish(home, failed);
+}

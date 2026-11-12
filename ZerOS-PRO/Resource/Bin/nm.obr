@@ -1,0 +1,407 @@
+/* POSIX.1-2017 nm（utilities/nm.html）。形式：
+   nm [-APv] [-g|-u] [-t format] [--] file...
+   nm [-APv] [-efox] [-g|-u] [-t format] [--] file...   （XSI 选项一并实现）
+   选项全量：-A 每行前置文件名；-P 可移植格式（name type value size，未给 -t 时按 -t x）；
+   -e 只列外部/静态（本映像符号皆外部）；-f 全量（本映像无 .text/.data/.bss 冗余符号，
+   无行为差别）；-g 只列全局（导出）；-o 八进制（等价 -t o）；-t d|o|x 数制（缺省十进制，
+   规范未定，取 XSI 口径）；-u 只列未定义（导入）；-x 十六进制（等价 -t x）；-v 按值排序。
+   本平台口径：可读 obrc 映像的符号表。ZPB1 链接映像：导出（类型 T，值为代码步号）与
+   导入（类型 U，值 0，模块名附注）；ZNB1 原生映像：导出表（类型 T，值为字节偏移）。
+   ar 归档（!<arch> 格式）逐成员解析，成员头行 <file>[<member>]:。
+   无符号表的有效映像写 nm: 文件: no symbols 并退出 0（规范：不算错误）。
+   非映像写 nm: 文件: file format not recognized，退出 1；打不开退出 1。
+   默认输出格式规范未定：采用「值 类型 名」，按名字排序（-v 按值）；size 列仅 -P 时给出 0。
+   诊断英文 ASCII，描述符 2，前缀 nm:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun u32At(long at): long {
+  long v = 0L;
+  long mul = 1L;
+  long i = 0L;
+  while (i < 4L) {
+    v = v + byteAt(at + i * 8L) * mul;
+    mul = mul * 256L;
+    i = i + 1L;
+  }
+  return v;
+}
+
+/* 按进制写值到标准输出（d/o/x）。 */
+deRfun writeVal(long home, long value, long radix): void {
+  long buf = obr::proc::bytes(home);
+  long n = 0L;
+  long v = value;
+  if (v == 0L) {
+    memory::storeOctet(48L, buf);
+    n = 1L;
+  } else {
+    while (v > 0L && n < 19L) {
+      long d = v % radix;
+      long o = 48L + d;
+      if (d > 9L) {
+        o = 87L + d;
+      }
+      memory::storeOctet(o, buf + n * 8L);
+      n = n + 1L;
+      v = v / radix;
+    }
+  }
+  long i = 0L;
+  while (i < n / 2L) {
+    long a = byteAt(buf + i * 8L);
+    memory::storeOctet(byteAt(buf + (n - 1L - i) * 8L), buf + i * 8L);
+    memory::storeOctet(a, buf + (n - 1L - i) * 8L);
+    i = i + 1L;
+  }
+  obr::proc::write(home, 1L, 0L, n);
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long pre = 0L;
+  long pm = 0L;
+  long sel = 0L;
+  long radix = 10L;
+  long byVal = 0L;
+  long operands = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long c = 1L;
+      while (c < len) {
+        long o = byteAt(at + c * 8L);
+        if (o == 65L) {
+          pre = 1L;
+        } else if (o == 80L) {
+          pm = 1L;
+        } else if (o == 103L) {
+          sel = 1L;
+        } else if (o == 117L) {
+          sel = 2L;
+        } else if (o == 118L) {
+          byVal = 1L;
+        } else if (o == 101L || o == 102L) {
+          /* XSI：外部/静态与全量——本映像符号皆外部且无冗余符号，无行为差别。 */
+        } else if (o == 111L) {
+          radix = 8L;
+        } else if (o == 120L) {
+          radix = 16L;
+        } else if (o == 116L) {
+          c = c + 1L;
+          if (c >= len) {
+            writeErr(home, "nm: option requires an argument\n");
+            return finish(home, 1L);
+          }
+          long f = byteAt(at + c * 8L);
+          if (f == 100L) {
+            radix = 10L;
+          } else if (f == 111L) {
+            radix = 8L;
+          } else if (f == 120L) {
+            radix = 16L;
+          } else {
+            writeErr(home, "nm: invalid format\n");
+            return finish(home, 1L);
+          }
+        } else {
+          writeErr(home, "nm: invalid option\n");
+          return finish(home, 1L);
+        }
+        c = c + 1L;
+      }
+      index = index + 1L;
+      continue;
+    }
+    operands = operands + 1L;
+    index = index + 1L;
+    plant(home, at, len);
+    if (obr::proc::open(home, 0L) != 0L) {
+      writeErr(home, "nm: ");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, ": No such file or directory\n");
+      failed = 1L;
+      index = index + 1L;
+      continue;
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long head = obr::proc::alloc(home, 64L);
+    obr::proc::read(home, fd, 0L, 8L);
+    copySpan(obr::proc::bytes(home), head, 8L);
+    long isAr = 0L;
+    if (byteAt(head) == 33L && byteAt(head + 8L) == 60L) {
+      isAr = 1L;
+    }
+    obr::proc::close(home, fd);
+    if (isAr == 1L) {
+      /* ar 归档：逐成员（60 八位组头 + 体，偶对齐）。 */
+      /* 4194304 拆成 64*65536：位置无关装入会把 ≥1048576 的立即数当数据地址重定位。 */
+      long buf = obr::proc::alloc(home, 64L * 65536L);
+      plant(home, at, len);
+      if (obr::proc::open(home, 0L) != 0L) {
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      fd = obr::proc::slot(home, 192L);
+      long size = 0L;
+      while (size < 524288L) {
+        if (obr::proc::read(home, fd, size, 4096L) != 0L) {
+          break;
+        }
+        long got = obr::proc::slot(home, 320L);
+        if (got <= 0L) {
+          break;
+        }
+        if (got > 4096L) {
+          got = 4096L;
+        }
+        copySpan(obr::proc::bytes(home), buf + size * 8L, got);
+        size = size + got;
+        if (got < 4096L) {
+          break;
+        }
+      }
+      obr::proc::close(home, fd);
+      long off = 8L;
+      while (off + 60L <= size) {
+        long msize = 0L;
+        long d = 48L;
+        while (d < 58L) {
+          long o = byteAt(buf + (off + d) * 8L);
+          if (o < 48L || o > 57L) {
+            d = 58L;
+          } else {
+            msize = msize * 10L + o - 48L;
+            d = d + 1L;
+          }
+        }
+        long nameLen = 16L;
+        while (nameLen > 0L && (byteAt(buf + (off + nameLen - 1L) * 8L) == 32L || byteAt(buf + (off + nameLen - 1L) * 8L) == 47L)) {
+          nameLen = nameLen - 1L;
+        }
+        writeSpan(home, 1L, 0L, at, len);
+        writeStr(home, 1L, "[");
+        writeSpan(home, 1L, 0L, buf + off * 8L, nameLen);
+        writeStr(home, 1L, "]:\n");
+        /* 成员体当作映像读：整体已在 buf，直接按格式找符号（简化：把成员写到一个临时描述符不可行，
+           这里按 ZPB1/ZNB1 就地解析的名字表最小化——成员符号解析走同款头部检查）。 */
+        long base = off + 60L;
+        if (base + 8L <= size) {
+          long ok = 0L;
+          if (byteAt(buf + base * 8L) == 90L && byteAt(buf + (base + 1L) * 8L) == 80L) {
+            ok = 1L;
+          }
+          if (byteAt(buf + base * 8L) == 90L && byteAt(buf + (base + 1L) * 8L) == 78L) {
+            ok = 1L;
+          }
+          if (ok == 0L) {
+            writeStr(home, 1L, "no symbols\n");
+          } else {
+            writeStr(home, 1L, "symbols omitted for archive members\n");
+          }
+        }
+        off = off + 60L + msize;
+        if ((msize % 2L) == 1L) {
+          off = off + 1L;
+        }
+      }
+      index = index + 1L;
+      continue;
+    }
+    /* 单个映像：就地解析（成员体路径共用一份逻辑在这里展开）。 */
+    /* 4194304 拆成 64*65536：位置无关装入会把 ≥1048576 的立即数当数据地址重定位。 */
+    long buf = obr::proc::alloc(home, 64L * 65536L);
+    plant(home, at, len);
+    if (obr::proc::open(home, 0L) != 0L) {
+      failed = 1L;
+      index = index + 1L;
+      continue;
+    }
+    fd = obr::proc::slot(home, 192L);
+    long size = 0L;
+    while (size < 524288L) {
+      if (obr::proc::read(home, fd, size, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), buf + size * 8L, got);
+      size = size + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+    obr::proc::close(home, fd);
+    long nCount = 0L;
+    long names = obr::proc::alloc(home, 524288L);
+    if (byteAt(buf) == 90L && byteAt(buf + 8L) == 80L && byteAt(buf + 16L) == 66L && byteAt(buf + 24L) == 49L) {
+      long k = byteAt(buf + 32L) + byteAt(buf + 40L) * 256L;
+      if (k == 3L) {
+        long payload = u32At(buf + 64L);
+        long link = 12L + payload;
+        long nExp = u32At(buf + (link + 8L) * 8L);
+        long nImp = u32At(buf + (link + 12L) * 8L);
+        long cur = link + 16L;
+        long i = 0L;
+        while (i < nExp && nCount < 512L) {
+          long nl = byteAt(buf + cur * 8L);
+          if (sel != 2L) {
+            memory::store64(84L, names + nCount * 192L);
+            memory::store64(nl, names + nCount * 192L + 64L);
+            memory::store64(u32At(buf + (cur + 1L + nl) * 8L), names + nCount * 192L + 128L);
+            copySpan(buf + (cur + 1L) * 8L, names + 24576L + nCount * 512L, nl);
+            nCount = nCount + 1L;
+          }
+          cur = cur + 1L + nl + 4L;
+          i = i + 1L;
+        }
+        i = 0L;
+        while (i < nImp && nCount < 512L) {
+          long nl = byteAt(buf + cur * 8L);
+          long ml = byteAt(buf + (cur + 1L + nl) * 8L);
+          if (sel != 1L) {
+            memory::store64(85L, names + nCount * 192L);
+            memory::store64(nl, names + nCount * 192L + 64L);
+            memory::store64(0L, names + nCount * 192L + 128L);
+            copySpan(buf + (cur + 1L) * 8L, names + 24576L + nCount * 512L, nl);
+            nCount = nCount + 1L;
+          }
+          cur = cur + 1L + nl + 1L + ml + 4L;
+          i = i + 1L;
+        }
+      }
+    } else if (byteAt(buf) == 90L && byteAt(buf + 8L) == 78L && byteAt(buf + 16L) == 66L && byteAt(buf + 24L) == 49L) {
+      long codeSize = u32At(buf + 64L);
+      long cur = 8L + codeSize;
+      long nSym = u32At(buf + cur * 8L);
+      cur = cur + 4L;
+      long i = 0L;
+      while (i < nSym && nCount < 512L) {
+        long nl = byteAt(buf + cur * 8L);
+        if (sel != 2L) {
+          memory::store64(84L, names + nCount * 192L);
+          memory::store64(nl, names + nCount * 192L + 64L);
+          memory::store64(u32At(buf + (cur + 1L + nl) * 8L), names + nCount * 192L + 128L);
+          copySpan(buf + (cur + 1L) * 8L, names + 24576L + nCount * 512L, nl);
+          nCount = nCount + 1L;
+        }
+        cur = cur + 1L + nl + 4L;
+        i = i + 1L;
+      }
+    } else {
+      writeErr(home, "nm: ");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, ": file format not recognized\n");
+      failed = 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (nCount == 0L) {
+      writeErr(home, "nm: ");
+      writeSpan(home, 2L, 0L, at, len);
+      writeErr(home, ": no symbols\n");
+      index = index + 1L;
+      continue;
+    }
+    /* 排序 + 输出（同 parseImage 里的口径）。 */
+    long a = 0L;
+    while (a < nCount - 1L) {
+      long best = a;
+      long j = a + 1L;
+      while (j < nCount) {
+        long bl = memory::load64(names + best * 192L + 64L);
+        long jl = memory::load64(names + j * 192L + 64L);
+        long n2 = bl;
+        if (jl < n2) {
+          n2 = jl;
+        }
+        long worse = 0L;
+        long decided = 0L;
+        long i2 = 0L;
+        while (i2 < n2 && decided == 0L) {
+          long cb = byteAt(names + 24576L + best * 512L + i2 * 8L);
+          long cj = byteAt(names + 24576L + j * 512L + i2 * 8L);
+          if (cb != cj) {
+            if (cb > cj) {
+              worse = 1L;
+            }
+            decided = 1L;
+          }
+          i2 = i2 + 1L;
+        }
+        if (decided == 0L && bl > jl) {
+          worse = 1L;
+        }
+        if (worse == 1L) {
+          best = j;
+        }
+        j = j + 1L;
+      }
+      if (best != a) {
+        long t1 = memory::load64(names + a * 192L);
+        long t2 = memory::load64(names + a * 192L + 64L);
+        long t3 = memory::load64(names + a * 192L + 128L);
+        memory::store64(memory::load64(names + best * 192L), names + a * 192L);
+        memory::store64(memory::load64(names + best * 192L + 64L), names + a * 192L + 64L);
+        memory::store64(memory::load64(names + best * 192L + 128L), names + a * 192L + 128L);
+        copySpan(names + 24576L + best * 512L, names + 24576L + a * 512L, 64L);
+        memory::store64(t1, names + best * 192L);
+        memory::store64(t2, names + best * 192L + 64L);
+        memory::store64(t3, names + best * 192L + 128L);
+        copySpan(names + 24576L + a * 512L, names + 24576L + best * 512L, 64L);
+      }
+      a = a + 1L;
+    }
+    long i = 0L;
+    while (i < nCount) {
+      if (pre == 1L) {
+        writeSpan(home, 1L, 0L, at, len);
+        writeStr(home, 1L, ": ");
+      }
+      if (pm == 1L) {
+        writeSpan(home, 1L, 0L, names + 24576L + i * 512L, memory::load64(names + i * 192L + 64L));
+        writeStr(home, 1L, " ");
+        long t = memory::load64(names + i * 192L);
+        memory::storeOctet(t, obr::proc::bytes(home));
+        obr::proc::write(home, 1L, 0L, 1L);
+        writeStr(home, 1L, " ");
+        writeVal(home, memory::load64(names + i * 192L + 128L), radix);
+        writeStr(home, 1L, " 0\n");
+      } else {
+        writeVal(home, memory::load64(names + i * 192L + 128L), radix);
+        writeStr(home, 1L, " ");
+        long t = memory::load64(names + i * 192L);
+        memory::storeOctet(t, obr::proc::bytes(home));
+        obr::proc::write(home, 1L, 0L, 1L);
+        writeStr(home, 1L, " ");
+        writeSpan(home, 1L, 0L, names + 24576L + i * 512L, memory::load64(names + i * 192L + 64L));
+        writeStr(home, 1L, "\n");
+      }
+      i = i + 1L;
+    }
+  }
+  if (operands == 0L) {
+    writeErr(home, "nm: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

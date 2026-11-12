@@ -1,0 +1,168 @@
+/* read銆乽mask銆俽ead 浠庢弿杩扮 0 閫愪釜鍏綅缁勮涓€琛岋紝鎸?IFS 鍒囩粰鍙橀噺锛?r 涓嶅悆鍙嶆枩鏉狅紝-p 鎶婃彁绀哄啓鍒版爣鍑嗛敊璇€?   umask 鏄３鐘舵€侊紙bstate 閲岀殑 umask 瀛楋級锛氭煡璇㈠拰鍏繘鍒惰缃畬鏁达紝鍐呮牳鍒涘缓娌℃湁 umask 闈€?   ulimit 鍦?run 鐨勫垎鍙戣〃閲屾槑纭姤涓嶆敮鎸侊紙鍐呮牳娌℃湁璧勬簮闄愬埗闈紝涓嶈鍋囩姸鎬侊級銆?*/
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
+import memory;
+import obr.proc;
+import bcore;
+import bstate;
+import bvar;
+import env;
+import span;
+import parse;
+import draw;
+import work;
+import bio;
+
+
+/* 鏀朵竴琛岀殑缂撳啿鍙湪杩欓噷鐢宠涓€娆★細鍘熷琛屻€佸幓鍙嶆枩鏉犺銆両FS銆佸瓧娈靛尯鍚?8192 鍏綅缁勩€?*/
+deRfun biBuf(long home, long work): long {
+  long slot = lineBufAt(work);
+  long buf = memory::load64(slot);
+  if (buf == 0L) {
+    buf = obr::proc::alloc(home, 8192L * 4L * 8L);
+    memory::store64(buf, slot);
+  }
+  return buf;
+}
+
+
+/* IFS 鍙栧€硷細娌¤缃槸榛樿绌虹櫧銆傝缃垚绌轰覆灏辨槸涓嶅垏鍒嗐€?*/
+deRfun biIfs(long env, long work, long ifs): long {
+  long value = 0L;
+  long valueLen = 0L;
+  if (envByName(env, work, "IFS", &value, &valueLen) == 0L) {
+    bcPut(ifs, 0L, 32L);
+    bcPut(ifs, 1L, 9L);
+    bcPut(ifs, 2L, 10L);
+    return 3L;
+  }
+  if (valueLen > 64L) {
+    valueLen = 64L;
+  }
+  copySpan(value, ifs, valueLen);
+  return valueLen;
+}
+
+
+deRfun biRead(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  long keep = 0L;
+  long at = command + 1L;
+  while (at < cmdArgc(cmd)) {
+    long word = cmdArgAt(cmd, at);
+    long len = cmdArgLen(cmd, at);
+    if (len < 2L || bcU8(word) != 45L || bcU8(word + 8L) == 45L) {
+      break;
+    }
+    long index = 1L;
+    while (index < len) {
+      long letter = bcU8(word + index * 8L);
+      if (letter == 114L) {
+        keep = 1L;
+      } else if (letter == 112L) {
+        at = at + 1L;
+        if (at >= cmdArgc(cmd)) {
+          sayErr(home, "sh: read: -p requires a prompt\n");
+          return 2L;
+        }
+        sayErrSpan(home, cmdArgAt(cmd, at), cmdArgLen(cmd, at));
+      } else {
+        sayErr(home, "sh: read: invalid option\n");
+        return 2L;
+      }
+      index = index + 1L;
+    }
+    at = at + 1L;
+  }
+  long names = cmdArgc(cmd) - at;
+  if (names < 1L) {
+    sayErr(home, "sh: read: usage: read [-r] [-p prompt] name ...\n");
+    return 2L;
+  }
+  if (biBuf(home, work) == 0L) {
+    sayErr(home, "sh: read: out of memory\n");
+    return 1L;
+  }
+  long buf = biBuf(home, work);
+  long total = 0L;
+  long eof = 0L;
+  /* 内核的 read 是定位读（与 pwrite 对称）：位移要按实际个数往前推，
+     文件重定向才不会每轮都重读第一个八位组、到不了 EOF。控制台和管道忽略位移，
+     推进无害；bfDot 的脚本读取就是这个推法。 */
+  long offset = 0L;
+  while (1) {
+    if (obr::proc::read(home, 0L, offset, 1L) != 0L) {
+      eof = 1L;
+      break;
+    }
+    long got = obr::proc::slot(home, 320L);
+    if (got < 1L) {
+      eof = 1L;
+      break;
+    }
+    offset = offset + got;
+    long unit = bcU8(obr::proc::bytes(home));
+    if (unit == 10L) {
+      break;
+    }
+    if (total < 8192L) {
+      bcPut(buf, total, unit);
+      total = total + 1L;
+    }
+  }
+  long line = buf + 8192L * 8L;
+  long lineLen = bcUnescape(line, buf, total, keep);
+  long ifs = buf + 16384L * 8L;
+  long ifsLen = biIfs(env, work, ifs);
+  long pos = 0L;
+  long index = 0L;
+  long code = 0L;
+  while (index < names) {
+    long name = cmdArgAt(cmd, at + index);
+    long nameLen = cmdArgLen(cmd, at + index);
+    if (index + 1L < names) {
+      long outAddr = buf + 24576L * 8L;
+      long fieldLen = 0L;
+      if (bcSplitField(line, lineLen, &pos, ifs, ifsLen, outAddr, 1024L, &fieldLen) == 0L) {
+        fieldLen = 0L;
+      }
+      if (bvAssign(bs, env, name, nameLen, outAddr, fieldLen) != 0L) {
+        sayErrMissing(home, "sh: read: ", name, nameLen, ": readonly variable\n");
+        code = 1L;
+      }
+    } else {
+      long rest = bcTrimTail(line + pos * 8L, lineLen - pos, ifs, ifsLen);
+      if (bvAssign(bs, env, name, nameLen, line + pos * 8L, rest) != 0L) {
+        sayErrMissing(home, "sh: read: ", name, nameLen, ": readonly variable\n");
+        code = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (eof == 1L && total == 0L) {
+    return 1L;
+  }
+  return code;
+}
+
+
+deRfun biUmask(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long {
+  if (cmdArgc(cmd) <= command + 1L) {
+    long at = bcPutOct3(scratchAt(work), bsUmask(bs));
+    saySpan(home, work, scratchAt(work), at);
+    say(home, work, "\n");
+    return 0L;
+  }
+  long word = cmdArgAt(cmd, command + 1L);
+  long len = cmdArgLen(cmd, command + 1L);
+  if (len == 2L && bcU8(word) == 45L) {
+    sayErr(home, "sh: umask: symbolic form is not supported\n");
+    return 1L;
+  }
+  long value = 0L;
+  if (bcOct(word, len, &value) != 0L) {
+    sayErr(home, "sh: umask: bad octal mask\n");
+    return 1L;
+  }
+  bsUmaskSet(bs, value);
+  return 0L;
+}

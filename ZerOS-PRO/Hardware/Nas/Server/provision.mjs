@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../Root");
 const resourceFont = path.resolve(here, "../../../Resource/Font");
+const resourceTimeZones = path.resolve(here, "../../../Resource/TimeZone/zoneinfo");
 const driverSource = path.resolve(here, "../../../../Driver/Display/panel.obr");
 const hostSource = path.resolve(here, "../../Display/Config/DisplayConfig.ts");
 
@@ -45,6 +46,11 @@ export function seedDebug() {
     return;
   }
   fs.writeFileSync(debug, Buffer.from([0]));
+}
+
+/** /var/log 是系统日志目录（logger 默认 /var/log/syslog 落在这里）。缺就建，不覆盖已有内容。 */
+export function seedVarLog() {
+  fs.mkdirSync(path.join(root, "var", "log"), { recursive: true });
 }
 
 /** 缺文件时写成小端 16 位宽、小端 16 位高。已有文件不改。 */
@@ -83,6 +89,56 @@ export function copyFonts() {
   }
 }
 
+/** 用随系统发布的 IANA 数据覆盖客根时区数据库。 */
+export function copyTimeZones() {
+  if (!fs.existsSync(resourceTimeZones)) {
+    throw new Error(`没有时区数据库 ${resourceTimeZones}`);
+  }
+  const destDir = path.join(root, "usr", "share", "zoneinfo");
+  fs.mkdirSync(destDir, { recursive: true });
+  function isPythonArtifact(name, isDirectory) {
+    return (isDirectory && name === "__pycache__")
+      || (!isDirectory && (name === "__init__.py" || /\.(?:pyc|pyo|pyd)$/i.test(name)));
+  }
+  function removePythonArtifacts(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (isPythonArtifact(entry.name, entry.isDirectory())) {
+        fs.rmSync(full, { recursive: entry.isDirectory(), force: true });
+      } else if (entry.isDirectory()) {
+        removePythonArtifacts(full);
+      }
+    }
+  }
+  function setTreeMode(dir, fileMode, directoryMode) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        setTreeMode(full, fileMode, directoryMode);
+      } else if (entry.isFile()) {
+        fs.chmodSync(full, fileMode);
+      }
+    }
+    fs.chmodSync(dir, directoryMode);
+  }
+  if (fs.existsSync(destDir)) {
+    setTreeMode(destDir, 0o644, 0o755);
+    removePythonArtifacts(destDir);
+  }
+  fs.cpSync(resourceTimeZones, destDir, {
+    recursive: true,
+    force: true,
+    filter(source) {
+      const relative = path.relative(resourceTimeZones, source);
+      const segments = relative.split(path.sep);
+      return path.basename(source) !== "__init__.py"
+        && !segments.includes("__pycache__")
+        && !/\.(?:pyc|pyo|pyd)$/i.test(path.basename(source));
+    },
+  });
+  setTreeMode(destDir, 0o444, 0o555);
+}
+
 function isDirectRun() {
   const entry = process.argv[1];
   if (entry === undefined) {
@@ -94,5 +150,7 @@ function isDirectRun() {
 if (isDirectRun()) {
   seedDisplay();
   seedDebug();
+  seedVarLog();
   copyFonts();
+  copyTimeZones();
 }

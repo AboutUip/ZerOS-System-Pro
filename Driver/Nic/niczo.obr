@@ -1,0 +1,15 @@
+/* flat 网卡驱动：自包含 PIE，不挂 zdll；直接发内核服务 45/41。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  long home = query(1L, 8L, obr::os::core());
+  memory::store64(1L, home + 128L);
+  obr::os::svc(45L);
+  while (1) {
+    obr::os::svc(41L);
+    obr::os::dwell(1000L);
+  }
+  return 0;
+}

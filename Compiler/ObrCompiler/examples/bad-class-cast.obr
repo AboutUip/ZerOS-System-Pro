@@ -1,0 +1,16 @@
+/* Plan 2 M1：无关的两类之间不能强转。编译应当失败：类之间不能这样转换 A -> B。 */
+#VERSION 2
+
+class A {
+  deRfun A(): void { }
+}
+
+class B {
+  deRfun B(): void { }
+}
+
+deRfun main(): int {
+  A a = new A();
+  B b = (B*)a;
+  return 0;
+}

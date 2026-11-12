@@ -1,0 +1,507 @@
+/* 内建共用的纯计算：数字、引号、字段切分、getopts 解析核心。
+   只碰调用方给的内存，不读键盘、不开文件、不派生。自检直接跑这些函数。 */
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
+import memory;
+import bcore;
+
+
+deRfun bcU8(long addr): long {
+  return memory::loadOctet(addr);
+}
+
+
+deRfun bcPut(long addr, long index, long value): void {
+  memory::storeOctet(value, addr + index * 8L);
+}
+
+
+/* 逐八位组搬运 count 个字节。 */
+deRfun bcCopy(long from, long to, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(bcU8(from + index * 8L), to + index * 8L);
+    index = index + 1L;
+  }
+}
+
+
+/* 逐字节比较两段。相同是 1。 */
+deRfun bcSame(long left, long leftLen, long right, long rightLen): long {
+  if (leftLen != rightLen) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < leftLen) {
+    if (bcU8(left + index * 8L) != bcU8(right + index * 8L)) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+
+/* 严格无符号十进制。空串、前导以外的非数字都算不合法。成功返回 0。 */
+deRfun bcDec(long addr, long count, long* value): long {
+  if (count < 1L || count > 18L) {
+    return 1L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < count) {
+    long digit = bcU8(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return 1L;
+    }
+    total = total * 10L + digit - 48L;
+    index = index + 1L;
+  }
+  *value = total;
+  return 0L;
+}
+
+
+/* 严格八进制。umask 用。 */
+deRfun bcOct(long addr, long count, long* value): long {
+  if (count < 1L || count > 9L) {
+    return 1L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < count) {
+    long digit = bcU8(addr + index * 8L);
+    if (digit < 48L || digit > 55L) {
+      return 1L;
+    }
+    total = total * 8L + digit - 48L;
+    index = index + 1L;
+  }
+  *value = total;
+  return 0L;
+}
+
+
+/* 十进制写进 addr，返回位数。值不小于 0。 */
+deRfun bcPutDec(long addr, long value): long {
+  if (value < 0L) {
+    value = 0L;
+  }
+  long temp = value;
+  long digits = 1L;
+  while (temp >= 10L) {
+    temp = temp / 10L;
+    digits = digits + 1L;
+  }
+  long index = digits;
+  temp = value;
+  while (index > 0L) {
+    index = index - 1L;
+    bcPut(addr, index, 48L + temp % 10L);
+    temp = temp / 10L;
+  }
+  return digits;
+}
+
+
+/* 三位八进制，如 022。umask 查询输出用。 */
+deRfun bcPutOct3(long addr, long value): long {
+  long bits = value % 512L;
+  bcPut(addr, 0L, 48L + bits / 64L);
+  bcPut(addr, 1L, 48L + bits / 8L % 8L);
+  bcPut(addr, 2L, 48L + bits % 8L);
+  return 3L;
+}
+
+
+deRfun bcIsWsp(long value): long {
+  if (value == 32L || value == 9L || value == 10L || value == 13L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+/* 字节在不在集合里。 */
+deRfun bcInSet(long value, long set, long setLen): long {
+  long index = 0L;
+  while (index < setLen) {
+    if (bcU8(set + index * 8L) == value) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+/* 变量名：字母或下划线开头，其余字母、数字、下划线。合法是 1。 */
+deRfun bcName(long addr, long count): long {
+  if (count < 1L || count > 64L) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    long value = bcU8(addr + index * 8L);
+    long ok = 0L;
+    if ((value >= 65L && value <= 90L) || (value >= 97L && value <= 122L) || value == 95L) {
+      ok = 1L;
+    }
+    if (index > 0L && value >= 48L && value <= 57L) {
+      ok = 1L;
+    }
+    if (ok == 0L) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+
+deRfun bcSay(long addr, long* at, long value): void {
+  bcPut(addr, *at, value);
+  *at = *at + 1L;
+}
+
+
+/* 单引号包起来，里面的单引号写成 '\'\''。alias、set、trap 列表按可再输入的格式写。 */
+deRfun bcQuote(long addr, long src, long count): long {
+  long at = 0L;
+  bcSay(addr, &at, 39L);
+  long index = 0L;
+  while (index < count) {
+    long value = bcU8(src + index * 8L);
+    if (value == 39L) {
+      bcSay(addr, &at, 39L);
+      bcSay(addr, &at, 92L);
+      bcSay(addr, &at, 39L);
+      bcSay(addr, &at, 39L);
+    } else {
+      bcSay(addr, &at, value);
+    }
+    index = index + 1L;
+  }
+  bcSay(addr, &at, 39L);
+  return at;
+}
+
+
+/* 反斜杠处理。keep 为 1（read -r）时原样照抄；
+   否则反斜杠吃掉自己、下一个字节按字面收下。行末孤单的反斜杠照抄。 */
+deRfun bcUnescape(long out, long src, long count, long keep): long {
+  long at = 0L;
+  long index = 0L;
+  while (index < count) {
+    long value = bcU8(src + index * 8L);
+    if (keep == 0L && value == 92L && index + 1L < count) {
+      index = index + 1L;
+      value = bcU8(src + index * 8L);
+    }
+    bcPut(out, at, value);
+    at = at + 1L;
+    index = index + 1L;
+  }
+  return at;
+}
+
+
+deRfun bcIfsWsp(long value, long ifs, long ifsLen): long {
+  if (bcIsWsp(value) == 1L && bcInSet(value, ifs, ifsLen) == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+/* 跳过一段 IFS 空白，返回新下标。 */
+deRfun bcSkipWsp(long src, long count, long at, long ifs, long ifsLen): long {
+  while (at < count && bcIfsWsp(bcU8(src + at * 8L), ifs, ifsLen) == 1L) {
+    at = at + 1L;
+  }
+  return at;
+}
+
+
+/* 从 *pos 起取一个字段。按 POSIX 字段切分：开头的 IFS 空白跳过；
+   非空白 IFS 字符切出空字段并连同相邻空白吃掉；其余读到 IFS 字符或末尾。
+   返回 1 取到（*outLen 可能是 0），0 是后面没有字段。*pos 越过已吃的分隔符。 */
+deRfun bcSplitField(long src, long count, long* pos, long ifs, long ifsLen,
+                    long out, long outCap, long* outLen): long {
+  long at = bcSkipWsp(src, count, *pos, ifs, ifsLen);
+  *outLen = 0L;
+  if (at >= count) {
+    *pos = at;
+    return 0L;
+  }
+  long value = bcU8(src + at * 8L);
+  if (bcInSet(value, ifs, ifsLen) == 1L && bcIsWsp(value) == 0L) {
+    *pos = bcSkipWsp(src, count, at + 1L, ifs, ifsLen);
+    return 1L;
+  }
+  long start = at;
+  while (at < count) {
+    value = bcU8(src + at * 8L);
+    if (bcInSet(value, ifs, ifsLen) == 1L) {
+      break;
+    }
+    at = at + 1L;
+  }
+  long size = at - start;
+  if (size > outCap) {
+    size = outCap;
+  }
+  long index = 0L;
+  while (index < size) {
+    bcPut(out, index, bcU8(src + (start + index) * 8L));
+    index = index + 1L;
+  }
+  *outLen = size;
+  /* 分隔符是一个整体：IFS 空白串，或空白加一个非空白 IFS 字符再加空白。
+     非空白的字只有在 IFS 里才算分隔符，不然会把下一字段的第一个字吃掉。 */
+  at = bcSkipWsp(src, count, at, ifs, ifsLen);
+  if (at < count && bcIsWsp(bcU8(src + at * 8L)) == 0L && bcInSet(bcU8(src + at * 8L), ifs, ifsLen) == 1L) {
+    at = bcSkipWsp(src, count, at + 1L, ifs, ifsLen);
+  }
+  *pos = at;
+  return 1L;
+}
+
+
+/* 去掉末尾的 IFS 空白，返回新长度。read 的最后一个变量用。 */
+deRfun bcTrimTail(long src, long count, long ifs, long ifsLen): long {
+  while (count > 0L && bcIfsWsp(bcU8(src + (count - 1L) * 8L), ifs, ifsLen) == 1L) {
+    count = count - 1L;
+  }
+  return count;
+}
+
+
+/* 逐字节比一段和一个字符串字面量。相同是 1。 */
+deRfun bcText(long addr, long count, string text): long {
+  int raw = length(text);
+  long need = raw;
+  if (need != count) {
+    return 0L;
+  }
+  long index = 0L;
+  while (index < count) {
+    if (bcU8(addr + index * 8L) != (long)text[index]) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+
+/* 信号名（不带 SIG 前缀，不分大小写）到信号号。不认识返回 -1。 */
+deRfun bcSigName(long addr, long count): long {
+  long up = 0L;
+  while (up < count) {
+    long value = bcU8(addr + up * 8L);
+    if (value >= 97L && value <= 122L) {
+      bcPut(addr, up, value - 32L);
+    }
+    up = up + 1L;
+  }
+  if (bcText(addr, count, "HUP") == 1L) { return 1L; }
+  if (bcText(addr, count, "INT") == 1L) { return 2L; }
+  if (bcText(addr, count, "QUIT") == 1L) { return 3L; }
+  if (bcText(addr, count, "ILL") == 1L) { return 4L; }
+  if (bcText(addr, count, "TRAP") == 1L) { return 5L; }
+  if (bcText(addr, count, "ABRT") == 1L) { return 6L; }
+  if (bcText(addr, count, "BUS") == 1L) { return 7L; }
+  if (bcText(addr, count, "FPE") == 1L) { return 8L; }
+  if (bcText(addr, count, "KILL") == 1L) { return 9L; }
+  if (bcText(addr, count, "USR1") == 1L) { return 10L; }
+  if (bcText(addr, count, "SEGV") == 1L) { return 11L; }
+  if (bcText(addr, count, "USR2") == 1L) { return 12L; }
+  if (bcText(addr, count, "PIPE") == 1L) { return 13L; }
+  if (bcText(addr, count, "ALRM") == 1L) { return 14L; }
+  if (bcText(addr, count, "TERM") == 1L) { return 15L; }
+  if (bcText(addr, count, "CHLD") == 1L) { return 17L; }
+  if (bcText(addr, count, "CONT") == 1L) { return 18L; }
+  if (bcText(addr, count, "STOP") == 1L) { return 19L; }
+  if (bcText(addr, count, "TSTP") == 1L) { return 20L; }
+  if (bcText(addr, count, "TTIN") == 1L) { return 21L; }
+  if (bcText(addr, count, "TTOU") == 1L) { return 22L; }
+  if (bcText(addr, count, "URG") == 1L) { return 23L; }
+  if (bcText(addr, count, "XCPU") == 1L) { return 24L; }
+  if (bcText(addr, count, "XFSZ") == 1L) { return 25L; }
+  if (bcText(addr, count, "VTALRM") == 1L) { return 26L; }
+  if (bcText(addr, count, "PROF") == 1L) { return 27L; }
+  if (bcText(addr, count, "WINCH") == 1L) { return 28L; }
+  if (bcText(addr, count, "POLL") == 1L) { return 29L; }
+  if (bcText(addr, count, "SYS") == 1L) { return 31L; }
+  return -1L;
+}
+
+
+/* 信号操作数：EXIT、十进制号、名字，名字可带 SIG 前缀。不认识返回 0，*number 收下号。 */
+deRfun bcSigOperand(long addr, long count, long* number): long {
+  if (bcText(addr, count, "EXIT") == 1L) {
+    *number = 0L;
+    return 1L;
+  }
+  if (count > 3L) {
+    /* bcSigName 把缓冲里的小写字母就地折成大写，借它折前三个字再认 SIG 前缀。 */
+    bcSigName(addr, 3L);
+    if (bcText(addr, 3L, "SIG") == 1L) {
+      addr = addr + 24L;
+      count = count - 3L;
+    }
+  }
+  long value = 0L;
+  if (bcDec(addr, count, &value) == 0L) {
+    if (value >= 0L && value <= 63L) {
+      *number = value;
+      return 1L;
+    }
+    return 0L;
+  }
+  value = bcSigName(addr, count);
+  if (value >= 0L) {
+    *number = value;
+    return 1L;
+  }
+  return 0L;
+}
+
+
+/* optstring 里这个字母要不要带参数：0 没有这个字母，1 不带，2 要带。
+   开头的冒号是静默标志，不算选项字母。 */
+deRfun bcOptFind(long optStr, long optLen, long letter): long {
+  long start = 0L;
+  if (optLen > 0L && bcU8(optStr) == 58L) {
+    start = 1L;
+  }
+  long index = start;
+  while (index < optLen) {
+    if (bcU8(optStr + index * 8L) == letter) {
+      if (index + 1L < optLen && bcU8(optStr + (index + 1L) * 8L) == 58L) {
+        return 2L;
+      }
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+deRfun goName(long nameAt, long* nameLen, long letter): void {
+  memory::storeOctet(letter, nameAt);
+  *nameLen = 1L;
+}
+
+
+/* 一个参数取完就进下一个。*optind 始终是下一个要处理的参数号（1 起）。 */
+deRfun goAdvance(long* argIx, long* charIx, long* optind): void {
+  *argIx = *argIx + 1L;
+  *charIx = 0L;
+  *optind = *argIx;
+}
+
+
+/* getopts 的纯解析核心。argv 是参数表（步长 640：+0 长度，+64 文字），argc 是条数。
+   光标 *argIx（1 起）、*charIx 和 *optind 由调用方持久保存，getopts 每次调用接着上回。
+   nameAt 写选项字母、'?' 或 ':'；OPTARG 写在 optArgAt，*optArgLen 为 -1 表示不设置。
+   返回 0 取到选项（含出错），1 遇到选项末尾，2 非法选项，3 缺参数。2 和 3 时 *bad 是字母。 */
+deRfun bcGetopts(long argv, long argc, long optStr, long optLen,
+                 long* argIx, long* charIx, long* optind,
+                 long nameAt, long* nameLen,
+                 long optArgAt, long* optArgLen, long* bad): long {
+  long silent = 0L;
+  if (optLen > 0L && bcU8(optStr) == 58L) {
+    silent = 1L;
+  }
+  *nameLen = 0L;
+  *optArgLen = -1L;
+  *bad = 0L;
+  while (1) {
+    if (*argIx > argc) {
+      *optind = argc + 1L;
+      goName(nameAt, nameLen, 63L);
+      return 1L;
+    }
+    long arg = argv + (*argIx - 1L) * 640L;
+    long argLen = memory::load64(arg);
+    if (*charIx <= 0L) {
+      *charIx = 1L;
+    }
+    if (*charIx == 1L) {
+      if (argLen < 2L || bcU8(arg + 64L) != 45L) {
+        *optind = *argIx;
+        goName(nameAt, nameLen, 63L);
+        return 1L;
+      }
+      if (argLen == 2L && bcU8(arg + 72L) == 45L) {
+        goAdvance(argIx, charIx, optind);
+        goName(nameAt, nameLen, 63L);
+        return 1L;
+      }
+    }
+    if (*charIx >= argLen) {
+      goAdvance(argIx, charIx, optind);
+      continue;
+    }
+    long letter = bcU8(arg + 64L + *charIx * 8L);
+    *charIx = *charIx + 1L;
+    long kind = bcOptFind(optStr, optLen, letter);
+    if (kind == 2L) {
+      if (*charIx < argLen) {
+        long at = 0L;
+        while (*charIx < argLen) {
+          memory::storeOctet(bcU8(arg + 64L + *charIx * 8L), optArgAt + at * 8L);
+          at = at + 1L;
+          *charIx = *charIx + 1L;
+        }
+        *optArgLen = at;
+        goAdvance(argIx, charIx, optind);
+      } else if (*argIx < argc) {
+        goAdvance(argIx, charIx, optind);
+        long next = argv + (*argIx - 1L) * 640L;
+        long nextLen = memory::load64(next);
+        long at = 0L;
+        while (at < nextLen && at < 64L) {
+          memory::storeOctet(bcU8(next + 64L + at * 8L), optArgAt + at * 8L);
+          at = at + 1L;
+        }
+        *optArgLen = at;
+        goAdvance(argIx, charIx, optind);
+      } else {
+        *optind = argc + 1L;
+        *bad = letter;
+        if (silent == 1L) {
+          memory::storeOctet(letter, optArgAt);
+          *optArgLen = 1L;
+          goName(nameAt, nameLen, 58L);
+        } else {
+          goName(nameAt, nameLen, 63L);
+        }
+        return 3L;
+      }
+      goName(nameAt, nameLen, letter);
+      return 0L;
+    }
+    if (*charIx >= argLen) {
+      goAdvance(argIx, charIx, optind);
+    } else {
+      *optind = *argIx;
+    }
+    if (kind == 1L) {
+      goName(nameAt, nameLen, letter);
+      return 0L;
+    }
+    *bad = letter;
+    if (silent == 1L) {
+      memory::storeOctet(letter, optArgAt);
+      *optArgLen = 1L;
+    }
+    goName(nameAt, nameLen, 63L);
+    return 2L;
+  }
+  return 1L;
+}
+

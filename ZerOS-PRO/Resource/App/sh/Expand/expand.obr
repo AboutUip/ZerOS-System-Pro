@@ -1,0 +1,613 @@
+/* 外部命令派生前的路径展开。
+   不读键盘，不画屏幕，也不执行命令。内建命令不经过这里。
+   *、? 和成对的方括号在引号或反斜杠之外才是模式。斜杠只分段。
+   点开头的名字，只有这一段模式也以点开头才对得上。
+   一段是 . 或 .. 时按字面收成上一级，不把它们交给目录匹配。
+   一个名字都对不上就保留原词。结果放进参数块，最多 64 个、合计 8192 个八位组。
+   放不下返回 1，调用方不派生。临时缓冲用完就还回。 */
+#DYN
+#LINK /run.obr, /expand.obr, /edit-check.obr
+import memory;
+import obr.proc;
+import obr.oct;
+import span;
+import parse;
+import work;
+import expand;
+
+
+/* 空 __zap__ 块是内联护栏：导入调用只留在这一层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
+deRfun u8(long addr): long {
+  __zap__ {
+  }
+  return obr::oct::get(addr);
+}
+
+
+/* 工作缓冲：前 6400 位是路径段表。8192 起是名字，12288 起是拼接结果。
+   两份候选路径从 32768 起，各 69824 位，够 64 条、合计 8192 个八位组。 */
+deRfun nameBuf(long hold): long {
+  return hold + 8192L;
+}
+
+
+deRfun pathBuf(long hold): long {
+  return hold + 12288L;
+}
+
+
+deRfun sideAt(long hold, long which): long {
+  return hold + 32768L + which * 69824L;
+}
+
+
+deRfun sideCount(long side): long {
+  return memory::load64(side);
+}
+
+
+deRfun sideClear(long side): void {
+  memory::store64(0L, side);
+  memory::store64(0L, side + 64L);
+  memory::store64(0L, side + 128L);
+}
+
+
+deRfun sideOff(long side, long index): long {
+  return memory::load64(side + 128L + index * 64L);
+}
+
+
+deRfun sidePtr(long side, long index): long {
+  return side + 4288L + sideOff(side, index) * 8L;
+}
+
+
+deRfun sideLen(long side, long index): long {
+  return sideOff(side, index + 1L) - sideOff(side, index);
+}
+
+
+/* 0 放得下。1 是条数或八位组已经到参数块的上限。 */
+deRfun sideAdd(long side, long addr, long len): long {
+  long count = sideCount(side);
+  long used = memory::load64(side + 64L);
+  if (count >= 64L || len < 1L || used + len > 8192L) {
+    return 1L;
+  }
+  copySpan(addr, side + 4288L + used * 8L, len);
+  memory::store64(used, side + 128L + count * 64L);
+  memory::store64(used + len, side + 128L + (count + 1L) * 64L);
+  memory::store64(used + len, side + 64L);
+  memory::store64(count + 1L, side);
+  return 0L;
+}
+
+
+deRfun pushArg(long base, long* count, long* used, long addr, long len): long {
+  if (*count >= 64L || len < 0L || *used + len > 8192L) {
+    return 1L;
+  }
+  memory::store64(len, base + 256L + *count * 64L);
+  if (len > 0L) {
+    copySpan(addr, base + 8448L + *used * 8L, len);
+  }
+  *used = *used + len;
+  *count = *count + 1L;
+  return 0L;
+}
+
+
+/* 没有通配符时和原来的装入相同。begin 之前的赋值不进参数块。 */
+deRfun packPlain(long base, long cmd, long begin): long {
+  long argc = cmdArgc(cmd) - begin;
+  if (argc < 0L || argc > 64L) {
+    return 1L;
+  }
+  long total = 0L;
+  long index = 0L;
+  while (index < argc) {
+    total = total + cmdArgLen(cmd, begin + index);
+    if (total > 8192L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  memory::store64(argc, base);
+  memory::store64(total, base + 128L);
+  index = 0L;
+  long filled = 0L;
+  while (index < argc) {
+    long count = cmdArgLen(cmd, begin + index);
+    memory::store64(count, base + 256L + index * 64L);
+    copySpan(cmdArgAt(cmd, begin + index), base + 8448L + filled * 8L, count);
+    filled = filled + count;
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+/* 方括号从 open 起。返回闭括号下标，不成对则 -1，这时 [ 只是普通字节。 */
+deRfun classClose(long pat, long patLen, long flags, long open): long {
+  long index = open + 1L;
+  if (index >= patLen) {
+    return -1L;
+  }
+  if (u8(flags + index * 8L) == 0L) {
+    long mark = u8(pat + index * 8L);
+    if (mark == 33L || mark == 94L) {
+      index = index + 1L;
+    }
+  }
+  if (index < patLen && u8(pat + index * 8L) == 93L) {
+    index = index + 1L;
+  }
+  while (index < patLen) {
+    if (u8(pat + index * 8L) == 93L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+
+deRfun classHas(long pat, long flags, long open, long close, long byte): long {
+  long neg = 0L;
+  long index = open + 1L;
+  if (index < close && u8(flags + index * 8L) == 0L) {
+    long mark = u8(pat + index * 8L);
+    if (mark == 33L || mark == 94L) {
+      neg = 1L;
+      index = index + 1L;
+    }
+  }
+  long hit = 0L;
+  long prev = -1L;
+  while (index < close) {
+    long ch = u8(pat + index * 8L);
+    if (ch == 45L && u8(flags + index * 8L) == 0L && prev >= 0L && index + 1L < close) {
+      long end = u8(pat + (index + 1L) * 8L);
+      if ((byte >= prev && byte <= end) || (byte >= end && byte <= prev)) {
+        hit = 1L;
+      }
+      prev = -1L;
+      index = index + 2L;
+    } else {
+      if (byte == ch) {
+        hit = 1L;
+      }
+      prev = ch;
+      index = index + 1L;
+    }
+  }
+  if (neg == 1L) {
+    if (hit == 1L) {
+      return 0L;
+    }
+    return 1L;
+  }
+  return hit;
+}
+
+
+/* flags 与模式逐字节对齐。1 表示这个字节是字面，0 才让 * ? [ 生效。
+   名字用完就出圈，剩下的只能是星号；匹配成功后不再回溯，*.txt 这类才对得上。 */
+deRfun globMatch(long name, long nameLen, long pat, long patLen, long flags): long {
+  if (nameLen > 0L && u8(name) == 46L) {
+    if (patLen < 1L || u8(pat) != 46L) {
+      return 0L;
+    }
+  }
+  long pi = 0L;
+  long ni = 0L;
+  long starPi = -1L;
+  long starNi = -1L;
+  long guard = 0L;
+  long limit = (nameLen + 1L) * (patLen + 1L) + 2L;
+  while (guard < limit && ni < nameLen) {
+    guard = guard + 1L;
+    if (pi < patLen && u8(flags + pi * 8L) == 0L && u8(pat + pi * 8L) == 42L) {
+      starPi = pi;
+      starNi = ni;
+      pi = pi + 1L;
+    } else if (ni < nameLen && pi < patLen && u8(flags + pi * 8L) == 0L && u8(pat + pi * 8L) == 63L) {
+      pi = pi + 1L;
+      ni = ni + 1L;
+    } else if (ni < nameLen && pi < patLen && u8(flags + pi * 8L) == 0L && u8(pat + pi * 8L) == 91L) {
+      long close = classClose(pat, patLen, flags, pi);
+      if (close > pi && classHas(pat, flags, pi, close, u8(name + ni * 8L)) == 1L) {
+        pi = close + 1L;
+        ni = ni + 1L;
+      } else if (close < 0L && u8(pat + pi * 8L) == u8(name + ni * 8L)) {
+        pi = pi + 1L;
+        ni = ni + 1L;
+      } else if (starPi >= 0L && starNi < nameLen) {
+        starNi = starNi + 1L;
+        ni = starNi;
+        pi = starPi + 1L;
+      } else {
+        return 0L;
+      }
+    } else if (ni < nameLen && pi < patLen && u8(pat + pi * 8L) == u8(name + ni * 8L)) {
+      pi = pi + 1L;
+      ni = ni + 1L;
+    } else if (starPi >= 0L && starNi < nameLen) {
+      starNi = starNi + 1L;
+      ni = starNi;
+      pi = starPi + 1L;
+    } else {
+      guard = limit;
+    }
+  }
+  while (pi < patLen && u8(flags + pi * 8L) == 0L && u8(pat + pi * 8L) == 42L) {
+    pi = pi + 1L;
+  }
+  if (pi == patLen && ni == nameLen) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+/* from 是这一段在整条参数里的起点。标记跟着整条参数走，不能从 0 重数。 */
+deRfun wordMeta(long out, long cmdIndex, long argIndex, long word, long from, long count): long {
+  long flags = argFlagAt(out, cmdIndex, argIndex) + from * 8L;
+  long pat = word + from * 8L;
+  long index = 0L;
+  while (index < count) {
+    if (u8(flags + index * 8L) == 0L) {
+      long bit = u8(pat + index * 8L);
+      if (bit == 42L || bit == 63L) {
+        return 1L;
+      }
+      if (bit == 91L && classClose(pat, count, flags, index) >= 0L) {
+        return 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+deRfun joinComp(long base, long baseLen, long name, long nameLen, long dest, long* outLen): long {
+  if (baseLen < 1L || nameLen < 0L) {
+    return 1L;
+  }
+  long slash = 1L;
+  if (u8(base + (baseLen - 1L) * 8L) == 47L) {
+    slash = 0L;
+  }
+  long total = baseLen + slash + nameLen;
+  if (total > 512L) {
+    return 1L;
+  }
+  copySpan(base, dest, baseLen);
+  if (slash == 1L) {
+    memory::storeOctet(47L, dest + baseLen * 8L);
+  }
+  if (nameLen > 0L) {
+    copySpan(name, dest + (baseLen + slash) * 8L, nameLen);
+  }
+  *outLen = total;
+  return 0L;
+}
+
+
+deRfun parentPath(long addr, long len, long dest, long* outLen): long {
+  long end = len;
+  while (end > 1L && u8(addr + (end - 1L) * 8L) == 47L) {
+    end = end - 1L;
+  }
+  while (end > 1L && u8(addr + (end - 1L) * 8L) != 47L) {
+    end = end - 1L;
+  }
+  if (end > 1L) {
+    end = end - 1L;
+  }
+  if (end < 1L) {
+    end = 1L;
+  }
+  copySpan(addr, dest, end);
+  *outLen = end;
+  return 0L;
+}
+
+
+/* 把 dir 里对得上这一段的名字接到 dest。dirsOnly 为 1 时只要目录。
+   0 是列完了，1 是结果放不下。 */
+deRfun pourDir(long home, long hold, long dir, long dirLen, long pat, long patLen, long flags, long dirsOnly, long dest): long {
+  long index = 0L;
+  long reading = 1L;
+  while (reading == 1L && index < 8192L) {
+    plantRaw(home, dir, dirLen);
+    if (obr::proc::list(home, index) != 0L) {
+      reading = 0L;
+    } else {
+      long batch = obr::proc::slot(home, 256L);
+      if (batch < 1L || batch > 8192L) {
+        reading = 0L;
+      } else {
+        long at = obr::proc::bytes(home);
+        long item = 0L;
+        while (item < batch) {
+          long got = memory::load64(at);
+          long kind = memory::load64(at + 64L);
+          if (got < 1L || got > 512L) {
+            reading = 0L;
+            item = batch;
+          } else {
+            copySpan(at + 576L, nameBuf(hold), got);
+            long skip = 0L;
+            if (got == 1L && u8(nameBuf(hold)) == 46L) {
+              skip = 1L;
+            }
+            if (got == 2L && u8(nameBuf(hold)) == 46L && u8(nameBuf(hold) + 8L) == 46L) {
+              skip = 1L;
+            }
+            if (skip == 0L && globMatch(nameBuf(hold), got, pat, patLen, flags) == 1L) {
+              long want = 1L;
+              if (dirsOnly == 1L && kind != 2L && kind != 4L && kind != 6L) {
+                want = 0L;
+              }
+              if (want == 1L) {
+                long nlen = 0L;
+                if (joinComp(dir, dirLen, nameBuf(hold), got, pathBuf(hold), &nlen) != 0L) {
+                  return 1L;
+                }
+                if (sideAdd(dest, pathBuf(hold), nlen) != 0L) {
+                  return 1L;
+                }
+              }
+            }
+            at = at + 576L + got * 8L;
+            item = item + 1L;
+          }
+        }
+        if (reading == 1L) {
+          index = index + batch;
+        }
+      }
+    }
+  }
+  return 0L;
+}
+
+
+deRfun keepExisting(long home, long src, long dest, long dirsOnly): long {
+  sideClear(dest);
+  long count = sideCount(src);
+  long index = 0L;
+  while (index < count) {
+    long len = sideLen(src, index);
+    long addr = sidePtr(src, index);
+    plantRaw(home, addr, len);
+    long kind = fileKind(home);
+    long want = 0L;
+    if (dirsOnly == 1L) {
+      if (kind == 2L || kind == 4L || kind == 6L) {
+        want = 1L;
+      }
+    } else if (kind > 0L) {
+      want = 1L;
+    }
+    if (want == 1L) {
+      if (sideAdd(dest, addr, len) != 0L) {
+        return 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+deRfun seedSide(long hold, long work, long side, long absolute): long {
+  sideClear(side);
+  if (absolute == 1L) {
+    memory::storeOctet(47L, pathBuf(hold));
+    return sideAdd(side, pathBuf(hold), 1L);
+  }
+  long cwdLen = memory::load64(cwdLenAt(work));
+  if (cwdLen < 1L || cwdLen > 512L) {
+    memory::storeOctet(47L, pathBuf(hold));
+    return sideAdd(side, pathBuf(hold), 1L);
+  }
+  return sideAdd(side, cwdAt(work), cwdLen);
+}
+
+
+/* 按斜杠切开。返回 0。段数超过 32 返回 1。末尾斜杠记在 +6208，绝对路径记在 +6272。 */
+deRfun parseComps(long hold, long out, long cmdIndex, long argIndex, long word, long wordLen): long {
+  memory::store64(0L, hold);
+  memory::store64(0L, hold + 6208L);
+  memory::store64(0L, hold + 6272L);
+  long absolute = 0L;
+  if (wordLen > 0L && u8(word) == 47L) {
+    absolute = 1L;
+  }
+  memory::store64(absolute, hold + 6272L);
+  long index = 0L;
+  while (index < wordLen && u8(word + index * 8L) == 47L) {
+    index = index + 1L;
+  }
+  while (index < wordLen) {
+    long start = index;
+    while (index < wordLen && u8(word + index * 8L) != 47L) {
+      index = index + 1L;
+    }
+    long len = index - start;
+    long slash = 0L;
+    while (index < wordLen && u8(word + index * 8L) == 47L) {
+      slash = 1L;
+      index = index + 1L;
+    }
+    if (len > 0L) {
+      long count = memory::load64(hold);
+      if (count >= 32L) {
+        return 1L;
+      }
+      long slot = hold + 64L + count * 192L;
+      memory::store64(start, slot);
+      memory::store64(len, slot + 64L);
+      memory::store64(wordMeta(out, cmdIndex, argIndex, word, start, len), slot + 128L);
+      memory::store64(count + 1L, hold);
+    }
+    if (slash == 1L && index >= wordLen) {
+      memory::store64(1L, hold + 6208L);
+    }
+  }
+  return 0L;
+}
+
+
+/* 正数是对上的条数，结果在 hold+6336 所指的那一份里。0 是没有。-1 是放不下。 */
+deRfun collect(long home, long work, long hold, long out, long cmdIndex, long argIndex, long word, long wordLen): long {
+  if (parseComps(hold, out, cmdIndex, argIndex, word, wordLen) != 0L) {
+    return -1L;
+  }
+  long absolute = memory::load64(hold + 6272L);
+  if (seedSide(hold, work, sideAt(hold, 0L), absolute) != 0L) {
+    return -1L;
+  }
+  long compCount = memory::load64(hold);
+  long compIndex = 0L;
+  long cur = 0L;
+  while (compIndex < compCount) {
+    long slot = hold + 64L + compIndex * 192L;
+    long start = memory::load64(slot);
+    long len = memory::load64(slot + 64L);
+    long meta = memory::load64(slot + 128L);
+    long next = 0L;
+    if (cur == 0L) {
+      next = 1L;
+    }
+    long dest = sideAt(hold, next);
+    sideClear(dest);
+    long dirsOnly = 0L;
+    if (meta == 1L && compIndex + 1L == compCount && memory::load64(hold + 6208L) == 1L) {
+      dirsOnly = 1L;
+    }
+    long src = sideAt(hold, cur);
+    long srcCount = sideCount(src);
+    long si = 0L;
+    while (si < srcCount) {
+      long sp = sidePtr(src, si);
+      long sl = sideLen(src, si);
+      long comp = word + start * 8L;
+      if (meta == 0L && len == 1L && u8(comp) == 46L) {
+        if (sideAdd(dest, sp, sl) != 0L) {
+          return -1L;
+        }
+      } else if (meta == 0L && len == 2L && u8(comp) == 46L && u8(comp + 8L) == 46L) {
+        long nlen = 0L;
+        parentPath(sp, sl, pathBuf(hold), &nlen);
+        if (sideAdd(dest, pathBuf(hold), nlen) != 0L) {
+          return -1L;
+        }
+      } else if (meta == 0L) {
+        long nlen = 0L;
+        if (joinComp(sp, sl, comp, len, pathBuf(hold), &nlen) != 0L) {
+          return -1L;
+        }
+        if (sideAdd(dest, pathBuf(hold), nlen) != 0L) {
+          return -1L;
+        }
+      } else {
+        long flags = argFlagAt(out, cmdIndex, argIndex) + start * 8L;
+        if (pourDir(home, hold, sp, sl, comp, len, flags, dirsOnly, dest) != 0L) {
+          return -1L;
+        }
+      }
+      si = si + 1L;
+    }
+    if (sideCount(dest) == 0L) {
+      return 0L;
+    }
+    cur = next;
+    compIndex = compIndex + 1L;
+  }
+  long lastMeta = 0L;
+  if (compCount > 0L) {
+    lastMeta = memory::load64(hold + 64L + (compCount - 1L) * 192L + 128L);
+  }
+  if (lastMeta == 0L) {
+    long next = 0L;
+    if (cur == 0L) {
+      next = 1L;
+    }
+    long dirsOnly = memory::load64(hold + 6208L);
+    if (keepExisting(home, sideAt(hold, cur), sideAt(hold, next), dirsOnly) != 0L) {
+      return -1L;
+    }
+    if (sideCount(sideAt(hold, next)) == 0L) {
+      return 0L;
+    }
+    cur = next;
+  }
+  memory::store64(cur, hold + 6336L);
+  return sideCount(sideAt(hold, cur));
+}
+
+
+deRfun fillArgs(long home, long work, long out, long cmd, long begin): long {
+  long base = obr::proc::args(home);
+  long argc = cmdArgc(cmd);
+  long which = (cmd - out - 4096L) / cmdStride();
+  long arg = begin;
+  long glob = 0L;
+  while (arg < argc) {
+    if (wordMeta(out, which, arg, cmdArgAt(cmd, arg), 0L, cmdArgLen(cmd, arg)) == 1L) {
+      glob = 1L;
+    }
+    arg = arg + 1L;
+  }
+  if (glob == 0L) {
+    return packPlain(base, cmd, begin);
+  }
+  long hold = obr::proc::alloc(home, 180224L);
+  if (hold == 0L) {
+    return 1L;
+  }
+  long count = 0L;
+  long used = 0L;
+  long failed = 0L;
+  arg = begin;
+  while (arg < argc && failed == 0L) {
+    long word = cmdArgAt(cmd, arg);
+    long wordLen = cmdArgLen(cmd, arg);
+    if (wordMeta(out, which, arg, word, 0L, wordLen) == 0L) {
+      if (pushArg(base, &count, &used, word, wordLen) != 0L) {
+        failed = 1L;
+      }
+    } else {
+      long found = collect(home, work, hold, out, which, arg, word, wordLen);
+      if (found < 0L) {
+        failed = 1L;
+      } else if (found == 0L) {
+        if (pushArg(base, &count, &used, word, wordLen) != 0L) {
+          failed = 1L;
+        }
+      } else {
+        long side = sideAt(hold, memory::load64(hold + 6336L));
+        long index = 0L;
+        while (index < found && failed == 0L) {
+          if (pushArg(base, &count, &used, sidePtr(side, index), sideLen(side, index)) != 0L) {
+            failed = 1L;
+          }
+          index = index + 1L;
+        }
+      }
+    }
+    arg = arg + 1L;
+  }
+  if (failed == 0L) {
+    memory::store64(count, base);
+    memory::store64(used, base + 128L);
+  }
+  obr::proc::free(home, hold, 180224L);
+  return failed;
+}

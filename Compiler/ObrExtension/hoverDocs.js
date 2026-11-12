@@ -4,6 +4,7 @@
  */
 
 const OBR = {
+  volatile: "`volatile T*` 是指向 volatile 的指针：经 `*p` 的每次读写都真实发出（vld./vst. 面），窥孔的重复 load 合并、常量删读、store→load 转发、常量指针折叠全部屏蔽。点类型只接受单字标量。volatile↔普通指针隐式互转拒绝，同点类型显式转换才放行。",
   deRfun: "声明或定义一个函数。`.mr` 以分号结束，`.obr` 写函数体。",
   export: "导出这个函数。名字须是字母开头的标识符，才能作为 ZAP 的 `call` 标号。",
   import: "引入一个模块。模块名是头文件名去掉 `.mr`。",
@@ -34,6 +35,8 @@ const OBR = {
   public: "公开可见。",
   private: "仅本模块可见。",
   static: "静态存储。函数之间保留这份值。",
+  out: "出参形参修饰词（写在参数类型前）：只写——调用前不必初始化，被调方负责写。ABI 逐位等于 `T*` + `&x`（传一个地址字），与存量 `long*` 函数互调。实参必须是可赋值左值（变量/字段/下标/*指针）；形参名不能当值用。多返回值 = 多个 out（状态返回 + 结果出参）。out 形参函数禁止内联；`@Fails` 失败路径不写出参。",
+  ref: "出参形参修饰词（写在参数类型前）：读写——实参调用前必须已初始化。ABI 逐位等于 `T*` + `&x`。实参必须是可赋值左值。修饰词进签名：`f(out long)`、`f(ref long)`、`f(long)` 是三个函数（重载、接口实现比对都按修饰词区分）。",
   "#VERSION": "语言版本。可写 1 或 2，省略是 1。版本 2 启用 interface、implements、const、switch、for-in 和 64 位对象头；同一编译单元不能混用 1 和 2。",
   "#LINK": "项目链接范围。列出本程序要一起编译的路径。",
   "#DYN": "本文件要动态装入头文件里声明的函数。不写参数。真正的函数体在 .lib 里，装入时再接上。",
@@ -55,7 +58,20 @@ const OBR = {
   array: "`array[元素]`。`new array[long](长度)` 在堆上分配。长度是负数时运行时停机。引用类型，没有下标越界检查以外的回收。",
   list: "`list[元素]`。`new list[元素]()`。`push` / `pop`。引用类型，没有垃圾回收。",
   set: "`set[元素]`。`new set[元素]()`。`has` / `add` / `remove`。不能用下标。",
-  map: "`map[键, 值]`。`new map[键, 值]()`。`has` / `put` / `get` / `remove`。没有这个键时 `get` 停机。"
+  map: "`map[键, 值]`。`new map[键, 值]()`。`has` / `put` / `get` / `remove`。没有这个键时 `get` 停机。",
+  span: "`span[T]` 两字切片值类型（元素位地址 + 元素个数），零分配、按结构体值语义传参/返回。`span[T](地址, 个数)` 构造（地址是指针或整数位址）；`s[i]`/`s[i] = v` 按元素值宽度（alignof：byte 8、short 16、int/char 32、long/float/double/指针 64 位）在八位组区访问；`s.sub(起, 个数)` 子切片；`.data`/`.count` 读两字（只读）。下标/子切片越界是失败值（code 1，try/?/throw 可接，未接住终止 rax = -code）。元素只收标量和指针；槽密度区（array/list/set/map）不用 span。",
+  "@Overwrite": "写在派生类方法前，声明覆盖基类同签名方法。基类链上必须有同签名方法（参数类型序列、返回类型完全一致），否则编译失败。需要 `#VERSION 2`。方法槽里有 `@Overwrite` 后，解析到该槽的调用按对象头 class ID 走方法表派发；没有覆盖的槽保持静态直呼，没有虚表开销。不能写在构造上。",
+  "@Destruct": "标注析构方法：零参、`: void`、每类至多一个，不能同时 `@Overwrite`，不能写在构造上。需要 `#VERSION 2`。析构绑定所有权：只有 `new` 直接初始化的类变量是所有者；作用域退出和 `return` 时按 LIFO 析构（循环体是每轮作用域）。派生析构跑完自动链基类析构。任务被放弃时由 `__dtor_sweep` 清扫记录链完成析构。",
+  "@Fails": "标注可失败函数。`throw 失败值;`、`try/catch`、`f(...)?` 都降级为早退和 goto。失败归宿：最近的 `try` → `catch` 绑定失败值；`@Fails` 函数 → 沿返回通道传给调用方（跨帧包一层原因）；都没有 → 终止，`rax = -状态`。不能标在析构上；接口实现的失败性必须与接口一致。",
+  "@Friend": "`@Friend(类名[, 类名...])` 写在类声明前（授权整类）或成员前（授权该成员）。被列出的类的方法可以访问对应 `private` 成员。friend 不继承，列出的必须是类。",
+  "@Callfun": "`@Callfun(文件.obr)` 只允许列出的源文件调用本函数。`@Callfun(*)` 与不写一样；`@Callfun(!*)` 禁止用户代码调用。",
+  fail: "内置失败值引用对象（`#VERSION 2`）。字段 `code: long`、`cause: fail`（原因链）、`note: string`。`fail.of(状态)` / `fail.of(状态, 备注)` 构造；同名局部变量可以遮蔽它。容器错误也是失败：下标越界 `code = 1`、空 `pop` `code = 2`、映射缺键 `code = 3`。",
+  throw: "`throw 失败值;` 抛出失败。失败值原样出本帧；没有 `try` 也没有 `@Fails` 归宿时终止，`rax = -状态`。",
+  try: "`try { ... } catch (fail e) { ... }`。接住最近的失败并绑定失败值；跳 `catch` 前析构被跳过的作用域。失败穿过 `await`（失败值随返回值通道走）。",
+  catch: "`catch (fail e)` 绑定捕获的失败值（原样得到，含 `code` / `cause` / `note`）。",
+  sizeof: "编译期内建：`sizeof(T)` 是类型 T 的存储跨度（槽粒度，单位位）——标量/指针/引用 64 位一槽，struct = 字段数×64，class =（对象头+字段数）×64（含对象头，`#VERSION 2` 有 1 字头）。Sema 期折成 `long` 常量，零运行时。sizeof 是槽跨度：`byte` 的 sizeof 是 64。",
+  offsetof: "编译期内建：`offsetof(T, 字段名)` 是字段的位偏移（单位位，class 含对象头）。T 限 struct/class，只接受直接字段名，嵌套两级相加。折成 `long` 常量。",
+  alignof: "编译期内建：`alignof(T)` 是值在八位组区的自然宽度（单位位）：byte 8、short 16、int 32、char 32、boolean 8、long/float/double/指针/引用 64；struct/class 是各字段最大值。alignof 是值自然宽度：`byte` 的 alignof 是 8。",
 };
 
 const ZAP = {
@@ -169,7 +185,10 @@ for (const [width, label] of Object.entries(LOAD)) {
 }
 
 function lookupObr(word) {
-  return OBR[word] || null;
+  if (OBR[word]) return OBR[word];
+  if (word.startsWith("@") && OBR[word.slice(1)]) return OBR[word.slice(1)];
+  if (OBR["@" + word]) return OBR["@" + word];
+  return null;
 }
 
 function lookupZap(word) {
@@ -217,7 +236,13 @@ const LIBRARY = {
   "memory::load64": "`load64(address)` — 按位地址读 64 位。",
   "memory::store64": "`store64(value, address)` — 按位地址写 64 位。",
   "memory::loadOctet": "`loadOctet(address)` — 按位地址读 8 位，结果是有符号扩展前的字节。比较前要与 255 相与。",
-  "memory::storeOctet": "`storeOctet(value, address)` — 按位地址写 8 位。"
+  "memory::storeOctet": "`storeOctet(value, address)` — 按位地址写 8 位。",
+  "obr::atomic::load": "`load(p, order)` — 读 `volatile long*` 共享字（volatile 读）。order 是 MemoryOrder 常量（Acquire/Release/SeqCst，编译期标注）。运行时动作余量，见 README 余量清单。",
+  "obr::atomic::store": "`store(p, value, order)` — 写 `volatile long*` 共享字（volatile 写）。单字 64 位对齐 store 原子是语义下限。",
+  "obr::atomic::cas": "`cas(p, expect, value, order)` — 比较并交换，返回旧值。经监督核信箱服务序列化（运行时余量，本轮调用是停机桩）。",
+  "obr::atomic::fetchAdd": "`fetchAdd(p, delta, order)` — 原子加，返回旧值。经监督核信箱服务序列化（运行时余量，本轮调用是停机桩）。",
+  "obr::atomic::MemoryOrder": "内存序三档：Acquire = 丢本核读缓存后读；Release = 写后发布到主板；SeqCst = 两者叠加。不提供 relaxed。是编译期标注参数，不进运行时。",
+  "memory::fence": "`fence()` — 内存栅栏：本核已写的交上主板 + 丢本核读缓存（release+acquire 全屏障，一档）。运行时下限是轻量 svc（余量，本轮调用是停机桩）。"
 };
 
 function lookupLibrary(word) {

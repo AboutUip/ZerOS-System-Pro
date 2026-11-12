@@ -5,6 +5,7 @@
 import proc;
 import sched;
 import board;
+import obr.os;
 
 deRfun frameEpoch(): long {
   return query(4L, 3L, 0L);
@@ -39,8 +40,52 @@ deRfun frameWait(long caller): long {
   }
   frameSeen(1L, frameEpoch());
   frameWaiter(1L, caller);
-  schedSleep(caller);
+  long self = taskCurrent(caller);
+  if (self < 0L) {
+    self = taskFind(caller);
+  }
+  /* 和 wait 同一条路：上下文进槽，核可以让给别的窗口任务。 */
+  if (self >= 0L) {
+    schedBlock(caller, self);
+  } else {
+    schedSleep(caller);
+  }
   return -2L;
+}
+
+/* 把等待显示的核交回。核已经跑着别的窗口任务时，只标成就绪，
+   下一次恢复时由 passReply 把拍号交回去。 */
+deRfun frameWakeOn(long core): void {
+  long index = -1L;
+  long scan = 0L;
+  long end = taskScanEnd();
+  while (scan < end) {
+    Task* task = taskAt(scan);
+    if (task.pid != 0L && task.core == core && task.state == TaskState::Sleeping && task.held > 0L) {
+      index = scan;
+      scan = end;
+    } else {
+      scan = scan + 1L;
+    }
+  }
+  if (index < 0L) {
+    return;
+  }
+  long epoch = frameEpoch();
+  /* 核还停在它自己的 svc 上：直接交拍号恢复。 */
+  if (query(1L, 5L, core) == 0L && query(1L, 11L, core) == 2L && taskFind(core) == index) {
+    taskAccount(index, TaskState::Running);
+    taskAt(index).state = TaskState::Running;
+    obr::os::pass(core, epoch);
+    rankPublish(core);
+    obr::os::schedule(core);
+    return;
+  }
+  taskAt(index).waitFor = epoch;
+  taskAt(index).code = -3L;
+  taskAccount(index, TaskState::Ready);
+  taskAt(index).state = TaskState::Ready;
+  wakeReady(core, index);
 }
 
 /* 没有人等，返回 -1。拍号变了，或调用方要求马上交，就把等的人交出去。 */

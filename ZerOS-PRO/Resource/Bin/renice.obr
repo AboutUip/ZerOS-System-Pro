@@ -1,0 +1,105 @@
+/* POSIX.1-2017 renice（utilities/renice.html）。
+   两种形式都完整解析：
+   renice -n increment [-p pid...] [-g pgrp...] [-u user...]
+   renice priority [pid...]（XSI 旧形式）
+   increment 与 priority 是 -20 到 20 的十进制整数；pid、pgrp、user 是正十进制。
+   -p -g -u 后面跟一个或多个值，直到下一个选项为止。
+   参数缺失或不合法写 renice: invalid argument，退出 1。
+   本内核没有调度优先级接口（服务 2 到 40 里没有改优先级的调用），无法调整。
+   完整处理完参数后写
+   renice: scheduling priority cannot be changed on this platform，退出 1。
+   不假装成功。诊断英文 ASCII，前缀 renice:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  long index = 1L;
+  if (index >= count) {
+    writeErr(home, "renice: invalid argument\n");
+    return finish(home, 1L);
+  }
+  long first = argPtr(home, 1L);
+  long firstLen = argLen(home, 1L);
+  long priority = 0L;
+  if (spanSame(first, firstLen, "-n") == 1L) {
+    index = 2L;
+    if (index >= count) {
+      writeErr(home, "renice: invalid argument\n");
+      return finish(home, 1L);
+    }
+    long ok = spanNum(argPtr(home, index), argLen(home, index), &priority);
+    if (ok != 0L || priority < -20L || priority > 20L) {
+      writeErr(home, "renice: invalid argument\n");
+      return finish(home, 1L);
+    }
+    index = index + 1L;
+    long targets = 0L;
+    long endOptions = 0L;
+    while (index < count && endOptions == 0L) {
+      long at = argPtr(home, index);
+      long len = argLen(home, index);
+      if (len == 2L && spanSame(at, len, "--") == 1L) {
+        endOptions = 1L;
+        index = index + 1L;
+      } else if (len == 2L && (spanSame(at, len, "-p") == 1L || spanSame(at, len, "-g") == 1L || spanSame(at, len, "-u") == 1L)) {
+        index = index + 1L;
+        long seen = 0L;
+        while (index < count) {
+          long valueAt = argPtr(home, index);
+          long valueLen = argLen(home, index);
+          if (valueLen >= 2L && byteAt(valueAt) == 45L) {
+            break;
+          }
+          long value = 0L;
+          if (spanNum(valueAt, valueLen, &value) != 0L || value < 0L) {
+            writeErr(home, "renice: invalid argument\n");
+            return finish(home, 1L);
+          }
+          seen = seen + 1L;
+          targets = targets + 1L;
+          index = index + 1L;
+        }
+        if (seen == 0L) {
+          writeErr(home, "renice: invalid argument\n");
+          return finish(home, 1L);
+        }
+      } else {
+        writeErr(home, "renice: invalid option\n");
+        return finish(home, 1L);
+      }
+    }
+    if (targets == 0L) {
+      writeErr(home, "renice: invalid argument\n");
+      return finish(home, 1L);
+    }
+    while (index < count) {
+      writeErr(home, "renice: too many operands\n");
+      return finish(home, 1L);
+    }
+  } else {
+    long ok = spanNum(first, firstLen, &priority);
+    if (ok != 0L || priority < -20L || priority > 20L) {
+      writeErr(home, "renice: invalid argument\n");
+      return finish(home, 1L);
+    }
+    index = 2L;
+    while (index < count) {
+      long pid = 0L;
+      if (spanNum(argPtr(home, index), argLen(home, index), &pid) != 0L || pid < 1L) {
+        writeErr(home, "renice: invalid argument\n");
+        return finish(home, 1L);
+      }
+      index = index + 1L;
+    }
+    if (count < 3L) {
+      writeErr(home, "renice: invalid argument\n");
+      return finish(home, 1L);
+    }
+  }
+  writeErr(home, "renice: scheduling priority cannot be changed on this platform\n");
+  return finish(home, 1L);
+}

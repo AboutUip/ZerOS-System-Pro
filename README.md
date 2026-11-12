@@ -20,8 +20,8 @@ ZerOS-System-Pro/
 │   └── Hardware/             # 参考实现
 │       ├── Motherboard/      # 主板、插座、上电入口
 │       ├── Cpu/  Gpu/  Memory/
-│       ├── Display/  Keyboard/  Pointer/  Sandbox/  Nas/
-├── Driver/                   # Display、Gpu、Pointer。默认宽高在 Display/panel
+│       ├── Display/  Keyboard/  Pointer/  Sandbox/  Nas/  Nic/
+├── Driver/                   # Display、Gpu、Pointer、Nic。默认宽高在 Display/panel
 ├── Compiler/ObrCompiler/     # 宿主编译器，.obr → ZAP
 ├── Compiler/ObrExtension/    # 编辑器扩展，.obr / .mr / .zap
 ├── Compiler/Debugger/        # ZTrace 工具侧；v1.1 已交付，v2 P4 进行中
@@ -44,7 +44,7 @@ ZerOS-System-Pro/
 - 工具入口：[Compiler/Debugger/Tools](./Compiler/Debugger/Tools/)
 - 运行手册：[Documents/Debug/Implementation/Runbook.md](./Documents/Debug/Implementation/Runbook.md)
 
-v1.1 当时覆盖 54 条 `/bin` 命令、命令退出码、基础 fault/stop 现场和 64 位时间。语料清单现在与 `Resource/Bin` 里除 `arg` 以外的每一条命令对应，少一条或多一条时 `ztrace-corpus --list` 和 `npm test` 都会失败。跑语料前由 runner 在客根种下 `/home`，不依赖已经存在的用户目录。stdout/stderr 文本、外部命令符号和逐帧 `GuestStack` 仍不在本版本内。v2 的 P4 正在继续。
+v1.1 当时覆盖 54 条 `/bin` 命令、命令退出码、基础 fault/stop 现场和 64 位时间。语料清单现在与 `Resource/Bin` 里除 `arg` 以外的每一条命令对应，少一条或多一条时 `ztrace-corpus --list` 和 `npm test` 都会失败。跑语料前由 runner 在客根种下 `/temp/test`（`/home` 留给未来用户家目录，测试一律不写），不依赖已经存在的目录。stdout/stderr 文本、外部命令符号和逐帧 `GuestStack` 仍不在本版本内。v2 的 P4 正在继续。
 
 ## 预览
 
@@ -92,6 +92,7 @@ cmake --build Compiler/ObrCompiler/build
 | **ZXP1 / ZXD1** | 扩展口与交换 | [Expansion](./Documents/Protocol/PhysicalHardware/Expansion/README.md) |
 | **ZSP1** | 沙盒 | [Sandbox](./Documents/Protocol/PhysicalHardware/Sandbox/README.md) |
 | **ZNP1** | NAS | [Nas](./Documents/Protocol/PhysicalHardware/Nas/README.md) |
+| **ZNC1** | 网卡（原始以太网帧） | [Nic](./Documents/Protocol/PhysicalHardware/Nic/README.md) |
 
 ## 参考实现现在在哪
 
@@ -103,6 +104,7 @@ cmake --build Compiler/ObrCompiler/build
 | 显示器 / 键盘 / 鼠标 / 沙盒 / NAS | 同名目录 | 显示器不经插座；键盘、鼠标、沙盒和 NAS 坐在扩展口上。NAS 进程要单独启动 |
 | 驱动 | `Driver/` | 显示器默认宽高在 `Display/panel`。`Gpu/` 是固件调用的 OpenGL 切片 |
 | 语言 | `Compiler/ObrCompiler/` | 默认只写无扩展名二进制。`-zap` 才另写文本对照。`-version` 缺省是 2，也是当前最高语言版本；源文件没写 `#VERSION` 就按它编译，写出的版本不能更高，同一个编译单元不能混用 1 和 2。不小于 1048576 的立即数会按数据地址重定位，长度和上界要拆开再乘。语法见 [编译器说明](./Compiler/ObrCompiler/README.md) |
+| 网卡 | `Hardware/Nic/`、`Driver/Nic/` | Rust 硬件只搬原始以太网帧，不解析不管理；Obr 驱动拥有完整网络栈，目前是占位实现 |
 | 编辑器 | `Compiler/ObrExtension/` | `.obr`、`.mr`、`.zap` 的着色和诊断。诊断调用旁边的 `obrc` |
 | 内核 | `Kernel/` | 入口 `/kernel/start`，常驻核心 2。文件在内核里。`/kernel/drv` 里的驱动从核心 4 起装入 |
 | 系统 | `System/`、`Resource/App/`、`Resource/Bin/` | `Init/init.obr` 是 pid 1，客路径 `/kernel/init`。`App/sh` 编成 `/os/sh`。`Bin/` 编成 `/bin`。每份命令的文件头写明规范页、接受的选项、退出状态和这一份实现的取舍 |

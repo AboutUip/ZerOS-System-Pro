@@ -1,0 +1,610 @@
+#DYN
+/* .zo 驱动管理器 CLI。管理器本体在内核服务 56；这里解析
+   drv load|stop|restart|rollback|list|state|current|info 并打印结果。 */
+import memory;
+import obr.oct;
+import obr.os;
+import obr.print;
+import obr.proc;
+import arg;
+
+deRfun word(long addr, long len, string text): long {
+  long want = length(text);
+  if (len != want) {
+    return 0L;
+  }
+  return obr::oct::eq(addr, len, text);
+}
+
+deRfun number(long addr, long len): long {
+  if (len < 1L || len > 9L) {
+    return -1L;
+  }
+  long value = 0L;
+  long index = 0L;
+  while (index < len) {
+    long digit = obr::oct::get(addr + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      return -1L;
+    }
+    value = value * 10L + digit - 48L;
+    index = index + 1L;
+  }
+  return value;
+}
+
+deRfun putNum(long home, long value): void {
+  if (value < 0L) {
+    obr::print::byte(home, 45L);
+    value = 0L - value;
+  }
+  long div = 1L;
+  while (div < 1000000000L && value / div >= 10L) {
+    div = div * 10L;
+  }
+  while (div > 0L) {
+    obr::print::byte(home, 48L + value / div % 10L);
+    div = div / 10L;
+  }
+}
+
+deRfun pathCopy(long home, long addr, long len): void {
+  memory::store64(len, home + 16384L);
+  long index = 0L;
+  while (index < len) {
+    memory::storeOctet(obr::oct::get(addr + index * 8L), home + 16448L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+/* 11 = 等核；12 = 等旧实例导出。超时切 op 6（SIGKILL + 新实例）。 */
+deRfun call(long home, long op): long {
+  /* 参数 home 可能跨调用被清零；真正提交前重新取本任务窗口起点。 */
+  long at = obr::proc::home();
+  memory::store64(op, at + 64L);
+  long status = obr::os::svc(56L);
+  long rounds = 0L;
+  long waits = 0L;
+  /* 11 等核，12 等旧实例导出。两次提交之间必须让出，
+     否则下一次服务 56 会在监督核取走上一次之前占满保持位。 */
+  while ((status == 11L || status == 12L || status == 1L || status == 7L) && rounds < 40L) {
+    if (status == 12L) {
+      waits = waits + 1L;
+      if (waits > 4L) {
+        memory::store64(1L, at + 2048L);
+        memory::store64(6L, at + 64L);
+      }
+    }
+    obr::os::dwell(100L);
+    at = obr::proc::home();
+    memory::store64(op, at + 64L);
+    if (waits > 4L) {
+      memory::store64(1L, at + 2048L);
+      memory::store64(6L, at + 64L);
+    }
+    status = obr::os::svc(56L);
+    rounds = rounds + 1L;
+  }
+  return status;
+}
+
+deRfun usage(long home): int {
+  obr::print::text(home, "drv: usage: drv load PATH | stop PID | restart PID PATH | rollback PID [LEVEL] | list | current | info PATH\n");
+  obr::print::flush(home);
+  return 2;
+}
+
+deRfun done(long home, long status): int {
+  if (status != 0L) {
+    obr::print::text(home, "drv: failed ");
+    putNum(home, status);
+    obr::print::byte(home, 10L);
+    obr::print::flush(home);
+    memory::store64(status, home + 128L);
+    obr::os::svc(28L);
+    return 1;
+  }
+  obr::os::dwell(200L);
+  obr::print::text(home, "pid ");
+  putNum(home, memory::load64(home + 192L));
+  obr::print::text(home, " core ");
+  putNum(home, memory::load64(home + 256L));
+  obr::print::byte(home, 10L);
+  obr::print::flush(home);
+  /* 显式退出，和验收程序同一条路；共享核上不要靠停机后的扫表恢复外壳。 */
+  memory::store64(0L, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}
+
+/* /drivers/x.zo -> /drivers/x.manifest（把末尾 zo 换成 manifest）。 */
+deRfun manifestPath(long home, long addr, long len): long {
+  if (len < 3L) {
+    return 0L;
+  }
+  pathCopy(home, addr, len);
+  long count = memory::load64(home + 16384L);
+  if (count < 3L) {
+    return 0L;
+  }
+  long at = home + 16448L + (count - 2L) * 8L;
+  string suffix = "manifest";
+  long index = 0L;
+  while (index < 8L) {
+    memory::storeOctet(suffix[index], at + index * 8L);
+    index = index + 1L;
+  }
+  long next = count + 6L;
+  memory::store64(next, home + 16384L);
+  return next;
+}
+
+deRfun keyAt(long base, long at, long len, string key): long {
+  long keyLen = length(key);
+  if (at + keyLen > len) {
+    return 0L;
+  }
+  return obr::oct::eq(base + at * 8L, keyLen, key);
+}
+
+deRfun lineEnd(long base, long at, long len): long {
+  long end = at;
+  while (end < len) {
+    long value = obr::oct::get(base + end * 8L);
+    if (value == 10L || value == 13L) {
+      break;
+    }
+    end = end + 1L;
+  }
+  return end;
+}
+
+deRfun lineNumber(long base, long at, long end): long {
+  long value = 0L;
+  long index = at;
+  while (index < end) {
+    long digit = obr::oct::get(base + index * 8L);
+    if (digit < 48L || digit > 57L) {
+      break;
+    }
+    value = value * 10L + digit - 48L;
+    index = index + 1L;
+  }
+  return value;
+}
+
+deRfun spanWord(long base, long at, long end, string text): long {
+  long want = length(text);
+  if (at + want != end) {
+    return 0L;
+  }
+  return obr::oct::eq(base + at * 8L, want, text);
+}
+
+deRfun capOk(long base, long at, long end): long {
+  if (spanWord(base, at, end, "net") == 1L) {
+    return 1L;
+  }
+  if (spanWord(base, at, end, "test") == 1L) {
+    return 1L;
+  }
+  if (spanWord(base, at, end, "input") == 1L) {
+    return 1L;
+  }
+  if (spanWord(base, at, end, "gpu") == 1L) {
+    return 1L;
+  }
+  if (spanWord(base, at, end, "storage") == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* /drivers/<dep>.zo 必须存在。 */
+deRfun depExists(long home, long base, long at, long end): long {
+  long nameLen = end - at;
+  if (nameLen < 1L || nameLen > 128L) {
+    return 0L;
+  }
+  long count = 9L + nameLen + 3L;
+  memory::store64(count, home + 16384L);
+  string prefix = "/drivers/";
+  long index = 0L;
+  while (index < 9L) {
+    memory::storeOctet(prefix[index], home + 16448L + index * 8L);
+    index = index + 1L;
+  }
+  index = 0L;
+  while (index < nameLen) {
+    memory::storeOctet(obr::oct::get(base + (at + index) * 8L), home + 16448L + (9L + index) * 8L);
+    index = index + 1L;
+  }
+  memory::storeOctet(46L, home + 16448L + (9L + nameLen) * 8L);
+  memory::storeOctet(122L, home + 16448L + (10L + nameLen) * 8L);
+  memory::storeOctet(111L, home + 16448L + (11L + nameLen) * 8L);
+  if (obr::proc::open(home, 0L) != 0L) {
+    return 0L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  obr::proc::close(home, fd);
+  return 1L;
+}
+
+/* 有清单就校验：version>=1、cap 在白名单、dep 文件存在。
+   没有清单按测试驱动处理，放行。返回 0 通过。 */
+deRfun validateManifest(long home, long addr, long len): long {
+  if (manifestPath(home, addr, len) == 0L) {
+    return 1L;
+  }
+  if (obr::proc::open(home, 0L) != 0L) {
+    return 0L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  obr::proc::read(home, fd, 0L, 4096L);
+  long got = obr::proc::slot(home, 320L);
+  obr::proc::close(home, fd);
+  if (got < 1L) {
+    return 2L;
+  }
+  long base = home + 131072L;
+  long at = 0L;
+  long version = 0L;
+  while (at < got) {
+    long lineStart = 0L;
+    if (at == 0L || obr::oct::get(base + (at - 1L) * 8L) == 10L) {
+      lineStart = 1L;
+    }
+    if (lineStart == 1L) {
+      if (keyAt(base, at, got, "version=") == 1L) {
+        long end = lineEnd(base, at + 8L, got);
+        version = lineNumber(base, at + 8L, end);
+        if (version < 1L) {
+          return 3L;
+        }
+      }
+      if (keyAt(base, at, got, "cap=") == 1L) {
+        long end = lineEnd(base, at + 4L, got);
+        if (end > at + 4L && capOk(base, at + 4L, end) == 0L) {
+          return 4L;
+        }
+      }
+      if (keyAt(base, at, got, "dep=") == 1L) {
+        long end = lineEnd(base, at + 4L, got);
+        if (end > at + 4L && depExists(home, base, at + 4L, end) == 0L) {
+          return 5L;
+        }
+      }
+    }
+    at = at + 1L;
+  }
+  return 0L;
+}
+
+deRfun info(long home): int {
+  long len = argLen(home, 2L);
+  if (len < 1L || manifestPath(home, argPtr(home, 2L), len) == 0L) {
+    obr::print::text(home, "drv: no manifest\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  if (obr::proc::open(home, 0L) != 0L) {
+    obr::print::text(home, "drv: manifest not found\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  obr::proc::read(home, fd, 0L, 4096L);
+  long got = obr::proc::slot(home, 320L);
+  obr::proc::close(home, fd);
+  if (got < 1L) {
+    obr::print::text(home, "drv: empty manifest\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  long base = home + 131072L;
+  long version = 0L;
+  long at = 0L;
+  while (at < got) {
+    long lineStart = 0L;
+    if (at == 0L || obr::oct::get(base + (at - 1L) * 8L) == 10L) {
+      lineStart = 1L;
+    }
+    if (lineStart == 1L) {
+      if (keyAt(base, at, got, "version=") == 1L) {
+        long end = lineEnd(base, at + 8L, got);
+        version = lineNumber(base, at + 8L, end);
+        obr::print::text(home, "version=");
+        putNum(home, version);
+        obr::print::byte(home, 10L);
+      }
+      if (keyAt(base, at, got, "cap=") == 1L) {
+        long end = lineEnd(base, at + 4L, got);
+        obr::print::text(home, "cap=");
+        long index = at + 4L;
+        while (index < end) {
+          obr::print::byte(home, obr::oct::get(base + index * 8L));
+          index = index + 1L;
+        }
+        obr::print::byte(home, 10L);
+      }
+      if (keyAt(base, at, got, "dep=") == 1L) {
+        long end = lineEnd(base, at + 4L, got);
+        obr::print::text(home, "dep=");
+        long index = at + 4L;
+        while (index < end) {
+          obr::print::byte(home, obr::oct::get(base + index * 8L));
+          index = index + 1L;
+        }
+        obr::print::byte(home, 10L);
+      }
+    }
+    at = at + 1L;
+  }
+  obr::print::flush(home);
+  if (version < 1L) {
+    return 1;
+  }
+  memory::store64(version, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  if (argc(home) < 2L) {
+    return usage(home);
+  }
+  long sub = argPtr(home, 1L);
+  long subLen = argLen(home, 1L);
+  if (word(sub, subLen, "state") == 1L) {
+    memory::store64(2L, home + 64L);
+    long count = obr::os::svc(57L);
+    if (count != 8L) {
+      obr::print::text(home, "drv: no state\n");
+      obr::print::flush(home);
+      return 1;
+    }
+    long value = memory::load64(home + 131072L);
+    obr::print::text(home, "state ");
+    putNum(home, value);
+    obr::print::byte(home, 10L);
+    obr::print::flush(home);
+    if (argc(home) >= 3L) {
+      long want = number(argPtr(home, 2L), argLen(home, 2L));
+      if (want >= 0L && value == want) {
+        return 0;
+      }
+      return 1;
+    }
+    memory::store64(value, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  if (word(sub, subLen, "list") == 1L) {
+    memory::store64(5L, home + 64L);
+    long count = obr::os::svc(56L);
+    if (count > 0L) {
+      obr::print::out(home, home + 131072L, count);
+    } else {
+      obr::print::text(home, "drv: no .zo tasks\n");
+    }
+    obr::print::byte(home, 10L);
+    obr::print::flush(home);
+    return 0;
+  }
+  if (word(sub, subLen, "current") == 1L) {
+    memory::store64(7L, home + 64L);
+    long len = obr::os::svc(56L);
+    if (len > 0L) {
+      obr::print::out(home, home + 16448L, len);
+      obr::print::byte(home, 10L);
+    }
+    obr::print::flush(home);
+    /* drv current EXPECTED：数字比长度，字符串比路径内容。 */
+    if (argc(home) >= 3L) {
+      long wantAt = argPtr(home, 2L);
+      long wantLen = argLen(home, 2L);
+      long want = number(wantAt, wantLen);
+      if (want >= 0L) {
+        if (len == want) {
+          return 0;
+        }
+        return 1;
+      }
+      if (len != wantLen) {
+        return 1;
+      }
+      long index = 0L;
+      while (index < len) {
+        if (obr::oct::get(home + 16448L + index * 8L) != obr::oct::get(wantAt + index * 8L)) {
+          return 1;
+        }
+        index = index + 1L;
+      }
+      return 0;
+    }
+    memory::store64(len, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  if (word(sub, subLen, "info") == 1L) {
+    if (argc(home) < 3L) {
+      return usage(home);
+    }
+    return info(home);
+  }
+  if (word(sub, subLen, "home") == 1L) {
+    /* 诊断：CLI 自己的 home 是否为 0。0 正常，9 异常。 */
+    long code = 0L;
+    if (home == 0L) {
+      code = 9L;
+    }
+    memory::store64(code, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  if (word(sub, subLen, "pid") == 1L) {
+    memory::store64(0L, home + 128L);
+    memory::store64(9L, home + 64L);
+    long value = obr::os::svc(56L);
+    obr::print::text(home, "pid ");
+    putNum(home, value);
+    obr::print::byte(home, 10L);
+    obr::print::flush(home);
+    memory::store64(value, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  if (word(sub, subLen, "count") == 1L) {
+    memory::store64(10L, home + 64L);
+    long value = obr::os::svc(56L);
+    obr::print::text(home, "count ");
+    putNum(home, value);
+    obr::print::byte(home, 10L);
+    obr::print::flush(home);
+    memory::store64(value, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  if (word(sub, subLen, "term") == 1L) {
+    long pid = 0L;
+    if (argc(home) >= 3L) {
+      pid = number(argPtr(home, 2L), argLen(home, 2L));
+      if (pid < 0L) {
+        obr::print::text(home, "drv: invalid pid\n");
+        obr::print::flush(home);
+        return 2;
+      }
+    }
+    memory::store64(pid, home + 128L);
+    memory::store64(8L, home + 64L);
+    long status = obr::os::svc(56L);
+    if (status != 0L) {
+      obr::print::text(home, "drv: term failed ");
+      putNum(home, status);
+      obr::print::byte(home, 10L);
+      obr::print::flush(home);
+      return 1;
+    }
+    /* 给驱动导出和退出一小段时间；随后 fresh load 启动新实例。 */
+    obr::os::dwell(500L);
+    obr::print::text(home, "terminated\n");
+    obr::print::flush(home);
+    return 0;
+  }
+  if (word(sub, subLen, "load") == 1L) {
+    if (argc(home) < 3L) {
+      return usage(home);
+    }
+    long len = argLen(home, 2L);
+    if (len < 1L || len > 2048L) {
+      obr::print::text(home, "drv: path too long\n");
+      obr::print::flush(home);
+      return 2;
+    }
+    long bad = validateManifest(home, argPtr(home, 2L), len);
+    if (bad != 0L) {
+      obr::print::text(home, "drv: invalid manifest ");
+      putNum(home, bad);
+      obr::print::byte(home, 10L);
+      obr::print::flush(home);
+      /* 失败码用 svc 28 退出，便于脚本/追踪直接读到 3/5。 */
+      memory::store64(bad, home + 128L);
+      obr::os::svc(28L);
+      return 1;
+    }
+    pathCopy(home, argPtr(home, 2L), len);
+    return done(home, call(home, 1L));
+  }
+  if (word(sub, subLen, "stop") == 1L || word(sub, subLen, "rollback") == 1L) {
+    if (argc(home) < 3L) {
+      return usage(home);
+    }
+    long pid = number(argPtr(home, 2L), argLen(home, 2L));
+    if (pid < 0L) {
+      obr::print::text(home, "drv: invalid pid\n");
+      obr::print::flush(home);
+      return 2;
+    }
+    memory::store64(pid, home + 128L);
+    if (word(sub, subLen, "stop") == 1L) {
+      memory::store64(2L, home + 64L);
+      long stopped = obr::os::svc(56L);
+      if (stopped != 0L) {
+        obr::print::text(home, "drv: stop failed\n");
+        obr::print::flush(home);
+        return 1;
+      }
+      obr::print::text(home, "stopped pid ");
+      putNum(home, pid);
+      obr::print::byte(home, 10L);
+      obr::print::flush(home);
+      return 0;
+    }
+    long level = 1L;
+    if (argc(home) >= 4L) {
+      level = number(argPtr(home, 3L), argLen(home, 3L));
+      if (level < 1L) {
+        obr::print::text(home, "drv: invalid level\n");
+        obr::print::flush(home);
+        return 2;
+      }
+    }
+    memory::store64(level, home + 2112L);
+    return done(home, call(home, 4L));
+  }
+  if (word(sub, subLen, "restart") == 1L) {
+    if (argc(home) < 4L) {
+      return usage(home);
+    }
+    long pid = number(argPtr(home, 2L), argLen(home, 2L));
+    if (pid < 0L) {
+      obr::print::text(home, "drv: invalid pid\n");
+      obr::print::flush(home);
+      return 2;
+    }
+    long len = argLen(home, 3L);
+    if (len < 1L || len > 2048L) {
+      obr::print::text(home, "drv: path too long\n");
+      obr::print::flush(home);
+      return 2;
+    }
+    long bad = validateManifest(home, argPtr(home, 3L), len);
+    if (bad != 0L) {
+      obr::print::text(home, "drv: invalid manifest ");
+      putNum(home, bad);
+      obr::print::byte(home, 10L);
+      obr::print::flush(home);
+      /* 失败码用 svc 28 退出，便于脚本/追踪直接读到 3/5。 */
+      memory::store64(bad, home + 128L);
+      obr::os::svc(28L);
+      return 1;
+    }
+    /* 重启拆成两步，不再让内核在一条服务 56 里等旧实例导出：
+       先 SIGTERM，让驱动把交接缓冲写好并退出；等任务表里没有 .zo，
+       再用 op 1 装新实例。这样不会占满保持位，也不依赖状态 12 的重试。 */
+    long at = obr::proc::home();
+    memory::store64(pid, at + 128L);
+    memory::store64(8L, at + 64L);
+    obr::os::svc(56L);
+    long live = 1L;
+    long rounds = 0L;
+    while (live > 0L && rounds < 60L) {
+      obr::os::dwell(100L);
+      at = obr::proc::home();
+      memory::store64(10L, at + 64L);
+      live = obr::os::svc(56L);
+      rounds = rounds + 1L;
+    }
+    if (live > 0L) {
+      at = obr::proc::home();
+      memory::store64(pid, at + 128L);
+      memory::store64(2L, at + 64L);
+      obr::os::svc(56L);
+      obr::os::dwell(300L);
+    }
+    pathCopy(home, argPtr(home, 3L), len);
+    return done(home, call(home, 1L));
+  }
+  return usage(home);
+}

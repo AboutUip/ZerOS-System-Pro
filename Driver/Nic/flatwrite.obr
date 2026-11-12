@@ -1,0 +1,52 @@
+/* flat 文件写测试：写一个字节到 /temp/flatwrite.cont。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun myHome(): long {
+  long value = query(1L, 8L, obr::os::core());
+  long tries = 0L;
+  while (value == 0L && tries < 20L) {
+    obr::os::dwell(5L);
+    value = query(1L, 8L, obr::os::core());
+    tries = tries + 1L;
+  }
+  if (value == 0L) {
+    value = obr::os::svc(65L);
+  }
+  return value;
+}
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun main(): int {
+  long home = myHome();
+  setPath(home, "/temp/flatwrite.cont");
+  memory::store64(1L, home + 128L);
+  if (obr::os::svc(5L) != 0L) {
+    home = myHome();
+    memory::store64(0L, home + 128L);
+    obr::os::svc(28L);
+    return 0;
+  }
+  long fd = memory::load64(home + 192L);
+  memory::store64(fd, home + 128L);
+  memory::store64(0L, home + 192L);
+  memory::store64(1L, home + 256L);
+  memory::storeOctet(7L, home + 131072L);
+  obr::os::svc(8L);
+  memory::store64(fd, home + 128L);
+  obr::os::svc(6L);
+  home = myHome();
+  memory::store64(0L, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

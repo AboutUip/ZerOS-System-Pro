@@ -115,6 +115,8 @@ export namespace ZerOS {
       const ProgramBinaryFill = CodeRoot.Hardware.Cpu.ProgramBinaryFill;
       const ProgramBinaryCarry = CodeRoot.Hardware.Cpu.ProgramBinaryCarry;
       const ProgramBinaryOffer = CodeRoot.Hardware.Cpu.ProgramBinaryOffer;
+  const ProgramBinaryTag = CodeRoot.Hardware.Cpu.ProgramBinaryTag;
+  const ProgramBinaryPassTask = CodeRoot.Hardware.Cpu.ProgramBinaryPassTask;
       const ProgramBinaryCapture = CodeRoot.Hardware.Cpu.ProgramBinaryCapture;
       const ProgramBinaryRestore = CodeRoot.Hardware.Cpu.ProgramBinaryRestore;
       const ProgramBinaryAttach = CodeRoot.Hardware.Cpu.ProgramBinaryAttach;
@@ -564,6 +566,14 @@ export namespace ZerOS {
             writeImmediate(writer, step.Address);
             writeRegister(writer, step.Register);
             return;
+          case "tag":
+            writeCode(writer, ProgramBinaryTag);
+            writeRegisters(writer, [step.Core, step.Index]);
+            return;
+          case "pass.task":
+            writeCode(writer, ProgramBinaryPassTask);
+            writeRegisters(writer, [step.Core, step.Tag, step.Value]);
+            return;
           case "ldi":
             writeCode(writer, ProgramBinaryLdi);
             writeOpcode(writer, step.Opcode);
@@ -764,6 +774,12 @@ export namespace ZerOS {
         }
         if (code === ProgramBinaryPass) {
           return { Op: "pass", Core: readRegister(reader), Value: readRegister(reader) };
+        }
+        if (code === ProgramBinaryTag) {
+          return { Op: "tag", Core: readRegister(reader), Index: readRegister(reader) };
+        }
+        if (code === ProgramBinaryPassTask) {
+          return { Op: "pass.task", Core: readRegister(reader), Tag: readRegister(reader), Value: readRegister(reader) };
         }
         if (code === ProgramBinaryTake) {
           return { Op: "take", Found: readRegister(reader), Value: readRegister(reader) };

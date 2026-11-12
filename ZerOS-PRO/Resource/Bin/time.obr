@@ -15,6 +15,7 @@ import memory;
 import obr.oct;
 import obr.os;
 import obr.proc;
+import time;
 import arg;
 
 deRfun u8(long addr): long {
@@ -388,7 +389,7 @@ deRfun main(): int {
   if (publish(home, saved, index) != 0L) {
     return finish(home, 1L);
   }
-  if (obr::proc::clock(home) != 0L) {
+  if (time::monotonic(home) != 0L) {
     return finish(home, 1L);
   }
   long t0 = obr::proc::slot(home, 128L);
@@ -400,7 +401,7 @@ deRfun main(): int {
   long pid = obr::proc::slot(home, 192L);
   obr::proc::wait(home, pid);
   long code = obr::proc::slot(home, 192L);
-  if (obr::proc::clock(home) != 0L) {
+  if (time::monotonic(home) != 0L) {
     return finish(home, 1L);
   }
   long t1 = obr::proc::slot(home, 128L);

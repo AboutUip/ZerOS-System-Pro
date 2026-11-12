@@ -24,12 +24,13 @@ std::string linkSymbol(const std::string& name) {
   return symbol;
 }
 
-/* 参数类型收成符号里允许的字符。没有参数时是空串。 */
+/* 参数类型收成符号里允许的字符。没有参数时是空串。
+   M-C：out/ref 修饰词与 pointee 都进符号（修 `long*`/`string*` 同符号碰撞）。 */
 std::string paramSymbol(const Function& function) {
   std::string text;
   for (const Param& param : function.params) {
     if (!text.empty()) text.push_back('_');
-    const std::string part = typeText(param.type, param.typeName, param.alt, param.altName);
+    const std::string part = typeText(param.type, param.typeName, param.alt, param.altName, param.pointee, param.volatilePointee, param.mode);
     for (const char unit : part) {
       const unsigned char byte = static_cast<unsigned char>(unit);
       text.push_back(std::isalnum(byte) ? static_cast<char>(byte) : '_');
@@ -75,6 +76,7 @@ Generated Generator::run(Unit& unit) {
     if (unit.shared && unit.exports.empty()) fail("动态库没有导出");
     jumpTables_ = !unit.shared && !unit.pie && unit.imports.empty();
     itables_ = jumpTables_;
+    failChecks_ = unit.version >= 2;
     functions_ = &unit.functions;
     classes_ = &unit.classes;
     interfaces_ = &unit.interfaces;
@@ -100,6 +102,21 @@ Generated Generator::run(Unit& unit) {
         emit("halt");
       }
     };
+    /* M2 触发点 (d)：先扫有没有影子析构记录——入口前导比函数先发射，只能先扫一遍。
+       没有记录的程序零代码（无析构零开销）。 */
+    {
+      std::vector<const Stmt*> stack;
+      for (const Function& function : unit.functions) {
+        for (const Stmt& stmt : function.body) stack.push_back(&stmt);
+      }
+      while (!stack.empty()) {
+        const Stmt* stmt = stack.back();
+        stack.pop_back();
+        if (stmt->kind == Stmt::Kind::Decl && stmt->recordSlot >= 0) hasDtorRecords_ = true;
+        for (const Stmt& inner : stmt->body) stack.push_back(&inner);
+        for (const Stmt& inner : stmt->other) stack.push_back(&inner);
+      }
+    }
     auto emitTails = [&]() {
       emitStubs();
       /* 运行时例程没有源行。清掉上一个函数，避免把它们记成用户函数。 */
@@ -110,6 +127,7 @@ Generated Generator::run(Unit& unit) {
       }
       if (needFrom_) emitFromRoutine();
       if (needCollect_) emitCollectRoutines();
+      if (hasDtorRecords_) emitDtorSweepRoutines();
       emitUiRoutines();
     };
     if (unit.shared) {
@@ -130,6 +148,18 @@ Generated Generator::run(Unit& unit) {
       {
         const SiteGuard guard(*this, DebugSite{});
         emitConstStringInit();
+        /* M2 触发点 (d)：任务入口把影子记录链根清零（每任务一个字，窗口私有），
+           并把 __dtor_sweep 的标号存进清扫入口单元（reap(task) 钩子读它换恢复 PC）。
+           清扫入口单元恒写：没有记录的映像写 0。窗口可能留着上一个任务的残值，
+           钩子只把 0 认作“没得扫”，不写就会把续跑点换到垃圾标号上。 */
+        if (hasDtorRecords_) {
+          emit("place r0, 0");
+          emit("store.64 r0, " + std::to_string(kUi + kDtorRootCell * 64));
+          emit("place r0, __dtor_sweep");
+        } else {
+          emit("place r0, 0");
+        }
+        emit("store.64 r0, " + std::to_string(kUi + kDtorSweepCell * 64));
       }
       emitZap(entry.body[0].name, entry.body[0].line);
       for (Function& function : unit.functions) {
@@ -144,6 +174,18 @@ Generated Generator::run(Unit& unit) {
       const SiteGuard guard(*this, DebugSite{});
       emit("place r0, " + std::to_string(kStack));
       emit("store.64 r0, " + std::to_string(kSp));
+      /* M2 触发点 (d)：任务入口把影子记录链根清零（每任务一个字，窗口私有），
+         并把 __dtor_sweep 的标号存进清扫入口单元（reap(task) 钩子读它换恢复 PC）。
+         清扫入口单元恒写：没有记录的映像写 0。窗口可能留着上一个任务的残值，
+         钩子只把 0 认作“没得扫”，不写就会把续跑点换到垃圾标号上。 */
+      if (hasDtorRecords_) {
+        emit("place r0, 0");
+        emit("store.64 r0, " + std::to_string(kUi + kDtorRootCell * 64));
+        emit("place r0, __dtor_sweep");
+      } else {
+        emit("place r0, 0");
+      }
+      emit("store.64 r0, " + std::to_string(kUi + kDtorSweepCell * 64));
       emitConstStringInit();
       emit("call " + unit.functions[static_cast<std::size_t>(mainIndex)].label);
       emit("halt");

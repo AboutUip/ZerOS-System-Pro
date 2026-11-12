@@ -1,0 +1,97 @@
+/* POSIX XCU 索引（Issue 7）外的传统 infocmp（任务批 3 要求实现，注明非 XCU 表内）。
+   形式：infocmp [-1] [-a] [-c] [-e] [-F] [-L] [-n] [-r] [-u] [-V] [-A dir] [-B] [-C]
+   [-I dir] [-L] [-T type] [--] [type...]
+   本平台口径：条目是本平台文本编译格式（terminfo 模块），库在 /usr/share/terminfo，
+   内建 zeros。type 缺省取 TERM（没有则 zeros）。
+   -T 指定终端；-1 每行一个能力（缺省也是单行形式）；其余传统选项（-a -c -e -F -L
+   -n -r -u -V -A -B -C -I）按 tabs 口径校验后接受：输出恒为本平台规范/源形式，
+   不随传统列格式变化（如实注明）。
+   输出：条目源形式（名字行加逗号、能力行缩进加逗号）到描述符 1。
+   找不到条目写 infocmp: unknown terminal，退出 1；否则 0。
+   诊断英文 ASCII，描述符 2，前缀 infocmp:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import terminfo;
+
+deRfun reportOne(long home, long buf, long out, long termAt, long termLen): long {
+  long size = entry(home, buf, 8192L, termAt, termLen);
+  if (size < 0L) {
+    writeErr(home, "infocmp: unknown terminal: ");
+    writeSpan(home, 2L, 0L, termAt, termLen);
+    writeErr(home, "\n");
+    return 1L;
+  }
+  long made = sourceForm(buf, size, out, 8192L);
+  if (made < 0L) {
+    writeErr(home, "infocmp: entry too long\n");
+    return 1L;
+  }
+  writeSpan(home, 1L, 0L, out, made);
+  return 0L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long buf = obr::proc::alloc(home, 65536L);
+  long out = obr::proc::alloc(home, 65536L);
+  long term = obr::proc::alloc(home, 4096L);
+  if (buf == 0L || out == 0L || term == 0L) {
+    writeErr(home, "infocmp: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long operands = 0L;
+  long failed = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 84L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "infocmp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        copySpan(argPtr(home, index), term, argLen(home, index));
+        memory::store64(argLen(home, index), term + 2048L);
+      } else if (o == 65L || o == 66L || o == 67L || o == 73L) {
+        /* -A -B -C -I 传统选项：接受，dir/参数随后。 */
+        if (o == 65L || o == 73L) {
+          index = index + 1L;
+          if (index >= count) {
+            writeErr(home, "infocmp: option requires an argument\n");
+            return finish(home, 1L);
+          }
+        }
+      } else if (o == 49L || o == 97L || o == 99L || o == 101L || o == 70L || o == 76L || o == 110L || o == 114L || o == 117L || o == 86L) {
+        /* 输出样式类：按 tabs 口径接受。 */
+      } else {
+        writeErr(home, "infocmp: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      failed = failed + reportOne(home, buf, out, at, len);
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    long termLen = memory::load64(term + 2048L);
+    if (termLen < 1L) {
+      termLen = defaultTerm(home, term);
+    }
+    failed = failed + reportOne(home, buf, out, term, termLen);
+  }
+  if (failed > 0L) {
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
+}

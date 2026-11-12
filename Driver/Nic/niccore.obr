@@ -1,0 +1,68 @@
+/* 内核侧网卡核心驱动。
+   运行在监督核上，才有权碰扩展口。只搬原始以太网帧，
+   不解析以太网、IP、TCP、UDP、ARP、DNS，也不管理连接和重传。 */
+import niccore;
+import board;
+import memory;
+
+deRfun niccore::probe(long home): long {
+  if (port::state(1L) != 2L) {
+    memory::store64(2L, home + 128L);
+    return 2L;
+  }
+  /* 控制字的低 8 位是状态，接着 4 个八位组是帧上界，
+     接着 2 个八位组是队列深度，最后 1 个八位组是线的种类。
+     第一个八位组 0 表示读能力。 */
+  long word = xchg(1L, 0L, 0L);
+  long status = word & 255L;
+  memory::store64(status, home + 128L);
+  memory::store64((word / 256L) % 4294967296L, home + 192L);
+  memory::store64((word / 1099511627776L) % 65536L, home + 256L);
+  memory::store64((word / 72057594037927936L) % 256L, home + 320L);
+  return status;
+}
+
+deRfun niccore::send(long home): long {
+  long address = memory::load64(home + 192L);
+  long length = memory::load64(home + 128L);
+  if (address < 0L || address % 8L != 0L || length < 1L || length > 262144L) {
+    return -7L;
+  }
+  long offered = offer(1L, address, length, home + 320L, 8L);
+  if (offered < 0L) {
+    return offered;
+  }
+  return 0L;
+}
+
+deRfun niccore::receive(long home): long {
+  long address = memory::load64(home + 192L);
+  long capacity = memory::load64(home + 128L);
+  if (address < 0L || address % 8L != 0L || capacity < 0L || capacity > 262144L) {
+    return -7L;
+  }
+  long carried = carry(1L, 0L, 0L, address, capacity);
+  if (carried < 0L) {
+    return carried;
+  }
+  memory::store64(carried, home + 320L);
+  return carried;
+}
+
+deRfun niccore::selfCheck(long home): long {
+  long status = niccore::probe(home);
+  if (status != 0L) {
+    return status;
+  }
+  long frameMax = memory::load64(home + 192L);
+  if (frameMax < 1500L || frameMax > 268435456L) {
+    return 7L;
+  }
+  return 0L;
+}
+
+deRfun niccore::configure(long home): long {
+  long word = memory::load64(home + 128L);
+  long reply = xchg(1L, 0L, word);
+  return reply & 255L;
+}

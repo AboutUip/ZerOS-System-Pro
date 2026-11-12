@@ -1,0 +1,23 @@
+/* handover 探针：读服务 57 保存的计数器，加一，写回，再以新值退出。
+   第一次装入没有状态，退出码 1；重启后读到 1，退出码 2；依此类推。
+   不循环，不占核，也不会饿死同一核上的其它任务。 */
+import board;
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  long home = query(1L, 8L, obr::os::core());
+  obr::os::dwell(200L);
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(57L);
+  long value = 0L;
+  if (count == 8L) {
+    value = memory::load64(home + 131072L);
+  }
+  value = value + 1L;
+  memory::store64(value, home + 131072L);
+  memory::store64(8L, home + 128L);
+  memory::store64(1L, home + 64L);
+  obr::os::svc(57L);
+  return 0;
+}

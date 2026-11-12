@@ -1,0 +1,37 @@
+/* M-C：out span[byte] 出参（M-B 决定 3 的启用点）——出参类型可以是 span：一个地址字指向
+   调用方的两字切片，被调方整值写回（出参形态）；ref span 元素读写同面。
+   out 形参名不当值用（读 out 形参编译失败），位置转发照常。结果 0。*/
+#VERSION 2
+
+deRfun make(out span[byte] buf): void {
+  buf = span[byte](1048576, 4L);
+}
+
+deRfun fill(ref span[byte] buf): void {
+  buf[0] = (byte)65;
+  buf[1] = (byte)66;
+  buf[2] = (byte)67;
+}
+
+/* out 形参位置沿传（不是取值）。 */
+deRfun makeForward(out span[byte] buf): void {
+  make(buf);
+}
+
+deRfun main(): long {
+  var[span[byte]] s = span[byte](0L, 0L);
+  make(s);
+  if (s.data != 1048576L) return 1;
+  if (s.count != 4L) return 2;
+  /* ref span：被调方按元素读写（经地址字，与 long* 同形）。 */
+  fill(s);
+  if ((long)s[0] != 65L) return 3;
+  if ((long)s[1] != 66L) return 4;
+  if ((long)s[2] != 67L) return 5;
+  /* out span 转发。 */
+  var[span[byte]] t = span[byte](0L, 0L);
+  makeForward(t);
+  if (t.data != s.data) return 6;
+  if (t.count != 4L) return 7;
+  return 0;
+}

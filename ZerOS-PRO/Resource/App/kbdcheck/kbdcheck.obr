@@ -1,0 +1,33 @@
+#DYN
+/* 真实键盘驱动 continuity 检查：读取服务 57 的 32 字节状态。
+   events > base（重启前事件数）且 base > 0，证明事件跨 restart 没有清零；
+   line > 0 证明真实键入的换行被处理。 */
+import memory;
+import obr.os;
+import obr.print;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(57L);
+  if (count != 32L) {
+    memory::store64(1L, home + 128L);
+    obr::os::svc(28L);
+    return 1;
+  }
+  long events = memory::load64(home + 131072L);
+  long base = memory::load64(home + 131136L);
+  long line = memory::load64(home + 131200L);
+  long col = memory::load64(home + 131264L);
+  if (base < 1L || events <= base || line < 1L || col < 0L) {
+    memory::store64(2L, home + 128L);
+    obr::os::svc(28L);
+    return 2;
+  }
+  obr::print::text(home, "kbd continuity ok\n");
+  obr::print::flush(home);
+  memory::store64(42L, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

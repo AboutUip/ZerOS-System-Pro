@@ -1,0 +1,36 @@
+/* Plan 2 M1：构造链。派生构造漏写链式调用时自动调用基类无参构造（先基类后自己）；
+   显式链式调用写在第一条语句、调用直接基类。结果 0。*/
+#VERSION 2
+
+class Root {
+  int z;
+  deRfun Root(): void { z = 1; }
+}
+
+class Base : Root {
+  int y;
+  deRfun Base(): void { y = 2; }
+  deRfun Base(int v): void { y = v; }
+}
+
+class Sub : Base {
+  int x;
+  deRfun Sub(): void { x = 3; }
+}
+
+class Explicit : Base {
+  int x;
+  deRfun Explicit(): void { Base::Base(this, 7); x = 4; }
+}
+
+deRfun main(): int {
+  Sub s = new Sub();
+  if (s.z != 1) return 1;
+  if (s.y != 2) return 2;
+  if (s.x != 3) return 3;
+  Explicit e = new Explicit();
+  if (e.z != 1) return 4;
+  if (e.y != 7) return 5;
+  if (e.x != 4) return 6;
+  return 0;
+}

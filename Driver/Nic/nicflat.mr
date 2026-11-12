@@ -1,0 +1,16 @@
+/* 网卡 API 的 flat 版本。函数体编成 /lib/nicflat.zdll。
+   和 nic.mr 同名空间、同一组导出；区别只在数据布局是任务窗口布局。 */
+namespace nic {
+/* 探测网卡。0 是服务可达，2 是未就绪，7 是参数不合法。 */
+deRfun probe(): long;
+/* 发送一帧原始以太网报文。成功返回 0，失败返回负数状态。 */
+deRfun send(long address, long length): long;
+/* 接收一帧原始以太网报文。成功返回帧长，失败返回负数状态；-1 是空。 */
+deRfun recv(long address, long capacity): long;
+/* 自检。0 是服务可达且能力字合法。 */
+deRfun selfCheck(): long;
+/* 读取能力。frameMax 是帧上界，queueDepth 是参考队列深度，wireKind 是线的种类。 */
+deRfun info(long* frameMax, long* queueDepth, long* wireKind): long;
+/* 配置线。mode 0 是 loopback，1 是 udp。 */
+deRfun configure(long mode, long address, long port): long;
+}

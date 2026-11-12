@@ -1,0 +1,158 @@
+/* POSIX.1-2017 umask（utilities/umask.html）。
+   形式是 umask、umask -S、umask mask（八进制或符号）。
+   本系统内核创建模式固定：普通文件 0644、目录 0755（设备 0666），没有掩码接口。
+   选定（与 mesg 的 y/n 同口径）：
+   无操作数向描述符 1 写 022 和换行（0644 = 0666&~022、0755 = 0777&~022），退出 0。
+   -S 向描述符 1 写 u=rwx,g=rx,o=rx 和换行，退出 0。
+   mask 与 022 等效时退出 0，不改内核状态；其它掩码写
+   umask: creation mask is fixed at 022 on this platform，退出 1。
+   mask 支持 1 到 4 位八进制（可带前导 0），也支持 u=rwx,g=rx,o=rx 这类符号串。
+   不合法的 mask 写 umask: invalid mask，退出 1；多余操作数写
+   umask: too many operands，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 umask:。结束用服务 28。 */
+#DYN
+import obr.proc;
+import arg;
+import binutil;
+
+/* 符号串：逗号分隔的类段，类是 u g o a 的组合，动作 = + -，权限 r w x。
+   返回解析出的「保留」权限位（0 到 511）；不合法返回 -1。 */
+deRfun parseSymbolic(long addr, long count): long {
+  long allowed = 0L;
+  long index = 0L;
+  if (count < 1L) {
+    return -1L;
+  }
+  while (index < count) {
+    long classes = 0L;
+    while (index < count) {
+      long octet = byteAt(addr + index * 8L);
+      if (octet == 117L) {
+        classes = classes + 1L;
+      } else if (octet == 103L) {
+        classes = classes + 2L;
+      } else if (octet == 111L) {
+        classes = classes + 4L;
+      } else if (octet == 97L) {
+        classes = classes + 7L;
+      } else {
+        break;
+      }
+      index = index + 1L;
+    }
+    if (index >= count) {
+      return -1L;
+    }
+    long octet = byteAt(addr + index * 8L);
+    if (octet != 61L && octet != 43L && octet != 45L) {
+      return -1L;
+    }
+    long action = octet;
+    index = index + 1L;
+    if (classes == 0L) {
+      classes = 7L;
+    }
+    long perms = 0L;
+    while (index < count) {
+      long bit = byteAt(addr + index * 8L);
+      if (bit == 114L) {
+        perms = perms + 4L;
+      } else if (bit == 119L) {
+        perms = perms + 2L;
+      } else if (bit == 120L) {
+        perms = perms + 1L;
+      } else {
+        break;
+      }
+      index = index + 1L;
+    }
+    if (classes < 1L || classes > 7L) {
+      return -1L;
+    }
+    long shift = 0L;
+    long base = 0L;
+    if ((long)(classes & 1L) != 0L) {
+      base = base + perms * 64L;
+      shift = shift + 448L;
+    }
+    if ((long)(classes & 2L) != 0L) {
+      base = base + perms * 8L;
+      shift = shift + 56L;
+    }
+    if ((long)(classes & 4L) != 0L) {
+      base = base + perms;
+      shift = shift + 7L;
+    }
+    if (action == 61L) {
+      allowed = (allowed & (511L - shift)) + base;
+    } else if (action == 43L) {
+      allowed = allowed + (base & (511L - allowed));
+    } else {
+      allowed = allowed & (511L - base);
+    }
+    if (index < count) {
+      if (byteAt(addr + index * 8L) != 44L) {
+        return -1L;
+      }
+      index = index + 1L;
+      if (index >= count) {
+        return -1L;
+      }
+    }
+  }
+  return allowed;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long count = argc(home);
+  if (count == 1L) {
+    writeStr(home, 1L, "022\n");
+    return finish(home, 0L);
+  }
+  if (count == 2L) {
+    long at = argPtr(home, 1L);
+    long len = argLen(home, 1L);
+    if (spanSame(at, len, "-S") == 1L) {
+      writeStr(home, 1L, "u=rwx,g=rx,o=rx\n");
+      return finish(home, 0L);
+    }
+    long mask = -1L;
+    if (len >= 1L && len <= 4L && spanSame(at, len, "-S") == 0L) {
+      long value = 0L;
+      long cursor = 0L;
+      long octal = 1L;
+      while (cursor < len) {
+        long octet = byteAt(at + cursor * 8L);
+        if (octet < 48L || octet > 55L) {
+          octal = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (octal == 1L) {
+        cursor = 0L;
+        while (cursor < len) {
+          value = value * 8L + byteAt(at + cursor * 8L) - 48L;
+          cursor = cursor + 1L;
+        }
+        mask = value;
+      } else {
+        long allowed = parseSymbolic(at, len);
+        if (allowed >= 0L) {
+          mask = 511L - allowed;
+        }
+      }
+    }
+    if (mask < 0L) {
+      writeErr(home, "umask: invalid mask\n");
+      return finish(home, 1L);
+    }
+    if (mask != 18L) {
+      writeErr(home, "umask: creation mask is fixed at 022 on this platform\n");
+      return finish(home, 1L);
+    }
+    return finish(home, 0L);
+  }
+  writeErr(home, "umask: too many operands\n");
+  return finish(home, 1L);
+}

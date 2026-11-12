@@ -1,5 +1,9 @@
 /* 工作区布局。当前目录长度、目录正文、上一屏的列数。
-   不读键盘，不写屏幕，也不碰进程服务。 */
+   不读键盘，不写屏幕，也不碰进程服务。
+   壳自己的可变状态都放这块工作区，不用 static：#DYN 程序和挂上的 .zdll
+   共用同一段静态区（槽位编号各自从头排），同槽位会互相覆盖——
+   draw 的画面指针和 obr.print 的缓冲计数同槽时，flush 会把堆指针当字节数写个不停。
+   工作区是每个任务自己的堆块，没有这个面。 */
 import work;
 
 deRfun cwdLenAt(long work): long {
@@ -12,4 +16,35 @@ deRfun cwdAt(long work): long {
 
 deRfun prevAt(long work): long {
   return work + 28736L;
+}
+
+/* 画面缓冲 2048 个八位组。管道表在 30848 结束，here-document 在 60000 起。 */
+deRfun screenAt(long work): long {
+  return work + 32768L;
+}
+
+/* Run 和 Bio 的缓存指针与派生登记，各占一个字。 */
+deRfun poolAt(long work): long {
+  return work + 49216L;
+}
+
+deRfun nestAt(long work): long {
+  return work + 49280L;
+}
+
+deRfun scratchBufAt(long work): long {
+  return work + 49344L;
+}
+
+deRfun lineBufAt(long work): long {
+  return work + 49408L;
+}
+
+/* 标准输出的文件位移。fd 1 接上普通文件时 runList 清零，写出时接在文件已有内容之后。 */
+deRfun outOffAt(long work): long {
+  return work + 49664L;
+}
+
+deRfun trackAt(long work, long index): long {
+  return work + 49728L + index * 64L;
 }

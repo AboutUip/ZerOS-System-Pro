@@ -1,16 +1,17 @@
 /* POSIX.1-2017 date（utilities/date.html）。
-   没有时区库。本地时间与 UTC 相同，%Z 固定写 UTC，-u 的结果与不写 -u 相同。
+   TZ 接受 IANA 区域名；未设置时按 UTC。-u 强制 UTC。
    形式是 date [-u] [+format]，以及 date [-u] mmddHHMM[[cc]yy]。
    没有 +format 时，输出等同 date "+%a %b %e %H:%M:%S %Z %Y" 再加一个换行。
    +format 只接受该页列出的转换，以及 E、O 修饰。
    没有区域设置，E 和 O 退回没有修饰的转换。名字用固定的英文。
-   不接受标志、宽度、精度，也不接受 %F、%s、%z 这些该页没有的写法。
-   设置操作数仍写 date: setting the time is not supported，不改系统时间。
+   不接受标志、宽度、精度，也不接受 %F、%s 这些该页没有的写法。
+   设置操作数用 mmddHHMM[[cc]yy]，走 time 驱动；仅 root 可以修改系统时间。
    诊断在标准错误，前缀 date:。结束用服务 28。 */
 #DYN
 import memory;
 import obr.oct;
 import obr.proc;
+import time;
 import arg;
 
 deRfun u8(long addr): long {
@@ -76,7 +77,7 @@ deRfun formatOk(long addr, long len): long {
           return 0L;
         }
         index = index + 1L;
-      } else if (hasByte("aAbBcCdDehHIjmMnprStTuUVwWxXyYZ", bit) == 0L) {
+      } else if (hasByte("aAbBcCdDehHIjmMnprStTuUVwWxXyYZz", bit) == 0L) {
         return 0L;
       } else {
         index = index + 1L;
@@ -249,8 +250,12 @@ deRfun dayOfYear(long year, long month, long day): long {
 }
 
 deRfun breakMillis(long ms, long* year, long* month, long* day, long* hour, long* minute, long* second): void {
-  long days = floorDiv(ms, 86400000L);
-  long tod = ms - days * 86400000L;
+  long days = ms / 86400000L;
+  long tod = ms % 86400000L;
+  if (tod < 0L) {
+    days = days - 1L;
+    tod = tod + 86400000L;
+  }
   long seconds = tod / 1000L;
   *hour = seconds / 3600L;
   *minute = (seconds % 3600L) / 60L;
@@ -281,6 +286,12 @@ deRfun fillClock(long ms, long rec): void {
   memory::store64(wday, rec + 384L);
   memory::store64(dayOfYear(year, month, day), rec + 448L);
   memory::store64(days, rec + 512L);
+  memory::store64(0L, rec + 576L);
+  memory::store64(0L, rec + 640L);
+  memory::storeOctet(85L, rec + 704L);
+  memory::storeOctet(84L, rec + 712L);
+  memory::storeOctet(67L, rec + 720L);
+  memory::storeOctet(0L, rec + 728L);
 }
 
 deRfun outByte(long home, long bit, long* place): long {
@@ -495,6 +506,21 @@ deRfun outDayPad(long home, long day, long* place): long {
   return outNum(home, day, 2L, place);
 }
 
+deRfun outZone(long home, long rec, long* place): long {
+  long index = 0L;
+  while (index < 64L) {
+    long bit = u8(rec + 704L + index * 8L);
+    if (bit == 0L) {
+      return 0L;
+    }
+    if (outByte(home, bit, place) != 0L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
 deRfun emitConv(long home, long rec, long code, long* place): long {
   long year = memory::load64(rec);
   long month = memory::load64(rec + 64L);
@@ -674,7 +700,22 @@ deRfun emitConv(long home, long rec, long code, long* place): long {
     return outNum(home, year, 1L, place);
   }
   if (code == 90L) {
-    return outText(home, "UTC", place);
+    return outZone(home, rec, place);
+  }
+  if (code == 122L) {
+    long offset = memory::load64(rec + 576L);
+    if (offset < 0L) {
+      if (outByte(home, 45L, place) != 0L) {
+        return 1L;
+      }
+      offset = -offset;
+    } else if (outByte(home, 43L, place) != 0L) {
+      return 1L;
+    }
+    if (outNum(home, offset / 3600L, 2L, place) != 0L) {
+      return 1L;
+    }
+    return outNum(home, (offset % 3600L) / 60L, 2L, place);
   }
   return 1L;
 }
@@ -684,6 +725,27 @@ deRfun formatBit(long fromText, long addr, long index, string text): long {
     return text[index];
   }
   return u8(addr + index * 8L);
+}
+
+deRfun findZone(long home, long* zone, long* zoneLen): void {
+  *zone = 0L;
+  *zoneLen = 0L;
+  long index = 0L;
+  long count = envc(home);
+  while (index < count) {
+    long at = envPtr(home, index);
+    long len = envLen(home, index);
+    if (len >= 3L && u8(at) == 84L && u8(at + 8L) == 90L && u8(at + 16L) == 61L) {
+      *zone = at + 24L;
+      *zoneLen = len - 3L;
+      if (*zoneLen > 0L && u8(*zone) == 58L) {
+        *zone = *zone + 8L;
+        *zoneLen = *zoneLen - 1L;
+      }
+      return;
+    }
+    index = index + 1L;
+  }
 }
 
 deRfun paint(long home, long rec, long fromText, long addr, long len, string text, long* place): long {
@@ -731,18 +793,25 @@ deRfun paint(long home, long rec, long fromText, long addr, long len, string tex
   return 0L;
 }
 
-deRfun showNow(long home, long fromText, long addr, long len, string text): int {
-  if (obr::proc::clock(home) != 0L) {
+deRfun showNow(long home, long fromText, long addr, long len, string text, long zone, long zoneLen): int {
+  if (time::clock(home) != 0L) {
     writeErr(home, "date: cannot read clock\n");
     return finish(home, 1L);
   }
   long ms = obr::proc::slot(home, 128L);
-  long rec = obr::proc::alloc(home, 576L);
+  long rec = obr::proc::alloc(home, 1216L);
   if (rec == 0L) {
     writeErr(home, "date: out of memory\n");
     return finish(home, 1L);
   }
-  fillClock(ms, rec);
+  if (zoneLen > 0L) {
+    if (time::zoneFields(ms, zone, zoneLen, (long*)rec, rec + 704L, 64L) != 0L) {
+      writeErr(home, "date: cannot read time zone\n");
+      return finish(home, 1L);
+    }
+  } else {
+    fillClock(ms, rec);
+  }
   long use = len;
   if (fromText == 1L) {
     int raw = length(text);
@@ -791,15 +860,17 @@ deRfun main(): int {
       ended = 1L;
     }
   }
-  if (utc == 1L) {
-    utc = 1L;
+  long zone = 0L;
+  long zoneLen = 0L;
+  if (utc == 0L) {
+    findZone(home, &zone, &zoneLen);
   }
   if (count - index > 1L) {
     writeErr(home, "date: too many arguments\n");
     return finish(home, 1L);
   }
   if (index == count) {
-    return showNow(home, 1L, 0L, 23L, "%a %b %e %H:%M:%S %Z %Y");
+    return showNow(home, 1L, 0L, 23L, "%a %b %e %H:%M:%S %Z %Y", zone, zoneLen);
   }
   long at = argPtr(home, index);
   long len = argLen(home, index);
@@ -808,12 +879,86 @@ deRfun main(): int {
       writeErr(home, "date: invalid format\n");
       return finish(home, 1L);
     }
-    return showNow(home, 0L, at + 8L, len - 1L, "");
+    return showNow(home, 0L, at + 8L, len - 1L, "", zone, zoneLen);
   }
   if (dateOk(at, len) == 0L) {
     writeErr(home, "date: invalid date\n");
     return finish(home, 1L);
   }
-  writeErr(home, "date: setting the time is not supported\n");
-  return finish(home, 1L);
+  long current = 0L;
+  if (time::clock(home) != 0L) {
+    writeErr(home, "date: cannot read clock\n");
+    return finish(home, 1L);
+  }
+  current = obr::proc::slot(home, 128L);
+  long record = obr::proc::alloc(home, 1216L);
+  if (record == 0L) {
+    writeErr(home, "date: out of memory\n");
+    return finish(home, 1L);
+  }
+  if (zoneLen > 0L) {
+    if (time::zoneFields(current, zone, zoneLen, (long*)record, record + 704L, 64L) != 0L) {
+      writeErr(home, "date: cannot read time zone\n");
+      return finish(home, 1L);
+    }
+  } else {
+    fillClock(current, record);
+  }
+  long year = memory::load64(record);
+  long month = two(at, 0L);
+  long day = two(at, 2L);
+  long hour = two(at, 4L);
+  long minute = two(at, 6L);
+  if (len == 10L) {
+    long shortYear = two(at, 8L);
+    if (shortYear >= 69L) {
+      year = 1900L + shortYear;
+    } else {
+      year = 2000L + shortYear;
+    }
+  } else if (len == 12L) {
+    year = two(at, 8L) * 100L + two(at, 10L);
+  }
+  if (day > monthDays(month, year, 1L)) {
+    writeErr(home, "date: invalid date\n");
+    return finish(home, 1L);
+  }
+  long localTarget = time::daysFromCivil(year, month, day) * 86400000L
+    + hour * 3600000L + minute * 60000L;
+  long target = localTarget;
+  if (zoneLen > 0L) {
+    if (time::zoneFields(localTarget, zone, zoneLen, (long*)record, record + 704L, 64L) != 0L) {
+      writeErr(home, "date: cannot read time zone\n");
+      return finish(home, 1L);
+    }
+    long offset = memory::load64(record + 576L);
+    target = localTarget - offset * 1000L;
+    if (time::zoneFields(target, zone, zoneLen, (long*)record, record + 704L, 64L) != 0L) {
+      writeErr(home, "date: cannot read time zone\n");
+      return finish(home, 1L);
+    }
+    if (memory::load64(record) != year || memory::load64(record + 64L) != month
+      || memory::load64(record + 128L) != day || memory::load64(record + 192L) != hour
+      || memory::load64(record + 256L) != minute) {
+      offset = memory::load64(record + 576L);
+      target = localTarget - offset * 1000L;
+      if (time::zoneFields(target, zone, zoneLen, (long*)record, record + 704L, 64L) != 0L
+        || memory::load64(record) != year || memory::load64(record + 64L) != month
+        || memory::load64(record + 128L) != day || memory::load64(record + 192L) != hour
+        || memory::load64(record + 256L) != minute) {
+        writeErr(home, "date: invalid local time\n");
+        return finish(home, 1L);
+      }
+    }
+  }
+  long status = time::setAt(home, target);
+  if (status != 0L) {
+    if (status == -1L) {
+      writeErr(home, "date: permission denied\n");
+    } else {
+      writeErr(home, "date: cannot set clock\n");
+    }
+    return finish(home, 1L);
+  }
+  return finish(home, 0L);
 }

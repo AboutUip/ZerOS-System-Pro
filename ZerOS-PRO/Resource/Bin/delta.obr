@@ -1,0 +1,254 @@
+/* POSIX.1-2017 delta（utilities/delta.html，SCCS 族）。选定子集：
+   delta [-r sid] [-s] [-n] [-y[comment]] [--] s.file...
+   提交新 delta：SID=1.n+1（子集线性）。正文来源：g 文件（get -e 产物，
+   操作数去 s. 前缀同 get）；无 g 文件时读描述符 0。
+   -r sid 指定被取代 SID（缺省 p 文件登记的；都无时取最新）；
+   -s 静默；-y 注释（缺省空）；-n 保留 g 文件（缺省删）。
+   与 get -e 配套写 p 文件清理（delta 后删 p 文件）。
+   未支持+原因：分支 SID 与 include/exclude 裁剪——线性子集。
+   失败写 delta: 文件: can't delta file，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 delta:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long out = obr::proc::alloc(home, 524288L);
+  if (st == 0L || buf == 0L || out == 0L) {
+    writeErr(home, "delta: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long sidAt = 0L;
+  long sidLen = 0L;
+  long silent = 0L;
+  long keepG = 0L;
+  long cmAt = 0L;
+  long cmLen = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      long vAt = at + 16L;
+      long vLen = len - 2L;
+      if (o == 114L || o == 121L) {
+        if (vLen == 0L) {
+          index = index + 1L;
+          if (index < count) {
+            vAt = argPtr(home, index);
+            vLen = argLen(home, index);
+          } else {
+            vAt = 0L;
+            vLen = 0L;
+          }
+        }
+      }
+      if (o == 114L) {
+        sidAt = vAt;
+        sidLen = vLen;
+      } else if (o == 115L) {
+        silent = 1L;
+      } else if (o == 110L) {
+        keepG = 1L;
+      } else if (o == 121L) {
+        cmAt = vAt;
+        cmLen = vLen;
+      } else {
+        writeErr(home, "delta: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      if (sccsLoad(home, st, buf, at, len) != 0L) {
+        writeErr(home, "delta: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": can't delta file\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long oldIdx = sccsFind(st, sidAt, sidLen);
+      if (oldIdx < 0L) {
+        writeErr(home, "delta: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": nonexistent sid\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      /* 新正文来源：g 文件或标准输入。 */
+      long g = obr::proc::alloc(home, 8192L * 8L);
+      long glen = 0L;
+      long slash = -1L;
+      long k = 0L;
+      while (k < len) {
+        if (byteAt(at + k * 8L) == 47L) {
+          slash = k;
+        }
+        k = k + 1L;
+      }
+      long nameAt = at;
+      long nameLen = len;
+      if (slash >= 0L) {
+        copySpan(at, g, slash + 1L);
+        nameAt = at + (slash + 1L) * 8L;
+        nameLen = len - slash - 1L;
+        glen = slash + 1L;
+      }
+      if (nameLen > 2L && byteAt(nameAt) == 115L && byteAt(nameAt + 8L) == 46L) {
+        copySpan(nameAt + 16L, g + glen * 8L, nameLen - 2L);
+        glen = glen + nameLen - 2L;
+      } else {
+        copySpan(nameAt, g + glen * 8L, nameLen);
+        glen = glen + nameLen;
+      }
+      long bodyLen = 0L;
+      plant(home, g, glen);
+      if (obr::proc::open(home, 0L) == 0L) {
+        long fd = obr::proc::slot(home, 192L);
+        while (bodyLen < 65536L) {
+          if (obr::proc::read(home, fd, bodyLen, 4096L) != 0L) {
+            break;
+          }
+          long got = obr::proc::slot(home, 320L);
+          if (got <= 0L) {
+            break;
+          }
+          if (got > 4096L) {
+            got = 4096L;
+          }
+          copySpan(obr::proc::bytes(home), out + bodyLen * 8L, got);
+          bodyLen = bodyLen + got;
+          if (got < 4096L) {
+            break;
+          }
+        }
+        obr::proc::close(home, fd);
+      } else {
+        while (bodyLen < 65536L) {
+          if (obr::proc::read(home, 0L, bodyLen, 4096L) != 0L) {
+            break;
+          }
+          long got = obr::proc::slot(home, 320L);
+          if (got <= 0L) {
+            break;
+          }
+          if (got > 4096L) {
+            got = 4096L;
+          }
+          copySpan(obr::proc::bytes(home), out + bodyLen * 8L, got);
+          bodyLen = bodyLen + got;
+          if (got < 4096L) {
+            break;
+          }
+        }
+      }
+      /* 追加 delta：serial = 最大 serial+1，SID 1.n+1。 */
+      long n = memory::load64(st + 64L);
+      if (n >= 64L) {
+        writeErr(home, "delta: too many deltas\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long maxSerial = 0L;
+      long maxN = 0L;
+      long i = 0L;
+      while (i < n) {
+        long s2 = memory::load64(st + 8192L + i * 1536L + 768L);
+        if (s2 > maxSerial) {
+          maxSerial = s2;
+        }
+        long sl = memory::load64(st + 8192L + i * 1536L);
+        long v = 0L;
+        if (sl == 3L) {
+          v = byteAt(st + 8192L + i * 1536L + 64L + 16L) - 48L;
+        }
+        if (v > maxN) {
+          maxN = v;
+        }
+        i = i + 1L;
+      }
+      long e = st + 8192L + n * 1536L;
+      long sid = obr::proc::bytes(home);
+      long sl = putText(sid, 0L, "1.");
+      if (maxN >= 9L) {
+        sl = putNum(sid, sl, maxN + 1L);
+      } else {
+        memory::storeOctet(48L + maxN + 1L, sid + sl * 8L);
+        sl = sl + 1L;
+      }
+      memory::store64(sl, e);
+      copySpan(sid, e + 64L, sl);
+      sccsNow(home, e + 192L);
+      long uLen = putText(e + 512L, 0L, "root");
+      memory::store64(uLen, e + 448L);
+      memory::store64(maxSerial + 1L, e + 768L);
+      /* pred = 旧 sid 文本。 */
+      long old = st + 8192L + oldIdx * 1536L;
+      long ol = memory::load64(old);
+      copySpan(old + 64L, e + 896L, ol);
+      memory::store64(ol, e + 832L);
+      if (bodyLen > 0L) {
+        long total = memory::load64(st);
+        copySpan(out, buf + total * 8L, bodyLen);
+        memory::store64(total, e + 1024L);
+      } else {
+        memory::store64(0L, e + 1024L);
+      }
+      memory::store64(bodyLen, e + 1088L);
+      memory::store64(n + 1L, st + 64L);
+      if (sccsSave(home, st, buf, at, len) != 0L) {
+        writeErr(home, "delta: can't delta file\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      if (keepG == 0L) {
+        plant(home, g, glen);
+        obr::proc::unlink(home);
+      }
+      /* 清 p 文件（同名去 s. 换 p）。 */
+      long pn = obr::proc::alloc(home, 8192L * 8L);
+      long po = 0L;
+      if (slash >= 0L) {
+        copySpan(at, pn, slash + 1L);
+        po = slash + 1L;
+      }
+      if (nameLen > 2L && byteAt(nameAt) == 115L && byteAt(nameAt + 8L) == 46L) {
+        copySpan(nameAt + 16L, pn + po * 8L, nameLen - 2L);
+        po = po + nameLen - 2L;
+      } else {
+        copySpan(nameAt, pn + po * 8L, nameLen);
+        po = po + nameLen;
+      }
+      putText(pn, po, "p");
+      plant(home, pn, po + 1L);
+      obr::proc::unlink(home);
+      if (silent == 0L) {
+        writeStr(home, 1L, "delta ");
+        writeSpan(home, 1L, 0L, e + 64L, sl);
+        writeStr(home, 1L, "\n");
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "delta: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

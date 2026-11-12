@@ -1,0 +1,85 @@
+#DYN
+/* export-before-kill 检查：
+   1. 装 holdover，等 1 秒，state 必须为空（驱动平时不 checkpoint）；
+   2. restart：SIGTERM 让旧实例导出，等它退出后装新实例；
+   3. state 必须 >0（旧实例退出前写的）；
+   4. 再跑 1 秒再 restart，第二个导出值必须更大。
+   成功返回 0；失败返回阶段号。 */
+import memory;
+import obr.os;
+import obr.print;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16448L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun state(long home): long {
+  memory::store64(2L, home + 64L);
+  long count = obr::os::svc(57L);
+  if (count != 8L) {
+    return -1L;
+  }
+  return memory::load64(home + 131072L);
+}
+
+deRfun restart(long home): long {
+  setPath(home, "/drivers/holdover.zo");
+  memory::store64(0L, home + 128L);
+  memory::store64(3L, home + 64L);
+  long status = obr::os::svc(56L);
+  long rounds = 0L;
+  long waits = 0L;
+  while ((status == 11L || status == 12L) && rounds < 80L) {
+    if (status == 12L) {
+      waits = waits + 1L;
+      if (waits > 10L) {
+        memory::store64(1L, home + 2048L);
+        memory::store64(6L, home + 64L);
+      }
+    }
+    obr::os::dwell(100L);
+    status = obr::os::svc(56L);
+    rounds = rounds + 1L;
+  }
+  return status;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  setPath(home, "/drivers/holdover.zo");
+  memory::store64(1L, home + 64L);
+  if (obr::os::svc(56L) != 0L) {
+    return 1;
+  }
+  obr::os::dwell(1000L);
+  if (state(home) != -1L) {
+    return 2;
+  }
+  if (restart(home) != 0L) {
+    return 3;
+  }
+  obr::os::dwell(150L);
+  long first = state(home);
+  if (first < 1L) {
+    return 4;
+  }
+  obr::os::dwell(1000L);
+  if (restart(home) != 0L) {
+    return 5;
+  }
+  obr::os::dwell(150L);
+  long second = state(home);
+  if (second <= first) {
+    return 6;
+  }
+  obr::print::text(home, "export-before-kill ok\n");
+  obr::print::flush(home);
+  return 0;
+}

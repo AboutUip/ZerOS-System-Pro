@@ -1,0 +1,9 @@
+/* Plan 2 M3：`?` 必须有归宿（最近的 try 或 @Fails 函数的返回通道）。编译应当失败：失败没有归宿：把函数标成 @Fails 或用 try 接住。 */
+#VERSION 2
+
+@Fails deRfun g(): void { throw fail.of(1); }
+
+deRfun main(): int {
+  g()?;
+  return 0;
+}

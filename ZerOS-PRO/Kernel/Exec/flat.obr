@@ -1,0 +1,332 @@
+/* 任务窗口装入。有空核时启动；没有空核时把任务做成 Ready 上下文放进该核的槽。
+   flat 程序的栈/静态/堆在窗口内，install 之前先 bound。 */
+import flat;
+import board;
+import exec;
+import fs;
+import proc;
+import sched;
+import memory;
+import obr.os;
+import window;
+
+/* 核可以装入新窗口任务：
+   - 已停且没有 svc 在等（why == 0）；
+   - 停着，但当前任务已经睡下且上下文在槽里（held > 0）——可以直接覆盖，
+     醒来时从槽恢复；
+   - 停着，当前任务已经退出（僵尸/空）——程序不再需要。 */
+deRfun flatCoreIdle(long core): long {
+  if (userCore(core) == 0L) {
+    return 0L;
+  }
+  /* 还没装过任务的核，启动时也会停在初始 svc 上。
+     任务数为 0 就是空核，可以直接装入。 */
+  if (taskCount(core) == 0L) {
+    return 1L;
+  }
+  if (query(1L, 5L, core) != 0L) {
+    /* 核还在跑，但核上那份任务已经收掉：旧驱动停在系统调用里被强制重启。
+       这种核可以直接覆盖，不必等它自己让出。 */
+    long live = taskCurrent(core);
+    if (live < 0L) {
+      live = taskFind(core);
+    }
+    if (live < 0L) {
+      return 1L;
+    }
+    Task* dead = taskAt(live);
+    if (dead.pid == 0L || dead.state == TaskState::Zombie || dead.state == TaskState::Empty) {
+      return 1L;
+    }
+    return 0L;
+  }
+  long why = query(1L, 11L, core);
+  if (why == 0L) {
+    return 1L;
+  }
+  long index = taskFind(core);
+  if (index >= 0L) {
+    Task* task = taskAt(index);
+    if (task.state == TaskState::Sleeping && task.held > 0L) {
+      return 1L;
+    }
+    if (task.state == TaskState::Zombie || task.state == TaskState::Empty) {
+      return 1L;
+    }
+  }
+  return 0L;
+}
+
+deRfun flatStore(long home, long pid, long core, long origin): void {
+  memory::store64(pid, home + 192L);
+  memory::store64(core, home + 256L);
+  memory::store64(origin, home + 320L);
+}
+
+deRfun flatRestoreOld(long core, long old, long slot): void {
+  taskBind(core, old);
+  obr::os::restore(core, slot);
+  taskAccount(old, TaskState::Running);
+  taskAt(old).state = TaskState::Running;
+  rankPublish(core);
+  obr::os::schedule(core);
+}
+
+deRfun flatLoaded(long caller, long home, long size, long pinArg): long {
+  long callerIndex = taskFind(caller);
+  long origin = windowTake();
+  if (origin == 0L) {
+    return 11L;
+  }
+
+  /* 有空核（真正空闲，或阻塞等待腾出来的核）：直接启动。
+     3 号也纳入：shell 在 wait 里睡下后，上下文已进槽，核可以复用。
+     调用者自己的核不装：它正停在这个 svc 里，装了会把调用者盖掉。 */
+  /* +576 是指定核，0 表示自动。指定核时只在这一颗上装。 */
+  long pin = pinArg;
+  if (pin == 0L) {
+    pin = memory::load64(home + 576L);
+  }
+  long pinned = 0L;
+  if (pin >= 3L && pin < 8L && pin != caller) {
+    pinned = 1L;
+  }
+  long core = 3L;
+  if (pinned == 1L) {
+    core = pin;
+    if (flatCoreIdle(core) == 0L) {
+      /* 核可能停在 svc 上，但任务已经睡下且上下文在槽里；这种情况可以直接覆盖。 */
+      long sleeping = taskFind(pin);
+      if (sleeping >= 0L && taskAt(sleeping).state == TaskState::Sleeping && taskAt(sleeping).held > 0L) {
+        core = pin;
+      } else {
+        core = 8L;
+      }
+    }
+  } else {
+    /* 加载者自己就在 6 号核时，避开 3 号共享核，
+       优先用 4/5/7。 */
+    while (core < 8L && (core == caller || flatCoreIdle(core) == 0L)) {
+      core = core + 1L;
+    }
+  }
+  if (core < 8L) {
+    obr::os::bound(core, origin, windowBits());
+    obr::os::install(core, imageAt(), size);
+    long bound = bindLibs(core, home, size);
+    if (bound != 0L) {
+      windowFree(origin);
+      return bound;
+    }
+    long pid = taskSpawnWindow(core, nextPid(), 0L, 0L, windowTag(), TaskState::Running, origin, windowBits(), origin + windowHeapOffset());
+    if (pid == 0L) {
+      windowFree(origin);
+      return 7L;
+    }
+    long parent = taskFind(caller);
+    Task* child = taskAt(taskByPid(pid));
+    if (parent >= 0L) {
+      child.ppid = taskAt(parent).pid;
+      rankSet(taskByPid(pid), rankGet(parent));
+    }
+    commFromPath(taskByPid(pid), home + 16384L);
+    obr::os::hertz(core, 30L);
+    schedWake(core);
+    flatStore(home, pid, core, origin);
+    return 0L;
+  }
+
+  /* 没有空闲核：和 execSpawn 同一把尺，只在能安全 capture 的核上装入。
+     只挑“已经抓过槽”的运行中任务（held > 0）：上下文有备份，换出后能恢复。
+     没有抓过槽的驱动核不碰，避免把无人回复的 svc 现场盖掉。 */
+  long pick = -1L;
+  if (pinned == 1L) {
+    if (stoppedForSlice(pin) == 1L) {
+      long running = taskCurrent(pin);
+      if (running < 0L) {
+        running = taskFind(pin);
+      }
+      if (running >= 0L && taskAt(running).held > 0L) {
+        pick = pin;
+      }
+    }
+  } else {
+    long least = 0L;
+    core = 3L;
+    while (core < 8L) {
+      if (core != caller && stoppedForSlice(core) == 1L) {
+        long running = taskCurrent(core);
+        if (running >= 0L && taskAt(running).held > 0L) {
+          long load = taskCount(core);
+          if (pick < 0L || load < least) {
+            pick = core;
+            least = load;
+          }
+        }
+      }
+      core = core + 1L;
+    }
+  }
+  if (pick < 0L) {
+    windowFree(origin);
+    return 11L;
+  }
+  core = pick;
+  long old = taskFind(core);
+  long oldSlot = slotHold(old);
+  if (oldSlot < 0L) {
+    windowFree(origin);
+    return 7L;
+  }
+  obr::os::capture(core, oldSlot);
+  taskAccount(old, TaskState::Ready);
+  taskAt(old).state = TaskState::Ready;
+
+  obr::os::bound(core, origin, windowBits());
+  obr::os::install(core, imageAt(), size);
+  long bound = bindLibs(core, home, size);
+  if (bound != 0L) {
+    flatRestoreOld(core, old, oldSlot);
+    windowFree(origin);
+    return bound;
+  }
+  /* 和 execSpawn 同一模型：子任务直接 Running 上核，旧任务已抄进槽、标成就绪。
+     不抓子任务上下文——install 之后核上就是子任务的入口，capture 反而是多余的挂点。 */
+  long pid = taskSpawnWindow(core, nextPid(), 0L, 0L, windowTag(), TaskState::Running, origin, windowBits(), origin + windowHeapOffset());
+  if (pid == 0L) {
+    flatRestoreOld(core, old, oldSlot);
+    windowFree(origin);
+    return 7L;
+  }
+  long parent = taskCurrent(caller);
+  if (parent < 0L) {
+    parent = taskFind(caller);
+  }
+  long childIndex = taskByPid(pid);
+  Task* child = taskAt(childIndex);
+  if (parent >= 0L) {
+    child.ppid = taskAt(parent).pid;
+    rankSet(childIndex, rankGet(parent));
+  }
+  commFromPath(childIndex, home + 16384L);
+  obr::os::hertz(core, 30L);
+  schedWake(core);
+  flatStore(home, pid, core, origin);
+  return 0L;
+}
+
+deRfun spawnFlat(long caller, long home, long pin): long {
+  long size = 0L;
+  long status = pullAt(home + 16384L, &size);
+  if (status != 0L) {
+    return status;
+  }
+  if (size < 1L) {
+    return 7L;
+  }
+  return flatLoaded(caller, home, size, pin);
+}
+
+deRfun flatDone(long op): long {
+  static long done = 0L;
+  if (op == 1L) {
+    done = 0L;
+  }
+  if (op == 2L) {
+    done = done + 1L;
+  }
+  return done;
+}
+
+deRfun bitOf(long index): long {
+  long value = 1L;
+  long step = 0L;
+  while (step < index) {
+    value = value * 2L;
+    step = step + 1L;
+  }
+  return value;
+}
+
+/* 位图里第 slot 个允许核（bit0=核3 … bit4=核7）。没有返回 0。 */
+deRfun maskCore(long mask, long slot): long {
+  long seen = 0L;
+  long core = 3L;
+  while (core < 8L) {
+    if ((mask / bitOf(core - 3L)) % 2L == 1L) {
+      if (seen == slot) {
+        return core;
+      }
+      seen = seen + 1L;
+    }
+    core = core + 1L;
+  }
+  return 0L;
+}
+
+deRfun spawnMany(long caller, long home): long {
+  long size = 0L;
+  long status = pullAt(home + 16384L, &size);
+  if (status != 0L) {
+    return status;
+  }
+  if (size < 1L) {
+    return 7L;
+  }
+  long want = memory::load64(home + 448L);
+  if (want < 1L || want > 150L) {
+    want = 150L;
+  }
+  /* +1024 是允许核位图：bit0=核3 … bit4=核7，0 表示自动。 */
+  long mask = memory::load64(home + 1024L);
+  /* 诊断：把内核读到的位图写回 +1152，调用者可以核对。 */
+  memory::store64(mask, home + 1152L);
+  long slot = 0L;
+  long made = 0L;
+  long peak = 0L;
+  /* 每核创建数跨批次累计，由服务 51 在测试开始时清零。 */
+  long index = 0L;
+  while (index < want) {
+    long madeStatus = 11L;
+    long attempt = 0L;
+    while (attempt < 5L && madeStatus == 11L) {
+      long core = 0L;
+      if (mask != 0L) {
+        core = maskCore(mask, slot % 5L);
+      }
+      slot = slot + 1L;
+      if (mask == 0L || core != 0L) {
+        madeStatus = flatLoaded(caller, home, size, core);
+      }
+      attempt = attempt + 1L;
+    }
+    if (madeStatus == 11L) {
+      break;
+    }
+    if (madeStatus == 0L) {
+      made = made + 1L;
+      long landed = memory::load64(home + 256L);
+      if (landed >= 3L && landed < 8L) {
+        long at = home + 640L + landed * 64L;
+        memory::store64(memory::load64(at) + 1L, at);
+      }
+    }
+    long live = 0L;
+    long scan = 0L;
+    long end = taskScanEnd();
+    while (scan < end) {
+      if (taskAt(scan).pid != 0L) {
+        live = live + 1L;
+      }
+      scan = scan + 1L;
+    }
+    if (live > peak) {
+      peak = live;
+    }
+    /* 进度每次落盘：调用者堵在 svc 里时，另一个程序也能看见停在哪一步。 */
+    memory::store64(peak, home + 384L);
+    memory::store64(madeStatus, home + 512L);
+    index = index + 1L;
+  }
+  return made;
+}

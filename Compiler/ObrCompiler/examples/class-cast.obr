@@ -1,0 +1,44 @@
+/* Plan 2 M1：类引用转换。派生→基类在赋值/返回/实参/集合元素四处隐式加宽；
+   基类→派生写显式 (类名*) 强转，按对象头 class ID 检查。结果 0。*/
+#VERSION 2
+
+class Base {
+  int x;
+  deRfun Base(): void { set(1); }
+  deRfun set(int v): void { x = v; }
+  deRfun v(): int { return 1; }
+}
+
+class Sub : Base {
+  deRfun Sub(): void { set(2); }
+  deRfun v(): int { return 2; }
+}
+
+deRfun take(Base b): int { return b.x; }
+
+deRfun give(): Base {
+  Sub s = new Sub();
+  return s;
+}
+
+deRfun main(): int {
+  Sub s = new Sub();
+  if (take(s) != 2) return 1;
+  Base b = s;
+  b = s;
+  if (b.x != 2) return 2;
+  b = give();
+  if (b.x != 2) return 3;
+  array[Base] slots = new array[Base](2);
+  slots[0] = s;
+  if (slots[0].x != 2) return 4;
+  list[Base] items = new list[Base]();
+  items.push(s);
+  if (items.pop().x != 2) return 5;
+  Base widened = (Base*)s;
+  if (widened.x != 2) return 6;
+  Sub back = (Sub*)b;
+  if (back.x != 2) return 7;
+  if (back.v() != 2) return 8;
+  return 0;
+}

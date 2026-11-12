@@ -1,0 +1,31 @@
+#DYN
+/* GPU continuity 检查：服务 71 直接返回 (frames<<32)|base。
+    成功 exit 42：base>0 且 frames>=base；250 = base<1 或还没发布。
+    不重启驱动，退出码走普通命令窗口。 */
+import memory;
+import obr.os;
+
+deRfun main(): int {
+  long code = 250L;
+  long rounds = 0L;
+  while (rounds < 200L) {
+    long packed = obr::os::svc(71L);
+    long frames = packed >> 32L;
+    long base = packed & 4294967295L;
+    if (base > 0L) {
+      if (frames >= base) {
+        code = 42L;
+        break;
+      }
+      code = 251L;
+    }
+    obr::os::dwell(50L);
+    rounds = rounds + 1L;
+  }
+  long home = obr::os::svc(65L);
+  if (home != 0L) {
+    memory::store64(code, home + 128L);
+  }
+  obr::os::svc(28L);
+  return 0;
+}

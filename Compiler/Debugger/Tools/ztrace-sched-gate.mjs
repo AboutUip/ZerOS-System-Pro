@@ -26,7 +26,7 @@ const QUIET_TAIL = 40;
 const SUITE = [
   { name: "echo", command: "echo ok", exit: 0 },
   { name: "pwd", command: "pwd", exit: 0 },
-  { name: "xargs", command: "xargs echo < /home/test.txt", exit: 0 },
+  { name: "xargs", command: "xargs echo < /temp/test/test.txt", exit: 0 },
   { name: "yes", command: "yes --help", exit: 1 },
 ];
 

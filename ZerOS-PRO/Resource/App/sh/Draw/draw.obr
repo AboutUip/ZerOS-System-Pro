@@ -1,17 +1,26 @@
 /* 壳的画面和标准输出。
-   只负责把一行画出来，并把八位组交给 obr.print。不解析命令，不派生进程。
-   画面缓冲由本库申请，不占用壳的工作区。键入、退格和提示符画完就 flush，避免停在库里等下一行。
+   只负责把一行画出来。不解析命令，不派生进程。
+   画面缓冲在工作区的 screenAt 里，不用 static：#DYN 程序和 .zdll 共用静态区，
+   同槽位会互相覆盖（见 work.obr 的布局注释）。
+   标准输出直接写描述符 1：内核的 write 按给出的位移写（pwrite），
+   fd 1 是普通文件时位移要接在文件已有内容之后，流位移记在工作区（outOffAt）。
+   不走 obr.print：壳的输出横跨终端和重定向文件，库里那条流位移从进程启动累计，
+   拿它当文件位移会在文件里写出一截 0 洞；壳也不再挂 obr.print.zdll。
+   键入、退格和提示符画完就交出，避免停在写上等下一行。
    列数和原先壳里的算法相同：128 到 191 的续字节不加列，其余每个八位组加一列。 */
 #DYN
 import memory;
-import obr.print;
 import obr.proc;
 import obr.line;
 import obr.oct;
 import draw;
 import work;
 
+/* 空 __zap__ 块是内联护栏：导入调用只留在这一层包装里。
+   ZAP 映像的导入调用点上限 256，包装被内联展开会把每个调用点都变成一次导入引用。 */
 deRfun octetAt(long addr): long {
+  __zap__ {
+  }
   return obr::oct::get(addr);
 }
 
@@ -39,66 +48,151 @@ deRfun placeText(long addr, long at, string text): long {
   return next;
 }
 
+/* 空 __zap__ 块是内联护栏：导入调用只留在这一层包装里。 */
 deRfun moveOctets(long from, long to, long count): void {
+  __zap__ {
+  }
   obr::oct::copy(from, to, count);
 }
 
-/* 画面缓冲只在本函数里。画整行、退格和画提示符都会进来，静态区不会被内联拆开。 */
-deRfun screen(long home): long {
-  static long paint = 0L;
-  if (paint == 0L) {
-    paint = obr::proc::alloc(home, 2048L * 8L);
+/* 标准输出的写出：八位组先摆进派生窗口的字节区，一次交给描述符 1。
+   write 按位移写，位移从 outOffAt 起接续；一次写不完（环满、管道阻塞）就按
+   内核交回的个数续写。写失败就丢下没写走的部分：管道没有读者时字节就该丢，
+   不能像缓冲流那样留到下一次输出再冒出来。 */
+deRfun outSend(long home, long work, long count): void {
+  long place = memory::load64(outOffAt(work));
+  long offset = 0L;
+  while (offset < count) {
+    long left = count - offset;
+    if (obr::proc::write(home, 1L, place + offset, left) != 0L) {
+      return;
+    }
+    long wrote = obr::proc::slot(home, 320L);
+    if (wrote < 1L || wrote > left) {
+      return;
+    }
+    offset = offset + wrote;
   }
-  return paint;
+  memory::store64(place + count, outOffAt(work));
 }
 
-deRfun say(long home, string text): void {
-  if (obr::print::text(home, text) != 0L) {
-    return;
+
+deRfun outText(long home, long work, string text): void {
+  int raw = length(text);
+  long count = raw;
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
   }
-  obr::print::flush(home);
+  outSend(home, work, count);
 }
 
-deRfun saySpan(long home, long addr, long count): void {
+
+deRfun outSpan(long home, long work, long addr, long count): void {
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(octetAt(addr + index * 8L), obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  outSend(home, work, count);
+}
+
+/* 空 __zap__ 块是内联护栏：输出包装不参与内联。调用点上百处，
+   展开会把生成面（数据重定位）顶爆，导入调用也留在包装层。 */
+deRfun say(long home, long work, string text): void {
+  __zap__ {
+  }
+  outText(home, work, text);
+}
+
+/* 空 __zap__ 块是内联护栏：输出包装不参与内联。 */
+deRfun saySpan(long home, long work, long addr, long count): void {
+  __zap__ {
+  }
   if (count < 1L) {
     return;
   }
-  if (obr::print::out(home, addr, count) != 0L) {
-    return;
-  }
-  obr::print::flush(home);
+  outSpan(home, work, addr, count);
 }
 
-deRfun sayByte(long home, long value): void {
-  if (obr::print::byte(home, value) != 0L) {
-    return;
+/* 空 __zap__ 块是内联护栏：输出包装不参与内联。 */
+deRfun sayByte(long home, long work, long value): void {
+  __zap__ {
   }
-  obr::print::flush(home);
+  memory::storeOctet(value, obr::proc::bytes(home));
+  outSend(home, work, 1L);
 }
 
-deRfun sayBack(long home): void {
-  long paint = screen(home);
-  if (paint == 0L) {
-    return;
-  }
+deRfun sayBack(long home, long work): void {
+  long paint = screenAt(work);
   memory::storeOctet(8L, paint);
   memory::storeOctet(32L, paint + 8L);
   memory::storeOctet(8L, paint + 16L);
-  saySpan(home, paint, 3L);
+  saySpan(home, work, paint, 3L);
 }
 
-deRfun sayMissing(long home, string lead, long addr, long count, string tail): void {
-  say(home, lead);
-  saySpan(home, addr, count);
-  say(home, tail);
+deRfun sayMissing(long home, long work, string lead, long addr, long count, string tail): void {
+  say(home, work, lead);
+  saySpan(home, work, addr, count);
+  say(home, work, tail);
+}
+
+/* 标准错误：诊断直接写描述符 2，不经 obr.print 的缓冲。 */
+deRfun errPut(long home, long addr, long count): void {
+  long offset = 0L;
+  while (offset < count) {
+    long chunk = count - offset;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    long index = 0L;
+    while (index < chunk) {
+      memory::storeOctet(octetAt(addr + (offset + index) * 8L), obr::proc::bytes(home) + index * 8L);
+      index = index + 1L;
+    }
+    obr::proc::write(home, 2L, 0L, chunk);
+    offset = offset + chunk;
+  }
+}
+
+deRfun sayErr(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  if (count > 2000L) {
+    count = 2000L;
+  }
+  if (count < 1L) {
+    return;
+  }
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::bytes(home) + index * 8L);
+    index = index + 1L;
+  }
+  obr::proc::write(home, 2L, 0L, count);
+}
+
+deRfun sayErrSpan(long home, long addr, long count): void {
+  if (count > 0L) {
+    errPut(home, addr, count);
+  }
+}
+
+deRfun sayErrByte(long home, long value): void {
+  memory::storeOctet(value, obr::proc::bytes(home));
+  obr::proc::write(home, 2L, 0L, 1L);
+}
+
+deRfun sayErrMissing(long home, string lead, long addr, long count, string tail): void {
+  sayErr(home, lead);
+  sayErrSpan(home, addr, count);
+  sayErr(home, tail);
 }
 
 /* 提示符加当前行，再抹掉变短的尾巴，光标退回到插入点。一次交给流。 */
 deRfun paintEdit(long home, long state, long work): void {
-  long paint = screen(home);
-  if (paint == 0L) {
-    return;
-  }
+  long paint = screenAt(work);
   long at = 0L;
   memory::storeOctet(13L, paint);
   at = 1L;
@@ -136,7 +230,7 @@ deRfun paintEdit(long home, long state, long work): void {
     at = at + 1L;
     step = step + 1L;
   }
-  saySpan(home, paint, at);
+  saySpan(home, work, paint, at);
   memory::store64(shown, prevAt(work));
 }
 
@@ -150,7 +244,7 @@ deRfun paintStep(long home, long state, long work, long beforeLen, long beforeCu
   }
   if (afterCur == afterLen && beforeCur == beforeLen && afterLen == beforeLen + 1L) {
     long added = obr::line::editAt(state, afterLen - 1L);
-    sayByte(home, added);
+    sayByte(home, work, added);
     long cols = 1L;
     if (added >= 128L && added < 192L) {
       cols = 0L;
@@ -159,7 +253,7 @@ deRfun paintStep(long home, long state, long work, long beforeLen, long beforeCu
     return;
   }
   if (afterCur == afterLen && beforeCur == beforeLen && beforeLen > 0L && afterLen == beforeLen - 1L) {
-    sayBack(home);
+    sayBack(home, work);
     long shown = memory::load64(prevAt(work));
     if (shown > 0L) {
       memory::store64(shown - 1L, prevAt(work));
@@ -171,21 +265,18 @@ deRfun paintStep(long home, long state, long work, long beforeLen, long beforeCu
 
 /* 收 here-document 时不画正常提示符，只写 > 和一个空格。 */
 deRfun paintMark(long home, long work): void {
-  say(home, "> ");
+  say(home, work, "> ");
   memory::store64(2L, prevAt(work));
 }
 
 deRfun paintPrompt(long home, long work): void {
-  long paint = screen(home);
-  if (paint == 0L) {
-    return;
-  }
+  long paint = screenAt(work);
   long at = placeText(paint, 0L, "root@zeros:");
   long cwdLen = memory::load64(cwdLenAt(work));
   moveOctets(cwdAt(work), paint + at * 8L, cwdLen);
   at = at + cwdLen;
   at = placeText(paint, at, "# ");
-  saySpan(home, paint, at);
+  saySpan(home, work, paint, at);
   memory::store64(columnCount(paint, at), prevAt(work));
   /* 提示符画完，发一次 no-op 服务 35。宿主在 svc 边界记 prompt 事件。 */
   obr::proc::prompt(home);

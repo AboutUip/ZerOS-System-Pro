@@ -1,0 +1,14 @@
+/* Plan 2 收口：接口方法的实现必须与接口的失败性一致。编译应当失败：接口方法的失败性要一致 Job::run。 */
+#VERSION 2
+
+interface Job {
+  @Fails deRfun run(): int;
+}
+
+class Bad implements Job {
+  deRfun run(): int { return 1; }
+}
+
+deRfun main(): int {
+  return 0;
+}

@@ -1,0 +1,211 @@
+/* POSIX cat 的版本 2 实现。 */
+#VERSION 2
+#DYN
+import memory;
+import obr.oct;
+import obr.proc;
+import arg;
+
+deRfun stringByteLength(string text): long {
+  return (long)length(text);
+}
+
+class CatCommand {
+  long home;
+  long bytes;
+  long inputOffset;
+  long outputOffset;
+
+  deRfun CatCommand(long taskHome): void {
+    home = taskHome;
+    bytes = obr::proc::bytes(taskHome);
+    inputOffset = 0L;
+    outputOffset = 0L;
+  }
+
+  deRfun copyBytes(long from, long to, long count): void {
+    obr::oct::copy(from, to, count);
+  }
+
+  deRfun writeWindow(long fd, long offset, long count): long {
+    long pending = count;
+    long written = 0L;
+    while (pending > 0L) {
+      if (obr::proc::write(home, fd, offset + written, pending) != 0L) {
+        return -1L;
+      }
+      long chunk = obr::proc::slot(home, 320L);
+      if (chunk < 1L) {
+        return -1L;
+      }
+      if (chunk > pending) {
+        chunk = pending;
+      }
+      pending = pending - chunk;
+      written = written + chunk;
+      if (pending > 0L) {
+        copyBytes(bytes + chunk * 8L, bytes, pending);
+      }
+    }
+    return written;
+  }
+
+  deRfun writeText(long fd, string text): long {
+    long textLength = stringByteLength(text);
+    for (long offset = 0L; offset < textLength;) {
+      long chunk = textLength - offset;
+      if (chunk > 4096L) {
+        chunk = 4096L;
+      }
+      for (long index = 0L; index < chunk; index = index + 1L) {
+        memory::storeOctet(text[offset + index], bytes + index * 8L);
+      }
+      if (writeWindow(fd, 0L, chunk) < 0L) {
+        return -1L;
+      }
+      offset = offset + chunk;
+    }
+    return 0L;
+  }
+
+  deRfun writeMemory(long fd, long address, long count, long offset): long {
+    for (long copied = 0L; copied < count;) {
+      long chunk = count - copied;
+      if (chunk > 4096L) {
+        chunk = 4096L;
+      }
+      copyBytes(address + copied * 8L, bytes, chunk);
+      if (writeWindow(fd, offset + copied, chunk) < 0L) {
+        return -1L;
+      }
+      copied = copied + chunk;
+    }
+    return 0L;
+  }
+
+  deRfun writeError(string text): void {
+    writeText(2L, text);
+  }
+
+  deRfun reportMissing(long address, long count): void {
+    writeError("ncat: ");
+    writeMemory(2L, address, count, 0L);
+    writeError(": No such file or directory\n");
+  }
+
+  deRfun stream(long fd, long fromStdin): long {
+    long readOffset = 0L;
+    if (fromStdin != 0L) {
+      readOffset = inputOffset;
+    }
+    for (;;) {
+      if (obr::proc::read(home, fd, readOffset, 4096L) != 0L) {
+        writeError("ncat: read error\n");
+        return 1L;
+      }
+      long count = obr::proc::slot(home, 320L);
+      if (count < 0L) {
+        writeError("ncat: read error\n");
+        return 1L;
+      }
+      if (count == 0L) {
+        return 0L;
+      }
+      if (count > 4096L) {
+        count = 4096L;
+      }
+      if (writeWindow(1L, outputOffset, count) < 0L) {
+        writeError("ncat: write error\n");
+        return 2L;
+      }
+      readOffset = readOffset + count;
+      if (fromStdin != 0L) {
+        inputOffset = readOffset;
+      }
+      outputOffset = outputOffset + count;
+    }
+  }
+
+  deRfun streamFile(long address, long count): long {
+    if (count < 0L || count > 8192L) {
+      reportMissing(address, count);
+      return 1L;
+    }
+    memory::store64(count, obr::proc::path(home));
+    copyBytes(address, obr::proc::path(home) + 64L, count);
+    if (obr::proc::open(home, 0L) != 0L) {
+      reportMissing(address, count);
+      return 1L;
+    }
+    long fd = obr::proc::slot(home, 192L);
+    long status = stream(fd, 0L);
+    if (fd != 0L) {
+      obr::proc::close(home, fd);
+    }
+    return status;
+  }
+
+  deRfun finish(long code): int {
+    obr::proc::exit(home, code);
+    return 0;
+  }
+
+  deRfun run(): int {
+    long argumentCount = argc(home);
+    long index = 1L;
+    long optionsEnded = 0L;
+
+    while (index < argumentCount && optionsEnded == 0L) {
+      long address = argPtr(home, index);
+      long count = argLen(home, index);
+      if (count == 2L && obr::oct::get(address) == 45L && obr::oct::get(address + 8L) == 45L) {
+        index = index + 1L;
+        optionsEnded = 1L;
+      } else if (count >= 2L && obr::oct::get(address) == 45L) {
+        for (long cursor = 1L; cursor < count; cursor = cursor + 1L) {
+          if (obr::oct::get(address + cursor * 8L) != 117L) {
+            writeError("ncat: invalid option\n");
+            return finish(1L);
+          }
+        }
+        index = index + 1L;
+      } else {
+        optionsEnded = 1L;
+      }
+    }
+
+    long failed = 0L;
+    if (index >= argumentCount) {
+      long status = stream(0L, 1L);
+      if (status == 2L) {
+        return finish(1L);
+      }
+      if (status != 0L) {
+        failed = 1L;
+      }
+    }
+
+    for (; index < argumentCount; index = index + 1L) {
+      long address = argPtr(home, index);
+      long count = argLen(home, index);
+      long status = 0L;
+      if (count == 1L && obr::oct::get(address) == 45L) {
+        status = stream(0L, 1L);
+      } else {
+        status = streamFile(address, count);
+      }
+      if (status == 2L) {
+        return finish(1L);
+      }
+      if (status != 0L) {
+        failed = 1L;
+      }
+    }
+    return finish(failed);
+  }
+}
+
+deRfun main(): int {
+  CatCommand command = new CatCommand(obr::proc::home());
+  return command.run();
+}

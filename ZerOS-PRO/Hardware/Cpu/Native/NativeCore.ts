@@ -1,24 +1,20 @@
-/**
+﻿/**
  * @module ZerOS.Hardware.Cpu.NativeCore
- * @description 在一颗核心的线性位元上跑原生指令
- *
+ * @description 鍦ㄤ竴棰楁牳蹇冪殑绾挎€т綅鍏冧笂璺戝師鐢熸寚浠? *
  * ---------------------------------------------------------------------------
- * 文件职责
+ * 鏂囦欢鑱岃矗
  * ---------------------------------------------------------------------------
- * 指令字节先经这颗核心写入，再读回来执行。
- * 0F 3F 的监督、保持位和系统调用在这里直接完成，不编成 ZAP 指令。
- * 不替换这颗核心上的 ZAP 寄存器。普通停机后核心停止。系统调用期间核心保持执行中。
- *
+ * 鎸囦护瀛楄妭鍏堢粡杩欓鏍稿績鍐欏叆锛屽啀璇诲洖鏉ユ墽琛屻€? * 0F 3F 鐨勭洃鐫ｃ€佷繚鎸佷綅鍜岀郴缁熻皟鐢ㄥ湪杩欓噷鐩存帴瀹屾垚锛屼笉缂栨垚 ZAP 鎸囦护銆? * 涓嶆浛鎹㈣繖棰楁牳蹇冧笂鐨?ZAP 瀵勫瓨鍣ㄣ€傛櫘閫氬仠鏈哄悗鏍稿績鍋滄銆傜郴缁熻皟鐢ㄦ湡闂存牳蹇冧繚鎸佹墽琛屼腑銆? *
  * ---------------------------------------------------------------------------
- * 代码组织（严格优先级，自上而下，禁止打乱）
+ * 浠ｇ爜缁勭粐锛堜弗鏍间紭鍏堢骇锛岃嚜涓婅€屼笅锛岀姝㈡墦涔憋級
  * ---------------------------------------------------------------------------
- *   1. 导入
- *   2. 访存
- *   3. 执行
+ *   1. 瀵煎叆
+ *   2. 璁垮瓨
+ *   3. 鎵ц
  */
 
 /* -------------------------------------------------------------------------- */
-/* 1. 导入                                                                     */
+/* 1. 瀵煎叆                                                                     */
 /* -------------------------------------------------------------------------- */
 
 import { ZerOS as ConfigRoot } from "../Config/CpuConfig";
@@ -53,11 +49,11 @@ export namespace ZerOS {
       const TraceOp = TraceOpRoot.Hardware.Diagnostics.TraceOp;
       const TraceLayer = TraceOpRoot.Hardware.Diagnostics.TraceLayer;
       const traceParent = RuntimeRoot.Hardware.Cpu.traceParent;
-      /** B1 原生采样累计：每 1024 条记一条，不逐条写。 */
+      /** B1 鍘熺敓閲囨牱绱锛氭瘡 1024 鏉¤涓€鏉★紝涓嶉€愭潯鍐欍€?*/
       let nativeTraceCarry = 0;
       const NativeInsnStride = 1024;
 
-      /** 原生指令采样。pc 是相对装入基址的八位组偏移，不是绝对位地址。 */
+      /** 鍘熺敓鎸囦护閲囨牱銆俻c 鏄浉瀵硅鍏ュ熀鍧€鐨勫叓浣嶇粍鍋忕Щ锛屼笉鏄粷瀵逛綅鍦板潃銆?*/
       function noteNativeInsn(ordinal: number, state: NativeState, baseBit: number, count: number): void {
         nativeTraceCarry += count;
         if (nativeTraceCarry < NativeInsnStride) {
@@ -82,6 +78,7 @@ export namespace ZerOS {
       const adoptNativeFrame = RuntimeRoot.Hardware.Cpu.adoptNativeFrame;
       const noteNativeWindow = RuntimeRoot.Hardware.Cpu.noteNativeWindow;
       const readNativeWindow = RuntimeRoot.Hardware.Cpu.readNativeWindow;
+      const readBoundOrigin = RuntimeRoot.Hardware.Cpu.readBoundOrigin;
       const readNativeFrame = RuntimeRoot.Hardware.Cpu.readNativeFrame;
       const bindNativeResume = RuntimeRoot.Hardware.Cpu.bindNativeResume;
       const nativeGate = RuntimeRoot.Hardware.Cpu.nativeGate;
@@ -178,10 +175,10 @@ export namespace ZerOS {
       type NativeOctetPort = StateRoot.Hardware.Cpu.NativeOctetPort;
       type NativeStop = StateRoot.Hardware.Cpu.NativeStop;
 
-      /** 代码和栈都放在这 528 个八位组里。栈顶在起点之后 512 个八位组。 */
+      /** 浠ｇ爜鍜屾爤閮芥斁鍦ㄨ繖 528 涓叓浣嶇粍閲屻€傛爤椤跺湪璧风偣涔嬪悗 512 涓叓浣嶇粍銆?*/
       const windowOctets = 0x210;
 
-      /** 续跑时从留下的指令指针起读回这么多个八位组，够一条停机指令。 */
+      /** 缁窇鏃朵粠鐣欎笅鐨勬寚浠ゆ寚閽堣捣璇诲洖杩欎箞澶氫釜鍏綅缁勶紝澶熶竴鏉″仠鏈烘寚浠ゃ€?*/
       const resumeOctets = 32;
 
       async function savedRegisters(ordinal: number): Promise<bigint[]> {
@@ -210,9 +207,7 @@ export namespace ZerOS {
       }
 
       /**
-       * 经这颗核心读一段八位组。核心必须是停止的，而且没有装入 ZAP 序列。
-       * 读完仍停止。ZAP 寄存器恢复成调用前的值。
-       */
+       * 缁忚繖棰楁牳蹇冭涓€娈靛叓浣嶇粍銆傛牳蹇冨繀椤绘槸鍋滄鐨勶紝鑰屼笖娌℃湁瑁呭叆 ZAP 搴忓垪銆?       * 璇诲畬浠嶅仠姝€俍AP 瀵勫瓨鍣ㄦ仮澶嶆垚璋冪敤鍓嶇殑鍊笺€?       */
       export async function readNativeOctets(ordinal: number, bit: bigint, count: number): Promise<Uint8Array> {
         const saved = await savedRegisters(ordinal);
         const out = new Uint8Array(count);
@@ -228,7 +223,7 @@ export namespace ZerOS {
         }
       }
 
-      /** 经这颗核心写一段八位组。调用前后都是停止。 */
+      /** 缁忚繖棰楁牳蹇冨啓涓€娈靛叓浣嶇粍銆傝皟鐢ㄥ墠鍚庨兘鏄仠姝€?*/
       export async function writeNativeOctets(ordinal: number, bit: bigint, octets: Uint8Array): Promise<void> {
         const saved = await savedRegisters(ordinal);
         beginNative(ordinal);
@@ -242,7 +237,7 @@ export namespace ZerOS {
         }
       }
 
-      /** 取出转义操作数。编号越界或寄存器帧里没有这一格时是空。 */
+      /** 鍙栧嚭杞箟鎿嶄綔鏁般€傜紪鍙疯秺鐣屾垨瀵勫瓨鍣ㄥ抚閲屾病鏈夎繖涓€鏍兼椂鏄┖銆?*/
       function readReg(state: NativeState, regs: readonly number[], index: number): bigint | null {
         const slot = regs[index];
         if (slot === undefined) {
@@ -252,19 +247,14 @@ export namespace ZerOS {
       }
 
       /**
-       * 兼容任务的 0F 05。
-       * 帧写到尾区页 0，再以服务号 27 通知监督核。回复寄存器只是把保持位交回去，续跑时改读这帧。
-       */
+       * 鍏煎浠诲姟鐨?0F 05銆?       * 甯у啓鍒板熬鍖洪〉 0锛屽啀浠ユ湇鍔″彿 27 閫氱煡鐩戠潱鏍搞€傚洖澶嶅瘎瀛樺櫒鍙槸鎶婁繚鎸佷綅浜ゅ洖鍘伙紝缁窇鏃舵敼璇昏繖甯с€?       */
       async function trapCompat(ordinal: number, state: NativeState): Promise<boolean> {
         await nativeWriteSpan(ordinal, BigInt(MapEndBits), encodeCompatFrame(state));
         return nativeSvc(ordinal, 27n, NativeRax);
       }
 
       /**
-       * 做完一条 0F 3F。
-       * 成功才把指令指针改到下一条。系统调用留下等待，yield 留下停止。
-       * 装入、卸下、划定、抄槽和接入要等访存结束，所以这里是异步的。
-       */
+       * 鍋氬畬涓€鏉?0F 3F銆?       * 鎴愬姛鎵嶆妸鎸囦护鎸囬拡鏀瑰埌涓嬩竴鏉°€傜郴缁熻皟鐢ㄧ暀涓嬬瓑寰咃紝yield 鐣欎笅鍋滄銆?       * 瑁呭叆銆佸嵏涓嬨€佸垝瀹氥€佹妱妲藉拰鎺ュ叆瑕佺瓑璁垮瓨缁撴潫锛屾墍浠ヨ繖閲屾槸寮傛鐨勩€?       */
       async function applyEscape(
         ordinal: number,
         state: NativeState,
@@ -315,10 +305,11 @@ export namespace ZerOS {
           if (reply === undefined || service === null) {
             return "fault";
           }
-          /* 服务 28 的退出码在 native home+128；调试打开时一次读回 8 个八位组。 */
+          /* 鏈嶅姟 28 鐨勯€€鍑虹爜鍦?native home+128锛涜皟璇曟墦寮€鏃朵竴娆¤鍥?8 涓叓浣嶇粍銆?*/
           if (service === 28n && traceEnabled()) {
-            const home = readNativeWindow(ordinal);
-            if (home !== null) {
+            /* 同步快照，避免 await 后 bound 被换掉。 */
+            const home = readBoundOrigin(ordinal);
+            if (home !== 0n) {
               try {
                 const bytes = await nativeReadSpan(ordinal, home + 128n, 8);
                 let code = 0n;
@@ -327,12 +318,12 @@ export namespace ZerOS {
                 }
                 traceInstant(TraceOp.ProcessExit, TraceLayer.Sched, ordinal, Number(code & 0xffffn), 0);
               } catch {
-                /* 读不到就保留原有退出路径。 */
+                /* 璇讳笉鍒板氨淇濈暀鍘熸湁閫€鍑鸿矾寰勩€?*/
               }
             }
           }
           if (!nativeSvc(ordinal, service, reply)) {
-            /* 指针留在这条调用上。让出之后监督核先把保持位取走，再调度回来重试。 */
+            /* 鎸囬拡鐣欏湪杩欐潯璋冪敤涓娿€傝鍑轰箣鍚庣洃鐫ｆ牳鍏堟妸淇濇寔浣嶅彇璧帮紝鍐嶈皟搴﹀洖鏉ラ噸璇曘€?*/
             nativeYield(ordinal);
             return "yield";
           }
@@ -623,10 +614,7 @@ export namespace ZerOS {
       }
 
       /**
-       * 核心已经在执行。
-       * preload 有值时先写进线性位元再读回。空则从当前指令指针读回续跑所需的字节。
-       * 系统调用会留下执行中；其余结束时核心停止。
-       */
+       * 鏍稿績宸茬粡鍦ㄦ墽琛屻€?       * preload 鏈夊€兼椂鍏堝啓杩涚嚎鎬т綅鍏冨啀璇诲洖銆傜┖鍒欎粠褰撳墠鎸囦护鎸囬拡璇诲洖缁窇鎵€闇€鐨勫瓧鑺傘€?       * 绯荤粺璋冪敤浼氱暀涓嬫墽琛屼腑锛涘叾浣欑粨鏉熸椂鏍稿績鍋滄銆?       */
       async function runPrepared(
         ordinal: number,
         state: NativeState,
@@ -704,7 +692,7 @@ export namespace ZerOS {
             if (outcome === "syscall") {
               const posted = await trapCompat(ordinal, state);
               if (!posted) {
-                /* 0F 05 已经走过。退回这两字节，让出后从同一条再试。 */
+                /* 0F 05 宸茬粡璧拌繃銆傞€€鍥炶繖涓ゅ瓧鑺傦紝璁╁嚭鍚庝粠鍚屼竴鏉″啀璇曘€?*/
                 state.rip -= 2n;
                 nativeYield(ordinal);
                 stopped = { kind: "yield", state };
@@ -748,9 +736,7 @@ export namespace ZerOS {
       }
 
       /**
-       * 把 image 写到 baseBit，读回后再按位地址执行。
-       * 停机或失败后核心停止。系统调用则保持执行中，等调度写入回复。
-       */
+       * 鎶?image 鍐欏埌 baseBit锛岃鍥炲悗鍐嶆寜浣嶅湴鍧€鎵ц銆?       * 鍋滄満鎴栧け璐ュ悗鏍稿績鍋滄銆傜郴缁熻皟鐢ㄥ垯淇濇寔鎵ц涓紝绛夎皟搴﹀啓鍏ュ洖澶嶃€?       */
       export async function runNativeOnCore(
         ordinal: number,
         image: Uint8Array,
@@ -765,10 +751,7 @@ export namespace ZerOS {
       }
 
       /**
-       * 跑装入时抄下的整段原生代码。
-       * 取指不看后来的 bound。数据访存先落在这一侧的缓冲里，一条指令成功后再写回。
-       * 节拍、抢占和时间片与 ZAP 序列同一套。
-       */
+       * 璺戣鍏ユ椂鎶勪笅鐨勬暣娈靛師鐢熶唬鐮併€?       * 鍙栨寚涓嶇湅鍚庢潵鐨?bound銆傛暟鎹瀛樺厛钀藉湪杩欎竴渚х殑缂撳啿閲岋紝涓€鏉℃寚浠ゆ垚鍔熷悗鍐嶅啓鍥炪€?       * 鑺傛媿銆佹姠鍗犲拰鏃堕棿鐗囦笌 ZAP 搴忓垪鍚屼竴濂椼€?       */
       async function runNativeImage(ordinal: number): Promise<void> {
         const program = readNativeProgram(ordinal);
         if (program === null) {
@@ -796,17 +779,12 @@ export namespace ZerOS {
           }
         }
         /*
-         * 一页六万多个八位组如果各占一条表项，表会留在老生代。
-         * 核心 2 升到 100 MHz 时取指分配很快，垃圾回收会把 CPU 线程停住大约 100 毫秒。
-         * 固件的 dwell 排在同一条线程上，设置画面就跟着停。降回 30 Hz 时几乎不再分配，回收也不来。
-         * 整页放进一块字节数组，回收不再扫这张大表。频率仍由客程序自己改。
-         */
+         * 涓€椤靛叚涓囧涓叓浣嶇粍濡傛灉鍚勫崰涓€鏉¤〃椤癸紝琛ㄤ細鐣欏湪鑰佺敓浠ｃ€?         * 鏍稿績 2 鍗囧埌 100 MHz 鏃跺彇鎸囧垎閰嶅緢蹇紝鍨冨溇鍥炴敹浼氭妸 CPU 绾跨▼鍋滀綇澶х害 100 姣銆?         * 鍥轰欢鐨?dwell 鎺掑湪鍚屼竴鏉＄嚎绋嬩笂锛岃缃敾闈㈠氨璺熺潃鍋溿€傞檷鍥?30 Hz 鏃跺嚑涔庝笉鍐嶅垎閰嶏紝鍥炴敹涔熶笉鏉ャ€?         * 鏁撮〉鏀捐繘涓€鍧楀瓧鑺傛暟缁勶紝鍥炴敹涓嶅啀鎵繖寮犲ぇ琛ㄣ€傞鐜囦粛鐢卞绋嬪簭鑷繁鏀广€?         */
         const pageOctets = 65536n;
         const pageMask = pageOctets - 1n;
         const pageOctetsN = 65536;
         const pageMaskN = 65535;
-        /* 键盘环在位址 6528 的次数和 6656 起五个槽，到 7296 为止。
-           缓存下标是八位组。7296 是引导阶段字，不能算进环里。 */
+        /* 閿洏鐜湪浣嶅潃 6528 鐨勬鏁板拰 6656 璧蜂簲涓Ы锛屽埌 7296 涓烘銆?           缂撳瓨涓嬫爣鏄叓浣嶇粍銆?296 鏄紩瀵奸樁娈靛瓧锛屼笉鑳界畻杩涚幆閲屻€?*/
         const keyRingCount = 6528 / 8;
         const keyRingSlots = 6656 / 8;
         const keyRingSlotsEnd = 7296 / 8;
@@ -816,17 +794,17 @@ export namespace ZerOS {
           }
           return index >= keyRingSlots && index < keyRingSlotsEnd;
         };
-        /* 页键用安全整数。大整数做键时，每次取数都要散列一个堆对象，监督核的循环会被这截拖住。 */
+        /* 椤甸敭鐢ㄥ畨鍏ㄦ暣鏁般€傚ぇ鏁存暟鍋氶敭鏃讹紝姣忔鍙栨暟閮借鏁ｅ垪涓€涓爢瀵硅薄锛岀洃鐫ｆ牳鐨勫惊鐜細琚繖鎴嫋浣忋€?*/
         const pages = new Map<number, Uint8Array>();
         const sparse = new Map<number, number>();
         const dirty = new Set<number>();
-        /** 本核窗口里改过的字节。送邮箱和调度时不走这张表，避免每次按键都扫一遍控制台。 */
+        /** 鏈牳绐楀彛閲屾敼杩囩殑瀛楄妭銆傞€侀偖绠卞拰璋冨害鏃朵笉璧拌繖寮犺〃锛岄伩鍏嶆瘡娆℃寜閿兘鎵竴閬嶆帶鍒跺彴銆?*/
         const ownDirty = new Set<number>();
         let waiting = false;
         let hot: Uint8Array | null = null;
         let hotBase = -1;
         const recallNum = (index: number): number | undefined => {
-          /* 键盘环由固件写、监督核读。页缓存会把刚发布的次数留成旧值，这一段只认刚读回来的稀疏字节。 */
+          /* 閿洏鐜敱鍥轰欢鍐欍€佺洃鐫ｆ牳璇汇€傞〉缂撳瓨浼氭妸鍒氬彂甯冪殑娆℃暟鐣欐垚鏃у€硷紝杩欎竴娈靛彧璁ゅ垰璇诲洖鏉ョ殑绋€鐤忓瓧鑺傘€?*/
           if (keyRingOctet(index)) {
             return sparse.get(index);
           }
@@ -848,8 +826,7 @@ export namespace ZerOS {
           return page[index - base];
         };
         const forgetRange = (address: bigint, count: bigint): void => {
-          /* 搬运和填零写在别的核心上。只丢掉这一段，监督核自己的页还留着。
-             整份缓冲一起丢掉的话，下一条指令又把六万字节拉回来，一次列目录会重复拉几千兆。 */
+          /* 鎼繍鍜屽～闆跺啓鍦ㄥ埆鐨勬牳蹇冧笂銆傚彧涓㈡帀杩欎竴娈碉紝鐩戠潱鏍歌嚜宸辩殑椤佃繕鐣欑潃銆?             鏁翠唤缂撳啿涓€璧蜂涪鎺夌殑璇濓紝涓嬩竴鏉℃寚浠ゅ張鎶婂叚涓囧瓧鑺傛媺鍥炴潵锛屼竴娆″垪鐩綍浼氶噸澶嶆媺鍑犲崈鍏嗐€?*/
           if (count <= 0n || address < 0n) {
             return;
           }
@@ -877,11 +854,10 @@ export namespace ZerOS {
         const recall = (octet: bigint): number | undefined => {
           return recallNum(Number(octet));
         };
-        /* 自己的窗口不进脏表。每次 store 都算一遍大整数会把写出拖慢，这里只算一次。 */
+        /* 鑷繁鐨勭獥鍙ｄ笉杩涜剰琛ㄣ€傛瘡娆?store 閮界畻涓€閬嶅ぇ鏁存暟浼氭妸鍐欏嚭鎷栨參锛岃繖閲屽彧绠椾竴娆°€?*/
         const ownKeepStart = Number((BigInt(RelocateDataFloor) + BigInt(ordinal) * BigInt(RelocateSlotBits)) / 8n);
         const ownKeepStop = ownKeepStart + Number(BigInt(RelocateSlotBits) / 8n);
-        /* 核心 2 的数据起点是 1048576 + 2×268435456。档发布在这之后 49152 位，八个八位组。
-           49344 位是内核发布的这一轮消息上限，小端 8 个八位组。颗粒游标占到 49343，再往后才是这个字。 */
+        /* 鏍稿績 2 鐨勬暟鎹捣鐐规槸 1048576 + 2脳268435456銆傛。鍙戝竷鍦ㄨ繖涔嬪悗 49152 浣嶏紝鍏釜鍏綅缁勩€?           49344 浣嶆槸鍐呮牳鍙戝竷鐨勮繖涓€杞秷鎭笂闄愶紝灏忕 8 涓叓浣嶇粍銆傞绮掓父鏍囧崰鍒?49343锛屽啀寰€鍚庢墠鏄繖涓瓧銆?*/
         const rankPublishN = 67246080;
         const spanWordN = rankPublishN + 24;
         const keep = (index: number, value: number): void => {
@@ -889,7 +865,7 @@ export namespace ZerOS {
           if (index >= rankPublishN && index < rankPublishN + 8) {
             noteCoreRank(index - rankPublishN, stored);
           }
-          /* 档发布之后的那一个八位组。1 表示 1 号被信号打中，宿主从这里停机。 */
+          /* 妗ｅ彂甯冧箣鍚庣殑閭ｄ竴涓叓浣嶇粍銆? 琛ㄧず 1 鍙疯淇″彿鎵撲腑锛屽涓讳粠杩欓噷鍋滄満銆?*/
           if (index === rankPublishN + 8) {
             noteMachineHalt(stored);
           }
@@ -908,7 +884,7 @@ export namespace ZerOS {
           } else {
             dirty.add(index);
           }
-          /* 上限字的八个八位组都到了，才把小端的低 32 位交给主板。高位不是 0 就当成还没发布。 */
+          /* 涓婇檺瀛楃殑鍏釜鍏綅缁勯兘鍒颁簡锛屾墠鎶婂皬绔殑浣?32 浣嶄氦缁欎富鏉裤€傞珮浣嶄笉鏄?0 灏卞綋鎴愯繕娌″彂甯冦€?*/
           if (index >= spanWordN && index < spanWordN + 8) {
             let word = 0;
             let high = false;
@@ -965,10 +941,7 @@ export namespace ZerOS {
           if (dirty.size === 0 && (!includeOwn || ownDirty.size === 0)) {
             return;
           }
-          /* 连续脏字节收成一段。段与段不相邻时一次消息写回，不再每段等一次主板。
-             降频、空转和还没画字形的矩形只送邮箱，数据窗留到取出、调度、查询或字形绘制。
-             缺页时只送即将被整页换掉的那一页，别的页继续攒着。
-             引导清表的脏字节远超上限，那种调用不会走这条。邮箱每次都送，固件才能看见。 */
+          /* 杩炵画鑴忓瓧鑺傛敹鎴愪竴娈点€傛涓庢涓嶇浉閭绘椂涓€娆℃秷鎭啓鍥烇紝涓嶅啀姣忔绛変竴娆′富鏉裤€?             闄嶉銆佺┖杞拰杩樻病鐢诲瓧褰㈢殑鐭╁舰鍙€侀偖绠憋紝鏁版嵁绐楃暀鍒板彇鍑恒€佽皟搴︺€佹煡璇㈡垨瀛楀舰缁樺埗銆?             缂洪〉鏃跺彧閫佸嵆灏嗚鏁撮〉鎹㈡帀鐨勯偅涓€椤碉紝鍒殑椤电户缁敀鐫€銆?             寮曞娓呰〃鐨勮剰瀛楄妭杩滆秴涓婇檺锛岄偅绉嶈皟鐢ㄤ笉浼氳蛋杩欐潯銆傞偖绠辨瘡娆￠兘閫侊紝鍥轰欢鎵嶈兘鐪嬭銆?*/
           const sharedN = Number(sharedOctet);
           const onlyN = onlyPage === null ? null : Number(onlyPage);
           const pending: number[] = [];
@@ -996,9 +969,7 @@ export namespace ZerOS {
           pending.sort((left, right): number => left - right);
           const addresses: bigint[] = [];
           const parts: Uint8Array[] = [];
-          /* 调用还没返回时，相邻的几个字中间常常空着一两个没改的字节。
-             这些字节本核心已经有，并进同一段，一次搬运就能带走整条记录。
-             没读过的空洞不能用旧值盖掉，仍从这里切开。调用之外不并空洞。 */
+          /* 璋冪敤杩樻病杩斿洖鏃讹紝鐩搁偦鐨勫嚑涓瓧涓棿甯稿父绌虹潃涓€涓や釜娌℃敼鐨勫瓧鑺傘€?             杩欎簺瀛楄妭鏈牳蹇冨凡缁忔湁锛屽苟杩涘悓涓€娈碉紝涓€娆℃惉杩愬氨鑳藉甫璧版暣鏉¤褰曘€?             娌¤杩囩殑绌烘礊涓嶈兘鐢ㄦ棫鍊肩洊鎺夛紝浠嶄粠杩欓噷鍒囧紑銆傝皟鐢ㄤ箣澶栦笉骞剁┖娲炪€?*/
           const holeLimit = serving ? 64 : 0;
           let index = 0;
           while (index < pending.length) {
@@ -1059,15 +1030,14 @@ export namespace ZerOS {
             cursor = end;
           }
         };
-        /* 环的通知已经到了，但这一圈读到的次数还没比上次更大。
-           读环返回真时，主循环自己记下次数已经前进。 */
+        /* 鐜殑閫氱煡宸茬粡鍒颁簡锛屼絾杩欎竴鍦堣鍒扮殑娆℃暟杩樻病姣斾笂娆℃洿澶с€?           璇荤幆杩斿洖鐪熸椂锛屼富寰幆鑷繁璁颁笅娆℃暟宸茬粡鍓嶈繘銆?*/
         let ringUnseen = false;
         let ringAdvanced = false;
         let lastRingCount = -1;
         const fill = async (bit: bigint): Promise<boolean> => {
           const octet = Number(bit / 8n);
           if (keyRingOctet(octet)) {
-            /* 次数、栅栏和五个槽一起读。一次只读一个字的话，conPump 要来回三四趟，一字节就要二十多毫秒。 */
+            /* 娆℃暟銆佹爡鏍忓拰浜斾釜妲戒竴璧疯銆備竴娆″彧璇讳竴涓瓧鐨勮瘽锛宑onPump 瑕佹潵鍥炰笁鍥涜稛锛屼竴瀛楄妭灏辫浜屽崄澶氭绉掋€?*/
             const ringBytes = 104;
             const bytes = await nativeReadSpan(ordinal, 6528n, ringBytes);
             const base = 6528 / 8;
@@ -1075,7 +1045,7 @@ export namespace ZerOS {
             for (let step = 0; step < width; step += 1) {
               sparse.set(base + step, bytes[step] ?? 0);
             }
-            /* 6528 是写入次数。通知已经到了而次数没变，就不能睡。 */
+            /* 6528 鏄啓鍏ユ鏁般€傞€氱煡宸茬粡鍒颁簡鑰屾鏁版病鍙橈紝灏变笉鑳界潯銆?*/
             if (bytes.length >= 4) {
               let count = 0;
               for (let step = 0; step < 4; step += 1) {
@@ -1088,10 +1058,10 @@ export namespace ZerOS {
             }
             return false;
           }
-          /* 只把这一页已经改过的字节送出去。整份脏缓冲一起送的话，每次缺页都会把还没写完的记录切成几十字节。 */
+          /* 鍙妸杩欎竴椤靛凡缁忔敼杩囩殑瀛楄妭閫佸嚭鍘汇€傛暣浠借剰缂撳啿涓€璧烽€佺殑璇濓紝姣忔缂洪〉閮戒細鎶婅繕娌″啓瀹岀殑璁板綍鍒囨垚鍑犲崄瀛楄妭銆?*/
           const dirtyPage = (bit / 8n) & ~pageMask;
           await flush(false, dirtyPage);
-          /* 整页都在窗口里才一次读回。窗口边只读错过的那一个八位组，不把窗外的字节带进缓冲。 */
+          /* 鏁撮〉閮藉湪绐楀彛閲屾墠涓€娆¤鍥炪€傜獥鍙ｈ竟鍙閿欒繃鐨勯偅涓€涓叓浣嶇粍锛屼笉鎶婄獥澶栫殑瀛楄妭甯﹁繘缂撳啿銆?*/
           let page = (bit / 8n) & ~pageMask;
           let count = Number(pageOctets);
           const last = page + pageOctets - 1n;
@@ -1116,7 +1086,7 @@ export namespace ZerOS {
             }
           }
         };
-        /** 固件刚发布的键盘环不能沿用这一拍早先读到的字节。 */
+        /** 鍥轰欢鍒氬彂甯冪殑閿洏鐜笉鑳芥部鐢ㄨ繖涓€鎷嶆棭鍏堣鍒扮殑瀛楄妭銆?*/
         const forgetKeyRing = (): void => {
           const stale: number[] = [];
           for (const key of sparse.keys()) {
@@ -1129,12 +1099,8 @@ export namespace ZerOS {
           }
         };
         /*
-         * 监督核的数据缓冲只可信自己窗口里的字。
-         * 客程序的参数写在别的核心的窗口里。上一次系统调用读过的那一页会留在缓冲中，
-         * 客程序随后改掉的标志和描述符，下一次取出时仍是旧值。
-         * 取出到一条调用后先丢掉窗外的页，分发再读到的就是客程序刚写上的字。
-         * 自己窗口里的任务表不丢，那些字已经在取出前写回。
-         */
+         * 鐩戠潱鏍哥殑鏁版嵁缂撳啿鍙彲淇¤嚜宸辩獥鍙ｉ噷鐨勫瓧銆?         * 瀹㈢▼搴忕殑鍙傛暟鍐欏湪鍒殑鏍稿績鐨勭獥鍙ｉ噷銆備笂涓€娆＄郴缁熻皟鐢ㄨ杩囩殑閭ｄ竴椤典細鐣欏湪缂撳啿涓紝
+         * 瀹㈢▼搴忛殢鍚庢敼鎺夌殑鏍囧織鍜屾弿杩扮锛屼笅涓€娆″彇鍑烘椂浠嶆槸鏃у€笺€?         * 鍙栧嚭鍒颁竴鏉¤皟鐢ㄥ悗鍏堜涪鎺夌獥澶栫殑椤碉紝鍒嗗彂鍐嶈鍒扮殑灏辨槸瀹㈢▼搴忓垰鍐欎笂鐨勫瓧銆?         * 鑷繁绐楀彛閲岀殑浠诲姟琛ㄤ笉涓紝閭ｄ簺瀛楀凡缁忓湪鍙栧嚭鍓嶅啓鍥炪€?         */
         const dropForeign = (): void => {
           hot = null;
           for (const key of sparse.keys()) {
@@ -1148,7 +1114,7 @@ export namespace ZerOS {
             }
           }
         };
-        /* 客程序的参数只在它自己的窗口里。丢掉整份窗外缓存的话，终端格子每次按键都要重新读回。 */
+        /* 瀹㈢▼搴忕殑鍙傛暟鍙湪瀹冭嚜宸辩殑绐楀彛閲屻€備涪鎺夋暣浠界獥澶栫紦瀛樼殑璇濓紝缁堢鏍煎瓙姣忔鎸夐敭閮借閲嶆柊璇诲洖銆?*/
         const dropCaller = (caller: number): void => {
           if (!Number.isInteger(caller) || caller < 0 || caller > 31) {
             dropForeign();
@@ -1173,27 +1139,17 @@ export namespace ZerOS {
           }
         };
         /*
-         * 同步切片大约 1 毫秒，然后用消息通道让出。
-         * Hz 不再把这一拍睡成 16 或 33 毫秒。以前取出调用后把切片放到 32 毫秒，
-         * 是因为每次让出都要等别的核心把 Hz 睡眠跑完。那种睡眠已经去掉，
-         * 1 毫秒的让出足够把显示拍和固件的 poll 排进来。
-         * serving 只决定脏字节能不能并进同一段搬运，不再把同步切片放到 32 毫秒。
-         */
+         * 鍚屾鍒囩墖澶х害 1 姣锛岀劧鍚庣敤娑堟伅閫氶亾璁╁嚭銆?         * Hz 涓嶅啀鎶婅繖涓€鎷嶇潯鎴?16 鎴?33 姣銆備互鍓嶅彇鍑鸿皟鐢ㄥ悗鎶婂垏鐗囨斁鍒?32 姣锛?         * 鏄洜涓烘瘡娆¤鍑洪兘瑕佺瓑鍒殑鏍稿績鎶?Hz 鐫＄湢璺戝畬銆傞偅绉嶇潯鐪犲凡缁忓幓鎺夛紝
+         * 1 姣鐨勮鍑鸿冻澶熸妸鏄剧ず鎷嶅拰鍥轰欢鐨?poll 鎺掕繘鏉ャ€?         * serving 鍙喅瀹氳剰瀛楄妭鑳戒笉鑳藉苟杩涘悓涓€娈垫惉杩愶紝涓嶅啀鎶婂悓姝ュ垏鐗囨斁鍒?32 姣銆?         */
         const sliceMs = 1;
         let serving = false;
         const sliceCheck = 8;
         /*
-         * 平时用消息通道让出，监督核的空转不会每拍都吃掉 4 毫秒。
-         * 消息通道会插到定时器前面。终端铺上之后仍只用通道，避免按键路径上堆定时器。
-         * 终端还没铺上时，固件的加载圈和设置界面都停在 dwell 上。
-         * 通道若完全不让，圆圈画出一帧就停住，字体的网络读也完不成。
-         * 这一段大约每 32 毫秒才走一次定时器，其余仍走通道。频率和每拍条数都不改。
-         */
+         * 骞虫椂鐢ㄦ秷鎭€氶亾璁╁嚭锛岀洃鐫ｆ牳鐨勭┖杞笉浼氭瘡鎷嶉兘鍚冩帀 4 姣銆?         * 娑堟伅閫氶亾浼氭彃鍒板畾鏃跺櫒鍓嶉潰銆傜粓绔摵涓婁箣鍚庝粛鍙敤閫氶亾锛岄伩鍏嶆寜閿矾寰勪笂鍫嗗畾鏃跺櫒銆?         * 缁堢杩樻病閾轰笂鏃讹紝鍥轰欢鐨勫姞杞藉湀鍜岃缃晫闈㈤兘鍋滃湪 dwell 涓娿€?         * 閫氶亾鑻ュ畬鍏ㄤ笉璁╋紝鍦嗗湀鐢诲嚭涓€甯у氨鍋滀綇锛屽瓧浣撶殑缃戠粶璇讳篃瀹屼笉鎴愩€?         * 杩欎竴娈靛ぇ绾︽瘡 32 姣鎵嶈蛋涓€娆″畾鏃跺櫒锛屽叾浣欎粛璧伴€氶亾銆傞鐜囧拰姣忔媿鏉℃暟閮戒笉鏀广€?         */
         let yieldResume: (() => void) | null = null;
         let yieldForced = false;
         let timerYieldAt = 0;
-        /* 只记住已经写进环的按下次数。松开不加这个序号，回显的写出不会被切开。
-           还有按下没进环时，这一拍满 1 毫秒就交给固件。 */
+        /* 鍙浣忓凡缁忓啓杩涚幆鐨勬寜涓嬫鏁般€傛澗寮€涓嶅姞杩欎釜搴忓彿锛屽洖鏄剧殑鍐欏嚭涓嶄細琚垏寮€銆?           杩樻湁鎸変笅娌¤繘鐜椂锛岃繖涓€鎷嶆弧 1 姣灏变氦缁欏浐浠躲€?*/
         let attentionSeen = 0;
         const keyArrived = (): boolean => {
           return MetricRoot.Hardware.Motherboard.keySerialNow() !== attentionSeen
@@ -1207,8 +1163,7 @@ export namespace ZerOS {
             resume();
           }
         };
-        /* 键进来之后这几毫秒继续跑。环里的次数往往比通知晚一点才读得到。
-           过了这几毫秒就停在入站通知和显示拍上，不再自己发消息。 */
+        /* 閿繘鏉ヤ箣鍚庤繖鍑犳绉掔户缁窇銆傜幆閲岀殑娆℃暟寰€寰€姣旈€氱煡鏅氫竴鐐规墠璇诲緱鍒般€?           杩囦簡杩欏嚑姣灏卞仠鍦ㄥ叆绔欓€氱煡鍜屾樉绀烘媿涓婏紝涓嶅啀鑷繁鍙戞秷鎭€?*/
         let hotUntil = 0;
         const noteHot = (): void => {
           const until = performance.now() + 8;
@@ -1216,8 +1171,8 @@ export namespace ZerOS {
             hotUntil = until;
           }
         };
-        RuntimeRoot.Hardware.Cpu.bindYieldPoke((): void => {
-          /* 落在同步切片里时，这一拍还没进等待。记下，拍尾不要再排一帧。 */
+        RuntimeRoot.Hardware.Cpu.bindYieldPoke(ordinal, (): void => {
+          /* 钀藉湪鍚屾鍒囩墖閲屾椂锛岃繖涓€鎷嶈繕娌¤繘绛夊緟銆傝涓嬶紝鎷嶅熬涓嶈鍐嶆帓涓€甯с€?*/
           yieldForced = true;
           const resume = yieldResume;
           yieldResume = null;
@@ -1225,20 +1180,16 @@ export namespace ZerOS {
             resume();
           }
         });
-        /* firmware 为真时必须真的让出，固件才能来收键。这时不能因为入站标记已经是 1 就立刻返回。 */
+        /* firmware 涓虹湡鏃跺繀椤荤湡鐨勮鍑猴紝鍥轰欢鎵嶈兘鏉ユ敹閿€傝繖鏃朵笉鑳藉洜涓哄叆绔欐爣璁板凡缁忔槸 1 灏辩珛鍒昏繑鍥炪€?*/
         const yieldTurn = (firmware: boolean): Promise<void> => {
-          /* 调用已经在保持位里，或上一拍的叫醒落在同步切片中。这一拍直接继续，去取调用。
-             入站标记不算：环还没写上，立刻返回会把固件的 poll 饿死。 */
-          /* 固件还等着交换结果时，不能用已经解决的承诺立刻再跑。
-             那会占住微任务，方向 2 的结果进不了队，键写进环要等十几毫秒。 */
+          /* 璋冪敤宸茬粡鍦ㄤ繚鎸佷綅閲岋紝鎴栦笂涓€鎷嶇殑鍙啋钀藉湪鍚屾鍒囩墖涓€傝繖涓€鎷嶇洿鎺ョ户缁紝鍘诲彇璋冪敤銆?             鍏ョ珯鏍囪涓嶇畻锛氱幆杩樻病鍐欎笂锛岀珛鍒昏繑鍥炰細鎶婂浐浠剁殑 poll 楗挎銆?*/
+          /* 鍥轰欢杩樼瓑鐫€浜ゆ崲缁撴灉鏃讹紝涓嶈兘鐢ㄥ凡缁忚В鍐崇殑鎵胯绔嬪埢鍐嶈窇銆?             閭ｄ細鍗犱綇寰换鍔★紝鏂瑰悜 2 鐨勭粨鏋滆繘涓嶄簡闃燂紝閿啓杩涚幆瑕佺瓑鍗佸嚑姣銆?*/
           if (
             !firmware
             && (yieldForced || nativeGatePending() || RuntimeRoot.Hardware.Cpu.keyRingPending())
           ) {
             yieldForced = false;
-            /* 固件还等着交换结果时，不能用已经解决的承诺立刻再跑。
-               那会占住微任务，方向 2 的结果进不了队。
-               只让出一个宏任务，结果落地后马上读环。睡到下一拍显示，字形会晚二十多毫秒。 */
+            /* 鍥轰欢杩樼瓑鐫€浜ゆ崲缁撴灉鏃讹紝涓嶈兘鐢ㄥ凡缁忚В鍐崇殑鎵胯绔嬪埢鍐嶈窇銆?               閭ｄ細鍗犱綇寰换鍔★紝鏂瑰悜 2 鐨勭粨鏋滆繘涓嶄簡闃熴€?               鍙鍑轰竴涓畯浠诲姟锛岀粨鏋滆惤鍦板悗椹笂璇荤幆銆傜潯鍒颁笅涓€鎷嶆樉绀猴紝瀛楀舰浼氭櫄浜屽崄澶氭绉掋€?*/
             if (RuntimeRoot.Hardware.Cpu.nativeFirmwareAwaiting()) {
               return new Promise((resolve): void => {
                 let settled = false;
@@ -1258,10 +1209,7 @@ export namespace ZerOS {
             }
             return Promise.resolve();
           }
-          /* 终端还没铺上时，大约每 32 毫秒才把队列让给定时器一次。
-             固件的 30 Hz 圆圈和字体的网络读仍排得进。
-             其余节拍走消息通道。每拍都用定时器的话，宿主会把 0 毫秒抬到大约 4 毫秒，引导就被这截间隙拖住。
-             终端铺上之后仍只用通道，避免按键路径上堆定时器。 */
+          /* 缁堢杩樻病閾轰笂鏃讹紝澶х害姣?32 姣鎵嶆妸闃熷垪璁╃粰瀹氭椂鍣ㄤ竴娆°€?             鍥轰欢鐨?30 Hz 鍦嗗湀鍜屽瓧浣撶殑缃戠粶璇讳粛鎺掑緱杩涖€?             鍏朵綑鑺傛媿璧版秷鎭€氶亾銆傛瘡鎷嶉兘鐢ㄥ畾鏃跺櫒鐨勮瘽锛屽涓讳細鎶?0 姣鎶埌澶х害 4 姣锛屽紩瀵煎氨琚繖鎴棿闅欐嫋浣忋€?             缁堢閾轰笂涔嬪悗浠嶅彧鐢ㄩ€氶亾锛岄伩鍏嶆寜閿矾寰勪笂鍫嗗畾鏃跺櫒銆?*/
           if (!firmware && !nativeTerminalLive() && performance.now() - timerYieldAt >= 32) {
             timerYieldAt = performance.now();
             return new Promise((resolve): void => {
@@ -1281,26 +1229,24 @@ export namespace ZerOS {
               resolve();
             };
             yieldResume = finish;
-            /* 决定让出之后，调用可能已经放进保持位。poke 若早于这一行，只把 yieldForced 留下。
-               这里再看一次。已经在分发的延后回复不算：那一拍仍要睡到子任务真正把下一次调用放进来。 */
+            /* 鍐冲畾璁╁嚭涔嬪悗锛岃皟鐢ㄥ彲鑳藉凡缁忔斁杩涗繚鎸佷綅銆俻oke 鑻ユ棭浜庤繖涓€琛岋紝鍙妸 yieldForced 鐣欎笅銆?               杩欓噷鍐嶇湅涓€娆°€傚凡缁忓湪鍒嗗彂鐨勫欢鍚庡洖澶嶄笉绠楋細閭ｄ竴鎷嶄粛瑕佺潯鍒板瓙浠诲姟鐪熸鎶婁笅涓€娆¤皟鐢ㄦ斁杩涙潵銆?*/
             if (yieldForced || nativeGatePending()) {
               finish();
               return;
             }
-            /* 这一拍的指令预算用完了，调用还在分发。不能睡到下一次按键，
-               否则 spawn 停在清表上。让出一个宏任务再接着分发。 */
+            /* 杩欎竴鎷嶇殑鎸囦护棰勭畻鐢ㄥ畬浜嗭紝璋冪敤杩樺湪鍒嗗彂銆備笉鑳界潯鍒颁笅涓€娆℃寜閿紝
+               鍚﹀垯 spawn 鍋滃湪娓呰〃涓娿€傝鍑轰竴涓畯浠诲姟鍐嶆帴鐫€鍒嗗彂銆?*/
             if (serving && !firmware) {
               yieldChannel.port2.postMessage(null);
               return;
             }
-            /* 键已经进环，这一圈的 conPump 还没跑完。
-               睡在入站字上会一直等到下一次按下，这一字节就卡在环里。 */
+            /* 閿凡缁忚繘鐜紝杩欎竴鍦堢殑 conPump 杩樻病璺戝畬銆?               鐫″湪鍏ョ珯瀛椾笂浼氫竴鐩寸瓑鍒颁笅涓€娆℃寜涓嬶紝杩欎竴瀛楄妭灏卞崱鍦ㄧ幆閲屻€?*/
             if (!firmware && ringUnseen) {
               yieldChannel.port2.postMessage(null);
               return;
             }
             if (firmware) {
-              /* 等当前这次让出挂上之后再拉固件，避免在监督核的栈上重入 poll。 */
+              /* 绛夊綋鍓嶈繖娆¤鍑烘寕涓婁箣鍚庡啀鎷夊浐浠讹紝閬垮厤鍦ㄧ洃鐫ｆ牳鐨勬爤涓婇噸鍏?poll銆?*/
               yieldChannel.port2.postMessage(null);
               queueMicrotask((): void => {
                 RuntimeRoot.Hardware.Cpu.pokeFirmwareYield();
@@ -1309,18 +1255,15 @@ export namespace ZerOS {
             }
             const mark = MetricRoot.Hardware.Motherboard.keyAttentionWords();
             const canWait = mark !== null && typeof Atomics.waitAsync === "function";
-            /* 引导和按键后的短窗仍自己发消息，读环才跟得上。
-               窗过了就只等入站通知和显示拍。定时器会被浏览器拉长，这里不用。 */
-            /* 引导和按键后的短窗自己发消息。延后的回复（壳在 wait、同核 spawn 还没交回）
-               不在这里转圈：子任务放进保持位时会 poke，这一拍从等待里回来。 */
+            /* 寮曞鍜屾寜閿悗鐨勭煭绐椾粛鑷繁鍙戞秷鎭紝璇荤幆鎵嶈窡寰椾笂銆?               绐楄繃浜嗗氨鍙瓑鍏ョ珯閫氱煡鍜屾樉绀烘媿銆傚畾鏃跺櫒浼氳娴忚鍣ㄦ媺闀匡紝杩欓噷涓嶇敤銆?*/
+            /* 寮曞鍜屾寜閿悗鐨勭煭绐楄嚜宸卞彂娑堟伅銆傚欢鍚庣殑鍥炲锛堝３鍦?wait銆佸悓鏍?spawn 杩樻病浜ゅ洖锛?               涓嶅湪杩欓噷杞湀锛氬瓙浠诲姟鏀捐繘淇濇寔浣嶆椂浼?poke锛岃繖涓€鎷嶄粠绛夊緟閲屽洖鏉ャ€?*/
             if (!canWait || !nativeTerminalLive() || performance.now() < hotUntil) {
               yieldChannel.port2.postMessage(null);
             }
             if (mark === null || typeof Atomics.waitAsync !== "function") {
               return;
             }
-            /* 等这一格发生变化。键入队会加一，不论当前是 0 还是上次没减干净的数。
-               已经变了就只叫醒固件。计数不归零时立刻结束会转成空转。 */
+            /* 绛夎繖涓€鏍煎彂鐢熷彉鍖栥€傞敭鍏ラ槦浼氬姞涓€锛屼笉璁哄綋鍓嶆槸 0 杩樻槸涓婃娌″噺骞插噣鐨勬暟銆?               宸茬粡鍙樹簡灏卞彧鍙啋鍥轰欢銆傝鏁颁笉褰掗浂鏃剁珛鍒荤粨鏉熶細杞垚绌鸿浆銆?*/
             const current = Atomics.load(mark, 0);
             const waited = Atomics.waitAsync(mark, 0, current);
             if (waited.async) {
@@ -1345,7 +1288,7 @@ export namespace ZerOS {
           if (bit < 0 || (bit & 7) !== 0) {
             return -1;
           }
-          /* 位址会超过 2^31。不能用 >>，那是 32 位有符号移位，核心 1 往后的窗口会落成负数，同一页永远命不中。 */
+          /* 浣嶅潃浼氳秴杩?2^31銆備笉鑳界敤 >>锛岄偅鏄?32 浣嶆湁绗﹀彿绉讳綅锛屾牳蹇?1 寰€鍚庣殑绐楀彛浼氳惤鎴愯礋鏁帮紝鍚屼竴椤垫案杩滃懡涓嶄腑銆?*/
           const index = (bit - baseNum) / 8;
           if (index >= 0 && index < code.length && Number.isInteger(index)) {
             return code[index] ?? 0;
@@ -1384,8 +1327,7 @@ export namespace ZerOS {
           },
         };
         try {
-          /* 数据窗里已经改过、还没送出的字节。邮箱和监督核自己的窗口不算。
-             自己窗口里的格子留在缓冲里，不能因为它们超过 64KB 就把一次按键的回复整段写回去。 */
+          /* 鏁版嵁绐楅噷宸茬粡鏀硅繃銆佽繕娌￠€佸嚭鐨勫瓧鑺傘€傞偖绠卞拰鐩戠潱鏍歌嚜宸辩殑绐楀彛涓嶇畻銆?             鑷繁绐楀彛閲岀殑鏍煎瓙鐣欏湪缂撳啿閲岋紝涓嶈兘鍥犱负瀹冧滑瓒呰繃 64KB 灏辨妸涓€娆℃寜閿殑鍥炲鏁存鍐欏洖鍘汇€?*/
           const dataOctets = (): number => {
             let count = 0;
             const sharedN = Number(sharedOctet);
@@ -1397,7 +1339,7 @@ export namespace ZerOS {
             }
             return count;
           };
-          /* 画字符串的参数是 itof 之后的位型。先还原成整数，再按八位组去本地缓冲里抄。 */
+          /* 鐢诲瓧绗︿覆鐨勫弬鏁版槸 itof 涔嬪悗鐨勪綅鍨嬨€傚厛杩樺師鎴愭暣鏁帮紝鍐嶆寜鍏綅缁勫幓鏈湴缂撳啿閲屾妱銆?*/
           const fontBits = new DataView(new ArrayBuffer(8));
           const floatInteger = (bits: bigint): number | null => {
             fontBits.setBigInt64(0, BigInt.asIntN(64, bits), true);
@@ -1407,8 +1349,7 @@ export namespace ZerOS {
             }
             return value;
           };
-          /* 这些出口会让别的核心或设备读刚才写下的字节，必须先整段送出。
-             pass 只改本核心的保持位，紧接着的调度仍会送出。降频、空转和查询只碰邮箱。 */
+          /* 杩欎簺鍑哄彛浼氳鍒殑鏍稿績鎴栬澶囪鍒氭墠鍐欎笅鐨勫瓧鑺傦紝蹇呴』鍏堟暣娈甸€佸嚭銆?             pass 鍙敼鏈牳蹇冪殑淇濇寔浣嶏紝绱ф帴鐫€鐨勮皟搴︿粛浼氶€佸嚭銆傞檷棰戙€佺┖杞拰鏌ヨ鍙閭銆?*/
           const mustExpose = (opcode: number): boolean => {
             return opcode === NativeEscapeSchedule
               || opcode === NativeEscapePresent
@@ -1423,13 +1364,9 @@ export namespace ZerOS {
               || opcode === NativeEscapeCapture
               || opcode === NativeEscapeRestore;
           };
-          /* 客程序正在执行指令、保持位里又没有新调用：监督核停在这里。
-             读键盘、dwell 和已经去掉的 Hz 定时器都不算执行。
-             提示符处不能停：键写进环之后还要 conPump 把这一字节交回壳。
-             客程序只是可运行、还没取指时也不能睡，否则没人 schedule。
-             停机和系统调用都会放开这把闩。 */
+          /* 瀹㈢▼搴忔鍦ㄦ墽琛屾寚浠ゃ€佷繚鎸佷綅閲屽張娌℃湁鏂拌皟鐢細鐩戠潱鏍稿仠鍦ㄨ繖閲屻€?             璇婚敭鐩樸€乨well 鍜屽凡缁忓幓鎺夌殑 Hz 瀹氭椂鍣ㄩ兘涓嶇畻鎵ц銆?             鎻愮ず绗﹀涓嶈兘鍋滐細閿啓杩涚幆涔嬪悗杩樿 conPump 鎶婅繖涓€瀛楄妭浜ゅ洖澹炽€?             瀹㈢▼搴忓彧鏄彲杩愯銆佽繕娌″彇鎸囨椂涔熶笉鑳界潯锛屽惁鍒欐病浜?schedule銆?             鍋滄満鍜岀郴缁熻皟鐢ㄩ兘浼氭斁寮€杩欐妸闂┿€?*/
           const parkForGuest = async (): Promise<boolean> => {
-            /* 已经取走的调用还在分发。键和客程序都不能把这一次回复截掉。 */
+            /* 宸茬粡鍙栬蛋鐨勮皟鐢ㄨ繕鍦ㄥ垎鍙戙€傞敭鍜屽绋嬪簭閮戒笉鑳芥妸杩欎竴娆″洖澶嶆埅鎺夈€?*/
             if (serving) {
               return false;
             }
@@ -1441,11 +1378,11 @@ export namespace ZerOS {
             }
             serving = false;
             await nativeWaitLatch();
-            /* 回来先走一圈。拍号可能已经变了，再睡会把显示程序留到下一次系统调用。 */
+            /* 鍥炴潵鍏堣蛋涓€鍦堛€傛媿鍙峰彲鑳藉凡缁忓彉浜嗭紝鍐嶇潯浼氭妸鏄剧ず绋嬪簭鐣欏埌涓嬩竴娆＄郴缁熻皟鐢ㄣ€?*/
             return false;
           };
           for (;;) {
-            /* 30 Hz 的 core() 空转。有真实指令或未取走的调用时不进入下面的取指。 */
+            /* 30 Hz 鐨?core() 绌鸿浆銆傛湁鐪熷疄鎸囦护鎴栨湭鍙栬蛋鐨勮皟鐢ㄦ椂涓嶈繘鍏ヤ笅闈㈢殑鍙栨寚銆?*/
             if (await pauseIdleSpin(ordinal)) {
               if (nativeAccount(ordinal, 0)) {
                 return;
@@ -1466,25 +1403,18 @@ export namespace ZerOS {
             }
             let ran = 0;
             let sliceAt = performance.now();
-            /* 这一拍已经把下一条调用放进保持位时，先取走再让出。
-               写出的回复会顺手叫醒显示。若在降频处把线程交出去，呈现要等下一拍，字形就晚十几毫秒。
-               每拍只多取一次，后面的调用仍把线程还给固件。 */
+            /* 杩欎竴鎷嶅凡缁忔妸涓嬩竴鏉¤皟鐢ㄦ斁杩涗繚鎸佷綅鏃讹紝鍏堝彇璧板啀璁╁嚭銆?               鍐欏嚭鐨勫洖澶嶄細椤烘墜鍙啋鏄剧ず銆傝嫢鍦ㄩ檷棰戝鎶婄嚎绋嬩氦鍑哄幓锛屽憟鐜拌绛変笅涓€鎷嶏紝瀛楀舰灏辨櫄鍗佸嚑姣銆?               姣忔媿鍙鍙栦竴娆★紝鍚庨潰鐨勮皟鐢ㄤ粛鎶婄嚎绋嬭繕缁欏浐浠躲€?*/
             let pendingTake = 0;
-            /* 环的通知先到，这一圈的读可能还在飞，读到的是旧次数。
-               这一圈先跑完，下一圈再读一次，不要睡到下一拍显示。 */
+            /* 鐜殑閫氱煡鍏堝埌锛岃繖涓€鍦堢殑璇诲彲鑳借繕鍦ㄩ锛岃鍒扮殑鏄棫娆℃暟銆?               杩欎竴鍦堝厛璺戝畬锛屼笅涓€鍦堝啀璇讳竴娆★紝涓嶈鐫″埌涓嬩竴鎷嶆樉绀恒€?*/
             let pumpAgain = false;
-            /* 这一圈已经走到给自己升频。中途按 1 毫秒停掉的不算，conPump 可能还停在缺页上。 */
+            /* 杩欎竴鍦堝凡缁忚蛋鍒扮粰鑷繁鍗囬銆備腑閫旀寜 1 姣鍋滄帀鐨勪笉绠楋紝conPump 鍙兘杩樺仠鍦ㄧ己椤典笂銆?*/
             let sawEpilogue = false;
-            /* 没人在取指时，主循环尾上把频率升回去就结束这一拍。
-               同一毫秒里再转圈会把线程占满，固件和回收都排在后面。 */
+            /* 娌′汉鍦ㄥ彇鎸囨椂锛屼富寰幆灏句笂鎶婇鐜囧崌鍥炲幓灏辩粨鏉熻繖涓€鎷嶃€?               鍚屼竴姣閲屽啀杞湀浼氭妸绾跨▼鍗犳弧锛屽浐浠跺拰鍥炴敹閮芥帓鍦ㄥ悗闈€?*/
             let restHigh = false;
-            /* 入站有字时先把线程交给固件，键盘环才写得上。
-               保持位里已经有调用时不再让。那次让出会把已经提交的写出拖过这一拍，字形跟着晚十几毫秒。
-               固件写完环就会清掉入站标记。只看入站的话，这一拍读到的旧计数会留到下一次按键。
-               写环留下的标记单独丢掉本地副本，这一圈读到的是刚写上的计数。 */
+            /* 鍏ョ珯鏈夊瓧鏃跺厛鎶婄嚎绋嬩氦缁欏浐浠讹紝閿洏鐜墠鍐欏緱涓娿€?               淇濇寔浣嶉噷宸茬粡鏈夎皟鐢ㄦ椂涓嶅啀璁┿€傞偅娆¤鍑轰細鎶婂凡缁忔彁浜ょ殑鍐欏嚭鎷栬繃杩欎竴鎷嶏紝瀛楀舰璺熺潃鏅氬崄鍑犳绉掋€?               鍥轰欢鍐欏畬鐜氨浼氭竻鎺夊叆绔欐爣璁般€傚彧鐪嬪叆绔欑殑璇濓紝杩欎竴鎷嶈鍒扮殑鏃ц鏁颁細鐣欏埌涓嬩竴娆℃寜閿€?               鍐欑幆鐣欎笅鐨勬爣璁板崟鐙涪鎺夋湰鍦板壇鏈紝杩欎竴鍦堣鍒扮殑鏄垰鍐欎笂鐨勮鏁般€?*/
             const pressed = MetricRoot.Hardware.Motherboard.keySerialNow();
             const published = RuntimeRoot.Hardware.Cpu.takeKeyRing();
-            /* 只在这一拍真有新键时丢掉环的副本。每拍都丢的话，conPump 每次都要再读一整圈。 */
+            /* 鍙湪杩欎竴鎷嶇湡鏈夋柊閿椂涓㈡帀鐜殑鍓湰銆傛瘡鎷嶉兘涓㈢殑璇濓紝conPump 姣忔閮借鍐嶈涓€鏁村湀銆?*/
             if (published > 0) {
               forgetKeyRing();
             }
@@ -1492,7 +1422,7 @@ export namespace ZerOS {
               attentionSeen += published;
               pumpAgain = true;
               ringUnseen = true;
-              /* 这一圈之前读到的次数不算数。要等通知之后再读到更大的次数。 */
+              /* 杩欎竴鍦堜箣鍓嶈鍒扮殑娆℃暟涓嶇畻鏁般€傝绛夐€氱煡涔嬪悗鍐嶈鍒版洿澶х殑娆℃暟銆?*/
               ringAdvanced = false;
               noteHot();
             }
@@ -1500,8 +1430,7 @@ export namespace ZerOS {
               noteHot();
             }
             if (!nativeGatePending() && (pressed !== attentionSeen || RuntimeRoot.Hardware.Cpu.keyUnwritten())) {
-              /* 叫醒没落到等待上就不记次数。下一拍再试，键不用干等那 8 毫秒。
-                 这里不记住计数。环没写上之前，调用仍按 1 毫秒让出。 */
+              /* 鍙啋娌¤惤鍒扮瓑寰呬笂灏变笉璁版鏁般€備笅涓€鎷嶅啀璇曪紝閿笉鐢ㄥ共绛夐偅 8 姣銆?                 杩欓噷涓嶈浣忚鏁般€傜幆娌″啓涓婁箣鍓嶏紝璋冪敤浠嶆寜 1 姣璁╁嚭銆?*/
               await yieldTurn(true);
               RuntimeRoot.Hardware.Cpu.takeFirmwareCatch();
               forgetKeyRing();
@@ -1524,12 +1453,10 @@ export namespace ZerOS {
                 if (recall(error.bit / 8n) === undefined) {
                   throw new Error("native instruction failed");
                 }
-                /* 键盘环刚读回来。下一拍开头会丢掉这份副本。
-                   这一条 load 还没把次数写进寄存器就停的话，conPump 看不见已经进环的键，
-                   监督核接着睡到下一次按下。这一条必须马上再执行。
-                   别的缺页仍按 1 毫秒把线程还给固件，避免一长串缺页占住写环。 */
+                /* 閿洏鐜垰璇诲洖鏉ャ€備笅涓€鎷嶅紑澶翠細涓㈡帀杩欎唤鍓湰銆?                   杩欎竴鏉?load 杩樻病鎶婃鏁板啓杩涘瘎瀛樺櫒灏卞仠鐨勮瘽锛宑onPump 鐪嬩笉瑙佸凡缁忚繘鐜殑閿紝
+                   鐩戠潱鏍告帴鐫€鐫″埌涓嬩竴娆℃寜涓嬨€傝繖涓€鏉″繀椤婚┈涓婂啀鎵ц銆?                   鍒殑缂洪〉浠嶆寜 1 姣鎶婄嚎绋嬭繕缁欏浐浠讹紝閬垮厤涓€闀夸覆缂洪〉鍗犱綇鍐欑幆銆?*/
                 if (keyRingOctet(Number(error.bit / 8n))) {
-                  /* 读环的往返不占这一拍的 1 毫秒。占了的话，次数刚进寄存器，后面的 conWake 又被截掉。 */
+                  /* 璇荤幆鐨勫線杩斾笉鍗犺繖涓€鎷嶇殑 1 姣銆傚崰浜嗙殑璇濓紝娆℃暟鍒氳繘瀵勫瓨鍣紝鍚庨潰鐨?conWake 鍙堣鎴帀銆?*/
                   sliceAt = performance.now();
                   continue;
                 }
@@ -1540,24 +1467,19 @@ export namespace ZerOS {
               }
               if (outcome === "cont") {
                 ran += 1;
-                /* 每 8 条才看一次钟。每条都看，会比快指令还贵；隔得再远，慢指令会把这一拍拖过 1 毫秒。
-                   跳转也走这里，不把 core() 空转计数清掉。while (core()) 中间的 jmp 仍算空转。
-                   正在分发时不切开。刚敲下的命令还算「有键」，切开就会把 spawn 停在清表上，
-                   监督核接着睡到下一次按键，这条命令永远等不到回复。 */
+                /* 姣?8 鏉℃墠鐪嬩竴娆￠挓銆傛瘡鏉￠兘鐪嬶紝浼氭瘮蹇寚浠よ繕璐碉紱闅斿緱鍐嶈繙锛屾參鎸囦护浼氭妸杩欎竴鎷嶆嫋杩?1 姣銆?                   璺宠浆涔熻蛋杩欓噷锛屼笉鎶?core() 绌鸿浆璁℃暟娓呮帀銆倃hile (core()) 涓棿鐨?jmp 浠嶇畻绌鸿浆銆?                   姝ｅ湪鍒嗗彂鏃朵笉鍒囧紑銆傚垰鏁蹭笅鐨勫懡浠よ繕绠椼€屾湁閿€嶏紝鍒囧紑灏变細鎶?spawn 鍋滃湪娓呰〃涓婏紝
+                   鐩戠潱鏍告帴鐫€鐫″埌涓嬩竴娆℃寜閿紝杩欐潯鍛戒护姘歌繙绛変笉鍒板洖澶嶃€?*/
                 if (ran % sliceCheck === 0 && performance.now() - sliceAt >= sliceMs && !serving) {
                   break;
                 }
                 continue;
               }
               noteIdleShape(ordinal, typeof outcome === "object" && outcome.opcode === NativeEscapeCore);
-              /* 连续的存储先留在本核心。每一拍结束都整段送出的话，一次调用会被切成几十次二十字节的往返。
-                 回复、调度、绘制、搬运和装入之前整段送出。打开字体面仍先送出。
-                 画字符串时标量已经抄齐就留在本核心，缺字才送出，避免抄到空页。攒过 64KB 仍马上送。 */
+              /* 杩炵画鐨勫瓨鍌ㄥ厛鐣欏湪鏈牳蹇冦€傛瘡涓€鎷嶇粨鏉熼兘鏁存閫佸嚭鐨勮瘽锛屼竴娆¤皟鐢ㄤ細琚垏鎴愬嚑鍗佹浜屽崄瀛楄妭鐨勫線杩斻€?                 鍥炲銆佽皟搴︺€佺粯鍒躲€佹惉杩愬拰瑁呭叆涔嬪墠鏁存閫佸嚭銆傛墦寮€瀛椾綋闈粛鍏堥€佸嚭銆?                 鐢诲瓧绗︿覆鏃舵爣閲忓凡缁忔妱榻愬氨鐣欏湪鏈牳蹇冿紝缂哄瓧鎵嶉€佸嚭锛岄伩鍏嶆妱鍒扮┖椤点€傛敀杩?64KB 浠嶉┈涓婇€併€?*/
               let mailboxOnly = false;
               let stagedFont = false;
               let fillFont: { readonly start: number; readonly glyphs: number } | null = null;
-              /* 这一行的标量还在本核心缓冲里。抄齐了就交给绘制队列，避免每行再向主板读一次。
-                 缺任何一个八位组就先把脏页写回，再读回这一行并留在缓冲里。下一行就能抄齐。 */
+              /* 杩欎竴琛岀殑鏍囬噺杩樺湪鏈牳蹇冪紦鍐查噷銆傛妱榻愪簡灏变氦缁欑粯鍒堕槦鍒楋紝閬垮厤姣忚鍐嶅悜涓绘澘璇讳竴娆°€?                 缂轰换浣曚竴涓叓浣嶇粍灏卞厛鎶婅剰椤靛啓鍥烇紝鍐嶈鍥炶繖涓€琛屽苟鐣欏湪缂撳啿閲屻€備笅涓€琛屽氨鑳芥妱榻愩€?*/
               if (typeof outcome === "object" && outcome.opcode === NativeEscapeAccel && ordinal === 2) {
                 const operation = readReg(state, outcome.regs, 1);
                 if (operation === 42n) {
@@ -1615,15 +1537,14 @@ export namespace ZerOS {
                   || opcode === NativeEscapePortByte;
                 mailboxOnly = dataOctets() < 65536 && (quiet || !expose);
               }
-              /* 调度、矩形和呈现读不到监督核窗口里的格子。那些字留到这一拍结束再送。
-                 客程序窗口里的返回值仍在这一次送出。 */
+              /* 璋冨害銆佺煩褰㈠拰鍛堢幇璇讳笉鍒扮洃鐫ｆ牳绐楀彛閲岀殑鏍煎瓙銆傞偅浜涘瓧鐣欏埌杩欎竴鎷嶇粨鏉熷啀閫併€?                 瀹㈢▼搴忕獥鍙ｉ噷鐨勮繑鍥炲€间粛鍦ㄨ繖涓€娆￠€佸嚭銆?*/
               const skipOwn = typeof outcome === "object"
                 && (outcome.opcode === NativeEscapeSchedule
                   || outcome.opcode === NativeEscapePresent
                   || outcome.opcode === NativeEscapeCharacter)
                 && dataOctets() < 65536;
               await flush(mailboxOnly, null, skipOwn);
-              /* 缓冲里缺的那一行已经写回主板。读回来留在本核心，绘制队列直接带上这些字节。 */
+              /* 缂撳啿閲岀己鐨勯偅涓€琛屽凡缁忓啓鍥炰富鏉裤€傝鍥炴潵鐣欏湪鏈牳蹇冿紝缁樺埗闃熷垪鐩存帴甯︿笂杩欎簺瀛楄妭銆?*/
               if (fillFont !== null) {
                 const filled = await nativeReadSpan(ordinal, BigInt(fillFont.start), fillFont.glyphs * 4);
                 if (filled.length === fillFont.glyphs * 4) {
@@ -1650,7 +1571,7 @@ export namespace ZerOS {
                 waiting = true;
                 return;
               }
-              /* hertz(30) 再 hertz(100000000) 不再按低频率补睡。chargePace 只记账。 */
+              /* hertz(30) 鍐?hertz(100000000) 涓嶅啀鎸変綆棰戠巼琛ョ潯銆俢hargePace 鍙璐︺€?*/
               const applied = await applyEscape(ordinal, state, outcome);
               if (outcome.opcode === NativeEscapeCarry || outcome.opcode === NativeEscapeFill || outcome.opcode === NativeEscapeOffer) {
                 const addressSlot = outcome.opcode === NativeEscapeFill ? 2 : 4;
@@ -1673,21 +1594,18 @@ export namespace ZerOS {
                   const packedSlot = outcome.regs[1];
                   const packed = packedSlot === undefined ? 0n : state.reg[packedSlot] ?? 0n;
                   dropCaller(Number(packed >> 32n));
-                  /* 调用号已经在寄存器里。分发紧挨着这条 take，不要先让出再做。
-                     切片仍是 1 毫秒。不再放到 32 毫秒，否则固件的 poll 要等分发跑完。 */
+                  /* 璋冪敤鍙峰凡缁忓湪瀵勫瓨鍣ㄩ噷銆傚垎鍙戠揣鎸ㄧ潃杩欐潯 take锛屼笉瑕佸厛璁╁嚭鍐嶅仛銆?                     鍒囩墖浠嶆槸 1 姣銆備笉鍐嶆斁鍒?32 姣锛屽惁鍒欏浐浠剁殑 poll 瑕佺瓑鍒嗗彂璺戝畬銆?*/
                   serving = true;
                   tookCall = true;
                 }
               }
-              /* 只有给自己降频或升频，才表示主循环这一圈已经走完。
-                 spawn 里给子核设 1000000 也是 hertz。把它当成收尾的话，
-                 schedWake 还没执行，监督核就睡到下一次按键，壳停在 spawn。 */
+              /* 鍙湁缁欒嚜宸遍檷棰戞垨鍗囬锛屾墠琛ㄧず涓诲惊鐜繖涓€鍦堝凡缁忚蛋瀹屻€?                 spawn 閲岀粰瀛愭牳璁?1000000 涔熸槸 hertz銆傛妸瀹冨綋鎴愭敹灏剧殑璇濓紝
+                 schedWake 杩樻病鎵ц锛岀洃鐫ｆ牳灏辩潯鍒颁笅涓€娆℃寜閿紝澹冲仠鍦?spawn銆?*/
               const hertzTarget = outcome.opcode === NativeEscapeHertz
                 ? readReg(state, outcome.regs, 0)
                 : null;
               const selfHertz = hertzTarget === BigInt(ordinal);
-              /* 给自己升频是主循环这一圈的收尾，分发函数已经返回。
-                 同核 spawn 可以不回复就返回，那一拍仍要结束，子任务才跑得起来。 */
+              /* 缁欒嚜宸卞崌棰戞槸涓诲惊鐜繖涓€鍦堢殑鏀跺熬锛屽垎鍙戝嚱鏁板凡缁忚繑鍥炪€?                 鍚屾牳 spawn 鍙互涓嶅洖澶嶅氨杩斿洖锛岄偅涓€鎷嶄粛瑕佺粨鏉燂紝瀛愪换鍔℃墠璺戝緱璧锋潵銆?*/
               if (selfHertz) {
                 serving = false;
               }
@@ -1705,9 +1623,7 @@ export namespace ZerOS {
               if (tookCall && performance.now() - sliceAt < sliceMs) {
                 continue;
               }
-              /* 查询不离开这一拍。调度每圈要问好几次核心状态，每次都让出会把按键推迟到下一次空转。
-                 已经攒下的绘制同样留在这一拍里。一行一次让出，滚屏会把换行拖到好几秒。
-                 打开字体面要等编号，不在这里连着做。 */
+              /* 鏌ヨ涓嶇寮€杩欎竴鎷嶃€傝皟搴︽瘡鍦堣闂ソ鍑犳鏍稿績鐘舵€侊紝姣忔閮借鍑轰細鎶婃寜閿帹杩熷埌涓嬩竴娆＄┖杞€?                 宸茬粡鏀掍笅鐨勭粯鍒跺悓鏍风暀鍦ㄨ繖涓€鎷嶉噷銆備竴琛屼竴娆¤鍑猴紝婊氬睆浼氭妸鎹㈣鎷栧埌濂藉嚑绉掋€?                 鎵撳紑瀛椾綋闈㈣绛夌紪鍙凤紝涓嶅湪杩欓噷杩炵潃鍋氥€?*/
               if (outcome.opcode === NativeEscapeQuery && performance.now() - sliceAt < sliceMs) {
                 continue;
               }
@@ -1717,9 +1633,7 @@ export namespace ZerOS {
                   continue;
                 }
               }
-              /* 主循环尾上的降频和 core 仍要让出，但同一毫秒里先把这一圈跑完。
-                 每条都让出时，定时器会把引导切成几毫秒一截。满一毫秒后下面的 break 仍把线程还给固件。
-                 已经形成的 core() 空转不再吃完这一毫秒。 */
+              /* 涓诲惊鐜熬涓婄殑闄嶉鍜?core 浠嶈璁╁嚭锛屼絾鍚屼竴姣閲屽厛鎶婅繖涓€鍦堣窇瀹屻€?                 姣忔潯閮借鍑烘椂锛屽畾鏃跺櫒浼氭妸寮曞鍒囨垚鍑犳绉掍竴鎴€傛弧涓€姣鍚庝笅闈㈢殑 break 浠嶆妸绾跨▼杩樼粰鍥轰欢銆?                 宸茬粡褰㈡垚鐨?core() 绌鸿浆涓嶅啀鍚冨畬杩欎竴姣銆?*/
               if (
                 outcome.opcode === NativeEscapeCore
                 && nativeTerminalLive()
@@ -1734,18 +1648,15 @@ export namespace ZerOS {
                 && performance.now() - sliceAt < sliceMs
                 && !(outcome.opcode === NativeEscapeCore && idleSpinning(ordinal))
               ) {
-                /* 自己的 core() 后面那次升频已经跑完。这一拍到此为止，去等键或显示拍。
-                   给别的核设频率不是这一拍的收尾。 */
+                /* 鑷繁鐨?core() 鍚庨潰閭ｆ鍗囬宸茬粡璺戝畬銆傝繖涓€鎷嶅埌姝や负姝紝鍘荤瓑閿垨鏄剧ず鎷嶃€?                   缁欏埆鐨勬牳璁鹃鐜囦笉鏄繖涓€鎷嶇殑鏀跺熬銆?*/
                 if (!(restHigh && selfHertz)) {
                   continue;
                 }
                 restHigh = false;
                 sawEpilogue = true;
               }
-              /* 这次调用还没走到降频或 core。中间让出会把写出和呈现切成十几毫秒。
-                 收尾那次给自己升频已经把 serving 清掉。同核 spawn 没回复也一样，
-                 否则子任务的下一次调用进不了这一条线程。
-                 按下还没进环才切开。松开键的交换还在飞时不要切，呈现会被切成十几毫秒。 */
+              /* 杩欐璋冪敤杩樻病璧板埌闄嶉鎴?core銆備腑闂磋鍑轰細鎶婂啓鍑哄拰鍛堢幇鍒囨垚鍗佸嚑姣銆?                 鏀跺熬閭ｆ缁欒嚜宸卞崌棰戝凡缁忔妸 serving 娓呮帀銆傚悓鏍?spawn 娌″洖澶嶄篃涓€鏍凤紝
+                 鍚﹀垯瀛愪换鍔＄殑涓嬩竴娆¤皟鐢ㄨ繘涓嶄簡杩欎竴鏉＄嚎绋嬨€?                 鎸変笅杩樻病杩涚幆鎵嶅垏寮€銆傛澗寮€閿殑浜ゆ崲杩樺湪椋炴椂涓嶈鍒囷紝鍛堢幇浼氳鍒囨垚鍗佸嚑姣銆?*/
               if (!serving && performance.now() - sliceAt >= sliceMs && keyArrived()) {
                 break;
               }
@@ -1758,23 +1669,18 @@ export namespace ZerOS {
               }
               break;
             }
-            /* 这一拍被系统调用或查询打断时，数据窗继续留着。
-               以前只要这一拍不是被钟截断就会整段送出，相邻的几个字被拆成二十字节一次。
-               超过 64KB 仍送，引导清表不会堆在缓冲里。
-               调用中间没送出的格子留在缓冲里，绘制队列已经抄过。不在这一拍结束时再搬一次。 */
+            /* 杩欎竴鎷嶈绯荤粺璋冪敤鎴栨煡璇㈡墦鏂椂锛屾暟鎹獥缁х画鐣欑潃銆?               浠ュ墠鍙杩欎竴鎷嶄笉鏄閽熸埅鏂氨浼氭暣娈甸€佸嚭锛岀浉閭荤殑鍑犱釜瀛楄鎷嗘垚浜屽崄瀛楄妭涓€娆°€?               瓒呰繃 64KB 浠嶉€侊紝寮曞娓呰〃涓嶄細鍫嗗湪缂撳啿閲屻€?               璋冪敤涓棿娌￠€佸嚭鐨勬牸瀛愮暀鍦ㄧ紦鍐查噷锛岀粯鍒堕槦鍒楀凡缁忔妱杩囥€備笉鍦ㄨ繖涓€鎷嶇粨鏉熸椂鍐嶆惉涓€娆°€?*/
             await flush(dataOctets() < 65536);
             dropShared();
             await nativeChargePace(ordinal, ran);
             if (nativeAccount(ordinal, ran)) {
               return;
             }
-            /* 客程序正在执行指令时，监督核停在保持位上。空转扫表会把线程从命令手里抢走。
-               调用写入保持位后立刻继续。客程序还没跑起来、或正停在读键盘里时不在这里等。 */
+            /* 瀹㈢▼搴忔鍦ㄦ墽琛屾寚浠ゆ椂锛岀洃鐫ｆ牳鍋滃湪淇濇寔浣嶄笂銆傜┖杞壂琛ㄤ細鎶婄嚎绋嬩粠鍛戒护鎵嬮噷鎶㈣蛋銆?               璋冪敤鍐欏叆淇濇寔浣嶅悗绔嬪埢缁х画銆傚绋嬪簭杩樻病璺戣捣鏉ャ€佹垨姝ｅ仠鍦ㄨ閿洏閲屾椂涓嶅湪杩欓噷绛夈€?*/
             if (await parkForGuest()) {
               continue;
             }
-            /* 通知之后至少要读到一次更大的次数，并且那一圈已经走完主循环。
-               只走到升频还不够：升频前的 conPump 可能仍拿着旧次数。 */
+            /* 閫氱煡涔嬪悗鑷冲皯瑕佽鍒颁竴娆℃洿澶х殑娆℃暟锛屽苟涓旈偅涓€鍦堝凡缁忚蛋瀹屼富寰幆銆?               鍙蛋鍒板崌棰戣繕涓嶅锛氬崌棰戝墠鐨?conPump 鍙兘浠嶆嬁鐫€鏃ф鏁般€?*/
             if (ringUnseen && ringAdvanced && sawEpilogue && published === 0) {
               ringUnseen = false;
               ringAdvanced = false;
@@ -1797,9 +1703,7 @@ export namespace ZerOS {
       }
 
       /**
-       * 调度在回复已经放进保持位之后调用。
-       * 回复写入原生寄存器，再从留下的位地址继续，直到停机或再一次系统调用。
-       */
+       * 璋冨害鍦ㄥ洖澶嶅凡缁忔斁杩涗繚鎸佷綅涔嬪悗璋冪敤銆?       * 鍥炲鍐欏叆鍘熺敓瀵勫瓨鍣紝鍐嶄粠鐣欎笅鐨勪綅鍦板潃缁х画锛岀洿鍒板仠鏈烘垨鍐嶄竴娆＄郴缁熻皟鐢ㄣ€?       */
       async function resumeNative(ordinal: number): Promise<void> {
         const frame = readNativeFrame(ordinal);
         const baseBit = readNativeWindow(ordinal);

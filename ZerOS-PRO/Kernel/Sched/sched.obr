@@ -1,10 +1,73 @@
-/* 调度。用户核上的任务数不再按核封顶。同一核上前台优先：更高档立刻抢占，同一档轮转。
+/* * 调度。用户核上的任务数不再按核封顶。同一核上前台优先：更高档立刻抢占，同一档轮转。
    后台只有在没有更高档就绪时才换上。前台自己停住或时间片让出之后，后台马上可以上。
    停在系统调用里的不换。停机的交给进程层。领不到槽的不换。跨核的让法在宿主，不在这一圈。 */
-#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr, /pipe.obr, /dev.obr, /sig.obr, /boot.obr, /spawn.obr, /frame.obr
+#LINK /start.obr, /exec.obr, /vfs.obr, /task.obr, /pipe.obr, /dev.obr, /sig.obr, /boot.obr, /spawn.obr, /frame.obr, /flat.obr
 import proc;
 import board;
 import obr.os;
+import window;
+import memory;
+
+
+deRfun taskBind(long core, long index): void {
+  Task* task = taskAt(index);
+  if (windowTagged(task.cap) != 0L) {
+    obr::os::bound(core, task.mm.origin, task.mm.length);
+  } else {
+    obr::os::bound(core, kArena(core), kSlot());
+  }
+}
+
+/* 恢复一份带待交回复的上下文。等子任务的回复值放在 waitFor（pid），
+   spawn 的回复仍是 0。只在 code == -2 时交，交完清掉标记。 */
+deRfun passReply(long core, long index): void {
+  long code = taskAt(index).code;
+  if (code != -2L && code != -3L) {
+    return;
+  }
+  taskAt(index).code = 0L;
+  long value = taskAt(index).waitFor;
+  taskAt(index).waitFor = 0L;
+  if (code == -2L && value < 0L) {
+    value = 0L;
+  }
+  /* -2：spawn/wait 的待交回复（0 或 pid）；-3：显示拍号，可以是 0。 */
+  obr::os::pass(core, value);
+}
+
+/* 任务要睡下等回复时，把上下文抄进槽，核让给下一份就绪任务；
+   没有就绪任务就卸下核心，让窗口装入器还能用这颗核。 */
+deRfun schedBlock(long core, long index): void {
+  long next = taskReady(core, index);
+  long slot = slotHold(index);
+  long to = -1L;
+  if (next >= 0L) {
+    to = taskAt(next).held - 1L;
+  }
+  if (slot < 0L || (next >= 0L && to < 0L)) {
+    /* 没有槽：保持旧行为，核停在 svc 上等回复。 */
+    taskAccount(index, TaskState::Sleeping);
+    taskAt(index).state = TaskState::Sleeping;
+    return;
+  }
+  obr::os::capture(core, slot);
+  taskAccount(index, TaskState::Sleeping);
+  taskAt(index).state = TaskState::Sleeping;
+  if (next < 0L) {
+    /* 没有可跑的任务：核保持停着。上下文已经在槽里，装入器可以把这颗核
+       当成可用核；醒来时由 wakeReady 从槽恢复。release 在 svc 序列里会失败，
+       不能靠它清核。 */
+    return;
+  }
+  taskBind(core, next);
+  obr::os::restore(core, to);
+  passReply(core, next);
+  taskAccount(next, TaskState::Running);
+  taskAt(next).state = TaskState::Running;
+  rankPublish(core);
+  schedPace(core, next);
+  obr::os::schedule(core);
+}
 
 export deRfun schedWake(long core): void {
   long index = taskFind(core);
@@ -18,6 +81,7 @@ export deRfun schedWake(long core): void {
   }
   taskAccount(index, TaskState::Running);
   task.state = TaskState::Running;
+  taskBind(core, index);
   rankPublish(core);
   obr::os::schedule(core);
 }
@@ -54,14 +118,29 @@ deRfun schedPace(long core, long index): void {
 
 /* 槽号由进程层分配，不必等于任务表下标。放回后仍要 schedule 才会跑。没有就绪的兄弟就什么也不做。 */
 deRfun schedResume(long core): void {
+  /* M2 触发点 (d)：清扫中的核不能换人，否则会把清扫上下文盖掉。 */
+  if (sweepBusy(core) == 1L) {
+    return;
+  }
+  /* 核上已经有上下文在续跑时不能再放回槽里的旧快照（M2-(d) reap 实证）：
+     procRelease 交回回复时已经 schedule 过等待者，它正从下一条续跑；
+     这时再 restore 它的槽（那份还是早先 capture 的旧状态）会把它整体倒回去，
+     刚收走的回复再也要不回来，wait 永远停着。停在系统调用里的（原因 2）
+     是退出/交回现场，仍要换上就绪任务；其余正在跑/被截停的一律不动。 */
+  if (query(1L, 5L, core) != 0L && query(1L, 11L, core) != 2L) {
+    return;
+  }
   long next = taskPrefer(core, -1L);
   if (next < 0L) {
+    /* 核上只剩退出/睡下的任务。不要在 svc 序列里 release（会失败）；
+       上下文已经进槽，装入器按 flatCoreIdle 判断这颗核可复用。 */
     return;
   }
   long slot = taskAt(next).held - 1L;
   if (slot < 0L) {
     return;
   }
+  taskBind(core, next);
   obr::os::restore(core, slot);
   /* 同核派生时父任务在槽里等 spawn 的回复。核上已经是子任务，
      回复不能提前 pass，否则会落到子任务身上；恢复父任务时再交回去。 */
@@ -80,6 +159,23 @@ deRfun schedSweep(): void {
   if (runLedger(8L, 0L) > 0L) {
     procCollect();
   }
+  /* 待杀收掉：任何任务带 kill 位（sig 9 的掩码是 sigMask(9) = 2^8 = 256）就按放弃清扫处理。
+     只看核上那一份（taskFind）会漏掉同核共享时换进槽里的受害任务。
+     与 sigRaise/sigPendingKill 同一把尺；早先硬编码 512（2^9）扫错了位，
+     kill 位永远命不中，wait 就永远等不到交回（M2-(d)）。 */
+  long scan = 0L;
+  long scanEnd = taskScanEnd();
+  while (scan < scanEnd) {
+    Task* victim = taskAt(scan);
+    if (victim.pid != 0L && victim.state != TaskState::Zombie && victim.state != TaskState::Empty
+      && victim.sig / 256L % 2L == 1L && sweepHolds(scan) == 0L) {
+      /* 清扫中的任务不能再收（M2-(d)）：reapSweep 会把状态置回 Ready，
+         不挡的话待杀扫描会再命同一格，第二次 procExitAt 的 procRelease
+         会把父任务放回核上、盖掉正在跑的清扫。 */
+      procExitAt(scan, 9L);
+    }
+    scan = scan + 1L;
+  }
   long core = 3L;
   while (core < 8L) {
     long running = query(1L, 5L, core);
@@ -91,7 +187,28 @@ deRfun schedSweep(): void {
     }
     long index = taskFind(core);
     if (index >= 0L) {
+      /* 诊断：核心停在 fault（why==3）时，把该核任务 pid 记进监督核窗口。
+         不改调度行为，只让宿主能定位是哪一份任务撞了 kSp。 */
+      if (running == 0L && why == 3L) {
+        long log = kSupervisor() + 2097152L + core * 256L;
+        memory::store64(taskAt(index).pid, log);
+        memory::store64(1L, log + 128L);
+      }
       long state = taskAt(index).state;
+      /* 清扫中的核只做两件事（M2-(d) reap 实证，用后即删的探针在别处）：
+         清扫变体停机就走 procSwept 收尾；被时间片/让出截停就原样续跑。
+         绝不换人、绝不按普通退出收任务：taskFind 在同核共享下会先看见
+         睡在槽里的父任务，换人会把清扫上下文抄进父任务的槽互相盖掉，
+         wait 就永远等不到交回（dtorreap 超时的根因链）。 */
+      if (sweepBusy(core) == 1L) {
+        if (running == 0L && why == 0L) {
+          procSwept(core);
+        } else if (running == 0L && why == 1L) {
+          obr::os::schedule(core);
+        }
+        core = core + 1L;
+        continue;
+      }
       if (running == 0L && sigPendingKill(core) == 1L) {
         procExit(core, 9L);
         /* 停在系统调用里时不能换任务，否则稍后的回复会落到另一份上。 */
@@ -101,6 +218,12 @@ deRfun schedSweep(): void {
       } else if (running == 0L && why == 0L && state == TaskState::Running) {
         procExit(core, 0L);
         schedResume(core);
+      } else if (running == 0L && why == 0L && sweepBusy(core) == 1L) {
+        /* M2 触发点 (d)：被放弃任务的清扫跑完（停机），现在才交回/收掉。
+           必须与上面的普通退出分支互斥：清扫的停机不能被当成普通退出再收一遍。
+           这里看核上的清扫标记而不是 taskFind 指回的那一格：同核共享时，
+           睡在槽里的父任务会被 taskFind 先找到，sweepHolds 就永远不成立（M2-(d)）。 */
+        procSwept(core);
       } else if (running == 0L && why == 1L && state != TaskState::Sleeping && state != TaskState::Zombie && state != TaskState::Empty) {
         long next = -1L;
         if (state == TaskState::Running) {
@@ -113,11 +236,9 @@ deRfun schedSweep(): void {
             obr::os::capture(core, from);
             taskAccount(index, TaskState::Ready);
             taskAt(index).state = TaskState::Ready;
+            taskBind(core, next);
             obr::os::restore(core, to);
-            if (taskAt(next).code == -2L) {
-              taskAt(next).code = 0L;
-              obr::os::pass(core, 0L);
-            }
+            passReply(core, next);
             taskAccount(next, TaskState::Running);
             taskAt(next).state = TaskState::Running;
             rankPublish(core);
@@ -126,13 +247,23 @@ deRfun schedSweep(): void {
           }
         } else {
           /* 同核共享时，旧任务在 capture 里，held 是槽号 + 1。
-             直接 schedule 会拿子任务留在核上的寄存器去跑旧任务；先 restore 回它的上下文。 */
-          long slot = taskAt(index).held - 1L;
-          if (slot >= 0L) {
-            obr::os::restore(core, slot);
+             只有等 spawn 回复的父任务（code == -2，核上是子任务的上下文）才需要 restore 放回。
+             其余情况核上就是这一格自己的上下文（时间片/让出的停点，resumeCursor 留着下一条），
+             槽里那份是早先 capture 的旧快照——放回去会把刚交完回复、正在续跑的任务整体
+             倒回旧状态（wait 的回复已被收走，倒回后永远等不到下一条，M2-(d) reap 实证）。
+             原样 schedule 从下一条继续即可。 */
+          if (taskAt(index).code == -2L) {
+            long back = taskAt(index).held - 1L;
+            if (back >= 0L) {
+              taskBind(core, index);
+              obr::os::restore(core, back);
+            }
+            /* 父任务的待交回复（spawn 是 0，wait 是 pid）在恢复后交。 */
+            passReply(core, index);
           }
           taskAccount(index, TaskState::Running);
           taskAt(index).state = TaskState::Running;
+          taskBind(core, index);
           rankPublish(core);
           schedPace(core, index);
           obr::os::schedule(core);
@@ -150,6 +281,12 @@ deRfun schedTick(): void {
   }
   long core = 3L;
   while (core < 8L) {
+    /* 清扫中的核不参与抢占轮换（M2-(d)）：taskFind 会指到同核槽里的父任务，
+       capture 会把清扫上下文抄进父任务的槽，互相盖掉。 */
+    if (sweepBusy(core) == 1L) {
+      core = core + 1L;
+      continue;
+    }
     long index = taskFind(core);
     if (index >= 0L) {
       long running = query(1L, 5L, core);
@@ -168,11 +305,9 @@ deRfun schedTick(): void {
               obr::os::capture(core, from);
               taskAccount(index, TaskState::Ready);
               taskAt(index).state = TaskState::Ready;
+              taskBind(core, next);
               obr::os::restore(core, to);
-              if (taskAt(next).code == -2L) {
-                taskAt(next).code = 0L;
-                obr::os::pass(core, 0L);
-              }
+              passReply(core, next);
               taskAccount(next, TaskState::Running);
               taskAt(next).state = TaskState::Running;
               rankPublish(core);

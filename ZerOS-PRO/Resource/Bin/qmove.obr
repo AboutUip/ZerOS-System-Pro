@@ -1,0 +1,71 @@
+/* POSIX.1-2017 qmove（utilities/qmove.html，批量作业族）。选定子集：
+   qmove destination job_identifier...
+   把作业移到目的队列：queue 字段置 destination（本平台队列为逻辑标签，
+   无路由守护进程——如实注明）。
+   job_identifier 子集：纯数字作业号（可带 .queue 后缀，忽略后缀）。
+   缺 destination 写 qmove: missing operand，退出 1；
+   不存在写 qmove: job: nonexistent job，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 qmove:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import nqslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long dir = obr::proc::alloc(home, 8192L * 8L);
+  long dirLen = putText(dir, 0L, "/var/spool/nqs");
+  nqsEnsure(home, dir, dirLen);
+  long count = argc(home);
+  long index = 1L;
+  long destAt = 0L;
+  long destLen = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (len == 2L && spanSame(at, len, "--") == 1L) {
+      index = index + 1L;
+      continue;
+    }
+    if (destAt == 0L) {
+      destAt = at;
+      destLen = len;
+    } else {
+      operands = operands + 1L;
+      long idLen = 0L;
+      while (idLen < len && byteAt(at + idLen * 8L) != 46L) {
+        idLen = idLen + 1L;
+      }
+      long path = obr::proc::alloc(home, 8192L * 8L);
+      copySpan(dir, path, dirLen);
+      putText(path, dirLen, "/job.");
+      copySpan(at, path + (dirLen + 5L) * 8L, idLen);
+      long plen = dirLen + 5L + idLen;
+      if (nqsLoad(home, st, buf, path, plen) != 0L) {
+        writeErr(home, "qmove: ");
+        writeSpan(home, 2L, 0L, at, idLen);
+        writeErr(home, ": nonexistent job\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      nqsSet(st, "queue", destAt, destLen);
+      if (nqsSave(home, st, buf, path, plen) != 0L) {
+        writeErr(home, "qmove: cannot write job\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (destAt == 0L || operands == 0L) {
+    writeErr(home, "qmove: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

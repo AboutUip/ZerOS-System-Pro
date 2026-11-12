@@ -1,0 +1,3 @@
+/* 路径展开。把未加引号的通配符收成已经存在的路径，再装进派生参数块。 */
+deRfun fillArgs(long home, long work, long out, long cmd, long begin): long;
+deRfun globMatch(long name, long nameLen, long pat, long patLen, long flags): long;

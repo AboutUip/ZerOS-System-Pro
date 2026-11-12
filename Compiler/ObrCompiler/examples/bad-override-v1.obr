@@ -1,0 +1,14 @@
+/* Plan 2 M1：版本 1 的类没有对象头，不能做覆盖派发。编译应当失败：@Overwrite 需要 #VERSION 2。 */
+#VERSION 1
+
+class Base {
+  deRfun v(): int { return 1; }
+}
+
+class Sub : Base {
+  @Overwrite deRfun v(): int { return 2; }
+}
+
+deRfun main(): int {
+  return 0;
+}

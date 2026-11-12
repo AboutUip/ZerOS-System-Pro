@@ -1,0 +1,107 @@
+/* POSIX.1-2017 nice（utilities/nice.html）。
+   形式是 nice [-n increment] utility [argument...]，也认旧形式 nice -increment utility。
+   increment 是 -20 到 19 的十进制整数，缺省 10；-n 缺值或越界写
+   nice: invalid increment，退出 1。旧形式 -increment 只收 0 到 19。
+   本内核没有调度优先级接口，不假装调整优先级：派生 utility 前向描述符 2 写一行
+   nice: no scheduling priority interface; running at normal priority。
+   utility 与参数原样交给子任务（参数窗口从 utility 起发布，环境不动）。
+   找不到 utility 写 nice: 名字: No such file or directory，退出 127；
+   派生失败写 nice: 名字: cannot execute，退出 126；
+   否则退出码是子进程退出码（收在 0 到 255）。
+   诊断英文 ASCII，描述符 2，前缀 nice:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun sayMiss(long home, long addr, long count): void {
+  writeErr(home, "nice: ");
+  writeSpan(home, 2L, 0L, addr, count);
+  writeErr(home, ": No such file or directory\n");
+}
+
+deRfun sayExec(long home, long addr, long count): void {
+  writeErr(home, "nice: ");
+  writeSpan(home, 2L, 0L, addr, count);
+  writeErr(home, ": cannot execute\n");
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long saved = obr::proc::alloc(home, 139520L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  if (saved == 0L || scratch == 0L) {
+    writeErr(home, "nice: out of memory\n");
+    return finish(home, 1L);
+  }
+  if (saveWindow(home, saved) != 0L) {
+    writeErr(home, "nice: out of memory\n");
+    return finish(home, 1L);
+  }
+  long count = savedCount(saved);
+  long index = 1L;
+  long util = 1L;
+  long ended = 0L;
+  while (index < count && ended == 0L) {
+    long at = savedArgPtr(saved, index);
+    long len = savedArgLen(saved, index);
+    if (len == 2L && spanSame(at, len, "--") == 1L) {
+      index = index + 1L;
+      ended = 1L;
+    } else if (len == 2L && spanSame(at, len, "-n") == 1L) {
+      index = index + 1L;
+      if (index >= count) {
+        writeErr(home, "nice: invalid increment\n");
+        return finish(home, 1L);
+      }
+      long value = 0L;
+      if (spanNum(savedArgPtr(saved, index), savedArgLen(saved, index), &value) != 0L || value < -20L || value > 19L) {
+        writeErr(home, "nice: invalid increment\n");
+        return finish(home, 1L);
+      }
+      index = index + 1L;
+    } else if (len >= 2L && byteAt(at) == 45L) {
+      long value = 0L;
+      if (spanNum(at + 8L, len - 1L, &value) != 0L || value < 0L || value > 19L) {
+        writeErr(home, "nice: invalid increment\n");
+        return finish(home, 1L);
+      }
+      index = index + 1L;
+    } else {
+      ended = 1L;
+    }
+    util = index;
+  }
+  if (util >= count) {
+    writeErr(home, "nice: missing operand\n");
+    return finish(home, 1L);
+  }
+  long name = savedArgPtr(saved, util);
+  long nameLen = savedArgLen(saved, util);
+  long pathLen = 0L;
+  if (resolve(home, scratch, name, nameLen, &pathLen) == 0L) {
+    sayMiss(home, name, nameLen);
+    return finish(home, 127L);
+  }
+  writeErr(home, "nice: no scheduling priority interface; running at normal priority\n");
+  if (publish(home, saved, util) != 0L) {
+    writeErr(home, "nice: out of memory\n");
+    return finish(home, 1L);
+  }
+  plant(home, scratch, pathLen);
+  if (obr::proc::spawn(home, 0L) != 0L) {
+    sayExec(home, name, nameLen);
+    return finish(home, 126L);
+  }
+  long pid = obr::proc::slot(home, 192L);
+  obr::proc::wait(home, pid);
+  long code = obr::proc::slot(home, 192L);
+  if (code < 0L) {
+    code = 0L;
+  }
+  if (code > 255L) {
+    code = code % 256L;
+  }
+  return finish(home, code);
+}

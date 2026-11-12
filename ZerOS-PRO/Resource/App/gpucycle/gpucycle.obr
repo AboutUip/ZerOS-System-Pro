@@ -1,0 +1,86 @@
+#DYN
+/* GPU 热更新验收：服务 71 读旧状态 → SIGTERM 导出 → 等旧实例离开
+   → fresh load → 再读状态。成功 exit 42 且新 base >= 旧 frames、frames >= base。
+   250 = 旧/新 base 缺失，251 = 旧实例没退出，252 = 装载失败，
+   253 = 读状态失败，254 = 新 base 比旧 frames 小，255 = 新 frames 比 base 小。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun setPath(long home): void {
+  string path = "/drivers/gpu.zo";
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun main(): int {
+  long packed = obr::os::svc(71L);
+  long frames = packed >> 32L;
+  long base = packed & 4294967295L;
+  long code = 253L;
+  long before = frames;
+  if (base > 0L) {
+    code = 0L;
+  } else {
+    code = 250L;
+  }
+  if (code == 0L) {
+    long home = obr::proc::home();
+    memory::store64(0L, home + 128L);
+    memory::store64(8L, home + 64L);
+    obr::os::svc(56L);
+    long live = 1L;
+    long rounds = 0L;
+    while (live > 0L && rounds < 60L) {
+      obr::os::dwell(100L);
+      home = obr::proc::home();
+      memory::store64(10L, home + 64L);
+      live = obr::os::svc(56L);
+      rounds = rounds + 1L;
+    }
+    if (live > 0L) {
+      code = 251L;
+    }
+  }
+  if (code == 0L) {
+    long home = obr::proc::home();
+    setPath(home);
+    long status = 11L;
+    long tries = 0L;
+    while (status == 11L && tries < 40L) {
+      obr::os::dwell(100L);
+      home = obr::proc::home();
+      memory::store64(0L, home + 128L);
+      memory::store64(1L, home + 64L);
+      status = obr::os::svc(56L);
+      tries = tries + 1L;
+    }
+    if (status != 0L) {
+      code = 252L;
+    }
+  }
+  if (code == 0L) {
+    obr::os::dwell(600L);
+    packed = obr::os::svc(71L);
+    frames = packed >> 32L;
+    base = packed & 4294967295L;
+    if (base < 1L) {
+      code = 250L;
+    } else if (base < before) {
+      code = 254L;
+    } else if (frames < base) {
+      code = 255L;
+    } else {
+      code = 42L;
+    }
+  }
+  long home = obr::proc::home();
+  memory::store64(code, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

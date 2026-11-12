@@ -1,0 +1,585 @@
+/* 内建共用的壳状态块：alias、readonly、hash、位置参数、trap、开关和 umask。
+   一整块由壳分配，这里是纯内存操作，不读键盘、不开文件、不派生。自检直接跑这些函数。
+   布局（位址，相对起点）：
+   +0 开关位（a=1 e=2 f=4 n=8 u=16 v=32 x=64 C=128），+64 umask，+128 OPTIND，
+   +192 getopts 参数下标，+256 getopts 字母游标，+320 嵌套深度，+384 源深度，
+   +448 return 标志，+512 return 状态，+576 alias 条数，+640 readonly 条数，
+   +704 hash 条数，+768 位置参数条数，+896 护栏栈条数。
+   表区：+4096 alias 16 格步长 3200（+0 名长 +64 值长 +128 名 +640 值）；
+   +55296 readonly 32 格步长 640（+0 名长 +64 名）；
+   +75776 hash 32 格步长 1792（+0 名长 +64 路径长 +128 名 +768 路径）；
+   +133120 位置参数 16 格步长 640（+0 长 +64 文字）；
+   +143360 getopts 显式参数 16 格步长 640；
+   +153600 trap 32 格步长 2240（+0 状态 +64 动作长 +128 动作）；
+   +225280 同名护栏栈 8 格步长 640；+230400 赋值暂存 8 格步长 5120；
+   +271360 OPTARG 文字；+271872 名字输出暂存。整块 bsSpan()。 */
+#DYN
+#LINK /sh.obr, /draw.obr, /work.obr, /span.obr, /env.obr, /cd.obr, /run.obr, /complete.obr, /parse.obr, /builtin.obr, /expand.obr, /edit-check.obr, /bcore.obr, /bstate.obr, /bvar.obr, /bflow.obr, /bopt.obr, /bjob.obr, /bcmd.obr, /bio.obr, /builtin-check.obr
+import memory;
+import bcore;
+import bstate;
+
+
+deRfun bsSpan(): long {
+  return 272384L;
+}
+
+
+deRfun bsInit(long bs): void {
+  long at = 0L;
+  while (at < 1024L) {
+    memory::store64(0L, bs + at);
+    at = at + 64L;
+  }
+  memory::store64(18L, bs + 64L);
+  memory::store64(1L, bs + 128L);
+  /* getopts 的参数游标是 1 基（bcGetopts 按 argv+(游标-1)*640 取词）：
+     初值必须是 1，落在 0 会取到参数表前一槽的垃圾长度，每次调用都判成
+     无选项、变量写成 ? 且回 1。 */
+  memory::store64(1L, bs + 192L);
+  /* trap 表不看条数，32 格状态先清零。其余的表都按条数读写。 */
+  long slot = 0L;
+  while (slot < 32L) {
+    memory::store64(0L, bs + 153600L + slot * 2240L);
+    slot = slot + 1L;
+  }
+}
+
+
+deRfun bsOpt(long bs): long {
+  return memory::load64(bs);
+}
+
+
+deRfun bsOptOn(long bs, long mask): long {
+  if (memory::load64(bs) / mask % 2L == 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+
+deRfun bsOptSet(long bs, long mask, long on): void {
+  long now = memory::load64(bs);
+  if (on == 1L && now / mask % 2L == 0L) {
+    now = now + mask;
+  }
+  if (on == 0L && now / mask % 2L == 1L) {
+    now = now - mask;
+  }
+  memory::store64(now, bs);
+}
+
+
+deRfun bsUmask(long bs): long {
+  return memory::load64(bs + 64L);
+}
+
+
+deRfun bsUmaskSet(long bs, long value): void {
+  memory::store64(value % 512L, bs + 64L);
+}
+
+
+deRfun bsWord(long bs, long at): long {
+  return memory::load64(bs + at);
+}
+
+
+deRfun bsWordSet(long bs, long at, long value): void {
+  memory::store64(value, bs + at);
+}
+
+
+deRfun bsNestIn(long bs): long {
+  long now = memory::load64(bs + 320L);
+  if (now >= 8L) {
+    return 1L;
+  }
+  memory::store64(now + 1L, bs + 320L);
+  return 0L;
+}
+
+
+deRfun bsNestOut(long bs): void {
+  long now = memory::load64(bs + 320L);
+  if (now > 0L) {
+    memory::store64(now - 1L, bs + 320L);
+  }
+}
+
+
+deRfun bsSource(long bs): long {
+  return memory::load64(bs + 384L);
+}
+
+
+deRfun bsSourceIn(long bs): void {
+  memory::store64(memory::load64(bs + 384L) + 1L, bs + 384L);
+}
+
+
+deRfun bsSourceOut(long bs): void {
+  long now = memory::load64(bs + 384L);
+  if (now > 0L) {
+    memory::store64(now - 1L, bs + 384L);
+  }
+}
+
+
+deRfun bsReturnHit(long bs): long {
+  return memory::load64(bs + 448L);
+}
+
+
+deRfun bsReturnSet(long bs, long code): void {
+  memory::store64(1L, bs + 448L);
+  memory::store64(code, bs + 512L);
+}
+
+
+deRfun bsReturnTake(long bs): long {
+  memory::store64(0L, bs + 448L);
+  return memory::load64(bs + 512L);
+}
+
+
+deRfun bsOptArgAt(long bs): long {
+  return bs + 271360L;
+}
+
+
+deRfun bsNameAt(long bs): long {
+  return bs + 271872L;
+}
+
+
+/* ---- alias 表：16 格，步长 3200 ---- */
+
+deRfun bsAliasCount(long bs): long {
+  return memory::load64(bs + 576L);
+}
+
+
+deRfun bsAliasSlot(long bs, long index): long {
+  return bs + 4096L + index * 3200L;
+}
+
+
+deRfun bsAliasNameLen(long bs, long index): long {
+  return memory::load64(bsAliasSlot(bs, index));
+}
+
+
+deRfun bsAliasValueLen(long bs, long index): long {
+  return memory::load64(bsAliasSlot(bs, index) + 64L);
+}
+
+
+deRfun bsAliasNameAt(long bs, long index): long {
+  return bsAliasSlot(bs, index) + 128L;
+}
+
+
+deRfun bsAliasValueAt(long bs, long index): long {
+  return bsAliasSlot(bs, index) + 640L;
+}
+
+
+deRfun bsAliasFind(long bs, long name, long nameLen): long {
+  long index = 0L;
+  long count = bsAliasCount(bs);
+  while (index < count) {
+    if (bcSame(bsAliasNameAt(bs, index), bsAliasNameLen(bs, index), name, nameLen) == 1L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+
+/* 有了就换值，没有就占新格。满 16 条返回 1。 */
+deRfun bsAliasSet(long bs, long name, long nameLen, long value, long valueLen): long {
+  if (nameLen < 1L || nameLen > 64L || valueLen < 0L || valueLen > 256L) {
+    return 1L;
+  }
+  long index = bsAliasFind(bs, name, nameLen);
+  if (index < 0L) {
+    index = bsAliasCount(bs);
+    if (index >= 16L) {
+      return 1L;
+    }
+    memory::store64(index + 1L, bs + 576L);
+    memory::store64(nameLen, bsAliasSlot(bs, index));
+    bcCopy(name, bsAliasNameAt(bs, index), nameLen);
+  }
+  memory::store64(valueLen, bsAliasSlot(bs, index) + 64L);
+  if (valueLen > 0L) {
+    bcCopy(value, bsAliasValueAt(bs, index), valueLen);
+  }
+  return 0L;
+}
+
+
+deRfun bsAliasDel(long bs, long name, long nameLen): long {
+  long index = bsAliasFind(bs, name, nameLen);
+  if (index < 0L) {
+    return 1L;
+  }
+  long last = bsAliasCount(bs) - 1L;
+  if (index != last) {
+    long from = bsAliasSlot(bs, last);
+    long to = bsAliasSlot(bs, index);
+    bcCopy(from, to, 3200L / 8L);
+  }
+  memory::store64(last, bs + 576L);
+  return 0L;
+}
+
+
+/* ---- readonly 表：32 格，步长 640 ---- */
+
+deRfun bsRoCount(long bs): long {
+  return memory::load64(bs + 640L);
+}
+
+
+deRfun bsRoNameAt(long bs, long index): long {
+  return bs + 55296L + index * 640L + 64L;
+}
+
+
+deRfun bsRoNameLen(long bs, long index): long {
+  return memory::load64(bs + 55296L + index * 640L);
+}
+
+
+deRfun bsRoHas(long bs, long name, long nameLen): long {
+  long index = 0L;
+  long count = bsRoCount(bs);
+  while (index < count) {
+    if (bcSame(bsRoNameAt(bs, index), bsRoNameLen(bs, index), name, nameLen) == 1L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+deRfun bsRoAdd(long bs, long name, long nameLen): long {
+  if (nameLen < 1L || nameLen > 64L) {
+    return 1L;
+  }
+  if (bsRoHas(bs, name, nameLen) == 1L) {
+    return 0L;
+  }
+  long index = bsRoCount(bs);
+  if (index >= 32L) {
+    return 1L;
+  }
+  memory::store64(nameLen, bs + 55296L + index * 640L);
+  bcCopy(name, bsRoNameAt(bs, index), nameLen);
+  memory::store64(index + 1L, bs + 640L);
+  return 0L;
+}
+
+
+deRfun bsRoDel(long bs, long name, long nameLen): long {
+  long index = 0L;
+  long count = bsRoCount(bs);
+  while (index < count) {
+    if (bcSame(bsRoNameAt(bs, index), bsRoNameLen(bs, index), name, nameLen) == 1L) {
+      long last = count - 1L;
+      if (index != last) {
+        bcCopy(bs + 55296L + last * 640L, bs + 55296L + index * 640L, 640L / 8L);
+      }
+      memory::store64(last, bs + 640L);
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+
+/* ---- hash 表：32 格，步长 1792 ---- */
+
+deRfun bsHashCount(long bs): long {
+  return memory::load64(bs + 704L);
+}
+
+
+deRfun bsHashNameAt(long bs, long index): long {
+  return bs + 75776L + index * 1792L + 128L;
+}
+
+
+deRfun bsHashNameLen(long bs, long index): long {
+  return memory::load64(bs + 75776L + index * 1792L);
+}
+
+
+deRfun bsHashPathAt(long bs, long index): long {
+  return bs + 75776L + index * 1792L + 768L;
+}
+
+
+deRfun bsHashPathLen(long bs, long index): long {
+  return memory::load64(bs + 75776L + index * 1792L + 64L);
+}
+
+
+deRfun bsHashFind(long bs, long name, long nameLen): long {
+  long index = 0L;
+  long count = bsHashCount(bs);
+  while (index < count) {
+    if (bcSame(bsHashNameAt(bs, index), bsHashNameLen(bs, index), name, nameLen) == 1L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+
+deRfun bsHashPut(long bs, long name, long nameLen, long path, long pathLen): long {
+  if (nameLen < 1L || nameLen > 64L || pathLen < 1L || pathLen > 128L) {
+    return 1L;
+  }
+  long index = bsHashFind(bs, name, nameLen);
+  if (index < 0L) {
+    index = bsHashCount(bs);
+    if (index >= 32L) {
+      return 1L;
+    }
+    memory::store64(index + 1L, bs + 704L);
+    memory::store64(nameLen, bs + 75776L + index * 1792L);
+    bcCopy(name, bsHashNameAt(bs, index), nameLen);
+  }
+  memory::store64(pathLen, bs + 75776L + index * 1792L + 64L);
+  bcCopy(path, bsHashPathAt(bs, index), pathLen);
+  return 0L;
+}
+
+
+deRfun bsHashReset(long bs): void {
+  memory::store64(0L, bs + 704L);
+}
+
+
+/* ---- 位置参数表：16 格，步长 640 ---- */
+
+deRfun bsPosBase(long bs): long {
+  return bs + 133120L;
+}
+
+
+deRfun bsPosCount(long bs): long {
+  return memory::load64(bs + 768L);
+}
+
+
+deRfun bsPosAt(long bs, long index): long {
+  return bs + 133120L + index * 640L + 64L;
+}
+
+
+deRfun bsPosLen(long bs, long index): long {
+  return memory::load64(bs + 133120L + index * 640L);
+}
+
+
+deRfun bsPosClear(long bs): void {
+  memory::store64(0L, bs + 768L);
+}
+
+
+deRfun bsPosSet(long bs, long index, long addr, long len): long {
+  if (index < 0L || index >= 16L || len < 0L || len > 64L) {
+    return 1L;
+  }
+  memory::store64(len, bs + 133120L + index * 640L);
+  if (len > 0L) {
+    bcCopy(addr, bsPosAt(bs, index), len);
+  }
+  return 0L;
+}
+
+
+deRfun bsPosKeep(long bs, long count): void {
+  memory::store64(count, bs + 768L);
+}
+
+
+/* 位置参数整体前移 n 个。n 大于条数返回 1。 */
+deRfun bsPosShift(long bs, long n): long {
+  long count = bsPosCount(bs);
+  if (n < 0L || n > count) {
+    return 1L;
+  }
+  long index = 0L;
+  while (index + n < count) {
+    bcCopy(bs + 133120L + (index + n) * 640L, bs + 133120L + index * 640L, 640L / 8L);
+    index = index + 1L;
+  }
+  memory::store64(count - n, bs + 768L);
+  return 0L;
+}
+
+
+/* ---- getopts 显式参数表：16 格，步长 640，布局同位置参数 ---- */
+
+deRfun bsOptArgvBase(long bs): long {
+  return bs + 143360L;
+}
+
+
+deRfun bsOptArgvAt(long bs, long index): long {
+  return bs + 143360L + index * 640L + 64L;
+}
+
+
+deRfun bsOptArgvPut(long bs, long index, long addr, long len): long {
+  if (index < 0L || index >= 16L || len < 0L || len > 64L) {
+    return 1L;
+  }
+  memory::store64(len, bs + 143360L + index * 640L);
+  if (len > 0L) {
+    bcCopy(addr, bsOptArgvAt(bs, index), len);
+  }
+  return 0L;
+}
+
+
+deRfun bsOptArgvLen(long bs, long index): long {
+  return memory::load64(bs + 143360L + index * 640L);
+}
+
+
+/* ---- trap 表：32 格，步长 2240。下标 0 是 EXIT，1..31 是信号号。状态 0 缺省 1 忽略 2 动作 ---- */
+
+deRfun bsTrapSlot(long bs, long sig): long {
+  return bs + 153600L + sig * 2240L;
+}
+
+
+deRfun bsTrapState(long bs, long sig): long {
+  return memory::load64(bsTrapSlot(bs, sig));
+}
+
+
+deRfun bsTrapActionLen(long bs, long sig): long {
+  return memory::load64(bsTrapSlot(bs, sig) + 64L);
+}
+
+
+deRfun bsTrapActionAt(long bs, long sig): long {
+  return bsTrapSlot(bs, sig) + 128L;
+}
+
+
+deRfun bsTrapSet(long bs, long sig, long state, long action, long actionLen): long {
+  if (sig < 0L || sig > 31L || actionLen < 0L || actionLen > 256L) {
+    return 1L;
+  }
+  memory::store64(state, bsTrapSlot(bs, sig));
+  memory::store64(actionLen, bsTrapSlot(bs, sig) + 64L);
+  if (actionLen > 0L) {
+    bcCopy(action, bsTrapActionAt(bs, sig), actionLen);
+  }
+  return 0L;
+}
+
+
+/* ---- 同名护栏栈：8 格，步长 640。alias 展开时同名不再展开 ---- */
+
+deRfun bsGuardCount(long bs): long {
+  return memory::load64(bs + 896L);
+}
+
+
+deRfun bsGuardHas(long bs, long name, long nameLen): long {
+  long index = 0L;
+  long count = bsGuardCount(bs);
+  while (index < count) {
+    long slot = bs + 225280L + index * 640L;
+    if (bcSame(slot + 64L, memory::load64(slot), name, nameLen) == 1L) {
+      return 1L;
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+
+deRfun bsGuardPush(long bs, long name, long nameLen): long {
+  long count = bsGuardCount(bs);
+  if (count >= 8L) {
+    return 1L;
+  }
+  long slot = bs + 225280L + count * 640L;
+  memory::store64(nameLen, slot);
+  bcCopy(name, slot + 64L, nameLen);
+  memory::store64(count + 1L, bs + 896L);
+  return 0L;
+}
+
+
+deRfun bsGuardPop(long bs): void {
+  long count = bsGuardCount(bs);
+  if (count > 0L) {
+    memory::store64(count - 1L, bs + 896L);
+  }
+}
+
+
+/* ---- 赋值暂存：8 格，步长 5120。常规内建前的赋值先记旧值，跑完还原 ---- */
+
+deRfun bsSaveSlot(long bs, long index): long {
+  return bs + 230400L + index * 5120L;
+}
+
+
+deRfun bsSaveKeep(long bs, long index, long name, long nameLen, long oldSet, long old, long oldLen): long {
+  if (index < 0L || index >= 8L || nameLen < 1L || nameLen > 64L || oldLen < 0L || oldLen > 512L) {
+    return 1L;
+  }
+  long slot = bsSaveSlot(bs, index);
+  memory::store64(nameLen, slot);
+  memory::store64(oldLen, slot + 64L);
+  memory::store64(oldSet, slot + 128L);
+  bcCopy(name, slot + 192L, nameLen);
+  if (oldSet == 1L && oldLen > 0L) {
+    bcCopy(old, slot + 768L, oldLen);
+  }
+  return 0L;
+}
+
+
+deRfun bsSaveNameAt(long bs, long index): long {
+  return bsSaveSlot(bs, index) + 192L;
+}
+
+
+deRfun bsSaveNameLen(long bs, long index): long {
+  return memory::load64(bsSaveSlot(bs, index));
+}
+
+
+deRfun bsSaveSet(long bs, long index): long {
+  return memory::load64(bsSaveSlot(bs, index) + 128L);
+}
+
+
+deRfun bsSaveValueAt(long bs, long index): long {
+  return bsSaveSlot(bs, index) + 768L;
+}
+
+
+deRfun bsSaveValueLen(long bs, long index): long {
+  return memory::load64(bsSaveSlot(bs, index) + 64L);
+}
+
+

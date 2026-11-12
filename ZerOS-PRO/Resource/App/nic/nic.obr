@@ -1,0 +1,83 @@
+#DYN
+/* 网卡自检。装入 /lib/nic.zdll 和 /lib/obr.print.zdll 后调用内核核心驱动。
+   先探测控制字，再用 loopback 线发一帧原始以太网报文并收回来。
+   不建 TCP/IP。线不是 loopback 时，收发这一段会失败。 */
+import nic;
+import memory;
+import obr.print;
+import obr.proc;
+
+deRfun put(long base, long index, long value): void {
+  memory::storeOctet(value, base + index * 8L);
+}
+
+deRfun sameFrame(long left, long right, long count): long {
+  long index = 0L;
+  while (index < count) {
+    long a = memory::loadOctet(left + index * 8L);
+    long b = memory::loadOctet(right + index * 8L);
+    if (a < 0L) {
+      a = a + 256L;
+    }
+    if (b < 0L) {
+      b = b + 256L;
+    }
+    if (a != b) {
+      return 0L;
+    }
+    index = index + 1L;
+  }
+  return 1L;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long configured = nic::configure(0L, 0L, 0L);
+  if (configured != 0L) {
+    obr::print::text(home, "nic configure failed\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  long status = nic::selfCheck();
+  if (status != 0L) {
+    obr::print::text(home, "nic self-check failed\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  long tx = home + 131072L;
+  long rx = home + 163840L;
+  /* 目的广播、源 02:00:00:00:00:01、类型 0x0800、载荷 NIC1。 */
+  put(tx, 0L, 255L);
+  put(tx, 1L, 255L);
+  put(tx, 2L, 255L);
+  put(tx, 3L, 255L);
+  put(tx, 4L, 255L);
+  put(tx, 5L, 255L);
+  put(tx, 6L, 2L);
+  put(tx, 7L, 0L);
+  put(tx, 8L, 0L);
+  put(tx, 9L, 0L);
+  put(tx, 10L, 0L);
+  put(tx, 11L, 1L);
+  put(tx, 12L, 8L);
+  put(tx, 13L, 0L);
+  put(tx, 14L, 78L);
+  put(tx, 15L, 73L);
+  put(tx, 16L, 67L);
+  put(tx, 17L, 49L);
+  long sent = nic::send(tx, 18L);
+  if (sent != 0L) {
+    obr::print::text(home, "nic send failed\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  long got = nic::recv(rx, 64L);
+  if (got != 18L || sameFrame(tx, rx, 18L) == 0L) {
+    obr::print::text(home, "nic loopback failed\n");
+    obr::print::flush(home);
+    return 1;
+  }
+  obr::print::text(home, "nic self-check ok\n");
+  obr::print::flush(home);
+  return 0;
+}

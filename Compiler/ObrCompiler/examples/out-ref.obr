@@ -1,0 +1,88 @@
+/* M-C：out/ref 形参（多返回值）——out 只写、ref 读写；实参是可赋值左值
+   （变量/字段/下标/*指针，复用地址发射管道），字面量拒绝（见 bad-out-literal）。
+   ABI 逐位等于 long* + &x（传一个地址字），与存量 long* 函数互调。
+   out 形参转发给 out 形参、&x 交给 long* 形参、*p 当 out 实参都走同一槽。结果 0。*/
+#VERSION 2
+
+struct Pair {
+  long a;
+  long b;
+}
+
+struct Node {
+  long v;
+}
+
+deRfun setOut(out long v): void {
+  v = 7;
+}
+
+deRfun bump(ref long total, long by): void {
+  total = total + by;
+}
+
+/* out 形参沿传给 out 形参（位置转发，不是取值）。 */
+deRfun forward(out long v): void {
+  setOut(v);
+}
+
+/* 与存量 long* 互调（一）：出参函数把 &v 交给 long* 形参。 */
+deRfun setViaPtr(long* p): void {
+  *p = 42;
+}
+
+deRfun interop(out long v): void {
+  setViaPtr(&v);
+}
+
+/* 与存量 long* 互调（二）：long* 函数把 *p 当 out 实参。 */
+deRfun usePtr(long* p): void {
+  setOut(*p);
+}
+
+/* 出参类型可以是指针（Node** 场景的正解是 out Node*，T** 仍拒绝）。 */
+deRfun find(long key, out Node* result): long {
+  result = (Node*)2097152;
+  return key;
+}
+
+deRfun main(): long {
+  long x = 0;
+  setOut(x);
+  if (x != 7L) return 1;
+  /* ref 读写：调用前已初始化，被调方读改写。 */
+  bump(x, 5L);
+  if (x != 12L) return 2;
+  /* 转发：out 形参当 out 实参。 */
+  long y = 0;
+  forward(y);
+  if (y != 7L) return 3;
+  /* 互调（一）：out 形参取址交给 long*。 */
+  interop(x);
+  if (x != 42L) return 4;
+  /* 互调（二）：*p 当 out 实参。 */
+  long z = 0;
+  usePtr(&z);
+  if (z != 7L) return 5;
+  /* 字段实参：结构体字段是可赋值左值。 */
+  Pair p;
+  p.a = 0;
+  p.b = 0;
+  setOut(p.a);
+  if (p.a != 7L) return 6;
+  /* 下标实参：列表元素是可赋值左值。 */
+  list[long] xs = new list[long]();
+  xs.push(0L);
+  setOut(xs[0]);
+  if (xs[0] != 7L) return 7;
+  /* 下标实参：span 元素是可赋值左值。 */
+  var[span[long]] s = span[long](4194304, 2L);
+  s[1] = 0L;
+  setOut(s[1]);
+  if (s[1] != 7L) return 8;
+  /* out 形参类型是指针：出参写回调用方的指针变量。 */
+  var[Node*] found = (Node*)0;
+  if (find(3L, found) != 3L) return 9;
+  if (found != (Node*)2097152) return 10;
+  return 0;
+}

@@ -1,0 +1,38 @@
+#DYN
+/* svc56 op10（live .zo 数）写到 /temp/drvcount.txt。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun main(): int {
+  long home = obr::os::svc(65L);
+  memory::store64(10L, home + 64L);
+  long live = obr::os::svc(56L);
+  home = obr::os::svc(65L);
+  setPath(home, "/temp/drvcount.txt");
+  memory::store64(1L, home + 128L);
+  if (obr::os::svc(5L) == 0L) {
+    long fd = memory::load64(home + 192L);
+    memory::storeOctet(live % 256L, home + 131072L);
+    memory::store64(fd, home + 128L);
+    memory::store64(0L, home + 192L);
+    memory::store64(1L, home + 256L);
+    obr::os::svc(8L);
+    memory::store64(fd, home + 128L);
+    obr::os::svc(6L);
+  }
+  home = obr::os::svc(65L);
+  memory::store64(live % 256L, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

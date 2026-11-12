@@ -1,0 +1,41 @@
+/* Plan 2 M3：失败值。fail 是普通对象（code/cause/note）；throw/try/catch/? 降级为
+   普通 Obr 的早退与 goto；容器错误（越界=1、空弹出=2、缺键=3）是同一种失败；
+   未接住的失败终止（rax=-code）。结果 0。*/
+#VERSION 2
+
+@Fails deRfun parse(int n): int {
+  if (n < 0) throw fail.of(7, "negative");
+  return n + 1;
+}
+
+@Fails deRfun twice(int n): int {
+  var[int] v = parse(n)?;
+  return parse(v)?;
+}
+
+deRfun main(): int {
+  try {
+    var[int] ok = twice(1);
+    if (ok != 3) return 1;
+  } catch (fail e) {
+    return 2;
+  }
+  try {
+    twice(-1);
+    return 3;
+  } catch (fail e) {
+    if (e.code != 7L) return 4;
+    if (e.cause == null) return 5;
+    if (e.cause.code != 7L) return 6;
+    /* note 留在抛出点的那一层：包装节点只叠 cause 链。 */
+    if (length(e.cause.note) != 8) return 7;
+  }
+  try {
+    list[long] xs = new list[long]();
+    var[long] v = xs.pop();
+    return 8;
+  } catch (fail e) {
+    if (e.code != 2L) return 9;
+  }
+  return 0;
+}

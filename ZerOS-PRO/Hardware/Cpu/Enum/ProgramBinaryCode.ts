@@ -176,6 +176,10 @@ export namespace ZerOS {
       export const ProgramBinaryAdmit = 84;
       /** 六个寄存器：目的、扩展口、请求位地址、请求长度、应答位地址、应答上限。 */
       export const ProgramBinaryOffer = 85;
+      /** 两个寄存器：目标核心、任务下标。设置该核当前调度任务的 tag。 */
+      export const ProgramBinaryTag = 86;
+      /** 三个寄存器：目标核心、任务 tag、回复值。把带 tag 的回复放进队列。 */
+      export const ProgramBinaryPassTask = 87;
 
       /** 立即数标记。0 用有符号 64 位读回，1 用无符号 64 位读回。 */
       export const ProgramBinaryImmediateSigned = 0;

@@ -1,0 +1,10 @@
+/* sizeof/offsetof/alignof 保留给编译期内建，用户函数不得同名，编译应当失败。 */
+#VERSION 2
+
+deRfun sizeof(long x): long {
+  return x;
+}
+
+deRfun main(): int {
+  return 0;
+}

@@ -4,7 +4,17 @@ import memory;
 import obr.os;
 
 deRfun obr::proc::home(): long {
-  return query(1L, 8L, obr::os::core());
+  long value = query(1L, 8L, obr::os::core());
+  long tries = 0L;
+  while (value == 0L && tries < 20L) {
+    obr::os::dwell(5L);
+    value = query(1L, 8L, obr::os::core());
+    tries = tries + 1L;
+  }
+  if (value == 0L) {
+    value = obr::os::svc(65L);
+  }
+  return value;
 }
 
 /* 请求路径的起点。字体服务的回复仍写在 +512。 */

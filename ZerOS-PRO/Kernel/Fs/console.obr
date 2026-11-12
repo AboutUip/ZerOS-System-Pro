@@ -1,11 +1,14 @@
 /* 终端格子、滚屏、绘制和键盘队列。
-   不管命令名，不管目录项怎么挂上 /dev/con。公布时只去调设备登记。 */
-#LINK /vfs.obr, /start.obr, /font.obr, /task.obr, /comm.obr, /sig.obr
+   不管命令名，不管目录项怎么挂上 /dev/con。公布时只去调设备登记。
+   一大段输出只先改格子。滚屏不在每个换行上画，Ctrl+C 才能在这段里停掉前台。
+   停掉之后丢掉环里还没收成格子的字节，并清掉没拼完的 UTF-8。 */
+#LINK /vfs.obr, /start.obr, /font.obr, /task.obr, /comm.obr, /sig.obr, /drv.obr
 import fs;
 import proc;
 import trap;
 import memory;
 import obr.ui;
+import drv;
 import obr.font;
 
 /* 终端格子紧挨内存文件正文。头 1024 位，行长到 4096，输入队列到 8192，格子到 253952。
@@ -377,6 +380,8 @@ deRfun conByte(long value): void {
 }
 
 deRfun qPush(long value): long {
+  /* 真实键盘字节同时进镜像环，供 .zo 输入驱动读取；不影响外壳自己的队列。 */
+  drvInputPush(value);
   long base = gridBase();
   long count = memory::load64(base + 640L);
   if (count >= 512L) {
@@ -543,8 +548,13 @@ deRfun conPaint(): void {
   if (count == 63L) {
     long row = 0L;
     while (row < rows) {
-      conPaintRow(row, wide, paper, ink, face);
-      row = row + 1L;
+      /* 一整屏都要画时，行与行之间收一次 Ctrl+C。一行字形可能要很久，不能等画完。 */
+      if (row > 0L && conCaught() == 1L) {
+        row = rows;
+      } else {
+        conPaintRow(row, wide, paper, ink, face);
+        row = row + 1L;
+      }
     }
   } else {
     long seen = packed / 64L;
@@ -553,9 +563,15 @@ deRfun conPaint(): void {
       long row = seen % 64L;
       seen = seen / 64L;
       if (row >= 0L && row < rows) {
-        conPaintRow(row, wide, paper, ink, face);
+        if (index > 0L && conCaught() == 1L) {
+          index = count;
+        } else {
+          conPaintRow(row, wide, paper, ink, face);
+          index = index + 1L;
+        }
+      } else {
+        index = index + 1L;
       }
-      index = index + 1L;
     }
   }
   long col = memory::load64(base + 256L);
@@ -575,6 +591,10 @@ deRfun conPresentWant(long op, long value): long {
 }
 
 deRfun conPresent(): void {
+  /* 提交之前先看键盘。Ctrl+C 已经成立就不要再把这一帧交出去。 */
+  if (conCaught() == 1L) {
+    return;
+  }
   /* 先把写入记下的脏行画进队列，这一次提交才带得上刚写的字。 */
   conPaint();
   if (conPresentWant(0L, 0L) == 0L) {
@@ -609,7 +629,31 @@ deRfun conPending(): long {
   return 0L;
 }
 
-/* 把已经写进环里的字节收成格子。一次最多一条环。呈现由调用方另一次请求。 */
+/* 前台被 Ctrl+C 停掉。环里剩下的字节不再收成格子，半个 UTF-8 也不留给下一行。
+   堵在写上的那一端已经随进程收掉，这里只清等待，不再回复。 */
+deRfun conSilence(): void {
+  long index = conDevice();
+  if (index >= 0L) {
+    Dev* dev = devAt(index);
+    dev.downHead = 0L;
+    dev.downCount = 0L;
+    dev.userWriteWait = -1L;
+  }
+  long base = gridBase();
+  memory::store64(0L, base + 704L);
+  memory::store64(0L, base + 768L);
+  memory::store64(0L, base + 896L);
+}
+
+
+/* 1 表示这一下已经停掉前台。0 是还没有 Ctrl+C。倒环和叫醒都在 conPump 里。 */
+deRfun conCaught(): long {
+  return conPump();
+}
+
+
+/* 把已经写进环里的字节收成格子。一次最多一条环。呈现由调用方另一次请求。
+   每个字节之前都看键盘。二进制的一个字可能要很久，不能攒 32 个再问。 */
 deRfun conFeed(): void {
   conInit();
   if (conCols() < 1L) {
@@ -619,17 +663,25 @@ deRfun conFeed(): void {
   if (index < 0L) {
     return;
   }
-  conBulk(1L, 0L);
+  conBulk(1L, 1L);
   long guard = 0L;
-  while (guard < ringRoom()) {
-    long value = devPullDown(index);
-    if (value < 0L) {
-      break;
+  long stopped = 0L;
+  while (guard < ringRoom() && stopped == 0L) {
+    if (conCaught() == 1L) {
+      stopped = 1L;
+    } else {
+      long value = devPullDown(index);
+      if (value < 0L) {
+        guard = ringRoom();
+      } else {
+        conByte(value);
+        guard = guard + 1L;
+      }
     }
-    conByte(value);
-    guard = guard + 1L;
   }
-  devWake(index);
+  if (stopped == 0L) {
+    devWake(index);
+  }
   conBulk(1L, 0L);
 }
 
@@ -648,52 +700,53 @@ deRfun pushSeq(long first, long second, long third, long fourth, long count): vo
   }
 }
 
-deRfun conKey(long at): void {
+/* 1 表示 Ctrl+C 已经停掉前台。0 是这一键进了队列，或者根本不是输入。 */
+deRfun conKey(long at): long {
   long packed = memory::load64(at);
   long name = memory::load64(at + 64L);
   long unit = packed % 65536L;
   long mods = packed / 65536L;
   if (name == 0x7265746e45L) {
     qPush(10L);
-    return;
+    return 0L;
   }
   if (name == 0x6b636142L) {
     qPush(127L);
-    return;
+    return 0L;
   }
   if (name == 0x7466654cL) {
     pushSeq(27L, 91L, 68L, 0L, 3L);
-    return;
+    return 0L;
   }
   if (name == 0x7468676952L) {
     pushSeq(27L, 91L, 67L, 0L, 3L);
-    return;
+    return 0L;
   }
   /* 显示器把 ArrowUp 原样交来，七个字符。Down 是 ArrowDown 收成的短名。 */
   if (name == 0x7055776f727241L) {
     pushSeq(27L, 91L, 65L, 0L, 3L);
-    return;
+    return 0L;
   }
   if (name == 0x6e776f44L) {
     pushSeq(27L, 91L, 66L, 0L, 3L);
-    return;
+    return 0L;
   }
   if (name == 0x656d6f48L) {
     pushSeq(27L, 91L, 72L, 0L, 3L);
-    return;
+    return 0L;
   }
   if (name == 0x646e45L) {
     pushSeq(27L, 91L, 70L, 0L, 3L);
-    return;
+    return 0L;
   }
   if (name == 0x6574656c6544L) {
     pushSeq(27L, 91L, 51L, 126L, 4L);
-    return;
+    return 0L;
   }
   /* Tab 交成制表符。读这一行的程序自己决定要不要补。 */
   if (name == 0x626154L) {
     qPush(9L);
-    return;
+    return 0L;
   }
   long ctrl = (mods / 2L) % 2L;
   /* 小写减 96、大写减 64。只有这一下会变成字节 3 的 Ctrl+C 才问进程层。
@@ -701,28 +754,30 @@ deRfun conKey(long at): void {
   if (ctrl == 1L && unit >= 97L && unit <= 122L) {
     long value = unit - 96L;
     if (value == 3L && procBreak() != 0L) {
-      return;
+      return 1L;
     }
     qPush(value);
-    return;
+    return 0L;
   }
   if (ctrl == 1L && unit >= 65L && unit <= 90L) {
     long value = unit - 64L;
     if (value == 3L && procBreak() != 0L) {
-      return;
+      return 1L;
     }
     qPush(value);
-    return;
+    return 0L;
   }
   if (ctrl == 1L) {
-    return;
+    return 0L;
   }
   if (unit >= 32L && unit <= 126L) {
     qPush(unit);
   }
+  return 0L;
 }
 
-deRfun conPump(): void {
+/* 1 表示这五个槽里有一次 Ctrl+C 停掉了前台。 */
+deRfun conPump(): long {
   conInit();
   long written = memory::load64(6528L);
   long base = gridBase();
@@ -733,12 +788,21 @@ deRfun conPump(): void {
   if (written > seen + 5L) {
     seen = written - 5L;
   }
+  long broke = 0L;
   while (seen < written) {
-    conKey(6656L + (seen % 5L) * 128L);
+    if (conKey(6656L + (seen % 5L) * 128L) == 1L) {
+      broke = 1L;
+    }
     seen = seen + 1L;
   }
   memory::store64(seen, base + 960L);
+  /* 先倒掉任何命令还没画的输出，再叫醒外壳。顺序反了，提示符会写进满环然后睡死，画面停在输出上。 */
+  if (broke == 1L) {
+    conSilence();
+    breakDeliver();
+  }
   conWake();
+  return broke;
 }
 
 /* 4096 是固件模式。0 仍是启动点，加载画面是 1，设置是 2。

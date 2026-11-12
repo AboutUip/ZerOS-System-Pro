@@ -8,13 +8,15 @@
     { "include": "#strings" },
     { "include": "#preprocessor-line" },
     { "include": "#annotations" },
+    { "include": "#function-def" },
+    { "include": "#type-def" },
     { "include": "#keywords" },
     { "include": "#var-decl" },
     { "include": "#pointers" },
     { "include": "#types" },
     { "include": "#constants" },
     { "include": "#numbers" },
-    { "include": "#function-def" },
+    { "include": "#builtin-call" },
     { "include": "#function-signature-parts" },
     { "include": "#function-call" },
     { "include": "#namespace-path" },
@@ -106,7 +108,7 @@
       "patterns": [
         {
           "name": "storage.modifier.annotation.objective-r",
-          "match": "@\\s*(Overwrite|Callfun)\\b"
+          "match": "@\\s*(Overwrite|Callfun|Destruct|Fails|Friend)\\b"
         }
       ]
     },
@@ -114,7 +116,7 @@
       "patterns": [
         {
           "name": "keyword.control.objective-r",
-          "match": "\\b(import|export|namespace|return|if|else|while|for|break|continue|goto|async|await|new|switch|case|default|fallthrough|in)\\b"
+          "match": "\\b(import|export|namespace|return|if|else|while|for|break|continue|goto|async|await|new|switch|case|default|fallthrough|in|try|catch|throw)\\b"
         },
         {
           "name": "storage.type.function.objective-r",
@@ -127,6 +129,14 @@
         {
           "name": "storage.modifier.objective-r",
           "match": "\\b(public|private|static|implements)\\b"
+        },
+        {
+          "name": "storage.modifier.outref.objective-r",
+          "match": "\\b(out|ref)\\b(?=\\s+[A-Za-z_]\\w*(?:\\[[^\\]]*\\])?[\\w*]*\\s+[A-Za-z_])"
+        },
+        {
+          "name": "storage.modifier.volatile.objective-r",
+          "match": "\\bvolatile\\b(?=\\s+[A-Za-z_]\\w*\\s*\\*+)"
         },
         {
           "name": "storage.type.var.objective-r",
@@ -173,7 +183,7 @@
       "patterns": [
         {
           "name": "storage.type.primitive.objective-r",
-          "match": "\\b(void|boolean|byte|short|int|long|float|double|char|string|array|list|set|map)\\b"
+          "match": "\\b(void|boolean|byte|short|int|long|float|double|char|string|array|list|set|map|span|fail)\\b"
         }
       ]
     },
@@ -197,11 +207,33 @@
       "patterns": [
         {
           "name": "meta.function.definition.objective-r",
-          "match": "\\b(deRfun)\\s+([A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)*)\\b",
+          "match": "\\b(deRfun)\\s+([A-Za-z_]\\w*(?:::[A-Za-z_]\\w*)*)\\s*(\\[[^\\[\\]]*\\])?",
           "captures": {
             "1": { "name": "storage.type.function.objective-r" },
-            "2": { "name": "entity.name.function.objective-r" }
+            "2": { "name": "entity.name.function.objective-r" },
+            "3": { "name": "storage.type.type-parameters.objective-r" }
           }
+        }
+      ]
+    },
+    "type-def": {
+      "patterns": [
+        {
+          "name": "meta.type.definition.objective-r",
+          "match": "\\b(class|interface|struct|enum)\\s+([A-Za-z_]\\w*)\\s*(\\[[^\\[\\]]*\\])?",
+          "captures": {
+            "1": { "name": "storage.type.struct.objective-r" },
+            "2": { "name": "entity.name.type.objective-r" },
+            "3": { "name": "storage.type.type-parameters.objective-r" }
+          }
+        }
+      ]
+    },
+    "builtin-call": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.objective-r",
+          "match": "\\b(sizeof|offsetof|alignof)\\b(?=\\s*\\()"
         }
       ]
     },
@@ -252,6 +284,10 @@
     },
     "operators": {
       "patterns": [
+        {
+          "name": "keyword.operator.propagate.objective-r",
+          "match": "\\?(?=\\s*[;\\)\\]\\},:])"
+        },
         {
           "name": "keyword.operator.increment.objective-r",
           "match": "\\+\\+|--"

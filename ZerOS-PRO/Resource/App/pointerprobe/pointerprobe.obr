@@ -1,0 +1,21 @@
+#DYN
+/* 指针设备诊断：连续消费 ZPP1 事件，退出码 = 取到的事件数（0..200）。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  obr::os::dwell(800L);
+  memory::store64(2L, home + 64L);
+  long got = obr::os::svc(61L);
+  long count = 0L;
+  while (got == 1L && count < 200L) {
+    count = count + 1L;
+    memory::store64(2L, home + 64L);
+    got = obr::os::svc(61L);
+  }
+  memory::store64(count, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

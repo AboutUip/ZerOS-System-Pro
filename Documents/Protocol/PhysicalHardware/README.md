@@ -14,5 +14,6 @@
 | **ZXP1 / ZXD1** | 扩展口与交换 | [Expansion](./Expansion/README.md) |
 | **ZSP1** | 沙盒 | [Sandbox](./Sandbox/README.md) |
 | **ZNP1** | NAS | [Nas](./Nas/README.md) |
+| **ZNC1** | 网卡（原始以太网帧） | [Nic](./Nic/README.md) |
 
 内核文本在 [../Kernel/README.md](../Kernel/README.md)，不属于硬件设备协议。

@@ -1,0 +1,280 @@
+/* q* 批处理族的共享模块（模块名 nqslib）。NAS 脱机队列 /var/spool/nqs/。
+   作业文件 job.<N>：头为键值行（`key: value`，键小写），空行后是脚本正文。
+   平台口径：无批处理守护进程——入队/查询/挂起/释放/改属性为文件操作；
+   执行用平台扩展 runner（qsub -X 或 uux -X 同款）手动触发，交 /os/sh。
+   状态块 st（位）：+0 头行数 +64 正文偏移 +128 正文长
+   行表 1024 起：32 行 × 2048 位：键长 0、键 64(16 八位组)、值长 192、值 256(224 八位组)。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun nqsRow(long st, long i): long {
+  return st + 1024L + i * 2048L;
+}
+
+/* 读作业文件到 buf 并解析头。0 成功，1 失败。 */
+deRfun nqsLoad(long home, long st, long buf, long pathAt, long pathLen): long {
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long total = 0L;
+  while (total < 65536L) {
+    if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+      break;
+    }
+    long got = obr::proc::slot(home, 320L);
+    if (got <= 0L) {
+      break;
+    }
+    if (got > 4096L) {
+      got = 4096L;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, got);
+    total = total + got;
+    if (got < 4096L) {
+      break;
+    }
+  }
+  obr::proc::close(home, fd);
+  memory::store64(0L, st);
+  long pos = 0L;
+  long rows = 0L;
+  while (pos < total) {
+    long start = pos;
+    while (pos < total && byteAt(buf + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    long len = pos - start;
+    if (pos < total) {
+      pos = pos + 1L;
+    }
+    if (len == 0L) {
+      break;
+    }
+    /* key: value */
+    long colon = -1L;
+    long k = 0L;
+    while (k < len) {
+      if (byteAt(buf + (start + k) * 8L) == 58L) {
+        colon = k;
+        k = len;
+      }
+      k = k + 1L;
+    }
+    if (colon > 0L && rows < 32L) {
+      long e = nqsRow(st, rows);
+      long kl = colon;
+      if (kl > 16L) {
+        kl = 16L;
+      }
+      memory::store64(kl, e);
+      copySpan(buf + start * 8L, e + 64L, kl);
+      long vs = colon + 1L;
+      while (vs < len && byteAt(buf + (start + vs) * 8L) == 32L) {
+        vs = vs + 1L;
+      }
+      long vl = len - vs;
+      if (vl > 224L) {
+        vl = 224L;
+      }
+      memory::store64(vl, e + 192L);
+      copySpan(buf + (start + vs) * 8L, e + 256L, vl);
+      rows = rows + 1L;
+    }
+  }
+  memory::store64(rows, st);
+  memory::store64(pos, st + 64L);
+  memory::store64(total - pos, st + 128L);
+  return 0L;
+}
+
+/* 取字段值。返回 1 找到（*valAt/*valLen 指向 st 内），0 无。 */
+deRfun nqsGet(long st, string key, long* valAt, long* valLen): long {
+  long rows = memory::load64(st);
+  long kl = 0L;
+  while (kl < 64L) {
+    long stop = key[kl];
+    if (stop == 0L) {
+      break;
+    }
+    kl = kl + 1L;
+  }
+  long i = 0L;
+  while (i < rows) {
+    long e = nqsRow(st, i);
+    if (memory::load64(e) == kl) {
+      long same = 1L;
+      long c = 0L;
+      while (c < kl) {
+        long ch = key[c];
+        if (byteAt(e + 64L + c * 8L) != ch) {
+          same = 0L;
+        }
+        c = c + 1L;
+      }
+      if (same == 1L) {
+        *valAt = e + 256L;
+        *valLen = memory::load64(e + 192L);
+        return 1L;
+      }
+    }
+    i = i + 1L;
+  }
+  return 0L;
+}
+
+/* 设字段：替换或新增。 */
+deRfun nqsSet(long st, string key, long valAt, long valLen): long {
+  long rows = memory::load64(st);
+  long kl = 0L;
+  while (kl < 64L) {
+    long stop = key[kl];
+    if (stop == 0L) {
+      break;
+    }
+    kl = kl + 1L;
+  }
+  long i = 0L;
+  while (i < rows) {
+    long e = nqsRow(st, i);
+    if (memory::load64(e) == kl) {
+      long same = 1L;
+      long c = 0L;
+      while (c < kl) {
+        long ch = key[c];
+        if (byteAt(e + 64L + c * 8L) != ch) {
+          same = 0L;
+        }
+        c = c + 1L;
+      }
+      if (same == 1L) {
+        long vl = valLen;
+        if (vl > 224L) {
+          vl = 224L;
+        }
+        memory::store64(vl, e + 192L);
+        copySpan(valAt, e + 256L, vl);
+        return 0L;
+      }
+    }
+    i = i + 1L;
+  }
+  if (rows >= 32L) {
+    return 1L;
+  }
+  long e = nqsRow(st, rows);
+  memory::store64(kl, e);
+  long c = 0L;
+  while (c < kl) {
+    long ch = key[c];
+    memory::storeOctet(ch, e + 64L + c * 8L);
+    c = c + 1L;
+  }
+  long vl = valLen;
+  if (vl > 224L) {
+    vl = 224L;
+  }
+  memory::store64(vl, e + 192L);
+  copySpan(valAt, e + 256L, vl);
+  memory::store64(rows + 1L, st);
+  return 0L;
+}
+
+/* 重写作业文件（头 + 空行 + 正文）。 */
+deRfun nqsSave(long home, long st, long buf, long pathAt, long pathLen): long {
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long out = obr::proc::alloc(home, 65536L * 8L);
+  long at = 0L;
+  long rows = memory::load64(st);
+  long i = 0L;
+  while (i < rows) {
+    long e = nqsRow(st, i);
+    long kl = memory::load64(e);
+    copySpan(e + 64L, out + at * 8L, kl);
+    at = at + kl;
+    at = putText(out, at, ": ");
+    long vl = memory::load64(e + 192L);
+    copySpan(e + 256L, out + at * 8L, vl);
+    at = at + vl;
+    memory::storeOctet(10L, out + at * 8L);
+    at = at + 1L;
+    i = i + 1L;
+  }
+  memory::storeOctet(10L, out + at * 8L);
+  at = at + 1L;
+  long bodyAt = memory::load64(st + 64L);
+  long bodyLen = memory::load64(st + 128L);
+  if (bodyLen > 0L) {
+    copySpan(buf + bodyAt * 8L, out + at * 8L, bodyLen);
+    at = at + bodyLen;
+  }
+  long off = 0L;
+  while (off < at) {
+    long chunk = at - off;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(out + off * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, off, chunk) != 0L) {
+      obr::proc::close(home, fd);
+      return 1L;
+    }
+    off = off + chunk;
+  }
+  obr::proc::close(home, fd);
+  return 0L;
+}
+
+/* 取下一个作业号（<dir>/.next 自增）。 */
+deRfun nqsNext(long home, long dir, long dirLen): long {
+  long p = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, p, dirLen);
+  putText(p, dirLen, "/.next");
+  long job = 1L;
+  plant(home, p, dirLen + 5L);
+  if (obr::proc::open(home, 0L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::read(home, fd, 0L, 8L);
+    long v = memory::load64(obr::proc::bytes(home));
+    if (v >= 1L && v < 1000000L) {
+      job = v;
+    }
+    obr::proc::close(home, fd);
+  }
+  plant(home, p, dirLen + 5L);
+  if (obr::proc::open(home, 1L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    memory::store64(job + 1L, obr::proc::bytes(home));
+    obr::proc::write(home, fd, 0L, 8L);
+    obr::proc::close(home, fd);
+  }
+  return job;
+}
+
+/* 作业路径：<dir>/job.<n> 写进 out，返回长度。 */
+deRfun nqsPath(long dir, long dirLen, long n, long out): long {
+  copySpan(dir, out, dirLen);
+  long at = putText(out, dirLen, "/job.");
+  return putNum(out, at, n);
+}
+
+/* 建队列目录（/var、/var/spool、<dir>）。 */
+deRfun nqsEnsure(long home, long dir, long dirLen): void {
+  long p = obr::proc::alloc(home, 8192L * 8L);
+  putText(p, 0L, "/var");
+  plant(home, p, 4L);
+  obr::proc::mkdir(home);
+  putText(p, 0L, "/var/spool");
+  plant(home, p, 10L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+}

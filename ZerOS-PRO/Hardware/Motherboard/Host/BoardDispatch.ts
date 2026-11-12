@@ -28,6 +28,7 @@ import { ZerOS as BoardRuntimeRoot } from "../Bootstrap/BoardRuntime";
 import { ZerOS as CpuSeatRoot } from "../Seat/CpuSeat";
 import { ZerOS as GpuSeatRoot } from "../Seat/GpuSeat";
 import { ZerOS as InboxRoot } from "./Inbox";
+import { ZerOS as MemoryLinkRoot } from "./MemoryLink";
 import { ZerOS as MailboxRoot } from "./Mailbox";
 import { ZerOS as PortRoot } from "../Slot/Expansion/ExpansionPort";
 import { ZerOS as PointerConfigRoot } from "../../Pointer/Config/PointerConfig";
@@ -53,6 +54,38 @@ export namespace ZerOS {
       const notePanel = QueryRoot.Hardware.Motherboard.notePanel;
       const exchangePort = PortRoot.Hardware.Motherboard.Slot.Exchange;
       const PointerPort = PointerConfigRoot.Hardware.Pointer.PointerConfig.OfficialPort;
+      const sharedMemoryLink = MemoryLinkRoot.Hardware.Motherboard.sharedMemoryLink;
+      /* 指针共享页环：12288 起 count/x/y/flag/kind/button/wheel，每个 64 位字。
+         和 8192 的字符串指针、13312 的字页不重叠。 */
+      const PointerRing = 12288n;
+      let pointerRingSeq = 0n;
+
+      function pointerRingWord(link: ReturnType<typeof sharedMemoryLink>, address: bigint, word: bigint): void {
+        const bytes = new Uint8Array(8);
+        let rest = word;
+        for (let octet = 0; octet < 8; octet += 1) {
+          bytes[octet] = Number(rest & 0xffn);
+          rest >>= 8n;
+        }
+        link.writeSpan(address, bytes);
+      }
+
+      /** 把一次鼠标事件写进共享页环；固件/内核只读，不再经过扩展口消费。 */
+      function writePointerRing(words: readonly bigint[]): void {
+        try {
+          const link = sharedMemoryLink();
+          pointerRingSeq += 1n;
+          pointerRingWord(link, PointerRing, pointerRingSeq);
+          pointerRingWord(link, PointerRing + 64n, words[2] ?? 0n);
+          pointerRingWord(link, PointerRing + 128n, words[3] ?? 0n);
+          pointerRingWord(link, PointerRing + 192n, 1n);
+          pointerRingWord(link, PointerRing + 256n, words[0] ?? 0n);
+          pointerRingWord(link, PointerRing + 320n, words[1] ?? 0n);
+          pointerRingWord(link, PointerRing + 384n, words[5] ?? 0n);
+        } catch {
+          /* 内存还没上电时只丢这一条环记录；扩展口那条路仍会尝试。 */
+        }
+      }
       const errorPicture = ErrorPictureRoot.Hardware.Motherboard.errorPicture;
       const gpuInfo = GpuSeatRoot.Hardware.Motherboard.gpuInfo;
       const faultChannel = FaultDeliveryRoot.Hardware.Motherboard.faultChannel;
@@ -292,13 +325,13 @@ export namespace ZerOS {
       }
 
       /**
-       * 把一次鼠标事件的六个字写进官方鼠标口。
+       * 把一次鼠标事件的七个字写进官方鼠标口。
        * 不进键盘的入站队列，免得固件把坐标当成按键。
        * 口还没引导或某一字不合法时整段停下，设备会丢掉没写完的事件。
        */
       function deliverPointer(record: Record<string, unknown>): void {
         const incoming = record["words"];
-        if (!Array.isArray(incoming) || incoming.length !== 6) {
+        if (!Array.isArray(incoming) || incoming.length !== 7) {
           traceInstant(TraceOp.HostReject, TraceLayer.Host, -1, TraceRejectSource.Pointer, TraceRejectReason.Shape);
           return;
         }
@@ -311,6 +344,8 @@ export namespace ZerOS {
           words.push(word);
         }
         traceInstant(TraceOp.HostEvent, TraceLayer.Host, -1, TraceHostEvent.Pointer, words.length);
+        /* 共享页环：驱动只读服务 63，不再逐事件 xchg。 */
+        writePointerRing(words);
         try {
           for (const word of words) {
             const payload = new Uint8Array(8);

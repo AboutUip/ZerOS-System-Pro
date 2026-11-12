@@ -1,0 +1,18 @@
+/* M-C 反例：out/无修饰重载对倒——`f(out long)` 与 `f(long)` 是两个函数（修饰词进签名），
+   但同一左值实参两边都精确匹配（按值收值、按出参收位置都对），按多义拒绝。
+   编译应当失败：调用 f 有多个完全匹配。*/
+#VERSION 2
+
+deRfun f(long v): long {
+  return v;
+}
+
+deRfun f(out long v): long {
+  v = 1;
+  return 0;
+}
+
+deRfun main(): long {
+  long x = 0;
+  return f(x);
+}

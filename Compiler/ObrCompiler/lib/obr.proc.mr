@@ -69,7 +69,7 @@ deRfun wait(long home, long pid): long;
 deRfun exit(long home, long code): long;
 /* 服务 29。当前目录的绝对路径写到字节区，长度在 +256。不含 . 和 ..。 */
 deRfun getcwd(long home): long;
-/* 服务 30。任何任务都能调用。+128 是从 Unix 纪元起的毫秒。 */
+/* 服务 30。任何任务都能调用。+128 是主板时间芯片给出的 Unix 纪元毫秒。 */
 deRfun clock(long home): long;
 /* 服务 31。路径在 +16384。setAccess 不是 0 时把 access 写成访问时间，setModify 不是 0 时把 modify 写成修改时间。
    给出 0 的那一项保持原值。状态时间改成这次调用读到的现在。属主或根才能改。 */

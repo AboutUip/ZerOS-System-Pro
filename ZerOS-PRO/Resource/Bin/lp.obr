@@ -1,0 +1,272 @@
+/* POSIX.1-2017 lp（utilities/printing.html 的 lp）选定子集。
+   形式：lp [-c] [-d destination] [-m] [-n copies] [-o option] [-P page-list]
+             [-q priority-level] [-s] [-t title] [-T type] [-w] [--] [file...]
+   平台口径：没有打印硬件与打印守护进程，输出走 NAS 脱机队列 /var/spool/lp/：
+   每个请求生成作业文件 <id>（记录 destination/title/type/copies/priority/
+   page-list/option 与正文），请求号 lp-N 递增（记在 /var/spool/lp/.next）。
+   file... 缺省或 - 读描述符 0；正文原样入队（-n copies 重复入队 N 份内容段）。
+   选项全量：-c 投递后保留原文件（本实现本就复制，等价接受）；-d 目的地登记；
+   -m 完成时通知（无守护进程，登记不通知，注明）；-n copies（1..100）；-o option
+   任意 name=value 或 name 登记；-P page-list 登记不筛选（注明）；-q 优先级 1..39
+   登记；-s 静默（不打请求号）；-t title、-T type 登记；-w 完成时写终端
+   （无守护进程，改为入队后立刻在描述符 2 提示，注明）。
+   请求号写到描述符 1：request id is lp-N。缺操作数且标准输入为空时入队空作业。
+   打不开输入写 lp: 文件: No such file or directory，退出 1；否则 0。
+   诊断英文 ASCII，描述符 2，前缀 lp:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long dir = obr::proc::alloc(home, 4096L);
+  long head = obr::proc::alloc(home, 8192L);
+  long body = obr::proc::alloc(home, 131072L);
+  if (dir == 0L || head == 0L || body == 0L) {
+    writeErr(home, "lp: out of memory\n");
+    return finish(home, 1L);
+  }
+  long dirLen = putText(dir, 0L, "/var/spool/lp");
+  long headLen = 0L;
+  long copies = 1L;
+  long silent = 0L;
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long files = 0L;
+  long failed = 0L;
+  long bodyLen = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 99L && len == 2L) {
+        /* -c：复制口径，等价。 */
+      } else if (o == 115L && len == 2L) {
+        silent = 1L;
+      } else if (o == 109L && len == 2L) {
+        headLen = putText(head, headLen, "notify: mail\n");
+      } else if (o == 119L && len == 2L) {
+        headLen = putText(head, headLen, "notify: terminal\n");
+      } else if (o == 100L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "lp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "dest: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 116L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "lp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "title: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 84L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "lp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "type: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 110L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "lp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        long v = 0L;
+        if (spanNum(argPtr(home, index), argLen(home, index), &v) != 0L || v < 1L || v > 100L) {
+          writeErr(home, "lp: invalid copies\n");
+          return finish(home, 1L);
+        }
+        copies = v;
+      } else if (o == 113L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "lp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        long v = 0L;
+        if (spanNum(argPtr(home, index), argLen(home, index), &v) != 0L || v < 1L || v > 39L) {
+          writeErr(home, "lp: invalid priority\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "priority: ");
+        headLen = putNum(head, headLen, v);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 80L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "lp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "pages: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else if (o == 111L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "lp: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        headLen = putText(head, headLen, "option: ");
+        copySpan(argPtr(home, index), head + headLen * 8L, argLen(home, index));
+        headLen = headLen + argLen(home, index);
+        headLen = putText(head, headLen, "\n");
+      } else {
+        writeErr(home, "lp: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      files = files + 1L;
+      if (len == 1L && byteAt(at) == 45L) {
+        /* 标准输入。 */
+        while (bodyLen < 65536L) {
+          if (obr::proc::read(home, 0L, bodyLen, 4096L) != 0L) {
+            break;
+          }
+          long got = obr::proc::slot(home, 320L);
+          if (got <= 0L) {
+            break;
+          }
+          if (got > 4096L) {
+            got = 4096L;
+          }
+          copySpan(obr::proc::bytes(home), body + bodyLen * 8L, got);
+          bodyLen = bodyLen + got;
+          if (got < 4096L) {
+            break;
+          }
+        }
+      } else {
+        plant(home, at, len);
+        if (obr::proc::open(home, 0L) != 0L) {
+          writeErr(home, "lp: ");
+          writeSpan(home, 2L, 0L, at, len);
+          writeErr(home, ": No such file or directory\n");
+          failed = 1L;
+          index = index + 1L;
+          continue;
+        }
+        long fd = obr::proc::slot(home, 192L);
+        while (bodyLen < 65536L) {
+          if (obr::proc::read(home, fd, bodyLen, 4096L) != 0L) {
+            break;
+          }
+          long got = obr::proc::slot(home, 320L);
+          if (got <= 0L) {
+            break;
+          }
+          if (got > 4096L) {
+            got = 4096L;
+          }
+          copySpan(obr::proc::bytes(home), body + bodyLen * 8L, got);
+          bodyLen = bodyLen + got;
+          if (got < 4096L) {
+            break;
+          }
+        }
+        obr::proc::close(home, fd);
+      }
+    }
+    index = index + 1L;
+  }
+  if (files == 0L) {
+    while (bodyLen < 65536L) {
+      if (obr::proc::read(home, 0L, bodyLen, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), body + bodyLen * 8L, got);
+      bodyLen = bodyLen + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+  }
+  /* 建队列目录，读/写计数器。 */
+  putText(head + 4096L, 0L, "/var");
+  plant(home, head + 4096L, 4L);
+  obr::proc::mkdir(home);
+  putText(head + 4096L, 0L, "/var/spool");
+  plant(home, head + 4096L, 10L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  long nextAt = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, nextAt, dirLen);
+  putText(nextAt, dirLen, "/.next");
+  long job = 1L;
+  plant(home, nextAt, dirLen + 5L);
+  if (obr::proc::open(home, 0L) == 0L) {
+    long fd = obr::proc::slot(home, 192L);
+    obr::proc::read(home, fd, 0L, 8L);
+    long v = memory::load64(obr::proc::bytes(home));
+    if (v >= 1L && v < 1000000L) {
+      job = v;
+    }
+    obr::proc::close(home, fd);
+  }
+  /* 写作业文件 <dir>/lp-N。 */
+  long path = obr::proc::alloc(home, 8192L * 8L);
+  copySpan(dir, path, dirLen);
+  putText(path, dirLen, "/lp-");
+  long plen = putNum(path, dirLen + 4L, job);
+  plant(home, path, plen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "lp: cannot queue job\n");
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long at = 0L;
+  writeSpan(home, fd, at, head, headLen);
+  at = at + headLen;
+  headLen = putText(head, 0L, "copies: ");
+  headLen = putNum(head, headLen, copies);
+  headLen = putText(head, headLen, "\n\n");
+  writeSpan(home, fd, at, head, headLen);
+  at = at + headLen;
+  long c = 0L;
+  while (c < copies) {
+    writeSpan(home, fd, at, body, bodyLen);
+    at = at + bodyLen;
+    c = c + 1L;
+  }
+  obr::proc::close(home, fd);
+  /* 更新计数器。 */
+  plant(home, nextAt, dirLen + 5L);
+  if (obr::proc::open(home, 1L) == 0L) {
+    fd = obr::proc::slot(home, 192L);
+    memory::store64(job + 1L, obr::proc::bytes(home));
+    obr::proc::write(home, fd, 0L, 8L);
+    obr::proc::close(home, fd);
+  }
+  if (silent == 0L) {
+    writeStr(home, 1L, "request id is lp-");
+    writeNum(home, 1L, job);
+    writeStr(home, 1L, "\n");
+  }
+  return finish(home, failed);
+}

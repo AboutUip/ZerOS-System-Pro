@@ -393,7 +393,7 @@ async function main() {
   try {
     plantCorpusHome(NAS_ROOT);
   } catch (error) {
-    process.stderr.write(`ztrace-corpus: 无法准备 /home：${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`ztrace-corpus: 无法准备 /temp/test：${error instanceof Error ? error.message : String(error)}\n`);
     return 2;
   }
   try {

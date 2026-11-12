@@ -7,7 +7,8 @@
  * ---------------------------------------------------------------------------
  * 实现 Font.md 第 3 节：包围盒取整、非零环绕、离曲线中点、四分之一像素细分、
  * 复合字形的平移与缩放。不抗锯齿，不执行字形指令，不调用宿主字体引擎。
- * 同一个字形两次光栅的覆盖必须逐字节相同，因为这里没有缓存，也没有随机采样。
+ * 同一个字形两次光栅的覆盖必须逐字节相同。没有随机采样。
+ * 成功的掩码按字体面、字形号和字号留一份。缺字都落到字形 0，不能每个标量重走一遍轮廓。
  *
  * ---------------------------------------------------------------------------
  * 代码组织（严格优先级，自上而下，禁止打乱）
@@ -111,6 +112,13 @@ export namespace ZerOS {
 
       const Identity: Affine = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 
+      /**
+       * 已经着好的掩码。键是字形号和字号。
+       * 字体面关掉之后没有别的引用，表跟着一起收掉。
+       * 二进制被解码成大量不同标量时，cmap 都落到字形 0，不能每次都重读 glyf。
+       */
+      const maskByFace = new WeakMap<FaceRoot.Hardware.Gpu.TtfFace, Map<string, MaskRoot.Hardware.Gpu.GlyphMask>>();
+
       /* ---------------------------------------------------------------------- */
       /* 2. rasterizeGlyph                                                       */
       /* ---------------------------------------------------------------------- */
@@ -144,9 +152,20 @@ export namespace ZerOS {
         ppem: number,
         fallback: boolean,
       ): MaskRoot.Hardware.Gpu.GlyphMask | null {
+        const key = `${String(glyph)}:${String(ppem)}`;
+        const held = maskByFace.get(face);
+        const known = held?.get(key);
+        if (known !== undefined) {
+          return known;
+        }
         const outline = loadOutline(face, glyph);
         const mask = outline === null ? null : rasterOutline(face, glyph, ppem, outline);
         if (mask !== null) {
+          const table = held ?? new Map<string, MaskRoot.Hardware.Gpu.GlyphMask>();
+          if (held === undefined) {
+            maskByFace.set(face, table);
+          }
+          table.set(key, mask);
           return mask;
         }
         if (fallback && glyph !== 0) {

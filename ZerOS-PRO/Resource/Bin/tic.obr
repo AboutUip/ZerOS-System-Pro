@@ -1,0 +1,151 @@
+/* POSIX XCU 索引（Issue 7）外的传统 tic（任务批 3 要求实现，注明非 XCU 表内）。
+   形式：tic [-c] [-v[n]] [-x] [-o dir] [--] [file]
+   把 terminfo 源（本平台文本编译格式的源形式，见 terminfo 模块）编译成条目文件，
+   写到库目录（缺省 /usr/share/terminfo，-o 可改）。file 缺省或 - 读标准输入。
+   选项：-c 只检查不写文件；-v 写统计（可带数字级别，登记接受）；-x 把未知能力
+   当用户定义能力接受（本平台格式本来允许 name=value 自由能力，接受登记）。
+   语义：名字行第一段是主文件名，条目写到 <库目录>/<主名>。
+   语法错写 tic: 编译信息，退出 1；打不开退出 1；否则 0。
+   诊断英文 ASCII，描述符 2，前缀 tic:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import terminfo;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long src = obr::proc::alloc(home, 65536L);
+  long out = obr::proc::alloc(home, 65536L);
+  long dir = obr::proc::alloc(home, 8192L);
+  if (src == 0L || out == 0L || dir == 0L) {
+    writeErr(home, "tic: out of memory\n");
+    return finish(home, 1L);
+  }
+  long dirLen = putText(dir, 0L, "/usr/share/terminfo");
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long checkOnly = 0L;
+  long srcLen = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 99L && len == 2L) {
+        checkOnly = 1L;
+      } else if (o == 118L) {
+        /* -v[n]：统计级别，接受。 */
+      } else if (o == 120L && len == 2L) {
+        /* -x：用户定义能力，接受（格式本就开放）。 */
+      } else if (o == 111L && len == 2L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "tic: option requires an argument\n");
+          return finish(home, 1L);
+        }
+        dirLen = argLen(home, index);
+        copySpan(argPtr(home, index), dir, dirLen);
+      } else {
+        writeErr(home, "tic: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      if (len == 1L && byteAt(at) == 45L) {
+        /* 标准输入。 */
+      } else {
+        plant(home, at, len);
+        if (obr::proc::open(home, 0L) != 0L) {
+          writeErr(home, "tic: ");
+          writeSpan(home, 2L, 0L, at, len);
+          writeErr(home, ": No such file or directory\n");
+          return finish(home, 1L);
+        }
+        long fd = obr::proc::slot(home, 192L);
+        while (srcLen < 8192L) {
+          if (obr::proc::read(home, fd, srcLen, 4096L) != 0L) {
+            break;
+          }
+          long got = obr::proc::slot(home, 320L);
+          if (got <= 0L) {
+            break;
+          }
+          if (got > 4096L) {
+            got = 4096L;
+          }
+          copySpan(obr::proc::bytes(home), src + srcLen * 8L, got);
+          srcLen = srcLen + got;
+          if (got < 4096L) {
+            break;
+          }
+        }
+        obr::proc::close(home, fd);
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    while (srcLen < 8192L) {
+      if (obr::proc::read(home, 0L, srcLen, 4096L) != 0L) {
+        break;
+      }
+      long got = obr::proc::slot(home, 320L);
+      if (got <= 0L) {
+        break;
+      }
+      if (got > 4096L) {
+        got = 4096L;
+      }
+      copySpan(obr::proc::bytes(home), src + srcLen * 8L, got);
+      srcLen = srcLen + got;
+      if (got < 4096L) {
+        break;
+      }
+    }
+  }
+  long made = compile(src, srcLen, out, 8192L);
+  if (made < 0L) {
+    writeErr(home, "tic: syntax error in source\n");
+    return finish(home, 1L);
+  }
+  if (checkOnly == 1L) {
+    return finish(home, 0L);
+  }
+  /* 主名 = 名字行第一段。 */
+  long nameLen = 0L;
+  while (nameLen < made && byteAt(out + nameLen * 8L) != 124L && byteAt(out + nameLen * 8L) != 10L) {
+    nameLen = nameLen + 1L;
+  }
+  if (nameLen < 1L) {
+    writeErr(home, "tic: bad entry name\n");
+    return finish(home, 1L);
+  }
+  /* 建库目录（尽力而为），写 <dir>/<name>。 */
+  long path = obr::proc::alloc(home, 8192L * 8L);
+  putText(path, 0L, "/usr/share");
+  plant(home, path, 10L);
+  obr::proc::mkdir(home);
+  putText(path, 0L, "/usr/share/terminfo");
+  plant(home, path, 19L);
+  obr::proc::mkdir(home);
+  plant(home, dir, dirLen);
+  obr::proc::mkdir(home);
+  copySpan(dir, path, dirLen);
+  memory::storeOctet(47L, path + dirLen * 8L);
+  copySpan(out, path + (dirLen + 1L) * 8L, nameLen);
+  plant(home, path, dirLen + 1L + nameLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    writeErr(home, "tic: cannot write entry\n");
+    return finish(home, 1L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  writeSpan(home, fd, 0L, out, made);
+  obr::proc::close(home, fd);
+  return finish(home, 0L);
+}

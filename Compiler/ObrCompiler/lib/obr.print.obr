@@ -21,6 +21,20 @@ deRfun copyOctets(long from, long to, long count): void {
   }
 }
 
+/* 堆块头在指针前两个字：载荷位数，使用中的链字是 -1。对得上才是这一份 4096 八位组的缓冲。 */
+deRfun bufferLive(long home, long storage): long {
+  if (storage < home) {
+    return 0L;
+  }
+  if (memory::load64(storage - 64L) != -1L) {
+    return 0L;
+  }
+  if (memory::load64(storage - 128L) < 32768L) {
+    return 0L;
+  }
+  return 1L;
+}
+
 /* 缓冲状态。op 0 保证已经分配。op 1 写已用个数。op 2 写文件偏移。
    op 3 写上次交出的帧序号。op 4 只查询，还没分配就返回 0。
    这块状态必须留在这一份函数里，out 和 flush 才看得到同一块缓冲。 */
@@ -31,8 +45,9 @@ deRfun hold(long home, long op, long arg, long* buf, long* used, long* place, lo
   static long seen = 0L;
   /* home 是这颗核心窗口的起点。堆块一定落在窗口里。
      0 和窗口以下的值都不是缓冲：上一个程序可能把旗标 1 留在同一格。
-     把它当成指针会写到位地址 1，客核直接越界。 */
-  if (storage < home) {
+     同核换程序时这一段 static 不会清，残留的指针也不是本程序的缓冲。
+     查询时认不出来就当没有，不要改 static，也不要按残留的个数把别人的内存写出去。 */
+  if (bufferLive(home, storage) == 0L) {
     if (op == 4L) {
       return 0L;
     }

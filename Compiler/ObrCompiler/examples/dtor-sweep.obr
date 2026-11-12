@@ -1,0 +1,36 @@
+/* Plan 2 M2 触发点 (d)：影子析构记录链与 __dtor_sweep 清扫（reap(task) 协议的编译器侧）。
+   所有权变量构造成功后压记录 {对象, 析构标签, 前一条}；作用域退出/return/break 路径
+   销毁时按 LIFO 弹除；映像导出 __dtor_sweep_core（可调用清扫）与 __dtor_sweep
+   （清扫后 halt——运行时放弃任务时把恢复 PC 换到这个入口）。结果 0。*/
+#VERSION 2
+
+class Witness {
+  int sum;
+  deRfun Witness(): void { sum = 0; }
+}
+
+class Res {
+  Witness w;
+  int tag;
+  deRfun Res(Witness x, int t): void { w = x; tag = t; }
+  @Destruct deRfun cleanup(): void { w.sum = w.sum * 10 + tag; }
+}
+
+deRfun build(Witness w): void {
+  Res a = new Res(w, 1);
+  Res b = new Res(w, 2);
+  /* return 路径按 LIFO 析构并弹除记录：b 然后 a → 2 然后 21 */
+}
+
+deRfun main(): int {
+  Witness w = new Witness();
+  build(w);
+  if (w.sum != 21) return 1;
+  Res c = new Res(w, 3);
+  __zap__ {
+    call __dtor_sweep_core
+  }
+  /* 清扫把存活记录 c 销毁 → 213。返回表达式先求值；
+     随后的正常析构会再跑一次 c 的清理，不影响已定的返回值。 */
+  return w.sum == 213 ? 0 : 2;
+}

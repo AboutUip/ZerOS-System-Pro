@@ -1,0 +1,103 @@
+/* POSIX.1-2017 sact（utilities/sact.html，SCCS 族）。选定子集：
+   sact [--] s.file...
+   显示每个 s 文件的活动（p 文件，get -e 产物）：每行
+   `<旧sid> <新sid> <user> <yymmdd> <hh:mm:ss>`；无 p 文件输出
+   `NONE` 行并继续（SCCS 口径：无活动），退出 0。
+   p 文件路径：操作数去 s. 前缀加 p（同 get）。
+   校验失败写 sact: 文件: invalid SCCS file，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 sact:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      writeErr(home, "sact: invalid option\n");
+      return finish(home, 1L);
+    } else {
+      operands = operands + 1L;
+      if (sccsLoad(home, st, buf, at, len) != 0L) {
+        writeErr(home, "sact: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": invalid SCCS file\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      /* p 文件名：同 get 规则。 */
+      long pn = obr::proc::alloc(home, 8192L * 8L);
+      long po = 0L;
+      long slash = -1L;
+      long k = 0L;
+      while (k < len) {
+        if (byteAt(at + k * 8L) == 47L) {
+          slash = k;
+        }
+        k = k + 1L;
+      }
+      long nameAt = at;
+      long nameLen = len;
+      if (slash >= 0L) {
+        copySpan(at, pn, slash + 1L);
+        po = slash + 1L;
+        nameAt = at + (slash + 1L) * 8L;
+        nameLen = len - slash - 1L;
+      }
+      if (nameLen > 2L && byteAt(nameAt) == 115L && byteAt(nameAt + 8L) == 46L) {
+        copySpan(nameAt + 16L, pn + po * 8L, nameLen - 2L);
+        po = po + nameLen - 2L;
+      } else {
+        copySpan(nameAt, pn + po * 8L, nameLen);
+        po = po + nameLen;
+      }
+      putText(pn, po, "p");
+      plant(home, pn, po + 1L);
+      if (obr::proc::open(home, 0L) != 0L) {
+        writeStr(home, 1L, "NONE\n");
+      } else {
+        long fd = obr::proc::slot(home, 192L);
+        long off = 0L;
+        while (1L == 1L) {
+          if (obr::proc::read(home, fd, off, 4096L) != 0L) {
+            break;
+          }
+          long got = obr::proc::slot(home, 320L);
+          if (got <= 0L) {
+            break;
+          }
+          if (got > 4096L) {
+            got = 4096L;
+          }
+          writeSpan(home, 1L, 0L, obr::proc::bytes(home), got);
+          off = off + got;
+          if (got < 4096L) {
+            break;
+          }
+        }
+        obr::proc::close(home, fd);
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "sact: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

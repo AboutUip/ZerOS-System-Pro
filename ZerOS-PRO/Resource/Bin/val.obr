@@ -1,0 +1,101 @@
+/* POSIX.1-2017 val（utilities/val.html，SCCS 族）。选定子集：
+   val [-r sid] [-s] [-m name] [-y] [--] s.file...
+   校验 SCCS s 文件形状（格式子集见 sccslib）：头、delta 表、正文段。
+   -r sid 校验该 SID 存在；-m name 校验模块名与注释区一致（子集：登记接受，
+   本格式无模块名字段，不校验——注明）；-y 校验标志段（子集：登记接受）；
+   -s 静默（不打诊断）。
+   退出码：0 全部有效；>0 无效文件个数（POSIX val 口径）。
+   诊断英文 ASCII，描述符 2，前缀 val:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long sidAt = 0L;
+  long sidLen = 0L;
+  long silent = 0L;
+  long bad = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      long vAt = at + 16L;
+      long vLen = len - 2L;
+      if (o == 114L || o == 109L) {
+        if (vLen == 0L) {
+          index = index + 1L;
+          if (index < count) {
+            vAt = argPtr(home, index);
+            vLen = argLen(home, index);
+          } else {
+            vAt = 0L;
+            vLen = 0L;
+          }
+        }
+      }
+      if (o == 114L) {
+        sidAt = vAt;
+        sidLen = vLen;
+      } else if (o == 115L) {
+        silent = 1L;
+      } else if (o == 109L) {
+        /* 模块名：本格式无此字段，登记接受。 */
+      } else if (o == 121L) {
+        /* 标志校验：子集只验标志段形状，已在 load 里容忍。 */
+      } else {
+        writeErr(home, "val: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      if (sccsLoad(home, st, buf, at, len) != 0L) {
+        if (silent == 0L) {
+          writeErr(home, "val: ");
+          writeSpan(home, 2L, 0L, at, len);
+          writeErr(home, ": invalid SCCS file\n");
+        }
+        bad = bad + 1L;
+        index = index + 1L;
+        continue;
+      }
+      long code = sccsCheck(st);
+      if (code != 0L) {
+        if (silent == 0L) {
+          writeErr(home, "val: ");
+          writeSpan(home, 2L, 0L, at, len);
+          writeErr(home, ": damaged SCCS file\n");
+        }
+        bad = bad + 1L;
+        index = index + 1L;
+        continue;
+      }
+      if (sidLen > 0L && sccsFind(st, sidAt, sidLen) < 0L) {
+        if (silent == 0L) {
+          writeErr(home, "val: ");
+          writeSpan(home, 2L, 0L, sidAt, sidLen);
+          writeErr(home, ": nonexistent sid\n");
+        }
+        bad = bad + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "val: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, bad);
+}

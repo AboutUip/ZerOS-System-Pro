@@ -1,6 +1,6 @@
 /* 引导。装驱动、1 号任务和空闲任务，并在空闲的用户核上推进下一份。
    不管映像怎么解码，不管参数布局。 */
-#LINK /start.obr, /spawn.obr
+#LINK /start.obr, /spawn.obr, /flat.obr
 import proc;
 import fs;
 import exec;
@@ -259,7 +259,11 @@ deRfun bootIdle(): void {
   seatIdle(3L, size);
   long core = 4L;
   while (core < 8L) {
-    seatIdle(core, size);
+    /* 5 号核不装空闲任务，留给 .zo 驱动。4 号核引导时已经装着 pulse。
+       空闲任务没有槽，占满 3-7 后装入器既找不到空核，也不能安全换入。 */
+    if (core != 5L) {
+      seatIdle(core, size);
+    }
     core = core + 1L;
   }
   bootMark(23L);
@@ -325,6 +329,12 @@ deRfun bootPump(): void {
     place r2, 537931520
     add r0, r0, r2
     ldi.64 r1, r0
+    place r2, 3
+    lt r0, r1, r2
+    jnz r0, pumpSkip
+    place r2, 7
+    lt r0, r2, r1
+    jnz r0, pumpSkip
     place r2, 268435456
     mul r3, r1, r2
     place r2, 1048576
@@ -333,6 +343,7 @@ deRfun bootPump(): void {
     add r3, r3, r2
     place r0, 1
     sti.64 r0, r3
+    pumpSkip:
     load.64 r6, 537931840
     place r2, 1
     add r6, r6, r2

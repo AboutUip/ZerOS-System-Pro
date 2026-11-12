@@ -1,0 +1,12 @@
+/* M-C 反例：`T**` 仍拒绝——出参类型可以是任意一层指针（`out Node*` 就是 Node** 场景
+   的正解，见 out-ref.obr），双重指针语法不放开。
+   编译应当失败：这一版只接受一层指针。*/
+#VERSION 2
+
+deRfun bad(out long** p): void {
+  p = (long**)0;
+}
+
+deRfun main(): long {
+  return 0;
+}

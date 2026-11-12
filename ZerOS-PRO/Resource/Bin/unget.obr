@@ -1,0 +1,122 @@
+/* POSIX.1-2017 unget（utilities/unget.html，SCCS 族）。选定子集：
+   unget [-r sid] [-s] [--] s.file...
+   撤销 get -e：删除 p 文件（get 的活动记录）。-r sid 校验 p 文件首行
+   sid 一致（子集）；-s 静默。
+   无 p 文件写 unget: 文件: no active deltas，退出 1。
+   诊断英文 ASCII，描述符 2，前缀 unget:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import arg;
+import binutil;
+import sccslib;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  long st = obr::proc::alloc(home, 131072L);
+  long buf = obr::proc::alloc(home, 524288L);
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long sidAt = 0L;
+  long sidLen = 0L;
+  long silent = 0L;
+  long failed = 0L;
+  long operands = 0L;
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long o = byteAt(at + 8L);
+      if (o == 114L) {
+        index = index + 1L;
+        if (index >= count) {
+          writeErr(home, "unget: missing operand\n");
+          return finish(home, 1L);
+        }
+        sidAt = argPtr(home, index);
+        sidLen = argLen(home, index);
+      } else if (o == 115L) {
+        silent = 1L;
+      } else {
+        writeErr(home, "unget: invalid option\n");
+        return finish(home, 1L);
+      }
+    } else {
+      operands = operands + 1L;
+      /* p 文件名规则同 get。 */
+      long pn = obr::proc::alloc(home, 8192L * 8L);
+      long po = 0L;
+      long slash = -1L;
+      long k = 0L;
+      while (k < len) {
+        if (byteAt(at + k * 8L) == 47L) {
+          slash = k;
+        }
+        k = k + 1L;
+      }
+      long nameAt = at;
+      long nameLen = len;
+      if (slash >= 0L) {
+        copySpan(at, pn, slash + 1L);
+        po = slash + 1L;
+        nameAt = at + (slash + 1L) * 8L;
+        nameLen = len - slash - 1L;
+      }
+      if (nameLen > 2L && byteAt(nameAt) == 115L && byteAt(nameAt + 8L) == 46L) {
+        copySpan(nameAt + 16L, pn + po * 8L, nameLen - 2L);
+        po = po + nameLen - 2L;
+      } else {
+        copySpan(nameAt, pn + po * 8L, nameLen);
+        po = po + nameLen;
+      }
+      putText(pn, po, "p");
+      plant(home, pn, po + 1L);
+      if (obr::proc::open(home, 0L) != 0L) {
+        writeErr(home, "unget: ");
+        writeSpan(home, 2L, 0L, at, len);
+        writeErr(home, ": no active deltas\n");
+        failed = 1L;
+        index = index + 1L;
+        continue;
+      }
+      long fd = obr::proc::slot(home, 192L);
+      if (sidLen > 0L) {
+        /* 校验 p 文件首词与 -r sid 一致。 */
+        long line = obr::proc::bytes(home);
+        obr::proc::read(home, fd, 0L, 64L);
+        long same = 1L;
+        long c = 0L;
+        while (c < sidLen) {
+          if (byteAt(line + c * 8L) != byteAt(sidAt + c * 8L)) {
+            same = 0L;
+          }
+          c = c + 1L;
+        }
+        if (same == 0L) {
+          obr::proc::close(home, fd);
+          writeErr(home, "unget: ");
+          writeSpan(home, 2L, 0L, sidAt, sidLen);
+          writeErr(home, ": sid mismatch\n");
+          failed = 1L;
+          index = index + 1L;
+          continue;
+        }
+      }
+      obr::proc::close(home, fd);
+      plant(home, pn, po + 1L);
+      if (obr::proc::unlink(home) != 0L) {
+        writeErr(home, "unget: cannot remove p file\n");
+        failed = 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (operands == 0L) {
+    writeErr(home, "unget: missing operand\n");
+    return finish(home, 1L);
+  }
+  return finish(home, failed);
+}

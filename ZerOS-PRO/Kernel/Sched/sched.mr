@@ -1,6 +1,12 @@
 /* 调度。入口扫任务，并在空转前按节拍抢占。执行和文件可以唤醒或睡下。 */
 deRfun schedWake(long core): void;
 deRfun schedResume(long core): void;
+/* 切换前按任务窗口设置该核的 bound。窗口任务用 mm.origin/length，旧任务用核窗口。 */
+deRfun taskBind(long core, long index): void;
+/* 任务要睡下等回复时，把上下文抄进槽；核上有就绪任务就换上去，不长期占核。 */
+deRfun schedBlock(long core, long index): void;
+/* 被换下核的等待者醒来：核空闲就恢复，核在跑别的就保持就绪等节拍。 */
+deRfun wakeReady(long core, long index): void;
 deRfun schedSweep(): void;
 deRfun schedTick(): void;
 deRfun schedSleep(long core): void;

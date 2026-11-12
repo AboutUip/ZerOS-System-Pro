@@ -1,0 +1,538 @@
+/* .zo 驱动管理器。
+   op 1 load：+16384 是路径，装好后 current=路径。
+   op 2 stop：+128 是 pid，发 SIGKILL。
+   op 3 restart：+128 旧 pid，+16384 新路径；current 先挪到 previous，再装新的。
+   op 4 rollback：+128 旧 pid；用 previous 再装一次，成功时 current=previous。
+   op 5 list：把 .zo 任务表写成文本放到 +131072，回复字节数。
+   元数据按计数字符串放在调用者窗口：previous 在 +81920，current 在 +98368，
+   最多 2048 个八位组（计数字 + 64 位一格）。 */
+#LINK /start.obr, /flat.obr, /task.obr, /sched.obr, /vfs.obr, /pipe.obr, /dev.obr, /sig.obr, /boot.obr, /spawn.obr, /frame.obr, /window.obr, /comm.obr, /console.obr, /drv.obr
+import proc;
+import fs;
+import flat;
+import memory;
+import board;
+import obr.os;
+import window;
+
+/* 元数据放在调用者的父任务窗口里。CLI 每次是新的子任务，窗口不持久；
+   父任务（shell）的窗口跨命令保留。没有父任务时退回调用者窗口。 */
+deRfun drvMetaHome(long caller, long home): long {
+  /* 找 shell 任务的 comm 是 "sh" 的窗口：尽量保住它在整机生命周期内的地址。 */
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (task.pid > 1L && task.state != TaskState::Empty && commLen(index) == 2L) {
+      if (commByte(index, 0L) == 115L && commByte(index, 1L) == 104L) {
+        if (windowTagged(task.cap) != 0L) {
+          return task.mm.origin;
+        }
+        return kArena(task.core);
+      }
+    }
+    index = index + 1L;
+  }
+  return home;
+}
+
+/* 找 shell 任务的窗口。找不到返回 0。 */
+deRfun drvRootHome(): long {
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (task.pid > 1L && task.state != TaskState::Empty && commLen(index) == 2L) {
+      if (commByte(index, 0L) == 115L && commByte(index, 1L) == 104L) {
+        if (windowTagged(task.cap) != 0L) {
+          return task.mm.origin;
+        }
+        return kArena(task.core);
+      }
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+/* 键盘事件镜像环：+3200000 起，头/尾各一个字，后面 256 个八位组。
+   控制台把每个输入字节同时写进这里，.zo 驱动通过服务 58 取走。 */
+deRfun drvInputBase(): long {
+  /* 第一次调用可能早于 shell 任务创建，不能把 0 缓存成永久结果。 */
+  long root = drvRootHome();
+  if (root == 0L) {
+    return 0L;
+  }
+  return root + 3200000L;
+}
+
+/* 镜像环累计写入字节数。驱动处理数追上它，就证明没有事件丢失。 */
+deRfun drvInputHead(): long {
+  long at = drvInputBase();
+  if (at == 0L) {
+    return 0L;
+  }
+  return memory::load64(at);
+}
+
+deRfun drvInputPush(long value): void {
+  long at = drvInputBase();
+  if (at == 0L) {
+    return;
+  }
+  long head = memory::load64(at);
+  long tail = memory::load64(at + 64L);
+  if (head - tail >= 256L) {
+    tail = head - 255L;
+  }
+  memory::storeOctet(value, at + 128L + (head % 256L) * 8L);
+  memory::store64(head + 1L, at);
+  memory::store64(tail, at + 64L);
+}
+
+/* 键盘驱动实时状态：+3300000 起 4 个字（events/base/line/col）。 */
+deRfun drvKbdPublish(long caller, long home): long {
+  long meta = drvMetaHome(caller, home);
+  long at = meta + 3300000L;
+  memory::store64(memory::load64(home + 131072L), at);
+  memory::store64(memory::load64(home + 131136L), at + 64L);
+  memory::store64(memory::load64(home + 131200L), at + 128L);
+  memory::store64(memory::load64(home + 131264L), at + 192L);
+  return 0L;
+}
+
+deRfun drvKbdRead(long caller, long home): long {
+  long meta = drvMetaHome(caller, home);
+  long at = meta + 3300000L;
+  memory::store64(memory::load64(at), home + 131072L);
+  memory::store64(memory::load64(at + 64L), home + 131136L);
+  memory::store64(memory::load64(at + 128L), home + 131200L);
+  memory::store64(memory::load64(at + 192L), home + 131264L);
+  return 32L;
+}
+
+/* 真实鼠标：监督核直接消费扩展口 3 的 ZPP1，一次一个事件。
+   固件启动后不再 takePointer，队列由内核取；同时回写光标页，固件光标仍能画。
+   返回 1 表示取到一个事件，正文：kind/button/x/y/wheel/count。 */
+deRfun drvPointerPoll(long home): long {  long depth = xchg(3L, 1L, 8L);
+  if (depth <= 0L) {
+    return 0L;
+  }
+  long count = xchg(3L, 1L, 0L);
+  long kind = xchg(3L, 1L, 1L);
+  long button = xchg(3L, 1L, 2L);
+  long x = xchg(3L, 1L, 3L);
+  long y = xchg(3L, 1L, 4L);
+  long wheel = xchg(3L, 1L, 6L);
+  xchg(3L, 1L, 9L);
+  memory::store64(kind, home + 131072L);
+  memory::store64(button, home + 131136L);
+  memory::store64(x, home + 131200L);
+  memory::store64(y, home + 131264L);
+  memory::store64(wheel, home + 131328L);
+  memory::store64(count, home + 131392L);
+  /* 固件光标页：x 7680，y 7744，有事件标志 7808。 */
+  memory::store64(x, 7680L);
+  memory::store64(y, 7744L);
+  memory::store64(1L, 7808L);
+  return 1L;
+}
+
+/* 服务 63：只读共享页指针环（count/x/y/flag），不消费队列。 */
+deRfun drvPointerSnapshot(long home): long {
+  memory::store64(memory::load64(12352L), home + 131072L);
+  memory::store64(memory::load64(12416L), home + 131136L);
+  memory::store64(memory::load64(12480L), home + 131200L);
+  memory::store64(memory::load64(12288L), home + 131264L);
+  return 4L;
+}
+
+/* 鼠标实时状态放监督核固定槽：+16256 起 4 个字（events/base/line/col）。
+   共享核或重启后 meta 窗口可能换一块，固定槽避免验收读到旧实例的值。 */
+deRfun drvMouseAt(): long {
+  return kSupervisor() + 16256L;
+}
+
+deRfun drvMousePublish(long caller, long home): long {
+  long at = drvMouseAt();
+  memory::store64(memory::load64(home + 131072L), at);
+  memory::store64(memory::load64(home + 131136L), at + 64L);
+  memory::store64(memory::load64(home + 131200L), at + 128L);
+  memory::store64(memory::load64(home + 131264L), at + 192L);
+  return 0L;
+}
+
+deRfun drvMouseRead(long caller, long home): long {
+  long at = drvMouseAt();
+  memory::store64(memory::load64(at), home + 131072L);
+  memory::store64(memory::load64(at + 64L), home + 131136L);
+  memory::store64(memory::load64(at + 128L), home + 131200L);
+  memory::store64(memory::load64(at + 192L), home + 131264L);
+  return 32L;
+}
+
+/* Pack mouse events/base into one scalar: base in low 32, events in high 32. */
+deRfun drvMousePacked(long caller, long home): long {
+  long at = drvMouseAt();
+  long events = memory::load64(at);
+  long base = memory::load64(at + 64L);
+  return (events << 32L) | (base & 4294967295L);
+}
+
+/* GPU 帧计数放在监督核窗口。shell 是旧布局，+3500000 会落到窗口外。 */
+deRfun drvGpuAt(): long {
+  return kSupervisor() + 16000L;
+}
+
+/* 打包回复：低 32 位 base，高 32 位 frames。共享核上不要再读调用方窗口。 */
+deRfun drvGpuPacked(long caller, long home): long {
+  long at = drvGpuAt();
+  long frames = memory::load64(at);
+  long base = memory::load64(at + 64L);
+  return (frames << 32L) | (base & 4294967295L);
+}
+
+deRfun drvGpuPublish(long caller, long home): long {
+  long at = drvGpuAt();
+  memory::store64(memory::load64(home + 131072L), at);
+  memory::store64(memory::load64(home + 131136L), at + 64L);
+  return 0L;
+}
+
+deRfun drvGpuRead(long caller, long home): long {
+  long at = drvGpuAt();
+  memory::store64(memory::load64(at), home + 131072L);
+  memory::store64(memory::load64(at + 64L), home + 131136L);
+  return 16L;
+}
+
+deRfun drvInputRead(long home): long {
+  long at = drvInputBase();
+  if (at == 0L) {
+    return 0L;
+  }
+  long head = memory::load64(at);
+  long tail = memory::load64(at + 64L);
+  long count = head - tail;
+  if (count > 256L) {
+    tail = head - 256L;
+    count = 256L;
+  }
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(memory::loadOctet(at + 128L + ((tail + index) % 256L) * 8L), home + 131072L + index * 8L);
+    index = index + 1L;
+  }
+  memory::store64(tail + count, at + 64L);
+  return count;
+}
+
+deRfun drvPathCopy(long dst, long src): void {
+  long len = memory::load64(src);
+  if (len < 0L || len > 512L) {
+    len = 0L;
+  }
+  memory::store64(len, dst);
+  long index = 0L;
+  while (index < len) {
+    memory::storeOctet(memory::loadOctet(src + 64L + index * 8L), dst + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun drvPut(long home, long* at, string text): void {
+  long count = length(text);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], home + 131072L + (*at) * 8L);
+    *at = *at + 1L;
+    index = index + 1L;
+  }
+}
+
+deRfun drvPutNum(long home, long* at, long value): void {
+  if (value < 0L) {
+    memory::storeOctet(45L, home + 131072L + (*at) * 8L);
+    *at = *at + 1L;
+    value = 0L - value;
+  }
+  long div = 1L;
+  while (div < 1000000000L && value / div >= 10L) {
+    div = div * 10L;
+  }
+  while (div > 0L) {
+    memory::storeOctet(48L + value / div % 10L, home + 131072L + (*at) * 8L);
+    *at = *at + 1L;
+    div = div / 10L;
+  }
+}
+
+deRfun drvIsZo(long index, long len): long {
+  if (len < 4L) {
+    return 0L;
+  }
+  if (commByte(index, len - 3L) != 46L) {
+    return 0L;
+  }
+  if (commByte(index, len - 2L) != 122L) {
+    return 0L;
+  }
+  if (commByte(index, len - 1L) != 111L) {
+    return 0L;
+  }
+  return 1L;
+}
+
+deRfun drvList(long home): long {
+  long at = 0L;
+  long index = 0L;
+  long end = taskScanEnd();
+  long count = 0L;
+  while (index < end) {
+    if (count >= 20L || at >= 8192L) {
+      return at;
+    }
+    Task* task = taskAt(index);
+    if (task.pid > 1L && task.state != TaskState::Empty && task.state != TaskState::Zombie) {
+      long len = commLen(index);
+      if (drvIsZo(index, len) == 1L && len <= 32L) {
+        drvPut(home, &at, "pid ");
+        drvPutNum(home, &at, task.pid);
+        drvPut(home, &at, " ppid ");
+        drvPutNum(home, &at, task.ppid);
+        drvPut(home, &at, " state ");
+        drvPutNum(home, &at, task.state);
+        drvPut(home, &at, " core ");
+        drvPutNum(home, &at, task.core);
+        drvPut(home, &at, " ");
+        long cursor = 0L;
+        while (cursor < len) {
+          memory::storeOctet(commByte(index, cursor), home + 131072L + at * 8L);
+          at = at + 1L;
+          cursor = cursor + 1L;
+        }
+        memory::storeOctet(10L, home + 131072L + at * 8L);
+        at = at + 1L;
+        count = count + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return at;
+}
+
+/* handover 缓冲：监督核窗口 +16512 起，头一个字是长度（字节），
+   后面最多 256 个八位组。不再挂到调用方/meta 窗口：
+   重启后窗口可能换一块，固定槽才能拿到旧实例导出的状态。 */
+deRfun drvHandover(long caller, long home): long {
+  long at = kSupervisor() + 16512L;
+  long op = memory::load64(home + 64L);
+  long count = memory::load64(at);
+  if (count < 0L || count > 256L) {
+    count = 0L;
+    memory::store64(0L, at);
+  }
+  if (op == 1L) {
+    long len = memory::load64(home + 128L);
+    if (len < 0L || len > 256L) {
+      return 2L;
+    }
+    long index = 0L;
+    while (index < len) {
+      memory::storeOctet(memory::loadOctet(home + 131072L + index * 8L), at + 64L + index * 8L);
+      index = index + 1L;
+    }
+    memory::store64(len, at);
+    return 0L;
+  }
+  if (op == 2L) {
+    long index = 0L;
+    while (index < count) {
+      memory::storeOctet(memory::loadOctet(at + 64L + index * 8L), home + 131072L + index * 8L);
+      index = index + 1L;
+    }
+    memory::store64(count, home + 128L);
+    return count;
+  }
+  if (op == 3L) {
+    memory::store64(0L, at);
+    return 0L;
+  }
+  return 2L;
+}
+
+/* 驱动是系统服务，挂到 1 号任务下；CLI 退出时不会留下自己的子任务，
+   shell 的 wait 也不会把驱动的退出当成 CLI 的退出。 */
+deRfun drvAdopt(long home): void {
+  long pid = memory::load64(home + 192L);
+  if (pid < 2L) {
+    return;
+  }
+  long index = taskByPid(pid);
+  if (index >= 0L) {
+    taskAt(index).ppid = 1L;
+    /* 2^40 标记：这是挂到 1 号下的系统驱动，退出时不需要 wait，立即收。 */
+    taskAt(index).cap = taskAt(index).cap + 1099511627776L;
+  }
+}
+
+deRfun drvRingPush(long meta): void {
+  drvPathCopy(meta + 8400L, meta + 4200L);
+  drvPathCopy(meta + 4200L, meta + 0L);
+  drvPathCopy(meta + 0L, meta + 12600L);
+}
+
+deRfun drvRingShift(long meta): void {
+  drvPathCopy(meta + 0L, meta + 4200L);
+  drvPathCopy(meta + 4200L, meta + 8400L);
+  memory::store64(0L, meta + 8400L);
+}
+
+/* 当前活着的 .zo 驱动：按 pid 取最新的一份。重启/停止传 0 时用它，
+   不依赖任何窗口里存下来的 pid 字。 */
+deRfun drvFindZo(): long {
+  long best = 0L;
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (task.pid > best && task.state != TaskState::Zombie && task.state != TaskState::Empty) {
+      if (drvIsZo(index, commLen(index)) == 1L) {
+        best = task.pid;
+      }
+    }
+    index = index + 1L;
+  }
+  return best;
+}
+
+/* 最近一次成功装入的驱动 pid。固定槽，不依赖 shell/meta 窗口是否换过。 */
+deRfun drvPidAt(): long {
+  return kSupervisor() + 16640L;
+}
+
+deRfun drvManage(long caller, long home): long {
+  long op = memory::load64(home + 64L);
+  long pid = memory::load64(home + 128L);
+  long force = memory::load64(home + 2048L);
+  if (op == 6L) {
+    op = 3L;
+    force = 1L;
+  }
+  long meta = drvMetaHome(caller, home);
+  if (pid == 0L && op != 1L && op != 5L) {
+    pid = drvFindZo();
+  }
+  if (op == 1L) {
+    /* 4 号核引导时已经装着 /kernel/drv/pulse。
+       .zo 改去 5 号：它不装空闲任务，也不和 shell（6 号）共核。 */
+    memory::store64(0L, home + 576L);
+    long status = spawnFlat(caller, home, 5L);
+    if (status == 0L) {
+      drvPathCopy(meta + 12600L, home + 16384L);
+      drvAdopt(home);
+      memory::store64(memory::load64(home + 192L), meta + 16800L);
+      memory::store64(memory::load64(home + 192L), drvPidAt());
+    }
+    return status;
+  }
+  if (op == 9L) {
+    /* 最近一次成功装入的 pid（0 表示没有）。 */
+    return pid;
+  }
+  if (op == 10L) {
+    /* 当前存活的 .zo 任务数，用于验证 term/restart 是否真的收掉了旧实例。 */
+    long live = 0L;
+    long scan = 0L;
+    long scanEnd = taskScanEnd();
+    while (scan < scanEnd) {
+      Task* item = taskAt(scan);
+      if (item.pid > 1L && item.state != TaskState::Empty && item.state != TaskState::Zombie) {
+        long nameLen = commLen(scan);
+        if (drvIsZo(scan, nameLen) == 1L) {
+          live = live + 1L;
+        }
+      }
+      scan = scan + 1L;
+    }
+    return live;
+  }
+  if (op == 2L) {
+    if (pid < 2L) {
+      return 2L;
+    }
+    sigRaise(caller, pid, 9L);
+    return 0L;
+  }
+  /* op 8：只发 SIGTERM，让驱动导出后退出；配合 fresh load 完成 stop/start。 */
+  if (op == 8L) {
+    if (pid < 2L) {
+      return 2L;
+    }
+    sigRaise(caller, pid, 15L);
+    return 0L;
+  }
+  if (op == 3L || op == 4L) {
+    if (pid < 2L) {
+      return 2L;
+    }
+    /* restart/rollback 的新实例沿用驱动核，和 load 一样独占。 */
+    if (op == 4L) {
+      long level = memory::load64(home + 2112L);
+      if (level < 1L || level > 3L) {
+        return 2L;
+      }
+      long slot = meta + (level - 1L) * 4200L;
+      if (memory::load64(slot) < 1L) {
+        return 2L;
+      }
+      drvPathCopy(home + 16384L, slot);
+    }
+    long oldIndex = taskByPid(pid);
+    if (oldIndex >= 0L) {
+      long oldState = taskAt(oldIndex).state;
+      if (oldState != TaskState::Zombie && oldState != TaskState::Empty) {
+        if (force == 0L) {
+          sigRaise(caller, pid, 15L);
+          return 12L;
+        }
+        sigRaise(caller, pid, 9L);
+        /* SIGKILL 只记账。驱动停在系统调用里时，扫表要等它让出核。
+           这里直接停核、丢掉这一格。不能走 procExitAt：
+           那条路会 release 整颗核，新实例就装不回去；也不能只丢任务，
+           保持位里还留着它那次系统调用的回复。 */
+        long oldCore = taskAt(oldIndex).core;
+        /* 先停核，再丢任务。反过来会在已释放的窗口里继续取指。 */
+        if (oldCore >= 3L && oldCore < 8L) {
+          obr::os::release(oldCore);
+        }
+        taskAccount(oldIndex, TaskState::Zombie);
+        taskAt(oldIndex).state = TaskState::Zombie;
+        taskAt(oldIndex).code = 9L;
+        taskRelease(oldIndex);
+      }
+    }
+    memory::store64(0L, home + 576L);
+    long status = spawnFlat(caller, home, 5L);
+    if (status == 0L) {
+      if (op == 3L) {
+        drvRingPush(meta);
+      } else {
+        drvRingShift(meta);
+      }
+      drvPathCopy(meta + 12600L, home + 16384L);
+      drvAdopt(home);
+      memory::store64(memory::load64(home + 192L), meta + 16800L);
+      memory::store64(memory::load64(home + 192L), drvPidAt());
+    }
+    return status;
+  }
+  if (op == 5L) {
+    return drvList(home);
+  }
+  if (op == 7L) {
+    drvPathCopy(home + 16384L, meta + 12600L);
+    return memory::load64(meta + 12600L);
+  }
+  return 2L;
+}

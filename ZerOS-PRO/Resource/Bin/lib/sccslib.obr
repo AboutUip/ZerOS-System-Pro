@@ -1,0 +1,519 @@
+/* SCCS 族命令的共享模块（模块名 sccslib）。SCCS s 文件格式子集的真实实现。
+   格式子集（^A = 八位组 1）：
+     ^AI<初始注释>
+     ^As 000000/00000/00000
+     ^Ad D<sid> <yymmdd> <hh:mm:ss> <user> <serial> <pred>
+     ^At            （统计段结束）
+     ^Au / ^AU      （用户表，登记接受）
+     ^Af<flag> / ^AT（标志段，登记接受）
+     （空行）
+     ^AI <sid>      （delta 正文段开始）
+     <正文行...>
+     ^AE            （段结束）
+   本子集：SID 只支持 1.n 递增（release 1）；正文段按 delta 顺序拼接即当前版本；
+   删除段（^AD）不支持（如实注明）；flags/users 仅登记回写。
+   p-file（get -e 活动记录）：每行 `<旧sid> <新sid> <user> <yymmdd> <hh:mm:ss>`。
+   g-file：get 无 -p 时写去 s. 前缀的同名文件。
+   状态块 st 布局（位）：+0 文件长度 +64 delta 数 +128 错误码 +192 注释长
+   +256 注释（256 八位组）+2304 用户段文本（128 八位组）+3328 用户段长
+   +3392 标志段文本（128 八位组）+4416 标志段长
+   delta 表 8192 起：每条 1536 位：sid 长 0、sid 64(16 八位组)、日期 192(8)、
+   时间 320(8)、用户长 448、用户 512(32 八位组)、serial 768、pred 长 832、
+   pred 896(16 八位组)、正文偏移 1024、正文长 1088。64 条 → 至 98304。 */
+#DYN
+import memory;
+import obr.proc;
+import time;
+import arg;
+import binutil;
+
+deRfun deltaAt(long st, long i): long {
+  return st + 8192L + i * 1536L;
+}
+
+deRfun sccsLoad(long home, long st, long buf, long pathAt, long pathLen): long {
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long total = 0L;
+  while (total < 65536L) {
+    if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+      break;
+    }
+    long got = obr::proc::slot(home, 320L);
+    if (got <= 0L) {
+      break;
+    }
+    if (got > 4096L) {
+      got = 4096L;
+    }
+    copySpan(obr::proc::bytes(home), buf + total * 8L, got);
+    total = total + got;
+    if (got < 4096L) {
+      break;
+    }
+  }
+  obr::proc::close(home, fd);
+  memory::store64(total, st);
+  memory::store64(0L, st + 64L);
+  memory::store64(0L, st + 128L);
+  memory::store64(0L, st + 192L);
+  memory::store64(0L, st + 3328L);
+  memory::store64(0L, st + 4416L);
+  /* 逐行解析。 */
+  long pos = 0L;
+  long dcount = 0L;
+  while (pos < total) {
+    long start = pos;
+    while (pos < total && byteAt(buf + pos * 8L) != 10L) {
+      pos = pos + 1L;
+    }
+    long len = pos - start;
+    if (pos < total) {
+      pos = pos + 1L;
+    }
+    if (len < 1L) {
+      continue;
+    }
+    long o = byteAt(buf + start * 8L);
+    if (o != 1L) {
+      /* 正文行（在 ^AI 段外不该出现，容忍跳过）。 */
+      continue;
+    }
+    if (len < 2L) {
+      continue;
+    }
+    long tag = byteAt(buf + (start + 1L) * 8L);
+    if (tag == 73L && len >= 3L && byteAt(buf + (start + 2L) * 8L) != 32L) {
+      /* ^AI<注释> */
+      long n = len - 2L;
+      if (n > 256L) {
+        n = 256L;
+      }
+      copySpan(buf + (start + 2L) * 8L, st + 256L, n);
+      memory::store64(n, st + 192L);
+    } else if (tag == 100L && len >= 3L) {
+      /* ^Ad D<sid> date time user serial pred */
+      if (dcount >= 64L) {
+        memory::store64(2L, st + 128L);
+        return 1L;
+      }
+      long e = deltaAt(st, dcount);
+      long p = start + 4L;
+      /* sid */
+      long s0 = p;
+      while (p < start + len && byteAt(buf + p * 8L) != 32L) {
+        p = p + 1L;
+      }
+      long sidLen = p - s0;
+      if (sidLen < 1L || sidLen > 16L) {
+        memory::store64(3L, st + 128L);
+        return 1L;
+      }
+      memory::store64(sidLen, e);
+      copySpan(buf + s0 * 8L, e + 64L, sidLen);
+      /* date */
+      p = p + 1L;
+      copySpan(buf + p * 8L, e + 192L, 8L);
+      p = p + 9L;
+      copySpan(buf + p * 8L, e + 320L, 8L);
+      p = p + 9L;
+      /* user */
+      s0 = p;
+      while (p < start + len && byteAt(buf + p * 8L) != 32L) {
+        p = p + 1L;
+      }
+      long ul = p - s0;
+      if (ul > 32L) {
+        ul = 32L;
+      }
+      memory::store64(ul, e + 448L);
+      copySpan(buf + s0 * 8L, e + 512L, ul);
+      /* serial */
+      p = p + 1L;
+      long serial = 0L;
+      long digits = 0L;
+      while (p < start + len && byteAt(buf + p * 8L) >= 48L && byteAt(buf + p * 8L) <= 57L) {
+        serial = serial * 10L + byteAt(buf + p * 8L) - 48L;
+        p = p + 1L;
+        digits = digits + 1L;
+      }
+      if (digits < 1L) {
+        memory::store64(3L, st + 128L);
+        return 1L;
+      }
+      memory::store64(serial, e + 768L);
+      /* pred */
+      p = p + 1L;
+      s0 = p;
+      while (p < start + len && byteAt(buf + p * 8L) != 32L) {
+        p = p + 1L;
+      }
+      long pl = p - s0;
+      if (pl < 0L) {
+        pl = 0L;
+      }
+      if (pl > 16L) {
+        pl = 16L;
+      }
+      memory::store64(pl, e + 832L);
+      copySpan(buf + s0 * 8L, e + 896L, pl);
+      memory::store64(0L, e + 1024L);
+      memory::store64(0L, e + 1088L);
+      dcount = dcount + 1L;
+    } else if (tag == 65L && len >= 3L && byteAt(buf + (start + 2L) * 8L) == 32L) {
+      /* ^AI <sid>：正文段开始，挂到最后登记的 delta。 */
+      if (dcount > 0L) {
+        long e = deltaAt(st, dcount - 1L);
+        memory::store64(pos, e + 1024L);
+        /* 找 ^AE 段结束。 */
+        long bodyEnd = pos;
+        while (bodyEnd < total) {
+          long s2 = bodyEnd;
+          while (bodyEnd < total && byteAt(buf + bodyEnd * 8L) != 10L) {
+            bodyEnd = bodyEnd + 1L;
+          }
+          long l2 = bodyEnd - s2;
+          if (bodyEnd < total) {
+            bodyEnd = bodyEnd + 1L;
+          }
+          if (l2 == 2L && byteAt(buf + s2 * 8L) == 1L && byteAt(buf + (s2 + 1L) * 8L) == 69L) {
+            break;
+          }
+        }
+        long blen = bodyEnd - pos;
+        /* 去掉末尾 ^AE 行（2+1 八位组）。 */
+        if (blen >= 3L) {
+          blen = blen - 3L;
+        }
+        memory::store64(blen, e + 1088L);
+        pos = bodyEnd;
+      }
+    } else if (tag == 117L) {
+      /* ^Au：用户段文本登记（到 ^AU）。 */
+      long n = 0L;
+      while (pos < total && n < 128L) {
+        long s2 = pos;
+        while (pos < total && byteAt(buf + pos * 8L) != 10L) {
+          pos = pos + 1L;
+        }
+        long l2 = pos - s2;
+        if (pos < total) {
+          pos = pos + 1L;
+        }
+        if (l2 == 2L && byteAt(buf + s2 * 8L) == 1L && byteAt(buf + (s2 + 1L) * 8L) == 85L) {
+          break;
+        }
+        copySpan(buf + s2 * 8L, st + 2304L + n * 8L, l2 + 1L);
+        n = n + l2 + 1L;
+      }
+      memory::store64(n, st + 3328L);
+    } else if (tag == 102L) {
+      /* ^Af flag 行。 */
+      long n = memory::load64(st + 4416L);
+      if (n + len + 1L < 128L) {
+        copySpan(buf + start * 8L, st + 3392L + n * 8L, len + 1L);
+        memory::store64(n + len + 1L, st + 4416L);
+      }
+    }
+  }
+  memory::store64(dcount, st + 64L);
+  return 0L;
+}
+
+/* 找 sid（文本）对应的 delta 序号，找不到 -1；空 sid 取最新。 */
+deRfun sccsFind(long st, long sidAt, long sidLen): long {
+  long n = memory::load64(st + 64L);
+  if (sidLen == 0L) {
+    return n - 1L;
+  }
+  long i = 0L;
+  while (i < n) {
+    long e = deltaAt(st, i);
+    if (memory::load64(e) == sidLen) {
+      long same = 1L;
+      long c = 0L;
+      while (c < sidLen) {
+        if (byteAt(e + 64L + c * 8L) != byteAt(sidAt + c * 8L)) {
+          same = 0L;
+        }
+        c = c + 1L;
+      }
+      if (same == 1L) {
+        return i;
+      }
+    }
+    i = i + 1L;
+  }
+  return -1L;
+}
+
+/* 取 sid 的版本正文：拼接 serial<=目标 的插入段（子集口径）。
+   out 缓冲接收，返回长度；-1 出错。 */
+deRfun sccsBody(long st, long buf, long index, long out): long {
+  if (index < 0L) {
+    return -1L;
+  }
+  long limit = memory::load64(deltaAt(st, index) + 768L);
+  long total = 0L;
+  long i = 0L;
+  long n = memory::load64(st + 64L);
+  while (i < n) {
+    long e = deltaAt(st, i);
+    if (memory::load64(e + 768L) <= limit) {
+      long at = memory::load64(e + 1024L);
+      long len = memory::load64(e + 1088L);
+      if (len > 0L) {
+        copySpan(buf + at * 8L, out + total * 8L, len);
+        total = total + len;
+      }
+    }
+    i = i + 1L;
+  }
+  return total;
+}
+
+/* 重写 s 文件：头 + delta 表 + 正文段（从 buf 的正文偏移按原样回写）。 */
+deRfun sccsSave(long home, long st, long buf, long pathAt, long pathLen): long {
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 1L) != 0L) {
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long out = obr::proc::alloc(home, 65536L * 8L);
+  long at = 0L;
+  /* ^AI 注释 */
+  memory::storeOctet(1L, out + at * 8L);
+  memory::storeOctet(73L, out + (at + 1L) * 8L);
+  at = at + 2L;
+  long n = memory::load64(st + 192L);
+  copySpan(st + 256L, out + at * 8L, n);
+  at = at + n;
+  memory::storeOctet(10L, out + at * 8L);
+  at = at + 1L;
+  /* ^As */
+  memory::storeOctet(1L, out + at * 8L);
+  memory::storeOctet(115L, out + (at + 1L) * 8L);
+  at = at + 2L;
+  at = putText(out, at, " 000000/00000/00000");
+  memory::storeOctet(10L, out + at * 8L);
+  at = at + 1L;
+  /* delta 表 */
+  long count = memory::load64(st + 64L);
+  long i = 0L;
+  while (i < count) {
+    long e = deltaAt(st, i);
+    memory::storeOctet(1L, out + at * 8L);
+    memory::storeOctet(100L, out + (at + 1L) * 8L);
+    at = at + 2L;
+    at = putText(out, at, " D");
+    long sl = memory::load64(e);
+    copySpan(e + 64L, out + at * 8L, sl);
+    at = at + sl;
+    memory::storeOctet(32L, out + at * 8L);
+    at = at + 1L;
+    copySpan(e + 192L, out + at * 8L, 8L);
+    at = at + 8L;
+    memory::storeOctet(32L, out + at * 8L);
+    at = at + 1L;
+    copySpan(e + 320L, out + at * 8L, 8L);
+    at = at + 8L;
+    memory::storeOctet(32L, out + at * 8L);
+    at = at + 1L;
+    long ul = memory::load64(e + 448L);
+    copySpan(e + 512L, out + at * 8L, ul);
+    at = at + ul;
+    memory::storeOctet(32L, out + at * 8L);
+    at = at + 1L;
+    at = putNum(out, at, memory::load64(e + 768L));
+    memory::storeOctet(32L, out + at * 8L);
+    at = at + 1L;
+    long pl = memory::load64(e + 832L);
+    copySpan(e + 896L, out + at * 8L, pl);
+    at = at + pl;
+    memory::storeOctet(10L, out + at * 8L);
+    at = at + 1L;
+    i = i + 1L;
+  }
+  /* ^At */
+  memory::storeOctet(1L, out + at * 8L);
+  memory::storeOctet(116L, out + (at + 1L) * 8L);
+  memory::storeOctet(10L, out + (at + 2L) * 8L);
+  at = at + 3L;
+  /* 用户段 */
+  n = memory::load64(st + 3328L);
+  if (n > 0L) {
+    copySpan(st + 2304L, out + at * 8L, n);
+    at = at + n;
+  } else {
+    /* 手写 ^Au 与 ^AU 两行。 */
+    memory::storeOctet(1L, out + at * 8L);
+    memory::storeOctet(117L, out + (at + 1L) * 8L);
+    memory::storeOctet(10L, out + (at + 2L) * 8L);
+    memory::storeOctet(1L, out + (at + 3L) * 8L);
+    memory::storeOctet(85L, out + (at + 4L) * 8L);
+    memory::storeOctet(10L, out + (at + 5L) * 8L);
+    at = at + 6L;
+  }
+  /* 标志段 */
+  n = memory::load64(st + 4416L);
+  if (n > 0L) {
+    copySpan(st + 3392L, out + at * 8L, n);
+    at = at + n;
+    memory::storeOctet(1L, out + at * 8L);
+    memory::storeOctet(84L, out + (at + 1L) * 8L);
+    memory::storeOctet(10L, out + (at + 2L) * 8L);
+    at = at + 3L;
+  } else {
+    memory::storeOctet(1L, out + at * 8L);
+    memory::storeOctet(84L, out + (at + 1L) * 8L);
+    memory::storeOctet(10L, out + (at + 2L) * 8L);
+    at = at + 3L;
+  }
+  /* 空行 + 正文段 */
+  memory::storeOctet(10L, out + at * 8L);
+  at = at + 1L;
+  i = 0L;
+  while (i < count) {
+    long e = deltaAt(st, i);
+    memory::storeOctet(1L, out + at * 8L);
+    memory::storeOctet(65L, out + (at + 1L) * 8L);
+    memory::storeOctet(73L, out + (at + 2L) * 8L);
+    memory::storeOctet(32L, out + (at + 3L) * 8L);
+    at = at + 4L;
+    long sl = memory::load64(e);
+    copySpan(e + 64L, out + at * 8L, sl);
+    at = at + sl;
+    memory::storeOctet(10L, out + at * 8L);
+    at = at + 1L;
+    long blen = memory::load64(e + 1088L);
+    long bpos = memory::load64(e + 1024L);
+    if (blen > 0L) {
+      copySpan(buf + bpos * 8L, out + at * 8L, blen);
+      at = at + blen;
+    }
+    memory::storeOctet(1L, out + at * 8L);
+    memory::storeOctet(69L, out + (at + 1L) * 8L);
+    memory::storeOctet(10L, out + (at + 2L) * 8L);
+    at = at + 3L;
+    i = i + 1L;
+  }
+  long off = 0L;
+  while (off < at) {
+    long chunk = at - off;
+    if (chunk > 4096L) {
+      chunk = 4096L;
+    }
+    copySpan(out + off * 8L, obr::proc::bytes(home), chunk);
+    if (obr::proc::write(home, fd, off, chunk) != 0L) {
+      obr::proc::close(home, fd);
+      return 1L;
+    }
+    off = off + chunk;
+  }
+  obr::proc::close(home, fd);
+  return 0L;
+}
+
+/* 校验 s 文件形状（供 val）。返回 0 有效、非 0 错误码。 */
+deRfun sccsCheck(long st): long {
+  if (memory::load64(st + 128L) != 0L) {
+    return 2L;
+  }
+  if (memory::load64(st + 64L) < 1L) {
+    return 3L;
+  }
+  if (memory::load64(st + 192L) < 0L) {
+    return 4L;
+  }
+  return 0L;
+}
+
+/* 把当前时钟（服务 30，Unix 纪元毫秒）写成 SCCS 时间字段：yy/mm/dd hh:mm:ss
+   到 out（16 八位组）。1970 起算，闰年按公历。 */
+deRfun sccsNow(long home, long out): long {
+  time::clock(home);
+  long ms = obr::proc::slot(home, 128L);
+  if (ms < 0L) {
+    ms = 0L;
+  }
+  long secs = ms / 1000L;
+  long days = secs / 86400L;
+  long tod = secs % 86400L;
+  /* 年月日：从 1970 年逐年扣天数。 */
+  long year = 1970L;
+  while (days >= 365L) {
+    long leap = 0L;
+    if (year % 4L == 0L) {
+      leap = 1L;
+    }
+    if (year % 100L == 0L && year % 400L != 0L) {
+      leap = 0L;
+    }
+    long yy = 365L + leap;
+    if (days < yy) {
+      break;
+    }
+    days = days - yy;
+    year = year + 1L;
+    if (year > 2099L) {
+      break;
+    }
+  }
+  long leap = 0L;
+  if (year % 4L == 0L) {
+    leap = 1L;
+  }
+  if (year % 100L == 0L && year % 400L != 0L) {
+    leap = 0L;
+  }
+  long monthLen0 = 31L;
+  long monthLen1 = 28L + leap;
+  long month = 1L;
+  long ok = 1L;
+  while (ok == 1L) {
+    long dim = 31L;
+    if (month == 4L || month == 6L || month == 9L || month == 11L) {
+      dim = 30L;
+    }
+    if (month == 2L) {
+      dim = 28L + leap;
+    }
+    if (days >= dim) {
+      days = days - dim;
+      month = month + 1L;
+      if (month > 12L) {
+        month = 12L;
+        ok = 0L;
+      }
+    } else {
+      ok = 0L;
+    }
+  }
+  long dom = days + 1L;
+  long hour = tod / 3600L;
+  long minute = (tod % 3600L) / 60L;
+  long second = tod % 60L;
+  long yy = year % 100L;
+  /* yy/mm/dd 写 out 起 8 个八位组；hh:mm:ss 写 out+128 起 8 个（状态块时间字段
+     在 320，与日期字段 192 隔 128；中间空位不写，避免把邻近字段冲掉）。 */
+  memory::storeOctet(48L + yy / 10L, out);
+  memory::storeOctet(48L + yy % 10L, out + 8L);
+  memory::storeOctet(47L, out + 16L);
+  memory::storeOctet(48L + month / 10L, out + 24L);
+  memory::storeOctet(48L + month % 10L, out + 32L);
+  memory::storeOctet(47L, out + 40L);
+  memory::storeOctet(48L + dom / 10L, out + 48L);
+  memory::storeOctet(48L + dom % 10L, out + 56L);
+  memory::storeOctet(48L + hour / 10L, out + 128L);
+  memory::storeOctet(48L + hour % 10L, out + 136L);
+  memory::storeOctet(58L, out + 144L);
+  memory::storeOctet(48L + minute / 10L, out + 152L);
+  memory::storeOctet(48L + minute % 10L, out + 160L);
+  memory::storeOctet(58L, out + 168L);
+  memory::storeOctet(48L + second / 10L, out + 176L);
+  memory::storeOctet(48L + second % 10L, out + 184L);
+  return 17L;
+}

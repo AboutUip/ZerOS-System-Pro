@@ -1,0 +1,8 @@
+/* 变量类特殊内建给 run 分发用的入口。参数面同 bflow.mr。 */
+deRfun bvAssign(long bs, long env, long name, long nameLen, long value, long valueLen): long;
+deRfun bvSayVar(long home, long work, string prefix, long name, long nameLen, long value, long valueLen): void;
+deRfun bvExport(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long;
+deRfun bvReadonly(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long;
+deRfun bvSet(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long;
+deRfun bvShift(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long;
+deRfun bvUnset(long home, long bs, long state, long work, long out, long env, long envTmp, long body, long cmd, long command, long status, long* leaving): long;

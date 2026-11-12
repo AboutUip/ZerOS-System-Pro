@@ -86,6 +86,8 @@ const NamedCode kNamed[] = {
     {"schedule", 66, 1},
     {"slice", 67, 1},
     {"pass", 68, 2},
+    {"tag", 86, 2},
+    {"pass.task", 87, 3},
     {"take", 69, 2},
     {"svc", 70, 2},
     {"bound", 71, 3},
@@ -119,9 +121,13 @@ const MemoryName kStore[] = {
 };
 const MemoryName kLdi[] = {
     {"ldi.octet", 3}, {"ldi.16", 5}, {"ldi.32", 7}, {"ldi.64", 9}, {"ldi.f32", 11}, {"ldi.f64", 13},
+    /* M-D：vld./vst. 是 volatile 访问的未登记助记符面——编码与 ldi./sti. 逐位相同
+       （同一类指令的别名），Peephole 不认识它们，危险优化对 volatile 全屏蔽。 */
+    {"vld.octet", 3}, {"vld.16", 5}, {"vld.32", 7}, {"vld.64", 9}, {"vld.f32", 11}, {"vld.f64", 13},
 };
 const MemoryName kSti[] = {
     {"sti.octet", 4}, {"sti.16", 6}, {"sti.32", 8}, {"sti.64", 10}, {"sti.f32", 12}, {"sti.f64", 14},
+    {"vst.octet", 4}, {"vst.16", 6}, {"vst.32", 8}, {"vst.64", 10}, {"vst.f32", 12}, {"vst.f64", 14},
 };
 
 void appendByte(std::vector<uint8_t>& out, uint8_t value) { out.push_back(value); }
@@ -211,19 +217,21 @@ bool isRegisterToken(const std::string& token) {
 }
 
 bool isNumberToken(const std::string& token) {
-  if (token.size() >= 3 && token[0] == '0' && (token[1] == 'x' || token[1] == 'X')) {
-    for (std::size_t index = 2; index < token.size(); index += 1) {
+  std::size_t start = 0;
+  if (!token.empty() && token[0] == '-') start = 1;
+  if (token.size() >= start + 3 && token[start] == '0' && (token[start + 1] == 'x' || token[start + 1] == 'X')) {
+    for (std::size_t index = start + 2; index < token.size(); index += 1) {
       const char item = token[index];
       const bool digit = item >= '0' && item <= '9';
       const bool lower = item >= 'a' && item <= 'f';
       const bool upper = item >= 'A' && item <= 'F';
       if (!digit && !lower && !upper) return false;
     }
-    return token.size() > 2;
+    return token.size() > start + 2;
   }
-  if (token.empty()) return false;
-  for (char item : token) {
-    if (item < '0' || item > '9') return false;
+  if (token.size() <= start) return false;
+  for (std::size_t index = start; index < token.size(); index += 1) {
+    if (token[index] < '0' || token[index] > '9') return false;
   }
   return true;
 }
@@ -358,11 +366,20 @@ bool isPseudoCall(const std::string& line) {
   return line.rfind("call ", 0) == 0 && !isMachineCall(line);
 }
 
+struct LabelOperand {
+  std::size_t line = 0;  /* image.lines 里的行号 */
+  std::size_t token = 0; /* 行内第几个词（词法：空格/逗号分隔，头部是第 0 个） */
+  uint32_t target = 0;   /* 删行前步号 */
+};
+
 struct Expanded {
   std::vector<std::string> lines;
   std::vector<DebugSite> sites;
   std::map<std::string, uint32_t> labels;
   std::vector<std::string> body;
+  /* 展开时被烘成立即数的代码标签（place 的析构标签、跳转表/方法表表项）。
+     它们和跳转目标一样是删行前步号，删掉硬件栈调整行后要重映射。 */
+  std::vector<LabelOperand> labelOperands;
 };
 
 struct LinkSite {
@@ -473,6 +490,7 @@ Expanded expand(const std::string& zapText, const std::vector<DebugSite>* sites)
           const auto found = image.labels.find(parts[item]);
           if (found == image.labels.end()) fail("没有标号 " + parts[item]);
           resolved += ", " + std::to_string(found->second);
+          image.labelOperands.push_back(LabelOperand{image.lines.size(), item, found->second});
         }
       } else {
         for (std::size_t item = first; item < parts.size(); item += 1) {
@@ -483,19 +501,24 @@ Expanded expand(const std::string& zapText, const std::vector<DebugSite>* sites)
           const auto found = image.labels.find(parts[item]);
           if (found == image.labels.end()) fail("没有标号 " + parts[item]);
           resolved += ", " + std::to_string(found->second);
+          image.labelOperands.push_back(LabelOperand{image.lines.size(), item, found->second});
         }
       }
       image.lines.push_back(resolved);
       if (noted) image.sites.push_back(bodySites[index]);
       continue;
     }
-    const bool jump = head == "jz" || head == "jnz" || head == "link" || head == "call";
+    /* place 的立即数也可以是标号（M2 记录链存析构标签），与跳转目标同一套展开。
+       place 的标号立即数记进 labelOperands：跳转目标由 rewriteJump 重映射，
+       place 不是跳转，删掉硬件栈调整行后要在这里记下、写出时另改。 */
+    const bool jump = head == "jz" || head == "jnz" || head == "link" || head == "call" || head == "place";
     if (!jump || parts.size() < 2 || isRegisterToken(target) || isNumberToken(target)) {
       image.lines.push_back(line);
     } else {
       const auto found = image.labels.find(target);
       if (found == image.labels.end()) fail("没有标号 " + target);
       image.lines.push_back(head + " " + parts[1] + ", " + std::to_string(found->second));
+      if (head == "place") image.labelOperands.push_back(LabelOperand{image.lines.size() - 1, 2, found->second});
     }
     if (noted) image.sites.push_back(bodySites[index]);
   }
@@ -608,6 +631,23 @@ void writeProgramBinary(const std::string& path, const std::string& zapText, con
     if (noted) keptSites.push_back(debugSites[index]);
   }
   for (std::string& line : kept) rewriteJump(line, stackMap);
+  /* place 的标号立即数与跳转表/方法表表项也是代码步号（M2 记录链的析构标签、
+     清扫入口标号）：和跳转目标一样要从删行前步号改到删行后的真指令上。
+     跳转行由 rewriteJump 改，这里只管 place/switch.table/itable.call 这些非跳转行。 */
+  for (const LabelOperand& item : image.labelOperands) {
+    if (item.line >= lines.size()) fail("标号立即数越出映像");
+    const int keptIndex = stackMap[item.line];
+    if (keptIndex < 0) fail("标号立即数行被删掉");
+    std::string& line = kept[static_cast<std::size_t>(keptIndex)];
+    std::vector<std::string> parts = tokensOf(line);
+    if (item.token >= parts.size()) fail("标号立即数越出指令 " + line);
+    parts[item.token] = std::to_string(landed(stackMap, item.target));
+    std::string rebuilt = parts[0];
+    for (std::size_t index = 1; index < parts.size(); index += 1) {
+      rebuilt += (index == 1 ? " " : ", ") + parts[index];
+    }
+    line = rebuilt;
+  }
   for (LinkSite& item : exports) item.index = static_cast<uint32_t>(landed(stackMap, item.index));
   for (LinkSite& item : imports) item.index = static_cast<uint32_t>(landed(stackMap, item.index));
   for (LinkReloc& item : relocs) {

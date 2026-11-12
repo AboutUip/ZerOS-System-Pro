@@ -45,6 +45,8 @@ const OpcodeSpec* opcodeSpec(const std::string& name) {
       {"obr::os::schedule", "schedule", TypeKind::Void, 1, 0, false, false},
       {"obr::os::slice", "slice", TypeKind::Void, 1, 0, false, false},
       {"obr::os::pass", "pass", TypeKind::Void, 2, 0, false, false},
+      {"obr::os::setTag", "tag", TypeKind::Void, 2, 0, false, false},
+      {"obr::os::passTask", "pass.task", TypeKind::Void, 3, 0, false, false},
       {"obr::os::take", "take", TypeKind::Long, 1, 0, false, false},
       {"obr::os::svc", "svc", TypeKind::Long, 1, 1, false, false},
       {"obr::os::bound", "bound", TypeKind::Void, 3, 0, false, false},
@@ -74,6 +76,23 @@ bool sameShape(const Function& function, std::initializer_list<TypeKind> kinds, 
   for (const TypeKind kind : kinds) {
     if (function.params[index].type != kind) return false;
     index += 1;
+  }
+  return true;
+}
+
+/* M-E：obr::atomic 的签名面——地址参数必须是 `volatile long*`，其余参数是 long
+   （内存序是编译期标注参数，Checker::checkAtomicCall 校验它必须是 MemoryOrder 常量）。
+   cas/fetchAdd 返回旧值。运行时动作（信箱服务/fence svc）本轮是余量。 */
+bool volatileLongPtr(const Param& param) {
+  return param.type == TypeKind::Ptr && param.pointee == TypeKind::Long && param.volatilePointee
+    && param.mode == ParamMode::None;
+}
+
+bool atomicShape(const Function& function, std::size_t extra, TypeKind ret) {
+  if (function.ret != ret || function.params.size() != extra + 1) return false;
+  if (!volatileLongPtr(function.params[0])) return false;
+  for (std::size_t index = 1; index < function.params.size(); index += 1) {
+    if (function.params[index].type != TypeKind::Long || function.params[index].mode != ParamMode::None) return false;
   }
   return true;
 }
@@ -135,6 +154,14 @@ bool libraryFunction(const Function& function) {
       && function.params[0].type == TypeKind::Array && function.params[0].typeName == "long"
       && function.params[1].type == TypeKind::Long;
   }
+  /* M-E：memory::fence 内建签名（fence 语义 = release+acquire 全屏障，一档）。
+     运行时下限（轻量 svc ping）本轮不发——fence svc = 运行时余量，先落停机桩。 */
+  if (function.name == "memory::fence") return sameShape(function, {}, TypeKind::Void);
+  /* M-E：obr::atomic 四函数签名面（load/store/cas/fetchAdd）。 */
+  if (function.name == "obr::atomic::load") return atomicShape(function, 1, TypeKind::Long);
+  if (function.name == "obr::atomic::store") return atomicShape(function, 2, TypeKind::Void);
+  if (function.name == "obr::atomic::cas") return atomicShape(function, 3, TypeKind::Long);
+  if (function.name == "obr::atomic::fetchAdd") return atomicShape(function, 2, TypeKind::Long);
   std::size_t count = 0;
   if (function.name == "obr::math::abs") count = 1;
   else if (function.name == "obr::math::min" || function.name == "obr::math::max") count = 2;

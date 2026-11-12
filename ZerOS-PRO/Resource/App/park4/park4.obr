@@ -1,0 +1,14 @@
+#DYN
+/* 诊断：服务 54 把核 4 上停着的任务收进槽。退出码 = 20 + 状态。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  memory::store64(4L, home + 448L);
+  long status = obr::os::svc(54L);
+  memory::store64(20L + status, home + 128L);
+  obr::os::svc(28L);
+  return 0;
+}

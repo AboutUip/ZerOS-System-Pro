@@ -1,5 +1,5 @@
 /* 入口。引导、系统调用分发和回复。回复只给进程层和文件层。 */
-#LINK /task.obr, /vfs.obr, /pipe.obr, /dev.obr, /console.obr, /frame.obr, /sig.obr
+#LINK /task.obr, /vfs.obr, /pipe.obr, /dev.obr, /console.obr, /frame.obr, /sig.obr, /drv.obr
 import proc;
 import mm;
 import sched;
@@ -11,8 +11,11 @@ import trap;
 import board;
 import memory;
 import obr.os;
+import niccore;
+import flat;
+import drv;
 
-/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd  30 clock  31 utime  32 ident  33 task  34 list  35 prompt  36 command  37 frame  38 frameWait  39 present  40 feed */
+/* 1 yield  2 alloc  3 free  4 stat  5 open  6 close  7 read  8 write  9 readdir  10 mkdir  11 unlink  12 load  13 unload  14 chmod  15 chown  16 chdir  17 spawn  18 kill  19 sigtake  20 pipe  21 wait  22 loadlib  23 devio  24 dup  25 dup2  26 font  27 compat  28 exit  29 getcwd  30 clock  31 utime  32 ident  33 task  34 list  35 prompt  36 command  37 frame  38 frameWait  39 present  40 feed  41 nicProbe  42 nicSend  43 nicReceive  44 nicSelfCheck  45 nicConfigure  46 spawnFlat  47 spawnMany  48 flatDone  49 monotonic  50 clockSet  51 flatDoneReset  52 idleMask  53 coreState  54 parkCore  55 restartDriver  56 drvManage  57 handover  58 inputRead  59 kbdState  60 inputHead  61 pointerPoll  62 mouseState  63 pointerPage  64 pointerCount  65 myHome  66/67/68 diag  69 gpuState  80 bindWho  81 faultWho  83 mousePacked */
 
 deRfun pack(): long {
   return 4294967296L;
@@ -23,7 +26,10 @@ deRfun word(long address): long {
 }
 
 deRfun markRunning(long caller): void {
-  long index = taskFind(caller);
+  long index = taskCurrent(caller);
+  if (index < 0L) {
+    index = taskFind(caller);
+  }
   if (index >= 0L) {
     /* 4 = 调度唤醒；只有确实在睡的任务才是一条唤醒边。 */
     if (taskAt(index).state == TaskState::Sleeping) {
@@ -44,9 +50,8 @@ deRfun reply(long caller, long value): void {
   if (rowsDirty() == 1L) {
     long woke = frameRelease(1L);
     if (woke >= 0L && woke != caller) {
-      markRunning(woke);
-      obr::os::pass(woke, frameEpoch());
-      obr::os::schedule(woke);
+      /* 显示任务的核可能已经跑着窗口任务；走同一条“标就绪/从槽恢复”的路。 */
+      frameWakeOn(woke);
     }
   }
   obr::os::schedule(caller);
@@ -93,7 +98,7 @@ deRfun compatSvc(long caller): void {
     reply(caller, -14L);
     return;
   }
-  long home = query(1L, 8L, caller);
+  long home = callerHome(caller);
   long result = compatWrite(caller, home, rdi, frame + rsi * 8L, rdx);
   memory::store64(result, frame);
   memory::store64(next, frame + 1024L);
@@ -150,12 +155,38 @@ deRfun exitBits(long code): long {
   return code;
 }
 
+/* 调用者的窗口起点。调用者此刻就停在这颗核上，直接从运行槽取，
+   不扫任务表；取不到再退回指标页。 */
+deRfun callerHome(long caller): long {
+  /* flat 任务用任务窗口；旧布局优先用核 bound，取不到再退回核窗口。
+     query 的指标页在刚装入/释放后可能还是 0，不能让 0 变成 home。 */
+  long index = taskCurrent(caller);
+  if (index >= 0L) {
+    Task* task = taskAt(index);
+    if (task.pid != 0L && task.core == caller && task.state == TaskState::Running) {
+      if (task.cap >= 4294967296L) {
+        long origin = task.mm.origin;
+        if (origin != 0L) {
+          return origin;
+        }
+      } else {
+        return kArena(caller);
+      }
+    }
+  }
+  long value = query(1L, 8L, caller);
+  if (value != 0L) {
+    return value;
+  }
+  return kArena(caller);
+}
+
 deRfun dispatch(long caller, long service): void {
   if (taskAllows(caller, service) == 0L) {
     reply(caller, -1L);
     return;
   }
-  long home = query(1L, 8L, caller);
+  long home = callerHome(caller);
   if (service == 1L) {
     reply(caller, 0L);
     return;
@@ -255,9 +286,37 @@ deRfun dispatch(long caller, long service): void {
     schedResume(caller);
     return;
   }
-  /* 读时钟。任何有任务的客程序都能调用。毫秒写在 +128，不改整机时间。 */
+  /* 读墙上时钟。毫秒写到 +128。 */
   if (service == 30L) {
     memory::store64(query(0L, 3L, 0L), home + 128L);
+    reply(caller, 0L);
+    return;
+  }
+  /* 设置墙上时钟。只有 euid 0 可以设置；低、高 32 位经监督核专用查询字段提交给主板芯片。 */
+  if (service == 50L) {
+    long taskIndex = taskFind(caller);
+    if (taskIndex < 0L || taskAt(taskIndex).cred.euid != 0L) {
+      reply(caller, -1L);
+      return;
+    }
+    long value = word(home + 128L);
+    long base = 4294967296L;
+    long low = value & 4294967295L;
+    long high = value / base;
+    if (value < 0L && value % base != 0L) {
+      high = high - 1L;
+    }
+    if (high < 0L) {
+      high = high + base;
+    }
+    query(0L, 4L, low);
+    query(0L, 5L, high);
+    reply(caller, 0L);
+    return;
+  }
+  /* 单调毫秒供经过时间测量使用；不受墙上时间设置影响。 */
+  if (service == 49L) {
+    memory::store64(query(0L, 6L, 0L), home + 128L);
     reply(caller, 0L);
     return;
   }
@@ -302,6 +361,266 @@ deRfun dispatch(long caller, long service): void {
   /* 把控制台环里的字节收成格子。不呈现。任何客程序都能调用，换一块玻璃可以不调用。 */
   if (service == 40L) {
     conFeed();
+    reply(caller, 0L);
+    return;
+  }
+  /* 网卡核心驱动。只有监督核能碰扩展口，所以客程序走这四个服务。 */
+  if (service == 41L) {
+    reply(caller, niccore::probe(home));
+    return;
+  }
+  if (service == 42L) {
+    reply(caller, niccore::send(home));
+    return;
+  }
+  if (service == 43L) {
+    reply(caller, niccore::receive(home));
+    return;
+  }
+  if (service == 44L) {
+    reply(caller, niccore::selfCheck(home));
+    return;
+  }
+  if (service == 45L) {
+    reply(caller, niccore::configure(home));
+    return;
+  }
+  /* 46 装入任务窗口程序。路径在 +16384；pid/core 写在 +192/+256。 */
+  if (service == 46L) {
+    reply(caller, spawnFlat(caller, home, 0L));
+    return;
+  }
+  /* 47 一次装 150 个 flat 任务；返回创建数，任务总数在 +384。 */
+  if (service == 47L) {
+    reply(caller, spawnMany(caller, home));
+    return;
+  }
+  /* 48 已退出窗口任务计数。150 任务红测轮询它，不占用等待者。 */
+  if (service == 48L) {
+    reply(caller, flatDone(0L));
+    return;
+  }
+  /* 54 把指定核上停着的任务收进槽并标 Sleeping。核号在 +448。
+     用于回收卡在无人回复的 svc 上的驱动核。成功回复 0，没有任务 2，没槽 7。 */
+  /* 55 restart：`+128` 是旧实例 pid（0 表示没有）。先向旧实例发 SIGKILL，
+     再用 `+16384` 的路径装新实例。成功回复 0，pid/core 在 +192/+256；
+     没有可用核回复 11，调用者稍后重试。 */
+  if (service == 55L) {
+    long oldPid = memory::load64(home + 128L);
+    if (oldPid > 1L && taskByPid(oldPid) >= 0L) {
+      sigRaise(caller, oldPid, 9L);
+    }
+    reply(caller, spawnFlat(caller, home, 0L));
+    return;
+  }
+  /* 56 驱动管理器：op 在 +64，路径 +16384，pid +128。
+     1 load、2 stop、3 restart、4 rollback、5 list。 */
+  if (service == 56L) {
+    reply(caller, drvManage(caller, home));
+    return;
+  }
+  if (service == 57L) {
+    reply(caller, drvHandover(caller, home));
+    return;
+  }
+  /* 58 键盘事件镜像读取。返回字节数，正文在 +131072。 */
+  if (service == 58L) {
+    reply(caller, drvInputRead(home));
+    return;
+  }
+  if (service == 59L) {
+    if (memory::load64(home + 64L) == 1L) {
+      reply(caller, drvKbdPublish(caller, home));
+    } else {
+      reply(caller, drvKbdRead(caller, home));
+    }
+    return;
+  }
+  /* 60 键盘镜像累计写入数。 */
+  if (service == 60L) {
+    reply(caller, drvInputHead());
+    return;
+  }
+  /* 61 真实鼠标：固件共享页快照（x/y/flag/count 到 +131072）。 */
+  if (service == 61L) {
+    reply(caller, drvPointerPoll(home));
+    return;
+  }
+  /* 62 鼠标驱动实时状态：op 1 发布，其它读取（回复 32）。 */
+  if (service == 62L) {
+    if (memory::load64(home + 64L) == 1L) {
+      reply(caller, drvMousePublish(caller, home));
+    } else {
+      reply(caller, drvMouseRead(caller, home));
+    }
+    return;
+  }
+  /* 63 固件鼠标页快照：x/y/flag/count，不消费。 */
+  if (service == 63L) {
+    reply(caller, drvPointerSnapshot(home));
+    return;
+  }
+  /* 64 pointerCount: pointer ring events, independent of caller window. */
+  if (service == 64L) {
+    reply(caller, memory::load64(12288L));
+    return;
+  }
+  /* 83 mousePacked: scalar (events<<32)|base, no caller window needed. */
+  if (service == 83L) {
+    reply(caller, drvMousePacked(caller, home));
+    return;
+  }
+  /* 65 取调用者自己的窗口/数据起点，不经过异步指标页。 */
+  if (service == 65L) {
+    long diagIndex = taskCurrent(caller);
+    if (diagIndex < 0L) {
+      diagIndex = taskFind(caller);
+    }
+    long diagPid = 0L;
+    if (diagIndex >= 0L) {
+      diagPid = taskAt(diagIndex).pid;
+    }
+    memory::store64(diagPid, 12800L);
+    memory::store64(home, 12864L);
+    reply(caller, home);
+    return;
+  }
+  /* 66/67 诊断：最近一次 svc65 的 pid 和 home。 */
+  if (service == 66L) {
+    reply(caller, memory::load64(12800L));
+    return;
+  }
+  if (service == 67L) {
+    reply(caller, memory::load64(12864L));
+    return;
+  }
+  /* 68 诊断：本核旧布局 kSp 单元的真实内存值。 */
+  if (service == 68L) {
+    long cell = kArena(caller) + 68173760L - 1048576L;
+    reply(caller, memory::load64(cell));
+    return;
+  }
+  /* 70 gpuPublish: frames/base at +131072. 69 只读。 */
+  if (service == 70L) {
+    reply(caller, drvGpuPublish(caller, home));
+    return;
+  }
+  /* 71 gpuPacked: (frames<<32)|base，不经过调用方窗口。 */
+  if (service == 71L) {
+    long gpuAt = kSupervisor() + 16000L;
+    long gpuFrames = memory::load64(gpuAt);
+    long gpuBase = memory::load64(gpuAt + 64L) & 4294967295L;
+    reply(caller, (gpuFrames << 32L) | gpuBase);
+    return;
+  }
+  /* 69 gpuState: read frames/base (reply 16). */
+  if (service == 69L) {
+    reply(caller, drvGpuRead(caller, home));
+    return;
+  }
+  /* 80 bindWho: reply previous core-3 legacy bind pid. */
+  if (service == 80L) {
+    long wantCore = memory::load64(home + 128L);
+    if (wantCore < 0L || wantCore > 7L) {
+      wantCore = 3L;
+    }
+    reply(caller, memory::load64(13056L + wantCore * 64L + 64L));
+    return;
+  }
+  /* 81 faultWho: reply the pid logged for a core that stopped with why==3. */
+  if (service == 81L) {
+    long wantCore = memory::load64(home + 128L);
+    if (wantCore < 0L || wantCore > 7L) {
+      wantCore = 3L;
+    }
+    reply(caller, memory::load64(kSupervisor() + 2097152L + wantCore * 256L));
+    return;
+  }
+  if (service == 54L) {
+    long parkCore = memory::load64(home + 448L);
+    long parkIndex = taskCurrent(parkCore);
+    if (parkIndex < 0L) {
+      parkIndex = taskFind(parkCore);
+    }
+    if (parkIndex < 0L) {
+      reply(caller, 2L);
+      return;
+    }
+    long parkSlot = slotHold(parkIndex);
+    if (parkSlot < 0L) {
+      reply(caller, 7L);
+      return;
+    }
+    obr::os::capture(parkCore, parkSlot);
+    taskAccount(parkIndex, TaskState::Sleeping);
+    taskAt(parkIndex).state = TaskState::Sleeping;
+    reply(caller, 0L);
+    return;
+  }
+  /* 53 指定核的当前任务诊断。核号在 +448；回复 running，state 在 +192，
+     stopKind 在 +256，held 在 +320。 */
+  if (service == 53L) {
+    long wantCore = memory::load64(home + 448L);
+    long wantIndex = taskFind(wantCore);
+    if (wantIndex >= 0L) {
+      long origin = taskAt(wantIndex).mm.origin;
+      if (origin == 0L) {
+        origin = kArena(wantCore);
+      }
+      memory::store64(origin, home + 192L);
+    }
+    long wantState = 0L;
+    long wantHeld = 0L;
+    if (wantIndex >= 0L) {
+      wantState = taskAt(wantIndex).state;
+      wantHeld = taskAt(wantIndex).held;
+    }
+    long heldBit = 0L;
+    if (wantHeld > 0L) {
+      heldBit = 32L;
+    }
+    long runBit = 0L;
+    if (query(1L, 5L, wantCore) != 0L) {
+      runBit = 64L;
+    }
+    reply(caller, wantState + query(1L, 11L, wantCore) * 8L + heldBit + runBit);
+    return;
+  }
+  /* 52 空闲核掩码：bit0…bit4 依次是核 3…7，1 表示已停且不在系统调用里。 */
+  if (service == 52L) {
+    long mask = 0L;
+    long probe = 3L;
+    while (probe < 8L) {
+      if (flatCoreIdle(probe) == 1L) {
+        if (probe == 3L) {
+          mask = mask + 1L;
+        }
+        if (probe == 4L) {
+          mask = mask + 2L;
+        }
+        if (probe == 5L) {
+          mask = mask + 4L;
+        }
+        if (probe == 6L) {
+          mask = mask + 8L;
+        }
+        if (probe == 7L) {
+          mask = mask + 16L;
+        }
+      }
+      probe = probe + 1L;
+    }
+    reply(caller, mask);
+    return;
+  }
+  /* 51 清零完成计数和每核创建数。批量装入前调用。49/50 已归单调时钟。 */
+  if (service == 51L) {
+    flatDone(1L);
+    long clearAt = 3L;
+    while (clearAt < 8L) {
+      memory::store64(0L, home + 640L + clearAt * 64L);
+      clearAt = clearAt + 1L;
+    }
     reply(caller, 0L);
     return;
   }
@@ -368,10 +687,10 @@ deRfun termBring(): void {
   termSet(1L);
 }
 
-/* 面板快于 30 Hz 时，抢占仍大约 33 毫秒一次。时钟往回走就再等一轮。 */
+/* 面板快于 30 Hz 时，抢占仍大约 33 毫秒一次。使用不受墙上时钟调整影响的单调时钟。 */
 deRfun schedDue(): long {
   static long last = 0L;
-  long now = query(0L, 3L, 0L);
+  long now = query(0L, 6L, 0L);
   if (now - last < 33L) {
     return 0L;
   }
@@ -383,6 +702,30 @@ deRfun main(): int {
   /* 地址缓存紧挨任务上界。窗口里原来的数不是 0，不先清掉就会把垃圾当成文件系统末址。 */
   memory::store64(0L, kSupervisor() + 13312L);
   memory::store64(0L, kSupervisor() + 13376L);
+  /* GPU 帧计数槽上电不是 0，不清会把垃圾当成上一轮的基线。 */
+  memory::store64(0L, kSupervisor() + 16000L);
+  memory::store64(0L, kSupervisor() + 16064L);
+  /* 鼠标状态槽同样要清。 */
+  memory::store64(0L, kSupervisor() + 16256L);
+  memory::store64(0L, kSupervisor() + 16320L);
+  memory::store64(0L, kSupervisor() + 16384L);
+  memory::store64(0L, kSupervisor() + 16448L);
+  /* handover 长度字。 */
+  memory::store64(0L, kSupervisor() + 16512L);
+  /* 最近一次成功装入的驱动 pid。 */
+  memory::store64(0L, kSupervisor() + 16640L);
+  /* 窗口位图紧挨任务表。上电不是 0，不清就会把垃圾当成已占用，windowTake 一直失败。 */
+  long map = 0L;
+  while (map < 230L) {
+    memory::storeOctet(0L, kSupervisor() + 1048576L + map * 8L);
+    map = map + 1L;
+  }
+  /* 命令名长度字上电不是 0。不清的话，驱动元数据会把垃圾任务认成 shell。 */
+  long comm = 0L;
+  while (comm < 512L) {
+    memory::store64(0L, 544768L + comm * 320L);
+    comm = comm + 1L;
+  }
   boot();
   while (1) {
     /* 没有前台在跑或就绪时收回 16MB。有前台时写成 256MB，调度前还会再写一次。 */
@@ -406,7 +749,10 @@ deRfun main(): int {
         dispatch(next / pack(), next % pack());
         burst = burst + 1L;
       }
-    } else if (schedWork() == 1L) {
+    }
+    /* 调用处理完必须扫表：只在空取时扫表会把调度饿死——最后一条调用之后
+       没有新唤醒，换回/待杀就永远轮不到（M2-(d) 同核派生换回卡死的根因）。 */
+    if (schedWork() == 1L) {
       schedSweep();
     }
     /* 537931776 为 1 时刚放行了驱动，先回去取调用。没人等节拍时按 30 Hz 空转，核心保持执行中。
@@ -446,12 +792,11 @@ deRfun main(): int {
           woke = frameRelease(1L);
         }
         if (woke >= 0L) {
-          reply(woke, frameEpoch());
+          frameWakeOn(woke);
         }
       } else {
         frameHold();
       }
-      obr::os::core();
       obr::os::hertz(obr::os::core(), 100000000L);
     }
   }

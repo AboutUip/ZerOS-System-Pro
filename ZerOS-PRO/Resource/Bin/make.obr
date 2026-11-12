@@ -1,0 +1,1175 @@
+/* POSIX.1-2017 make（utilities/make.html）选定子集。
+   选项（全量实现）：make [-einpqrst] [-f makefile]... [-k|-S] [macro=value...] [target...]
+   -e 环境宏覆盖 makefile 宏；-f 指定 makefile（可多个，- 为标准输入；缺省先
+   ./makefile 再 ./Makefile）；-i 忽略命令错误；-k 出错继续其它目标；-n 只回显不执行
+   （+ 前缀行仍执行）；-p 打印宏与规则；-q 只查询（0 已最新 / 1 未最新，+ 仍执行）；
+   -r 禁用内建推理规则（本子集本无推理，见下）；-S 出错即停（缺省，-k 与 -S 后者优先）；
+   -s 不回显命令；-t 只把目标 mtime 置当前并打印 touched（+ 仍执行）。
+   MAKEFLAGS 环境变量按选项字母先行解析。
+   makefile 子集（任务口径：目标/依赖/命令/变量/.PHONY）：目标规则
+   `目标...: 依赖...`、制表符开头的命令行、行尾 \ 续行、# 注释与空行、
+   宏 NAME=值（右值惰性展开）与 $(NAME)/${NAME}/单字符 $N/$$、内部宏
+   $@ $< $* $% $? 及 $(@D) $(@F) 等 D/F 形式、include 行（嵌套 ≤16）、
+   命令前缀 -（忽略错误）@（不回显）+（强制执行）。
+   特殊目标：.PHONY（GNU 扩展，任务要求：目标永不最新）、.SILENT、.IGNORE、
+   .DEFAULT、.POSIX、.PRECIOUS、.SUFFIXES（登记接受）。
+   内建宏 MAKE AR ARFLAGS YACC YFLAGS LEX LFLAGS LDFLAGS CC CFLAGS FC FFLAGS
+   GET GFLAGS SCCSFLAGS SCCSGETFLAGS 按默认规则表给出。
+   未支持+原因：推理规则（.s1.s2 与内建后缀规则）——平台无 C/Fortran 前端，
+   规则无意义（.SUFFIXES 仅登记不推理）；库成员目标 lib(member) 不支持；
+   .SCCS_GET（XSI）仅接受不执行。容量：宏 128、规则 64、目标名 128、依赖 256、
+   命令行累计 1024 八位组，超出写 make: out of memory 退出 2。
+   命令执行：每条命令行展开后交 /os/sh（本程序建管道，标准输入喂命令与 exit 两行；
+   exit 保证壳退出并传递状态）。mtime 比较用 stat 的修改时间字。
+   退出码：0 成功；-q 时 0 已最新 / 1 未最新；命令失败或其它错误 2。
+   诊断英文 ASCII，描述符 2，前缀 make:。结束用服务 28。 */
+#DYN
+import memory;
+import obr.proc;
+import time;
+import arg;
+import binutil;
+
+deRfun macroAt(long st, long index): long {
+  return st + 8192L + index * 2688L;
+}
+
+deRfun ruleAt(long st, long index): long {
+  return st + 352256L + index * 11456L;
+}
+
+deRfun optBit(long st, long bit): long {
+  long word = memory::load64(st + 128L);
+  long shift = 1L;
+  long index = 0L;
+  while (index < bit) {
+    shift = shift * 2L;
+    index = index + 1L;
+  }
+  return (long)(word / shift % 2L);
+}
+
+deRfun setOpt(long st, long bit, long on): void {
+  long word = memory::load64(st + 128L);
+  long shift = 1L;
+  long index = 0L;
+  while (index < bit) {
+    shift = shift * 2L;
+    index = index + 1L;
+  }
+  long low = word % shift;
+  long high = word / (shift * 2L) * shift * 2L;
+  memory::store64(high + low + shift * on, st + 128L);
+}
+
+deRfun setMacro(long st, string name, string value): void {
+  long count = memory::load64(st);
+  long nameLen = 0L;
+  while (nameLen < 64L) {
+    long stop = name[nameLen];
+    if (stop == 0L) {
+      break;
+    }
+    nameLen = nameLen + 1L;
+  }
+  long index = 0L;
+  while (index < count) {
+    long at = macroAt(st, index);
+    if (memory::load64(at) == nameLen) {
+      long same = 1L;
+      long cursor = 0L;
+      while (cursor < nameLen) {
+        long ch = name[cursor];
+        if (byteAt(at + 128L + cursor * 8L) != ch) {
+          same = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (same == 1L) {
+        memory::store64(putText(at + 640L, 0L, value), at + 64L);
+        return;
+      }
+    }
+    index = index + 1L;
+  }
+  if (count >= 128L) {
+    return;
+  }
+  long at = macroAt(st, count);
+  memory::store64(nameLen, at);
+  long cursor = 0L;
+  while (cursor < nameLen) {
+    memory::storeOctet(name[cursor], at + 128L + cursor * 8L);
+    cursor = cursor + 1L;
+  }
+  memory::store64(putText(at + 640L, 0L, value), at + 64L);
+  memory::store64(count + 1L, st);
+}
+
+deRfun findMacro(long st, long name, long nameLen, long* valAt, long* valLen): long {
+  long count = memory::load64(st);
+  long index = 0L;
+  while (index < count) {
+    long at = macroAt(st, index);
+    if (memory::load64(at) == nameLen) {
+      long same = 1L;
+      long cursor = 0L;
+      while (cursor < nameLen) {
+        if (byteAt(at + 128L + cursor * 8L) != byteAt(name + cursor * 8L)) {
+          same = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (same == 1L) {
+        *valAt = at + 640L;
+        *valLen = memory::load64(at + 64L);
+        return 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun isNameChar(long o): long {
+  if (o >= 48L && o <= 57L) {
+    return 1L;
+  }
+  if (o >= 65L && o <= 90L) {
+    return 1L;
+  }
+  if (o >= 97L && o <= 122L) {
+    return 1L;
+  }
+  if (o == 46L || o == 95L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 展开：src 的宏替换写进 out，返回八位组数；超 cap 或递归过深 -1。
+   tgAt/tgLen 当前目标名，prAt/prLen 新于目标的依赖串（空格分隔），star 是去后缀名，
+   allAt/allLen 全部依赖串。 */
+deRfun expand(long st, long src, long srcLen, long out, long cap, long tgAt, long tgLen, long starAt, long starLen, long prAt, long prLen, long allAt, long allLen, long depth): long {
+  if (depth > 8L) {
+    return -1L;
+  }
+  long next = 0L;
+  long index = 0L;
+  while (index < srcLen) {
+    long o = byteAt(src + index * 8L);
+    if (o != 36L) {
+      if (next >= cap) {
+        return -1L;
+      }
+      memory::storeOctet(o, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+      continue;
+    }
+    index = index + 1L;
+    if (index >= srcLen) {
+      return -1L;
+    }
+    long mark = byteAt(src + index * 8L);
+    if (mark == 36L) {
+      memory::storeOctet(36L, out + next * 8L);
+      next = next + 1L;
+      index = index + 1L;
+      continue;
+    }
+    if (mark == 40L || mark == 123L) {
+      long close = 41L;
+      if (mark == 123L) {
+        close = 125L;
+      }
+      index = index + 1L;
+      long nameAt = src + index * 8L;
+      long nameLen = 0L;
+      while (index < srcLen && byteAt(src + index * 8L) != close) {
+        index = index + 1L;
+        nameLen = nameLen + 1L;
+      }
+      if (index >= srcLen) {
+        return -1L;
+      }
+      index = index + 1L;
+      if (nameLen < 1L) {
+        continue;
+      }
+      long suffix = 0L;
+      long bodyLen = nameLen;
+      if (nameLen >= 2L && byteAt(nameAt + (nameLen - 1L) * 8L) == 70L && byteAt(nameAt + (nameLen - 2L) * 8L) == 68L) {
+        suffix = 68L;
+        bodyLen = nameLen - 2L;
+      } else if (nameLen >= 2L && byteAt(nameAt + (nameLen - 1L) * 8L) == 70L) {
+        suffix = 70L;
+        bodyLen = nameLen - 1L;
+      }
+      long one = byteAt(nameAt);
+      if (bodyLen == 1L && (one == 64L || one == 60L || one == 42L || one == 63L || one == 37L)) {
+        long base = tgAt;
+        long blen = tgLen;
+        if (one == 60L || one == 63L) {
+          base = prAt;
+          blen = prLen;
+        } else if (one == 42L) {
+          base = starAt;
+          blen = starLen;
+        }
+        if (one == 37L) {
+          base = 0L;
+          blen = 0L;
+        }
+        if (suffix == 70L) {
+          long cut = blen;
+          while (cut > 0L && byteAt(base + (cut - 1L) * 8L) != 47L) {
+            cut = cut - 1L;
+          }
+          base = base + cut * 8L;
+          blen = blen - cut;
+        } else if (suffix == 68L) {
+          long cut = blen;
+          while (cut > 0L && byteAt(base + (cut - 1L) * 8L) != 47L) {
+            cut = cut - 1L;
+          }
+          if (cut == 0L) {
+            blen = 1L;
+            memory::storeOctet(46L, out + next * 8L);
+            next = next + 1L;
+            continue;
+          }
+          blen = cut - 1L;
+        }
+        if (next + blen > cap) {
+          return -1L;
+        }
+        if (blen > 0L) {
+          copySpan(base, out + next * 8L, blen);
+          next = next + blen;
+        }
+        continue;
+      }
+      long valAt = 0L;
+      long valLen = 0L;
+      if (findMacro(st, nameAt, bodyLen, &valAt, &valLen) != 1L) {
+        continue;
+      }
+      long made = expand(st, valAt, valLen, out + next * 8L, cap - next, tgAt, tgLen, starAt, starLen, prAt, prLen, allAt, allLen, depth + 1L);
+      if (made < 0L) {
+        return -1L;
+      }
+      next = next + made;
+      continue;
+    }
+    long one = mark;
+    index = index + 1L;
+    long base = tgAt;
+    long blen = tgLen;
+    if (one == 60L || one == 63L) {
+      base = prAt;
+      blen = prLen;
+    } else if (one == 42L) {
+      base = starAt;
+      blen = starLen;
+    } else if (one == 64L) {
+      base = tgAt;
+      blen = tgLen;
+    } else {
+      memory::storeOctet(36L, out + next * 8L);
+      memory::storeOctet(one, out + (next + 1L) * 8L);
+      next = next + 2L;
+      continue;
+    }
+    if (next + blen > cap) {
+      return -1L;
+    }
+    if (blen > 0L) {
+      copySpan(base, out + next * 8L, blen);
+      next = next + blen;
+    }
+  }
+  return next;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  /* 2097152 拆成 32*65536：位置无关装入会把 ≥1048576 的立即数当数据地址重定位。 */
+  long st = obr::proc::alloc(home, 32L * 65536L);
+  if (st == 0L) {
+    writeErr(home, "make: out of memory\n");
+    return finish(home, 2L);
+  }
+  memory::store64(0L, st);
+  memory::store64(0L, st + 64L);
+  memory::store64(0L, st + 128L);
+  setMacro(st, "MAKE", "make");
+  setMacro(st, "AR", "ar");
+  setMacro(st, "ARFLAGS", "-rv");
+  setMacro(st, "YACC", "yacc");
+  setMacro(st, "YFLAGS", "");
+  setMacro(st, "LEX", "lex");
+  setMacro(st, "LFLAGS", "");
+  setMacro(st, "LDFLAGS", "");
+  setMacro(st, "CC", "c99");
+  setMacro(st, "CFLAGS", "-O 1");
+  setMacro(st, "FC", "fort77");
+  setMacro(st, "FFLAGS", "-O 1");
+  setMacro(st, "GET", "get");
+  setMacro(st, "GFLAGS", "");
+  setMacro(st, "SCCSFLAGS", "");
+  setMacro(st, "SCCSGETFLAGS", "-s");
+  return makeRun(home, st);
+}
+
+deRfun setMacroSpan(long st, long at, long len): long {
+  long eq = -1L;
+  long index = 0L;
+  while (index < len) {
+    if (byteAt(at + index * 8L) == 61L) {
+      eq = index;
+      break;
+    }
+    index = index + 1L;
+  }
+  if (eq < 1L) {
+    return 1L;
+  }
+  long nameEnd = eq;
+  while (nameEnd > 0L && (byteAt(at + (nameEnd - 1L) * 8L) == 32L || byteAt(at + (nameEnd - 1L) * 8L) == 9L)) {
+    nameEnd = nameEnd - 1L;
+  }
+  if (nameEnd < 1L || nameEnd > 64L) {
+    return 1L;
+  }
+  long count = memory::load64(st);
+  if (count >= 128L) {
+    return 1L;
+  }
+  long entry = macroAt(st, count);
+  memory::store64(nameEnd, entry);
+  copySpan(at, entry + 128L, nameEnd);
+  long valStart = eq + 1L;
+  while (valStart < len && (byteAt(at + valStart * 8L) == 32L || byteAt(at + valStart * 8L) == 9L)) {
+    valStart = valStart + 1L;
+  }
+  long valEnd = len;
+  while (valEnd > valStart && (byteAt(at + (valEnd - 1L) * 8L) == 32L || byteAt(at + (valEnd - 1L) * 8L) == 9L)) {
+    valEnd = valEnd - 1L;
+  }
+  if (valEnd - valStart > 256L) {
+    return 1L;
+  }
+  copySpan(at + valStart * 8L, entry + 640L, valEnd - valStart);
+  memory::store64(valEnd - valStart, entry + 64L);
+  memory::store64(count + 1L, st);
+  return 0L;
+}
+
+deRfun listHas(long listAt, long listLen, long nameAt, long nameLen): long {
+  long start = 0L;
+  while (start < listLen) {
+    while (start < listLen && byteAt(listAt + start * 8L) == 32L) {
+      start = start + 1L;
+    }
+    long end = start;
+    while (end < listLen && byteAt(listAt + end * 8L) != 32L) {
+      end = end + 1L;
+    }
+    if (end - start == nameLen) {
+      long same = 1L;
+      long cursor = 0L;
+      while (cursor < nameLen) {
+        if (byteAt(listAt + (start + cursor) * 8L) != byteAt(nameAt + cursor * 8L)) {
+          same = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (same == 1L) {
+        return 1L;
+      }
+    }
+    start = end;
+  }
+  return 0L;
+}
+
+deRfun findRule(long st, long nameAt, long nameLen): long {
+  long count = memory::load64(st + 64L);
+  long index = 0L;
+  while (index < count) {
+    long at = ruleAt(st, index);
+    if (listHas(at + 192L, memory::load64(at), nameAt, nameLen) == 1L) {
+      return index;
+    }
+    index = index + 1L;
+  }
+  return -1L;
+}
+
+deRfun addRule(long st, long tgAt, long tgLen, long prAt, long prLen): long {
+  long count = memory::load64(st + 64L);
+  if (count >= 64L) {
+    return -1L;
+  }
+  long at = ruleAt(st, count);
+  if (tgLen > 128L || prLen > 256L) {
+    return -1L;
+  }
+  copySpan(tgAt, at + 192L, tgLen);
+  copySpan(prAt, at + 1216L, prLen);
+  memory::store64(tgLen, at);
+  memory::store64(prLen, at + 64L);
+  memory::store64(0L, at + 128L);
+  memory::store64(count + 1L, st + 64L);
+  return count;
+}
+
+deRfun appendCmd(long st, long rule, long at, long len): long {
+  long base = ruleAt(st, rule);
+  long have = memory::load64(base + 128L);
+  if (have + len + 1L > 1024L) {
+    return 1L;
+  }
+  copySpan(at, base + 3264L + have * 8L, len);
+  memory::storeOctet(10L, base + 3264L + (have + len) * 8L);
+  memory::store64(have + len + 1L, base + 128L);
+  return 0L;
+}
+
+deRfun fileTime(long home, long at, long len): long {
+  if (len < 1L || len > 8192L) {
+    return -1L;
+  }
+  plant(home, at, len);
+  if (obr::proc::stat(home) != 0L) {
+    return -1L;
+  }
+  return obr::proc::slot(home, 576L);
+}
+
+deRfun touchFile(long home, long at, long len): long {
+  plant(home, at, len);
+  long now = time::clock(home);
+  long ms = obr::proc::slot(home, 128L);
+  if (obr::proc::utime(home, 1L, 1L, ms, ms) != 0L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+deRfun markBuilt(long st, long nameAt, long nameLen): void {
+  long count = memory::load64(st + 192L);
+  if (count >= 16L) {
+    return;
+  }
+  memory::store64(nameAt, st + 5376L + count * 128L);
+  memory::store64(nameLen, st + 5376L + count * 128L + 64L);
+  memory::store64(count + 1L, st + 192L);
+}
+
+deRfun isBuilt(long st, long nameAt, long nameLen): long {
+  long count = memory::load64(st + 192L);
+  long index = 0L;
+  while (index < count) {
+    long at = st + 5376L + index * 128L;
+    long len = memory::load64(at + 64L);
+    if (len == nameLen) {
+      long same = 1L;
+      long cursor = 0L;
+      while (cursor < len) {
+        if (byteAt(memory::load64(at) + cursor * 8L) != byteAt(nameAt + cursor * 8L)) {
+          same = 0L;
+        }
+        cursor = cursor + 1L;
+      }
+      if (same == 1L) {
+        return 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  return 0L;
+}
+
+deRfun starOf(long nameAt, long nameLen, long* starLen): long {
+  long dot = -1L;
+  long index = 1L;
+  while (index < nameLen) {
+    if (byteAt(nameAt + index * 8L) == 46L) {
+      dot = index;
+    }
+    index = index + 1L;
+  }
+  if (dot < 1L) {
+    *starLen = nameLen;
+    return nameAt;
+  }
+  *starLen = dot;
+  return nameAt;
+}
+
+deRfun runShell(long home, long cmdAt, long cmdLen): long {
+  if (obr::proc::pipe(home) != 0L) {
+    return 2L;
+  }
+  long readEnd = obr::proc::slot(home, 128L);
+  long writeEnd = obr::proc::slot(home, 192L);
+  long saved = obr::proc::dup(home, 0L);
+  if (saved < 0L) {
+    return 2L;
+  }
+  if (obr::proc::dup2(home, readEnd, 0L) != 0L) {
+    obr::proc::close(home, readEnd);
+    obr::proc::close(home, writeEnd);
+    return 2L;
+  }
+  obr::proc::close(home, readEnd);
+  long win = obr::proc::alloc(home, 139520L);
+  long scratch = obr::proc::alloc(home, 65728L);
+  if (win == 0L || scratch == 0L || saveWindow(home, win) != 0L) {
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    obr::proc::close(home, writeEnd);
+    return 2L;
+  }
+  putText(scratch, 0L, "/os/sh");
+  if (setSolo(home, win, "/os/sh") != 0L) {
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    obr::proc::close(home, writeEnd);
+    return 2L;
+  }
+  plant(home, scratch, 6L);
+  long status = 2L;
+  if (obr::proc::spawn(home, 0L) == 0L) {
+    long pid = obr::proc::slot(home, 192L);
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    writeSpan(home, writeEnd, 0L, cmdAt, cmdLen);
+    writeStr(home, writeEnd, "\nexit\n");
+    obr::proc::close(home, writeEnd);
+    obr::proc::wait(home, pid);
+    status = obr::proc::slot(home, 192L);
+    if (status < 0L) {
+      status = 0L;
+    }
+    if (status > 255L) {
+      status = status % 256L;
+    }
+  } else {
+    obr::proc::dup2(home, saved, 0L);
+    obr::proc::close(home, saved);
+    obr::proc::close(home, writeEnd);
+  }
+  return status;
+}
+
+deRfun runRecipe(long home, long st, long cmdAt, long cmdLen, long tgAt, long tgLen, long starAt, long starLen, long prAt, long prLen, long allAt, long allLen, long mode): long {
+  /* mode 0 正常；1 是 -t：只执行 + 前缀行。 */
+  long out = obr::proc::alloc(home, 65536L);
+  if (out == 0L) {
+    writeErr(home, "make: out of memory\n");
+    return 2L;
+  }
+  long made = expand(st, cmdAt, cmdLen, out, 8192L, tgAt, tgLen, starAt, starLen, prAt, prLen, allAt, allLen, 0L);
+  if (made < 0L) {
+    writeErr(home, "make: expansion too long\n");
+    return 2L;
+  }
+  long start = 0L;
+  long ignore = 0L;
+  long silent = 0L;
+  long plus = 0L;
+  while (start < made) {
+    long o = byteAt(out + start * 8L);
+    if (o == 45L) {
+      ignore = 1L;
+      start = start + 1L;
+    } else if (o == 64L) {
+      silent = 1L;
+      start = start + 1L;
+    } else if (o == 43L) {
+      plus = 1L;
+      start = start + 1L;
+    } else {
+      break;
+    }
+  }
+  while (start < made && byteAt(out + start * 8L) == 32L) {
+    start = start + 1L;
+  }
+  if (optBit(st, 7L) == 1L) {
+    silent = 1L;
+  }
+  if (optBit(st, 1L) == 1L) {
+    ignore = 1L;
+  }
+  if (mode == 1L && plus == 0L) {
+    return 0L;
+  }
+  long quiet = 0L;
+  if (optBit(st, 3L) == 1L || optBit(st, 5L) == 1L) {
+    quiet = 1L;
+  }
+  if (silent == 0L && (quiet == 0L || plus == 1L)) {
+    writeSpan(home, 1L, 0L, out + start * 8L, made - start);
+    writeStr(home, 1L, "\n");
+  }
+  if (quiet == 1L && plus == 0L) {
+    return 0L;
+  }
+  long status = runShell(home, out + start * 8L, made - start);
+  if (status != 0L && ignore == 0L) {
+    writeErr(home, "make: command failed\n");
+    return 2L;
+  }
+  return 0L;
+}
+
+deRfun readMakefile(long home, long st, long pathAt, long pathLen, long depth): long {
+  if (depth > 16L) {
+    writeErr(home, "make: include nesting too deep\n");
+    return 1L;
+  }
+  plant(home, pathAt, pathLen);
+  if (obr::proc::open(home, 0L) != 0L) {
+    writeErr(home, "make: cannot open makefile\n");
+    return 1L;
+  }
+  long fd = obr::proc::slot(home, 192L);
+  long text = obr::proc::alloc(home, 131072L);
+  if (text == 0L) {
+    obr::proc::close(home, fd);
+    return 1L;
+  }
+  long total = 0L;
+  while (total < 16384L) {
+    if (obr::proc::read(home, fd, total, 4096L) != 0L) {
+      obr::proc::close(home, fd);
+      return 1L;
+    }
+    long got = obr::proc::slot(home, 320L);
+    if (got <= 0L) {
+      break;
+    }
+    if (got > 4096L) {
+      got = 4096L;
+    }
+    copySpan(obr::proc::bytes(home), text + total * 8L, got);
+    total = total + got;
+    if (got < 4096L) {
+      break;
+    }
+  }
+  obr::proc::close(home, fd);
+  long scratch = obr::proc::alloc(home, 65536L);
+  long line = obr::proc::alloc(home, 16384L);
+  if (scratch == 0L || line == 0L) {
+    return 1L;
+  }
+  long cur = memory::load64(st + 768L);
+  long pos = 0L;
+  while (pos < total) {
+    /* 收一条逻辑行（续行 \）。 */
+    long llen = 0L;
+    long isCmd = -1L;
+    while (pos < total) {
+      long start = pos;
+      while (pos < total && byteAt(text + pos * 8L) != 10L) {
+        pos = pos + 1L;
+      }
+      long segLen = pos - start;
+      if (pos < total) {
+        pos = pos + 1L;
+      }
+      if (isCmd < 0L) {
+        isCmd = 0L;
+        if (segLen > 0L && byteAt(text + start * 8L) == 9L) {
+          isCmd = 1L;
+          start = start + 1L;
+          segLen = segLen - 1L;
+        }
+      }
+      long cont = 0L;
+      if (segLen > 0L && byteAt(text + (start + segLen - 1L) * 8L) == 92L) {
+        cont = 1L;
+        segLen = segLen - 1L;
+      }
+      if (llen + segLen > 8000L) {
+        writeErr(home, "make: line too long\n");
+        return 1L;
+      }
+      copySpan(text + start * 8L, line + llen * 8L, segLen);
+      llen = llen + segLen;
+      if (cont == 0L) {
+        break;
+      }
+      if (isCmd == 0L) {
+        memory::storeOctet(32L, line + llen * 8L);
+        llen = llen + 1L;
+      }
+    }
+    /* 去尾空白。 */
+    while (llen > 0L && (byteAt(line + (llen - 1L) * 8L) == 32L || byteAt(line + (llen - 1L) * 8L) == 9L)) {
+      llen = llen - 1L;
+    }
+    if (llen < 1L) {
+      continue;
+    }
+    if (isCmd == 1L) {
+      if (cur < 0L) {
+        writeErr(home, "make: command before rule\n");
+        return 1L;
+      }
+      if (appendCmd(st, cur, line, llen) != 0L) {
+        writeErr(home, "make: out of memory\n");
+        return 1L;
+      }
+      continue;
+    }
+    if (byteAt(line) == 35L) {
+      continue;
+    }
+    /* include 行。 */
+    if (llen > 8L && spanSame(line, 7L, "include") == 1L && byteAt(line + 7L * 8L) == 32L) {
+      long made = expand(st, line + 8L * 8L, llen - 8L, scratch, 8192L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
+      if (made > 0L && readMakefile(home, st, scratch, made, depth + 1L) != 0L) {
+        return 1L;
+      }
+      continue;
+    }
+    /* 宏行：= 先于 : 出现，或整行没有 :。 */
+    long eq = -1L;
+    long colon = -1L;
+    long index = 0L;
+    while (index < llen) {
+      long o = byteAt(line + index * 8L);
+      if (o == 61L && eq < 0L) {
+        eq = index;
+      }
+      if (o == 58L && colon < 0L) {
+        colon = index;
+      }
+      index = index + 1L;
+    }
+    if (eq >= 1L && (colon < 0L || eq < colon)) {
+      if (setMacroSpan(st, line, llen) != 0L) {
+        writeErr(home, "make: bad macro definition\n");
+        return 1L;
+      }
+      continue;
+    }
+    if (colon < 1L) {
+      writeErr(home, "make: missing separator\n");
+      return 1L;
+    }
+    /* 目标行：读时展开宏。 */
+    long made = expand(st, line, llen, scratch, 8192L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L);
+    if (made < 0L) {
+      writeErr(home, "make: expansion too long\n");
+      return 1L;
+    }
+    index = 0L;
+    while (index < made && byteAt(scratch + index * 8L) != 58L) {
+      index = index + 1L;
+    }
+    if (index >= made) {
+      writeErr(home, "make: missing separator\n");
+      return 1L;
+    }
+    long tgStart = 0L;
+    long tgEnd = index;
+    while (tgEnd > tgStart && (byteAt(scratch + (tgEnd - 1L) * 8L) == 32L || byteAt(scratch + (tgEnd - 1L) * 8L) == 9L)) {
+      tgEnd = tgEnd - 1L;
+    }
+    long prStart = index + 1L;
+    long prEnd = made;
+    long semi = -1L;
+    long scan = prStart;
+    while (scan < made) {
+      long o = byteAt(scratch + scan * 8L);
+      if (o == 59L && semi < 0L) {
+        semi = scan;
+        prEnd = scan;
+      }
+      if (o == 35L && semi < 0L) {
+        prEnd = scan;
+        scan = made;
+      }
+      scan = scan + 1L;
+    }
+    while (prEnd > prStart && (byteAt(scratch + (prEnd - 1L) * 8L) == 32L || byteAt(scratch + (prEnd - 1L) * 8L) == 9L)) {
+      prEnd = prEnd - 1L;
+    }
+    while (prStart < prEnd && (byteAt(scratch + prStart * 8L) == 32L || byteAt(scratch + prStart * 8L) == 9L)) {
+      prStart = prStart + 1L;
+    }
+    cur = addRule(st, scratch + tgStart * 8L, tgEnd - tgStart, scratch + prStart * 8L, prEnd - prStart);
+    memory::store64(cur, st + 768L);
+    if (cur < 0L) {
+      writeErr(home, "make: out of memory\n");
+      return 1L;
+    }
+    if (semi >= 0L) {
+      long cStart = semi + 1L;
+      while (cStart < made && byteAt(scratch + cStart * 8L) == 32L) {
+        cStart = cStart + 1L;
+      }
+      if (appendCmd(st, cur, scratch + cStart * 8L, made - cStart) != 0L) {
+        writeErr(home, "make: out of memory\n");
+        return 1L;
+      }
+    }
+  }
+  return 0L;
+}
+
+deRfun update(long home, long st, long nameAt, long nameLen, long depth): long {
+  if (depth > 32L) {
+    writeErr(home, "make: circular dependency\n");
+    return 2L;
+  }
+  if (isBuilt(st, nameAt, nameLen) == 1L) {
+    return 0L;
+  }
+  long rule = findRule(st, nameAt, nameLen);
+  long phony = 0L;
+  long idx = 0L;
+  long count = memory::load64(st + 64L);
+  while (idx < count) {
+    long at = ruleAt(st, idx);
+    if (memory::load64(at) == 6L && byteAt(at + 192L) == 46L && byteAt(at + 200L) == 80L && byteAt(at + 208L) == 72L) {
+      if (listHas(at + 1216L, memory::load64(at + 64L), nameAt, nameLen) == 1L) {
+        phony = 1L;
+      }
+    }
+    idx = idx + 1L;
+  }
+  long targetTime = fileTime(home, nameAt, nameLen);
+  if (rule < 0L) {
+    if (targetTime >= 0L && phony == 0L) {
+      return 0L;
+    }
+    writeErr(home, "make: no rule to make target\n");
+    return 2L;
+  }
+  long base = ruleAt(st, rule);
+  long allAt = base + 1216L;
+  long allLen = memory::load64(base + 64L);
+  long newer = obr::proc::alloc(home, 2048L * 8L);
+  long newerLen = 0L;
+  if (newer == 0L) {
+    return 2L;
+  }
+  /* 逐个依赖递归。 */
+  long pos = 0L;
+  while (pos < allLen) {
+    while (pos < allLen && byteAt(allAt + pos * 8L) == 32L) {
+      pos = pos + 1L;
+    }
+    long start = pos;
+    while (pos < allLen && byteAt(allAt + pos * 8L) != 32L) {
+      pos = pos + 1L;
+    }
+    if (pos > start) {
+      long sub = update(home, st, allAt + start * 8L, pos - start, depth + 1L);
+      if (sub == 2L) {
+        return 2L;
+      }
+      long pt = fileTime(home, allAt + start * 8L, pos - start);
+      if (targetTime < 0L || phony == 1L || pt > targetTime) {
+        if (newerLen + (pos - start) + 1L < 2048L) {
+          if (newerLen > 0L) {
+            memory::storeOctet(32L, newer + newerLen * 8L);
+            newerLen = newerLen + 1L;
+          }
+          copySpan(allAt + start * 8L, newer + newerLen * 8L, pos - start);
+          newerLen = newerLen + (pos - start);
+        }
+      }
+    }
+  }
+  if (targetTime >= 0L && newerLen == 0L && phony == 0L) {
+    return 0L;
+  }
+  if (optBit(st, 5L) == 1L) {
+    return 1L;
+  }
+  long starLen = 0L;
+  long starAt = starOf(nameAt, nameLen, &starLen);
+  long firstAt = allAt;
+  long firstLen = 0L;
+  long p2 = 0L;
+  while (p2 < allLen && byteAt(allAt + p2 * 8L) != 32L) {
+    firstLen = firstLen + 1L;
+    p2 = p2 + 1L;
+  }
+  long touchMode = 0L;
+  if (optBit(st, 8L) == 1L) {
+    /* -t：置目标 mtime 为当前，打印 touched；命令不执行（+ 前缀行仍执行）。 */
+    writeStr(home, 1L, "make: touched ");
+    writeSpan(home, 1L, 0L, nameAt, nameLen);
+    writeStr(home, 1L, "\n");
+    touchFile(home, nameAt, nameLen);
+    touchMode = 1L;
+  }
+  /* 命令逐行执行。 */
+  long cmdAt = base + 3264L;
+  long cmdTotal = memory::load64(base + 128L);
+  long cpos = 0L;
+  while (cpos < cmdTotal) {
+    long start = cpos;
+    while (cpos < cmdTotal && byteAt(cmdAt + cpos * 8L) != 10L) {
+      cpos = cpos + 1L;
+    }
+    if (runRecipe(home, st, cmdAt + start * 8L, cpos - start, nameAt, nameLen, starAt, starLen, firstAt, firstLen, newer, newerLen, touchMode) == 2L) {
+      return 2L;
+    }
+    cpos = cpos + 1L;
+  }
+  markBuilt(st, nameAt, nameLen);
+  return 0L;
+}
+
+deRfun printAll(long home, long st): void {
+  long count = memory::load64(st);
+  long index = 0L;
+  while (index < count) {
+    long at = macroAt(st, index);
+    writeSpan(home, 1L, 0L, at + 128L, memory::load64(at));
+    writeStr(home, 1L, "=");
+    writeSpan(home, 1L, 0L, at + 640L, memory::load64(at + 64L));
+    writeStr(home, 1L, "\n");
+    index = index + 1L;
+  }
+  count = memory::load64(st + 64L);
+  index = 0L;
+  while (index < count) {
+    long at = ruleAt(st, index);
+    writeStr(home, 1L, "\n");
+    writeSpan(home, 1L, 0L, at + 192L, memory::load64(at));
+    writeStr(home, 1L, ": ");
+    writeSpan(home, 1L, 0L, at + 1216L, memory::load64(at + 64L));
+    writeStr(home, 1L, "\n");
+    long cmdAt = at + 3264L;
+    long cmdTotal = memory::load64(at + 128L);
+    long pos = 0L;
+    while (pos < cmdTotal) {
+      long start = pos;
+      while (pos < cmdTotal && byteAt(cmdAt + pos * 8L) != 10L) {
+        pos = pos + 1L;
+      }
+      writeStr(home, 1L, "\t");
+      writeSpan(home, 1L, 0L, cmdAt + start * 8L, pos - start);
+      writeStr(home, 1L, "\n");
+      pos = pos + 1L;
+    }
+    index = index + 1L;
+  }
+}
+
+deRfun makeRun(long home, long st): int {
+  long count = argc(home);
+  long index = 1L;
+  long ended = 0L;
+  long made = 0L;
+  long scratch = obr::proc::alloc(home, 65536L);
+  if (scratch == 0L) {
+    writeErr(home, "make: out of memory\n");
+    return finish(home, 2L);
+  }
+  /* MAKEFLAGS 先行。 */
+  putText(scratch, 0L, "MAKEFLAGS");
+  long envAt = 0L;
+  long envLen = 0L;
+  if (envLookup(home, scratch, 9L, &envAt, &envLen) == 1L) {
+    long e = 0L;
+    while (e < envLen) {
+      long o = byteAt(envAt + e * 8L);
+      if (o == 101L) {
+        setOpt(st, 0L, 1L);
+      } else if (o == 105L) {
+        setOpt(st, 1L, 1L);
+      } else if (o == 107L) {
+        setOpt(st, 2L, 1L);
+      } else if (o == 110L) {
+        setOpt(st, 3L, 1L);
+      } else if (o == 112L) {
+        /* -p 在 MAKEFLAGS 里结果未定义：忽略。 */
+      } else if (o == 113L) {
+        setOpt(st, 5L, 1L);
+      } else if (o == 114L) {
+        setOpt(st, 6L, 1L);
+      } else if (o == 115L) {
+        setOpt(st, 7L, 1L);
+      } else if (o == 116L) {
+        setOpt(st, 8L, 1L);
+      } else if (o == 83L) {
+        setOpt(st, 2L, 0L);
+      }
+      e = e + 1L;
+    }
+  }
+  while (index < count) {
+    long at = argPtr(home, index);
+    long len = argLen(home, index);
+    if (ended == 0L && len == 2L && spanSame(at, len, "--") == 1L) {
+      ended = 1L;
+    } else if (ended == 0L && len >= 2L && byteAt(at) == 45L) {
+      long c = 1L;
+      while (c < len) {
+        long o = byteAt(at + c * 8L);
+        if (o == 101L) {
+          setOpt(st, 0L, 1L);
+        } else if (o == 105L) {
+          setOpt(st, 1L, 1L);
+        } else if (o == 107L) {
+          setOpt(st, 2L, 1L);
+        } else if (o == 110L) {
+          setOpt(st, 3L, 1L);
+        } else if (o == 112L) {
+          setOpt(st, 4L, 1L);
+        } else if (o == 113L) {
+          setOpt(st, 5L, 1L);
+        } else if (o == 114L) {
+          setOpt(st, 6L, 1L);
+        } else if (o == 115L) {
+          setOpt(st, 7L, 1L);
+        } else if (o == 116L) {
+          setOpt(st, 8L, 1L);
+        } else if (o == 83L) {
+          setOpt(st, 2L, 0L);
+        } else if (o == 102L) {
+          index = index + 1L;
+          if (index >= count) {
+            writeErr(home, "make: option requires an argument\n");
+            return finish(home, 2L);
+          }
+          long fcount = memory::load64(st + 4224L);
+          if (fcount < 8L) {
+            memory::store64(argPtr(home, index), st + 4288L + fcount * 128L);
+            memory::store64(argLen(home, index), st + 4288L + fcount * 128L + 64L);
+            memory::store64(fcount + 1L, st + 4224L);
+          }
+          c = len;
+        } else {
+          writeErr(home, "make: invalid option\n");
+          return finish(home, 2L);
+        }
+        c = c + 1L;
+      }
+    } else {
+      long eq = -1L;
+      long scan = 0L;
+      while (scan < len) {
+        if (byteAt(at + scan * 8L) == 61L) {
+          eq = scan;
+          scan = len;
+        }
+        scan = scan + 1L;
+      }
+      if (eq >= 1L) {
+        if (setMacroSpan(st, at, len) != 0L) {
+          writeErr(home, "make: bad macro definition\n");
+          return finish(home, 2L);
+        }
+      } else {
+        long tcount = memory::load64(st + 2048L);
+        if (tcount < 16L) {
+          memory::store64(at, st + 2048L + 64L + tcount * 128L);
+          memory::store64(len, st + 2048L + 64L + tcount * 128L + 64L);
+          memory::store64(tcount + 1L, st + 2048L);
+        }
+      }
+    }
+    index = index + 1L;
+  }
+  /* 读 makefile。 */
+  memory::store64(-1L, st + 768L);
+  long fcount = memory::load64(st + 4224L);
+  if (fcount > 0L) {
+    long f = 0L;
+    while (f < fcount) {
+      long at = memory::load64(st + 4288L + f * 128L);
+      long len = memory::load64(st + 4288L + f * 128L + 64L);
+      if (len == 1L && byteAt(at) == 45L) {
+        /* 标准输入：本子集不支持，明确报错。 */
+        writeErr(home, "make: makefile from standard input is not supported on this platform\n");
+        return finish(home, 2L);
+      }
+      if (readMakefile(home, st, at, len, 0L) != 0L) {
+        return finish(home, 2L);
+      }
+      f = f + 1L;
+    }
+  } else {
+    long got = 0L;
+    putText(scratch, 0L, "makefile");
+    if (fileTime(home, scratch, 8L) >= 0L) {
+      if (readMakefile(home, st, scratch, 8L, 0L) != 0L) {
+        return finish(home, 2L);
+      }
+      got = 1L;
+    } else {
+      putText(scratch, 0L, "Makefile");
+      if (fileTime(home, scratch, 8L) >= 0L) {
+        if (readMakefile(home, st, scratch, 8L, 0L) != 0L) {
+          return finish(home, 2L);
+        }
+        got = 1L;
+      }
+    }
+    if (got == 0L) {
+      writeErr(home, "make: no makefile found\n");
+      return finish(home, 2L);
+    }
+  }
+  if (optBit(st, 4L) == 1L) {
+    printAll(home, st);
+  }
+  /* 目标列表：缺省取第一条非特殊目标。 */
+  long tcount = memory::load64(st + 2048L);
+  long result = 0L;
+  if (tcount == 0L) {
+    long rules = memory::load64(st + 64L);
+    long r = 0L;
+    long done = 0L;
+    while (r < rules && done == 0L) {
+      long at = ruleAt(st, r);
+      long tlen = memory::load64(at);
+      long firstLen = 0L;
+      while (firstLen < tlen && byteAt(at + 192L + firstLen * 8L) != 32L) {
+        firstLen = firstLen + 1L;
+      }
+      if (firstLen > 0L && byteAt(at + 192L) != 46L) {
+        memory::store64(at + 192L, st + 2048L + 64L);
+        memory::store64(firstLen, st + 2048L + 64L + 64L);
+        memory::store64(1L, st + 2048L);
+        tcount = 1L;
+        done = 1L;
+      }
+      r = r + 1L;
+    }
+    if (done == 0L) {
+      writeStr(home, 1L, "make: nothing to be done\n");
+      return finish(home, 0L);
+    }
+  }
+  long t = 0L;
+  while (t < tcount) {
+    long at = memory::load64(st + 2048L + 64L + t * 128L);
+    long len = memory::load64(st + 2048L + 64L + t * 128L + 64L);
+    long sub = update(home, st, at, len, 0L);
+    if (sub == 2L) {
+      result = 2L;
+    } else if (sub == 1L && result == 0L) {
+      result = 1L;
+    }
+    if (sub != 0L && optBit(st, 2L) == 0L && optBit(st, 5L) == 0L && sub == 2L) {
+      return finish(home, 2L);
+    }
+    t = t + 1L;
+  }
+  return finish(home, result);
+}

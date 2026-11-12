@@ -1,13 +1,15 @@
 /* 信号、退出、等待，以及 Ctrl+C 停掉正在被等的子进程。
    不管任务表怎么排布，不管堆池怎么切。 */
-#LINK /start.obr, /sched.obr, /console.obr
+#LINK /start.obr, /sched.obr, /console.obr, /vfs.obr, /pipe.obr, /frame.obr, /drv.obr
 import proc;
 import fs;
 import sched;
+import flat;
 import trap;
 import board;
 import memory;
 import obr.os;
+import window;
 
 /* 任务级诊断字。4416 记在 Bios.obr：键盘完成次数和键盘口之间的空字。
    一个 64 位字装下四个 16 位字段：种类、a、b、c。一次事件只写一个字。
@@ -73,7 +75,10 @@ deRfun sigRaise(long caller, long pid, long sig): long {
 }
 
 deRfun sigTake(long caller): long {
-  long index = taskFind(caller);
+  long index = taskCurrent(caller);
+  if (index < 0L) {
+    index = taskFind(caller);
+  }
   if (index < 0L) {
     return 0L;
   }
@@ -99,15 +104,206 @@ deRfun reapIndex(long index): void {
   }
   long core = taskAt(index).core;
   taskRelease(index);
-  if (taskCount(core) == 0L) {
+  if (core >= 3L && core < 8L && taskCount(core) == 0L && query(1L, 11L, core) != 2L) {
     obr::os::release(core);
   }
 }
 
 /* 停住的核心变成僵尸。1 号自己退出就收掉。父任务不在时改挂到 1 号；1 号也不在就立刻收掉。
-   父任务正在等它，就把退出码交回去再收掉。否则留着，等以后的 wait。 */
+   父任务正在等它，就把退出码交回去再收掉。否则留着，等以后的 wait。
+   按核心收时，taskFind 看见的那一格才是要收的。同核上父任务也在睡时，taskFind 会先看见父任务。 */
+/* 1 表示这次退出先别叫醒外壳。0 是读，2 是清掉。 */
+deRfun breakNow(long op): long {
+  static long on = 0L;
+  if (op == 1L) {
+    on = 1L;
+    return 1L;
+  }
+  if (op == 2L) {
+    on = 0L;
+    return 0L;
+  }
+  return on;
+}
+
+/* 除 except 以外，这颗核上还有没有活着的任务。僵尸不算。 */
+deRfun liveBeside(long core, long except): long {
+  long count = 0L;
+  long index = 0L;
+  long end = taskScanEnd();
+  while (index < end) {
+    Task* task = taskAt(index);
+    if (index != except && task.pid != 0L && task.core == core && task.state != TaskState::Zombie && task.state != TaskState::Empty) {
+      count = count + 1L;
+    }
+    index = index + 1L;
+  }
+  return count;
+}
+
+/* Ctrl+C 记下的叫醒。任何前台命令都用这一份。
+   1 是回复 core 和 value。2 是同核时把外壳标成就绪再调度，value 是任务下标。
+   3 才真正叫醒。先清掉记录再回复，免得外壳写提示符时又走进来把记录盖掉。
+   0 只读种类。 */
+deRfun breakWake(long op, long core, long value): long {
+  static long kind = 0L;
+  static long at = 0L;
+  static long data = 0L;
+  if (op == 1L || op == 2L) {
+    kind = op;
+    at = core;
+    data = value;
+    return op;
+  }
+  if (op == 3L) {
+    long k = kind;
+    long c = at;
+    long v = data;
+    kind = 0L;
+    if (k == 1L) {
+      reply(c, v);
+    }
+    if (k == 2L) {
+      taskAccount(v, TaskState::Running);
+      taskAt(v).state = TaskState::Running;
+      /* 槽里若还是一次没回复的系统调用，必须先 pass。空着调度会把监督核停掉。 */
+      if (query(1L, 11L, c) == 2L) {
+        reply(c, 0L);
+      } else {
+        obr::os::schedule(c);
+      }
+    }
+    return k;
+  }
+  return kind;
+}
+
+deRfun breakDeliver(): void {
+  breakWake(3L, 0L, 0L);
+}
+
 deRfun procExit(long core, long code): void {
-  long index = taskFind(core);
+  long index = taskCurrent(core);
+  if (index < 0L) {
+    index = taskFind(core);
+  }
+  procExitAt(index, code);
+}
+
+/* M2 触发点 (d)（2026-11-06）：reap(task)——放弃任务前清扫一次。
+   清扫中的僵尸先不交回等待者：析构要先落输出、任务表和文件表也还活着。
+   一次只清扫一个（清扫很短，串行足够）；标记存在函数静态里，不动任务结构 19 字。 */
+/* 清扫中的任务下标 + 1（0 = 没有）。op: 0 读，1 写 value，2 清。 */
+deRfun sweepMark(long op, long value): long {
+  static long wait = 0L;
+  if (op == 1L) {
+    wait = value;
+  }
+  if (op == 2L) {
+    wait = 0L;
+  }
+  return wait;
+}
+
+/* 这颗核心上是不是有一个清扫中的任务（清扫完成前不能把核让给别人）。 */
+deRfun sweepBusy(long core): long {
+  long held = sweepMark(0L, 0L);
+  if (held > 0L && taskAt(held - 1L).core == core) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 这个任务是不是正在清扫（清扫完成前不能收掉）。 */
+deRfun sweepHolds(long index): long {
+  if (sweepMark(0L, 0L) == index + 1L) {
+    return 1L;
+  }
+  return 0L;
+}
+
+/* 把被放弃任务的上下文装回一次，从映像的 __dtor_sweep 起跑清理（reap 变体的 restore
+   用槽里私有字节里的清扫入口换恢复 PC）。清扫入口是编译器写在任务窗口 kUi+158 单元的标号。
+   返回 1 = 清扫在跑（交回延后到 procSwept）；0 = 没得扫（没有保存的上下文，
+   或这颗核心正忙）——按原来的路收，所有权对象泄漏，如实如此。 */
+deRfun reapSweep(long index): long {
+  Task* task = taskAt(index);
+  long core = task.core;
+  if (core < 3L || core == obr::os::core()) {
+    return 0L;
+  }
+  long slot = task.held - 1L;
+  if (slot < 0L) {
+    /* 还在核上（含停在系统调用里的）：先收进槽，再换续跑点。 */
+    if (query(1L, 5L, core) != 0L || taskFind(core) != index) {
+      return 0L;
+    }
+    slot = slotHold(index);
+    if (slot < 0L) {
+      return 0L;
+    }
+    obr::os::capture(core, slot);
+    task.held = slot + 1L;
+  }
+  /* 同核共享换上来的活上下文还占着核（多半是等 spawn 回复的父任务）：
+     先收进它自己的槽，procRelease 交回时再从槽放回；不收就会被清扫上下文盖掉。 */
+  long live = taskFind(core);
+  /* 核上还是退出者自己的上下文（halt 或停在 svc 28）时，不能抓“活任务”：
+     那会把退出者的上下文写进 Ready 子任务的槽。用运行槽判断，不靠 why。 */
+  long selfStop = 0L;
+  if (taskCurrent(core) == index) {
+    selfStop = 1L;
+  }
+  if (selfStop == 0L && live >= 0L && live != index && taskAt(live).state == TaskState::Running) {
+    long back = slotHold(live);
+    if (back >= 0L) {
+      obr::os::capture(core, back);
+    }
+  }
+  /* 清扫入口（映像入口单元 __dtor_sweep 的标号）由 restore 的 reap 变体
+     从槽里的私有字节取（kUi+158 单元）。不从活窗口按地址读：同核共享换回后
+     那格被另一任务的私有整份替换盖住，而且窗口里的写入从不上主板，
+     监督核读到的永远不是它（M2-(d)）。没有析构记录的映像没有入口：
+     变体让核心保持停机、摘掉程序，下一次扫表按「清扫已停」走 procSwept 收尾。
+     reap 变体的槽号是 普通槽 + slotLimit()（256 起，与宿主 OfficialSlotCount 同一标定）：
+     早先写的 +8 是 8 槽时代的旧约定，会落进普通槽 8..255 把别人/空槽当上下文放回。 */
+  /* M2-(d) reap 实证（真修复，保留）：同核兄弟的调用还压在保持位里就先派发完，
+     再换清扫变体。调用窗口是按核共享的：变体一上核就把 +128 等输入格盖掉，
+     procWait 会把变体 open 的 flags(=1) 当成等待的 pid，回出「没有子任务」的 2；
+     这条 2 又被变体下一条系统调用收走，整条调用/回复链错位——
+     见证写偏 4 个八位组、dtorreap 的 wait 永远等不到回复的共同根因。
+     先派发完，procWait 读到的才是等待者自己的 pid，回 -2 睡下，回复链一一对上。 */
+  long pending = 0L;
+  while (obr::os::take(&pending) == 1L) {
+    /* 4294967296 = pack()（调用值的进制，高 32 位是核心号）。 */
+    dispatch(pending / 4294967296L, pending % 4294967296L);
+  }
+  obr::os::restore(core, slot + slotLimit());
+  taskAccount(index, TaskState::Ready);
+  task.state = TaskState::Ready;
+  obr::os::schedule(core);
+  return 1L;
+}
+
+/* 清扫停机后的收尾：交回等待者/收掉僵尸，并把这颗核让回调度。 */
+deRfun procSwept(long core): void {
+  long held = sweepMark(0L, 0L);
+  if (held <= 0L || taskAt(held - 1L).core != core) {
+    return;
+  }
+  sweepMark(2L, 0L);
+  /* 交回已经把等待者放回核上并回过复时，再 schedResume 放回槽里的旧快照
+     会把它整体倒回去（M2-(d) reap 实证）：只有没交回（无人等）才需要让回调度。 */
+  if (procRelease(held - 1L) == 0L) {
+    schedResume(core);
+  }
+}
+
+deRfun procExitAt(long index, long code): void {
+  long interrupt = breakNow(0L);
+  if (interrupt == 1L) {
+    breakNow(2L);
+  }
   if (index < 0L) {
     return;
   }
@@ -118,44 +314,173 @@ deRfun procExit(long core, long code): void {
   taskAccount(index, TaskState::Zombie);
   task.state = TaskState::Zombie;
   task.code = code;
-  /* 不会再被放回去。槽交还给还没领到槽的任务。 */
-  task.held = 0L;
-  long pid = task.pid;
-  if (pid == 1L) {
-    reapIndex(index);
+  /* spawnMany 清零后，每收一个任务加一；150 任务红测直接读这个计数。 */
+  if (windowTagged(task.cap) != 0L) {
+    flatDone(2L);
+  }
+  /* 窗口任务的 flat 映像没有析构记录。直接交回/收尾：
+     走清扫变体会把核留在 why=2，sweepBusy 同时挡住 schedResume 和 schedSweep，
+     整颗核就再也换不出下一份任务。 */
+  if (windowTagged(task.cap) != 0L) {
+    procRelease(index);
     return;
   }
+  /* M2 触发点 (d)：放弃清扫。清扫在跑时先不交回（procRelease 延后到 procSwept）。
+     清扫标记在 reapSweep 之前立起（M2-(d) reap 实证）：变体换上核之前，
+     同核兄弟的 wait 可能还在保持位里没派发；标记先立，procWait 才会把
+     清扫中的僵尸按未退出处理、乖乖睡下，不会把「没有子任务」的 2 回出去。 */
+  sweepMark(1L, index + 1L);
+  long swept = reapSweep(index);
+  /* 不会再被放回去。槽交还给还没领到槽的任务。 */
+  task.held = 0L;
+  if (swept == 1L) {
+    return;
+  }
+  sweepMark(2L, 0L);
+  procRelease(index);
+}
+
+/* 任务自己的窗口起点。窗口任务用 mm.origin；旧任务用所在核的核窗口。 */
+deRfun taskHome(Task* owner): long {
+  if (windowTagged(owner.cap) != 0L) {
+    return owner.mm.origin;
+  }
+  return kArena(owner.core);
+}
+
+/* 被让出核的等待者醒来：核空闲就立即恢复，核还在跑别人就保持就绪等节拍。 */
+deRfun wakeReady(long core, long index): void {
+  long running = query(1L, 5L, core);
+  long why = query(1L, 11L, core);
+  if (running == 1L || why == 2L) {
+    return;
+  }
+  long other = taskFind(core);
+  if (other >= 0L && other != index && taskAt(other).state == TaskState::Running) {
+    return;
+  }
+  long slot = taskAt(index).held - 1L;
+  if (slot < 0L) {
+    return;
+  }
+  taskBind(core, index);
+  obr::os::restore(core, slot);
+  long value = taskAt(index).waitFor;
+  taskAt(index).code = 0L;
+  taskAt(index).waitFor = 0L;
+  taskAccount(index, TaskState::Running);
+  taskAt(index).state = TaskState::Running;
+  obr::os::pass(core, value);
+  rankPublish(core);
+  obr::os::schedule(core);
+}
+
+/* 僵尸的交回与收尾（procExitAt 的后半段；清扫完成时由 procSwept 走同一段）。 */
+deRfun procRelease(long index): long {
+  long interrupt = breakNow(0L);
+  Task* task = taskAt(index);
+  long resident = task.core;
+  long pid = task.pid;
+  long code = task.code;
+  if (pid == 1L) {
+    reapIndex(index);
+    return 0L;
+  }
   long parent = task.ppid;
+  long originalPpid = parent;
   if (taskByPid(parent) < 0L) {
     if (taskByPid(1L) >= 0L) {
       task.ppid = 1L;
       parent = 1L;
     } else {
       reapIndex(index);
-      return;
+      return 0L;
     }
   }
   long parentIndex = taskByPid(parent);
   Task* owner = taskAt(parentIndex);
-  if (owner.state != TaskState::Sleeping) {
-    return;
+  /* 挂到 1 号下的孤儿（父任务已不在）和 drvAdopt 标记过的驱动没有人 wait，
+     立即收掉；外壳自己的子进程原本就是 ppid 1，必须走正常交回路径。 */
+  if (parent == 1L && (originalPpid != 1L || taskAt(index).cap >= 1099511627776L)) {
+    reapIndex(index);
+    return 1L;
   }
-  if (owner.waitFor != -1L && owner.waitFor != pid) {
-    return;
+  /* 同核上一次写回会把 taskFind 指到正在 wait 的父任务，markRunning 把它改成正在跑。
+     waitFor 还在就仍然是这次等待，不能因为状态不是 Sleeping 就把退出码留在僵尸上。 */
+  if (owner.state == TaskState::Zombie || owner.state == TaskState::Empty) {
+    return 0L;
   }
   long parentCore = owner.core;
-  long home = query(1L, 8L, parentCore);
+  /* 同核派生时父任务还停在 spawn 里，code 是 -2，waitFor 仍是 0。
+     子任务先把 out of memory 写出来再退出的话，落在这个窗口。
+     不在这里把 0 交回去，外壳就一直停在那次 spawn 上，画面只剩错误行。
+     交的是 0，不是 pid：外壳把非 0 的 spawn 当成启动失败。
+     退出码先留在僵尸上，随后的 wait 自己取走。不要写进 home+192，那里还放着 pid。
+     先标成正在跑，后面的 schedResume 才不会把这份槽再放回去盖住回复。 */
+  if (owner.waitFor != -1L && owner.waitFor != pid) {
+    if (owner.code == -2L) {
+      owner.code = 0L;
+      long back = owner.held - 1L;
+      if (parentCore == resident && back >= 0L) {
+        obr::os::restore(parentCore, back);
+      }
+      taskAccount(parentIndex, TaskState::Running);
+      owner.state = TaskState::Running;
+      reply(parentCore, 0L);
+      return 1L;
+    }
+    /* 窗口任务（批量工作负载）的父任务从不等它；留着僵尸会把核和窗口一起占死。 */
+    if (windowTagged(task.cap) != 0L) {
+      reapIndex(index);
+      return 1L;
+    }
+    return 0L;
+  }
+  /* 写回父任务自己的窗口，不是这颗核当前的 bound。父任务可能已经让出核。 */
+  long home = taskHome(owner);
   memory::store64(code, home + 192L);
-  owner.waitFor = 0L;
   /* 父任务真的从睡里被叫醒，才是一次完整的任务级 wait/wake。 */
   diagTask(2L, pid, parent, code);
   reapIndex(index);
-  reply(parentCore, pid);
+  /* 父任务还停在原来的 svc 上（没有让出核）：直接交回复。 */
+  long parked = 0L;
+  if (query(1L, 5L, parentCore) == 0L && query(1L, 11L, parentCore) == 2L && taskFind(parentCore) == parentIndex) {
+    parked = 1L;
+  }
+  /* 先别回复。环里多半还有这条命令没画完的输出，外壳一醒就会把提示符写进去，写满就睡死。
+     调用方倒掉环之后再 breakDeliver。 */
+  if (interrupt == 1L && parked == 1L) {
+    owner.waitFor = 0L;
+    taskAccount(parentIndex, TaskState::Running);
+    owner.state = TaskState::Running;
+    /* 子任务在这颗核上跑过，bound 还指着子任务的窗口；父任务原样续跑前必须换回。 */
+    taskBind(parentCore, parentIndex);
+    breakWake(1L, parentCore, pid);
+    return 1L;
+  }
+  if (parked == 1L) {
+    owner.waitFor = 0L;
+    taskAccount(parentIndex, TaskState::Running);
+    owner.state = TaskState::Running;
+    taskBind(parentCore, parentIndex);
+    reply(parentCore, pid);
+    return 1L;
+  }
+  /* 父任务已经被换下：标成就绪并带上回复值，由调度恢复时 pass。 */
+  owner.waitFor = pid;
+  owner.code = -2L;
+  taskAccount(parentIndex, TaskState::Ready);
+  owner.state = TaskState::Ready;
+  wakeReady(parentCore, parentIndex);
+  return 1L;
 }
 
 /* 等一个子任务。home+128 是 pid，0 表示任意一个。成功时回复 pid，退出码写在 +192。没有子任务回复 2。子任务还在跑则先睡下，回复 -2 表示先不要应答这次调用。 */
 deRfun procWait(long caller, long home): long {
-  long self = taskFind(caller);
+  long self = taskCurrent(caller);
+  if (self < 0L) {
+    self = taskFind(caller);
+  }
   if (self < 0L) {
     return -1L;
   }
@@ -171,11 +496,15 @@ deRfun procWait(long caller, long home): long {
     Task* child = taskAt(index);
     if (child.pid != 0L && child.ppid == me.pid && (want == 0L || want == child.pid)) {
       if (child.state == TaskState::Zombie) {
-        long pid = child.pid;
-        long code = child.code;
-        reapIndex(index);
-        memory::store64(code, home + 192L);
-        return pid;
+        /* M2 触发点 (d)：清扫中的僵尸还没收完（析构还在跑），按未退出处理，
+           等 procSwept 走 procRelease 交回。 */
+        if (sweepHolds(index) == 0L) {
+          long pid = child.pid;
+          long code = child.code;
+          reapIndex(index);
+          memory::store64(code, home + 192L);
+          return pid;
+        }
       }
       live = 1L;
     }
@@ -191,7 +520,8 @@ deRfun procWait(long caller, long home): long {
   }
   /* b 里放 waitFor+2：-1（任意子任务）收成 1，具体 pid 收成 pid+2。 */
   diagTask(1L, me.pid, me.waitFor + 2L, 0L);
-  schedSleep(caller);
+  /* 等子任务时把核让出来；上下文进槽，子任务退出后按槽恢复。 */
+  schedBlock(caller, self);
   return -2L;
 }
 
@@ -208,32 +538,119 @@ deRfun dropOwnCall(long core): void {
   }
 }
 
-/* Ctrl+C 要停掉正在被等的子进程。只认一个 Sleeping 且 waitFor 不是 0 的任务。
+/* 外壳已经派生、wait 还没记上 waitFor。监督核先看键盘再取调用，Ctrl+C 会落在这个窗口。
+   只收外壳的子进程。会话的父任务是 1 号，它的子进程是显示和外壳，不能收。
+   子进程变成退出码 130 的僵尸，随后的 wait 自己取走。
+   spawn 的回复还没交（code 为 -2）时回 0。不要把 pid 回进 spawn，外壳会当成启动失败。
+   外壳已经停在别的调用里时不要 pass，也不要 schedule。没有回复就 schedule 会停掉监督核。 */
+deRfun procBreakParked(): long {
+  long index = 0L;
+  long end = taskScanEnd();
+  long parked = -1L;
+  long child = -1L;
+  while (index < end) {
+    Task* task = taskAt(index);
+    /* ppid 大于 1 才是外壳，不是会话。会话的子进程是显示和外壳本身。 */
+    if (task.pid > 1L && task.ppid > 1L && task.waitFor == 0L && task.state != TaskState::Zombie && task.state != TaskState::Empty) {
+      long parentPid = task.pid;
+      long scan = 0L;
+      while (scan < end) {
+        Task* born = taskAt(scan);
+        if (born.pid > 1L && born.ppid == parentPid && born.state != TaskState::Zombie && born.state != TaskState::Empty) {
+          parked = index;
+          child = scan;
+          scan = end;
+          index = end;
+        }
+        scan = scan + 1L;
+      }
+    }
+    index = index + 1L;
+  }
+  if (parked < 0L || child < 0L) {
+    return 0L;
+  }
+  Task* parent = taskAt(parked);
+  long parentPid = parent.pid;
+  long parentCore = parent.core;
+  Task* who = taskAt(child);
+  long core = who.core;
+  if (core == obr::os::core()) {
+    return 0L;
+  }
+  long running = query(1L, 5L, core);
+  long why = query(1L, 11L, core);
+  if (taskFind(core) == child && why != 2L && running != 0L) {
+    long slot = slotHold(child);
+    if (slot < 0L) {
+      return 0L;
+    }
+    obr::os::capture(core, slot);
+  }
+  dropOwnCall(core);
+  conInterrupt(core);
+  taskAccount(child, TaskState::Zombie);
+  who = taskAt(child);
+  who.state = TaskState::Zombie;
+  who.code = 130L;
+  who.held = 0L;
+  diagTask(2L, who.pid, parentPid, 130L);
+  long back = parent.held - 1L;
+  long spawnReply = 0L;
+  if (parent.code == -2L) {
+    spawnReply = 1L;
+  }
+  parent.code = 0L;
+  /* 僵尸还占着 pid，taskCount 不会是 0。映像不卸的话，任何命令都会继续往环里写。 */
+  if (parentCore != core && liveBeside(core, child) == 0L) {
+    obr::os::release(core);
+  }
+  /* spawn 还没回复，必须回 0，外壳才会走到 wait。其它情况别 pass。
+     外壳的 wait 可能还在监督核的保持位里，先回 0 会和后面的 wait 回复叠在一起。
+     子进程已经是僵尸，wait 取到就返回。父进程还在跑时也不必再 schedule。
+     真正的叫醒留到环倒空之后。 */
+  if (spawnReply == 1L) {
+    if (parentCore == core && back >= 0L) {
+      taskBind(parentCore, parked);
+      obr::os::restore(parentCore, back);
+    }
+    breakWake(1L, parentCore, 0L);
+  } else if (parentCore == core && back >= 0L) {
+    taskBind(parentCore, parked);
+    obr::os::restore(parentCore, back);
+    breakWake(2L, parentCore, parked);
+  }
+  return 1L;
+}
+
+/* Ctrl+C 要停掉正在被等的子进程。认 waitFor 不是 0 的任务；写回可能已经把它标成正在跑。
+   同核派生时父任务还停在 spawn 里，code 是 -2，waitFor 还没写上。这种也收掉它的子进程，再把 spawn 回成 0。
    没有，或者没能停掉，返回 0，键盘仍入队字节 3。真正停掉才返回 1，这次不要入队。
    1 号自己一直在 wait，读键盘的任务 waitFor 仍是 0。把 1 号算成等待者的话，字节 3 永远进不了队列。
    所以 1 号不作这次的等待者，也不杀 pid 1。
    waitFor 大于 0 就是那个 pid。等于 -1 时，找 ppid 是这个等待者、还没成僵尸的子进程，只停第一个。
-   子进程若在等待者自己那颗核上，或就在监督核上，不停。
+   子进程若就在监督核上，不停。和等待者同一颗核时，映像是子任务，父任务在槽里，退出时先把槽放回去再回复。
    退出码是 130，即 128 加中断信号 2。不另设信号 9，免得同一圈 schedSweep 再按 9 收一次。
    不把子进程改成就绪，也不再 schedule。
    停止原因 2 是正停在系统调用里。空转把执行位留成 1，原因仍是 2，所以先看原因。
-   这条不 capture。正在跑才先拿槽再 capture，停在下一条。已经停着的直接收。
-   拿不到槽就不停。父任务正在等时，procExit 会把 130 回复过去。
-   procExit 收的是这颗核上 taskFind 的那一格。对不上这个子进程就不动。 */
+   正在跑、而且 taskFind 就是这个子进程时，才先拿槽再 capture，停在下一条。
+   已经停着，或 taskFind 看见的是同核父任务时，直接按子进程那一格收，不 capture。
+   拿不到槽就不停。父任务正在等时，procExit 会把 130 回复过去。 */
 deRfun procBreak(): long {
   long index = 0L;
   long end = taskScanEnd();
   long waiter = -1L;
   while (index < end) {
     Task* task = taskAt(index);
-    if (task.pid > 1L && task.state == TaskState::Sleeping && task.waitFor != 0L) {
+    /* 不要求 Sleeping。写回把父任务标成正在跑之后，waitFor 仍指着前台子任务。 */
+    if (task.pid > 1L && task.waitFor != 0L && task.state != TaskState::Zombie && task.state != TaskState::Empty) {
       waiter = index;
       break;
     }
     index = index + 1L;
   }
   if (waiter < 0L) {
-    return 0L;
+    return procBreakParked();
   }
   Task* parent = taskAt(waiter);
   long parentPid = parent.pid;
@@ -261,25 +678,27 @@ deRfun procBreak(): long {
     return 0L;
   }
   long core = who.core;
-  if (core == parentCore || core == obr::os::core()) {
-    return 0L;
-  }
-  if (taskFind(core) != child) {
+  if (core == obr::os::core()) {
     return 0L;
   }
   long running = query(1L, 5L, core);
   long why = query(1L, 11L, core);
-  if (why != 2L && running != 0L) {
+  /* 环写满时父子都睡，taskFind 看见父任务。停在系统调用里时执行位仍是 1。
+     映像不是这个子任务时不能 capture，否则会把父任务的寄存器抄进子任务的槽。
+     直接按这一格收。同核时 procExit 会先把父任务的槽放回去。
+     领不到槽也收，不能把这次 Ctrl+C 丢掉。 */
+  if (taskFind(core) == child && why != 2L && running != 0L) {
     long slot = slotHold(child);
-    if (slot < 0L) {
-      return 0L;
+    if (slot >= 0L) {
+      obr::os::capture(core, slot);
     }
-    obr::os::capture(core, slot);
   }
   dropOwnCall(core);
-  /* 先拨光标、放开键盘等待，再收进程。收的时候才会把父进程叫醒。 */
+  /* 先拨光标、放开键盘等待，再收进程。收的时候才会把父进程叫醒。
+     任何前台命令都走这里，不看命令名。先记下这次是中断，退出时先清输出再回复外壳。 */
   conInterrupt(core);
-  procExit(core, 130L);
+  breakNow(1L);
+  procExitAt(child, 130L);
   return 1L;
 }
 
@@ -289,7 +708,8 @@ deRfun procCollect(): void {
   long end = taskScanEnd();
   while (index < end) {
     Task* task = taskAt(index);
-    if (task.state == TaskState::Zombie && task.pid != 1L && taskByPid(task.ppid) < 0L) {
+    /* 清扫中的僵尸还没收完（析构还在跑），留给 procSwept 收。 */
+    if (task.state == TaskState::Zombie && sweepHolds(index) == 0L && task.pid != 1L && taskByPid(task.ppid) < 0L) {
       if (taskByPid(1L) >= 0L) {
         task.ppid = 1L;
       } else {

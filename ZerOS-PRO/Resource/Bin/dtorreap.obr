@@ -1,0 +1,61 @@
+/* M2 触发点 (d) 端到端探针的驱动任务：
+   派生 /bin/dtorvictim（argv 继承 "hold" 时它持有析构对象后挂起），kill(9) 弃弃它，
+   等清扫交回后核对见证文件两个八位组：0 = LIFO 累积 21，1 = 调用次数 2。
+   核对通过退出 0；调用次数不对时退出码就是次数（直接暴露现场）。 */
+import memory;
+import obr.oct;
+import obr.os;
+import obr.proc;
+import arg;
+
+deRfun plantText(long home, string text): void {
+  int raw = length(text);
+  long count = raw;
+  memory::store64(count, obr::proc::path(home));
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(text[index], obr::proc::path(home) + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun finish(long home, long code): int {
+  obr::proc::exit(home, code);
+  return 0;
+}
+
+deRfun main(): int {
+  long home = obr::proc::home();
+  plantText(home, "/bin/dtorvictim");
+  /* argv 继承给受害任务：命令行带 "hold"（corpus: dtorreap hold）时它才挂起。 */
+  if (obr::proc::spawn(home, 0L) != 0L) {
+    return finish(home, 1L);
+  }
+  long pid = obr::proc::slot(home, 192L);
+  /* 等受害任务构造完并挂起。清扫是微秒级，这里给足余量。 */
+  obr::os::dwell(500L);
+  if (obr::proc::kill(home, pid, 9L) != 0L) {
+    return finish(home, 2L);
+  }
+  /* 清扫交回后才收得到它（清扫中的僵尸按未退出处理）。 */
+  obr::proc::wait(home, pid);
+  plantText(home, "/temp/test/reap.txt");
+  /* fd 在 home+192（open 的返回是状态，全语料同一约定）。 */
+  if (obr::proc::open(home, 0L) != 0L) {
+    return finish(home, 3L);
+  }
+  long fd = obr::proc::slot(home, 192L);
+  obr::proc::read(home, fd, 0L, 2L);
+  obr::proc::close(home, fd);
+  if (obr::proc::slot(home, 320L) != 2L) {
+    return finish(home, 4L);
+  }
+  long sum = memory::loadOctet(obr::proc::bytes(home)) & 255L;
+  long calls = memory::loadOctet(obr::proc::bytes(home) + 8L) & 255L;
+  if (calls != 2L) {
+    /* 析构被多跑/少跑：退出码就是调用次数，直接暴露现场。
+       0 不作退出码：读到全 0 的见证是读错了位置，退 5，不能被误当成通过。 */
+    return finish(home, calls == 0L ? 5L : calls);
+  }
+  return finish(home, sum == 21L ? 0L : 6L);
+}

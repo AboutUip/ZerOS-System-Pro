@@ -1,0 +1,7 @@
+/* span-oct 自包含对照用的指令声明头：与 ZerOS-PRO/Hardware/Memory/memory.mr 同名同参
+   （memory::loadOctet / memory::storeOctet），调用处收成一条已有 ZAP，不建栈帧。
+   用独立模块名 octmem 是为了让 examples/ 的编译不与 memory.mr 抢模块名。 */
+namespace memory {
+deRfun loadOctet(long address): long;
+deRfun storeOctet(long value, long address): void;
+}

@@ -1043,7 +1043,8 @@ export namespace ZerOS {
           const instruction = createMemoryInstruction(opcode, address, data);
           const direction = memoryOpcodeDirection(instruction.Opcode);
           if (direction === ChannelDirectionRead) {
-            return { value: ExecuteLoad(instruction), found: 0, span: null };
+            const loaded = ExecuteLoad(instruction);
+            return { value: loaded, found: 0, span: null };
           }
           ExecuteStore(instruction);
           /* 只认整字。拆开的八位组由另一条路径拼回去，避免高位的 0 把开关盖掉。 */

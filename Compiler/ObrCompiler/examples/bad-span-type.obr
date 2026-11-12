@@ -1,0 +1,8 @@
+/* M-B 反例：span 元素类型非法——string 是引用语义，没有单一值宽度。编译应当失败：
+   span 的元素类型只接受标量和指针。 */
+#VERSION 2
+
+deRfun main(): long {
+  var[span[string]] s = span[string](1048576, 2L);
+  return 0;
+}

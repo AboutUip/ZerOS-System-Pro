@@ -1,0 +1,17 @@
+/* Plan 2 M4：未授权的类不能访问 private 字段。编译应当失败：访问私有成员 Account::balance。 */
+#VERSION 2
+
+class Account {
+  private long balance;
+  deRfun Account(long start): void { balance = start; }
+}
+
+class Stranger {
+  deRfun peek(Account a): long { return a.balance; }
+}
+
+deRfun main(): int {
+  Account a = new Account(1);
+  Stranger s = new Stranger();
+  return 0;
+}

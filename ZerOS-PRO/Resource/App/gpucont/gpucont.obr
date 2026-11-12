@@ -1,0 +1,101 @@
+#DYN
+/* GPU .zo restart continuity：读服务 69 的旧 frames → svc56 op8（SIGTERM 导出）
+   → 等旧实例退出 → 重新装入 /drivers/gpu.zo → 读服务 69。
+   成功 42：新 base >= 旧 frames 且 base > 0。结果同时写入 /temp/gpu.cont，
+   避免 shell 的退出交付问题影响验收。 */
+import memory;
+import obr.os;
+import obr.proc;
+
+deRfun setPath(long home, string path): void {
+  long count = length(path);
+  memory::store64(count, home + 16384L);
+  long index = 0L;
+  while (index < count) {
+    memory::storeOctet(path[index], home + 16384L + 64L + index * 8L);
+    index = index + 1L;
+  }
+}
+
+deRfun putVerdict(long home, long code): void {
+  setPath(home, "/temp/gpu.cont");
+  memory::store64(1L, home + 128L);
+  long opened = obr::os::svc(5L);
+  if (opened != 0L) {
+    return;
+  }
+  long fd = memory::load64(home + 192L);
+  memory::store64(fd, home + 128L);
+  memory::store64(0L, home + 192L);
+  memory::store64(1L, home + 256L);
+  memory::storeOctet(code, home + 131072L);
+  obr::os::svc(8L);
+  memory::store64(fd, home + 128L);
+  obr::os::svc(6L);
+}
+
+deRfun main(): int {
+  /* write/truncate: flags at +128 must be set before svc5, path already at +16384. */
+  long home = obr::proc::home();
+  memory::store64(2L, home + 64L);
+  long got = obr::os::svc(69L);
+  long before = 0L;
+  if (got == 16L) {
+    before = memory::load64(home + 131072L);
+  }
+  home = obr::proc::home();
+  memory::store64(0L, home + 128L);
+  memory::store64(8L, home + 64L);
+  obr::os::svc(56L);
+  long live = 1L;
+  long waits = 0L;
+  while (live > 0L && waits < 30L) {
+    home = obr::proc::home();
+    memory::store64(10L, home + 64L);
+    live = obr::os::svc(56L);
+    if (live > 0L) {
+      obr::os::dwell(50L);
+    }
+    waits = waits + 1L;
+  }
+  home = obr::proc::home();
+  setPath(home, "/drivers/gpu.zo");
+  long status = 11L;
+  long tries = 0L;
+  while (status == 11L && tries < 30L) {
+    home = obr::proc::home();
+    memory::store64(0L, home + 128L);
+    memory::store64(1L, home + 64L);
+    status = obr::os::svc(56L);
+    if (status == 11L) {
+      obr::os::dwell(100L);
+    }
+    tries = tries + 1L;
+  }
+  if (status != 0L) {
+    home = obr::proc::home();
+    putVerdict(home, 254L);
+    return 0;
+  }
+  obr::os::dwell(800L);
+  home = obr::proc::home();
+  memory::store64(2L, home + 64L);
+  got = obr::os::svc(69L);
+  if (got != 16L) {
+    putVerdict(home, 253L);
+    return 0;
+  }
+  long frames = memory::load64(home + 131072L);
+  long base = memory::load64(home + 131136L);
+  long code = 42L;
+  if (base < 1L) {
+    code = 250L;
+  } else if (base < before) {
+    code = 251L;
+  } else if (frames < base) {
+    code = 252L;
+  }
+  home = obr::proc::home();
+  putVerdict(home, code);
+  return 0;
+}

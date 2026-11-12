@@ -1,0 +1,468 @@
+/* 内建纯核心的自检：名字表、数字、引号、字段切分、getopts 解析和状态块。
+   编成原生映像后由宿主核对三格：用例数、失败数、第一处失败。不进引导，也不打开终端。
+   这里只跑纯计算，不开文件、不派生、不写屏幕。三格在跑完后一次抄给宿主。 */
+#LINK /builtin-check.obr
+import memory;
+import builtin;
+import bcore;
+import bstate;
+
+deRfun casesBit(): long {
+  return 33488896L;
+}
+
+deRfun failsBit(): long {
+  return 33488960L;
+}
+
+deRfun firstBit(): long {
+  return 33489024L;
+}
+
+deRfun tick(): long {
+  static long now = 0L;
+  now = now + 1L;
+  return now;
+}
+
+deRfun expect(boolean ok, long id): void {
+  memory::store64(memory::load64(casesBit()) + 1L, casesBit());
+  if (!ok) {
+    if (memory::load64(firstBit()) == 0L) {
+      memory::store64(id, firstBit());
+    }
+    memory::store64(memory::load64(failsBit()) + 1L, failsBit());
+    memory::store64(id, 33488320L + memory::load64(failsBit()) * 64L);
+  }
+}
+
+deRfun report(): void {
+  memory::store64(memory::load64(casesBit()), 2097152L);
+  memory::store64(memory::load64(failsBit()), 2097216L);
+  memory::store64(memory::load64(firstBit()), 2097280L);
+}
+
+deRfun bsAt(): long {
+  return 33554432L;
+}
+
+deRfun blobAt(): long {
+  return 33832960L;
+}
+
+deRfun plant(long addr, string text): long {
+  int raw = length(text);
+  int index = 0;
+  while (index < raw) {
+    memory::storeOctet(text[index], addr + index * 8L);
+    index = index + 1;
+  }
+  long count = raw;
+  return count;
+}
+
+deRfun strIs(long addr, long count, string text): long {
+  long len = length(text);
+  if (count != len) {
+    return 0L;
+  }
+  return bcSame(addr, count, blobAt() + 200000L, plant(blobAt() + 200000L, text));
+}
+
+
+deRfun idIs(string text, long want): void {
+  long at = blobAt();
+  expect(builtinId(at, plant(at, text)) == want, tick());
+}
+
+deRfun nameCases(): void {
+  idIs(":", 1L);
+  idIs("cd", 2L);
+  idIs(".", 3L);
+  idIs("exit", 4L);
+  idIs("history", 5L);
+  idIs("clear", 6L);
+  idIs("alias", 7L);
+  idIs("bg", 8L);
+  idIs("break", 9L);
+  idIs("command", 10L);
+  idIs("continue", 11L);
+  idIs("echo", 12L);
+  idIs("eval", 13L);
+  idIs("exec", 14L);
+  idIs("export", 15L);
+  idIs("false", 16L);
+  idIs("fc", 17L);
+  idIs("fg", 18L);
+  idIs("getopts", 19L);
+  idIs("hash", 20L);
+  idIs("jobs", 21L);
+  idIs("kill", 22L);
+  idIs("newgrp", 23L);
+  idIs("pwd", 24L);
+  idIs("read", 25L);
+  idIs("readonly", 26L);
+  idIs("return", 27L);
+  idIs("set", 28L);
+  idIs("shift", 29L);
+  idIs("times", 30L);
+  idIs("trap", 31L);
+  idIs("true", 32L);
+  idIs("type", 33L);
+  idIs("ulimit", 34L);
+  idIs("umask", 35L);
+  idIs("unalias", 36L);
+  idIs("unset", 37L);
+  idIs("wait", 38L);
+  idIs("ls", 0L);
+  idIs("", 0L);
+  idIs("CD", 0L);
+  idIs("cdd", 0L);
+  expect(builtinSpecial(1L) == 1L && builtinSpecial(3L) == 1L && builtinSpecial(4L) == 1L, tick());
+  expect(builtinSpecial(9L) == 1L && builtinSpecial(11L) == 1L && builtinSpecial(13L) == 1L, tick());
+  expect(builtinSpecial(14L) == 1L && builtinSpecial(15L) == 1L && builtinSpecial(26L) == 1L, tick());
+  expect(builtinSpecial(27L) == 1L && builtinSpecial(28L) == 1L && builtinSpecial(29L) == 1L, tick());
+  expect(builtinSpecial(30L) == 1L && builtinSpecial(31L) == 1L && builtinSpecial(37L) == 1L, tick());
+  expect(builtinSpecial(2L) == 0L && builtinSpecial(7L) == 0L && builtinSpecial(12L) == 0L, tick());
+  expect(builtinSpecial(25L) == 0L && builtinSpecial(33L) == 0L && builtinSpecial(38L) == 0L, tick());
+}
+
+
+deRfun numCases(): void {
+  long at = blobAt();
+  long value = -1L;
+  long len = plant(at, "42");
+  expect(bcDec(at, len, &value) == 0L && value == 42L, tick());
+  len = plant(at, "");
+  expect(bcDec(at, len, &value) == 1L, tick());
+  len = plant(at, "12x");
+  expect(bcDec(at, len, &value) == 1L, tick());
+  len = plant(at, "0");
+  expect(bcDec(at, len, &value) == 0L && value == 0L, tick());
+  len = plant(at, "022");
+  expect(bcOct(at, len, &value) == 0L && value == 18L, tick());
+  len = plant(at, "088");
+  expect(bcOct(at, len, &value) == 1L, tick());
+  len = plant(at, "777");
+  expect(bcOct(at, len, &value) == 0L && value == 511L, tick());
+  expect(strIs(at, bcPutDec(at, 127L), "127") == 1L, tick());
+  expect(strIs(at, bcPutDec(at, 0L), "0") == 1L, tick());
+  expect(strIs(at, bcPutOct3(at, 18L), "022") == 1L, tick());
+  expect(strIs(at, bcPutOct3(at, 511L), "777") == 1L, tick());
+  expect(bcName(at, plant(at, "HOME")) == 1L && bcName(at, plant(at, "_x9")) == 1L, tick());
+  expect(bcName(at, plant(at, "9x")) == 0L && bcName(at, plant(at, "a-b")) == 0L, tick());
+  expect(bcSame(at, plant(at, "ab"), at, 2L) == 1L && bcSame(at, plant(at, "ab"), at, 3L) == 0L, tick());
+}
+
+
+deRfun quoteCases(): void {
+  long at = blobAt();
+  long out = at + 512L;
+  long n = plant(at, "hi");
+  expect(strIs(out, bcQuote(out, at, n), "'hi'") == 1L, tick());
+  n = plant(at, "it's");
+  expect(strIs(out, bcQuote(out, at, n), "'it'\\''s'") == 1L, tick());
+  expect(strIs(out, bcQuote(out, at, 0L), "''") == 1L, tick());
+  n = plant(at, "a\\b");
+  expect(strIs(out, bcUnescape(out, at, n, 0L), "ab") == 1L, tick());
+  expect(strIs(out, bcUnescape(out, at, n, 1L), "a\\b") == 1L, tick());
+  n = plant(at, "x\\");
+  expect(strIs(out, bcUnescape(out, at, n, 0L), "x\\") == 1L, tick());
+  n = plant(at, "\\\\");
+  expect(strIs(out, bcUnescape(out, at, n, 0L), "\\") == 1L, tick());
+}
+
+
+deRfun split3(long at, long lineLen, long ifs, long ifsLen, long out): long {
+  long pos = 0L;
+  long n = 0L;
+  long len = 0L;
+  while (n < 3L) {
+    if (bcSplitField(at, lineLen, &pos, ifs, ifsLen, out + n * 1024L, 64L, &len) == 0L) {
+      break;
+    }
+    memory::store64(len, out + 3072L + n * 64L);
+    n = n + 1L;
+  }
+  return n;
+}
+
+
+deRfun splitIs(string line, string ifs, long want, string f0, string f1, string f2): void {
+  long at = blobAt();
+  long lineLen = plant(at, line);
+  long ifsLen = plant(at + 2048L, ifs);
+  long out = at + 4096L;
+  long n = split3(at, lineLen, at + 2048L, ifsLen, out);
+  long ok = 1L;
+  if (n != want) {
+    ok = 0L;
+  }
+  if (want > 0L && strIs(out, memory::load64(out + 3072L), f0) == 0L) {
+    ok = 0L;
+  }
+  if (want > 1L && strIs(out + 1024L, memory::load64(out + 3136L), f1) == 0L) {
+    ok = 0L;
+  }
+  if (want > 2L && strIs(out + 2048L, memory::load64(out + 3200L), f2) == 0L) {
+    ok = 0L;
+  }
+  expect(ok == 1L, tick());
+}
+
+
+deRfun tailIs(string line, string ifs, long skip, string want): void {
+  long at = blobAt();
+  long lineLen = plant(at, line);
+  long ifsLen = plant(at + 2048L, ifs);
+  long pos = 0L;
+  long len = 0L;
+  long n = 0L;
+  while (n < skip) {
+    if (bcSplitField(at, lineLen, &pos, at + 2048L, ifsLen, at + 4096L, 64L, &len) == 0L) {
+      n = skip;
+    }
+    n = n + 1L;
+  }
+  long rest = bcTrimTail(at + pos * 8L, lineLen - pos, at + 2048L, ifsLen);
+  expect(strIs(at + pos * 8L, rest, want) == 1L, tick());
+}
+
+
+deRfun fieldCases(): void {
+  splitIs("a b c", " ", 3L, "a", "b", "c");
+  splitIs("  a  b  ", " ", 2L, "a", "b", "");
+  splitIs("", " ", 0L, "", "", "");
+  splitIs("   ", " ", 0L, "", "", "");
+  splitIs("x", " ", 1L, "x", "", "");
+  splitIs("a:b:c", ":", 3L, "a", "b", "c");
+  splitIs("a::b", ":", 3L, "a", "", "b");
+  splitIs(":a", ":", 2L, "", "a", "");
+  splitIs("a:", ":", 1L, "a", "", "");
+  splitIs("a : b", " :", 2L, "a", "b", "");
+  splitIs("a :b", " :", 2L, "a", "b", "");
+  splitIs("a b", ":", 1L, "a b", "", "");
+  splitIs(" a ", " ", 1L, "a", "", "");
+  tailIs("a b c", " ", 2L, "c");
+  tailIs("a b  ", " ", 1L, "b");
+  tailIs("a:b:", ":", 2L, "");
+  tailIs("a: ", ":", 1L, " ");
+  tailIs("a b ", " ", 1L, "b");
+  tailIs("a=b=c", "=", 1L, "b=c");
+}
+
+
+deRfun goTable(): long {
+  return blobAt() + 60000L;
+}
+
+deRfun goOptStr(): long {
+  return blobAt() + 68000L;
+}
+
+deRfun goArgIx(): long {
+  return blobAt() + 70000L;
+}
+
+deRfun goCharIx(): long {
+  return blobAt() + 70064L;
+}
+
+deRfun goOptind(): long {
+  return blobAt() + 70128L;
+}
+
+deRfun goNameAt(): long {
+  return blobAt() + 70192L;
+}
+
+deRfun goArgAt(): long {
+  return blobAt() + 70256L;
+}
+
+deRfun goBad(): long {
+  return blobAt() + 70320L;
+}
+
+deRfun goNameLen(): long {
+  return blobAt() + 70384L;
+}
+
+deRfun goArgLen(): long {
+  return blobAt() + 70448L;
+}
+
+
+deRfun goSetup(string opt, string a0, string a1, string a2): void {
+  plant(goOptStr(), opt);
+  memory::store64(plant(goTable() + 64L, a0), goTable());
+  memory::store64(plant(goTable() + 640L + 64L, a1), goTable() + 640L);
+  memory::store64(plant(goTable() + 1280L + 64L, a2), goTable() + 1280L);
+  memory::store64(1L, goArgIx());
+  memory::store64(1L, goCharIx());
+  memory::store64(1L, goOptind());
+}
+
+
+deRfun goStep(long argc, long optLen): long {
+  return bcGetopts(goTable(), argc, goOptStr(), optLen, (long*)goArgIx(), (long*)goCharIx(),
+                   (long*)goOptind(), goNameAt(), (long*)goNameLen(),
+                   goArgAt(), (long*)goArgLen(), (long*)goBad());
+}
+
+
+deRfun goNameIs(string want): long {
+  return strIs(goNameAt(), memory::load64(goNameLen()), want);
+}
+
+
+deRfun goArgIs(string want): long {
+  return strIs(goArgAt(), memory::load64(goArgLen()), want);
+}
+
+
+deRfun optCases(): void {
+  long optLen = 0L;
+  goSetup("ab", "-a", "-b", "");
+  optLen = plant(goOptStr(), "ab");
+  expect(goStep(2L, optLen) == 0L && goNameIs("a") == 1L && memory::load64(goOptind()) == 2L, tick());
+  expect(goStep(2L, optLen) == 0L && goNameIs("b") == 1L && memory::load64(goOptind()) == 3L, tick());
+  expect(goStep(2L, optLen) == 1L && goNameIs("?") == 1L && memory::load64(goOptind()) == 3L, tick());
+  goSetup("ab", "-ab", "", "");
+  optLen = plant(goOptStr(), "ab");
+  expect(goStep(1L, optLen) == 0L && goNameIs("a") == 1L && memory::load64(goOptind()) == 1L, tick());
+  expect(goStep(1L, optLen) == 0L && goNameIs("b") == 1L && memory::load64(goOptind()) == 2L, tick());
+  goSetup("ab", "-a", "x", "-b");
+  optLen = plant(goOptStr(), "ab");
+  expect(goStep(3L, optLen) == 0L && goNameIs("a") == 1L, tick());
+  expect(goStep(3L, optLen) == 1L && memory::load64(goOptind()) == 2L, tick());
+  goSetup("ab", "--", "-a", "");
+  optLen = plant(goOptStr(), "ab");
+  expect(goStep(2L, optLen) == 1L && memory::load64(goOptind()) == 2L, tick());
+  goSetup("a:", "-a", "val", "");
+  optLen = plant(goOptStr(), "a:");
+  expect(goStep(2L, optLen) == 0L && goNameIs("a") == 1L && goArgIs("val") == 1L, tick());
+  expect(memory::load64(goOptind()) == 3L, tick());
+  goSetup("a:", "-aval", "", "");
+  optLen = plant(goOptStr(), "a:");
+  expect(goStep(1L, optLen) == 0L && goNameIs("a") == 1L && goArgIs("val") == 1L, tick());
+  goSetup("a:", "-a", "", "");
+  optLen = plant(goOptStr(), "a:");
+  expect(goStep(1L, optLen) == 3L && goNameIs("?") == 1L && memory::load64(goArgLen()) == -1L, tick());
+  expect(memory::load64(goOptind()) == 2L && memory::load64(goBad()) == 97L, tick());
+  goSetup(":a:", "-x", "", "");
+  optLen = plant(goOptStr(), ":a:");
+  expect(goStep(1L, optLen) == 2L && goNameIs("?") == 1L && goArgIs("x") == 1L, tick());
+  goSetup("ab", "-x", "", "");
+  optLen = plant(goOptStr(), "ab");
+  expect(goStep(1L, optLen) == 2L && goNameIs("?") == 1L && memory::load64(goArgLen()) == -1L, tick());
+  goSetup("a:", "-a", "-b", "");
+  optLen = plant(goOptStr(), "a:");
+  expect(goStep(2L, optLen) == 0L && goNameIs("a") == 1L && goArgIs("-b") == 1L, tick());
+  goSetup("ab", "-", "", "");
+  optLen = plant(goOptStr(), "ab");
+  expect(goStep(1L, optLen) == 1L && memory::load64(goOptind()) == 1L, tick());
+  goSetup("ab", "", "", "");
+  optLen = plant(goOptStr(), "ab");
+  expect(goStep(1L, optLen) == 1L && memory::load64(goOptind()) == 1L, tick());
+  goSetup("a:b", "-ab", "", "");
+  optLen = plant(goOptStr(), "a:b");
+  expect(goStep(1L, optLen) == 0L && goNameIs("a") == 1L && goArgIs("b") == 1L, tick());
+  expect(bcOptFind(goOptStr(), optLen, 97L) == 2L && bcOptFind(goOptStr(), optLen, 98L) == 1L, tick());
+  expect(bcOptFind(goOptStr(), optLen, 122L) == 0L, tick());
+  optLen = plant(goOptStr(), ":a");
+  expect(bcOptFind(goOptStr(), optLen, 97L) == 1L && bcOptFind(goOptStr(), optLen, 58L) == 0L, tick());
+}
+
+
+deRfun tableCases(): void {
+  long bs = bsAt();
+  bsInit(bs);
+  expect(bsUmask(bs) == 18L && bsWord(bs, 128L) == 1L, tick());
+  expect(bsOptOn(bs, 64L) == 0L, tick());
+  bsOptSet(bs, 64L, 1L);
+  bsOptSet(bs, 2L, 1L);
+  expect(bsOptOn(bs, 64L) == 1L && bsOptOn(bs, 2L) == 1L && bsOptOn(bs, 1L) == 0L, tick());
+  bsOptSet(bs, 64L, 0L);
+  expect(bsOptOn(bs, 64L) == 0L && bsOptOn(bs, 2L) == 1L, tick());
+  long at = blobAt();
+  expect(bsAliasSet(bs, at, plant(at, "ll"), at + 128L, plant(at + 128L, "ls -l")) == 0L, tick());
+  expect(bsAliasCount(bs) == 1L && bsAliasFind(bs, at, 2L) == 0L, tick());
+  expect(bsAliasFind(bs, at + 2048L, plant(at + 2048L, "zz")) == -1L, tick());
+  expect(strIs(bsAliasValueAt(bs, 0L), bsAliasValueLen(bs, 0L), "ls -l") == 1L, tick());
+  expect(bsAliasSet(bs, at, 2L, at + 128L, plant(at + 128L, "cd")) == 0L && bsAliasCount(bs) == 1L, tick());
+  expect(strIs(bsAliasValueAt(bs, 0L), bsAliasValueLen(bs, 0L), "cd") == 1L, tick());
+  expect(bsAliasDel(bs, at, 2L) == 0L && bsAliasCount(bs) == 0L && bsAliasDel(bs, at, 2L) == 1L, tick());
+  expect(bsRoHas(bs, at, plant(at, "RO")) == 0L, tick());
+  expect(bsRoAdd(bs, at, plant(at, "RO")) == 0L && bsRoHas(bs, at, 2L) == 1L, tick());
+  expect(bsRoDel(bs, at, 2L) == 0L && bsRoHas(bs, at, 2L) == 0L && bsRoDel(bs, at, 2L) == 1L, tick());
+  expect(bsHashPut(bs, at, plant(at, "ls"), at + 128L, plant(at + 128L, "/bin/ls")) == 0L, tick());
+  long slot = bsHashFind(bs, at, 2L);
+  expect(slot == 0L && strIs(bsHashPathAt(bs, slot), bsHashPathLen(bs, slot), "/bin/ls") == 1L, tick());
+  expect(bsHashPut(bs, at, 2L, at + 128L, plant(at + 128L, "/os/ls")) == 0L && bsHashCount(bs) == 1L, tick());
+  expect(strIs(bsHashPathAt(bs, 0L), bsHashPathLen(bs, 0L), "/os/ls") == 1L, tick());
+  bsHashReset(bs);
+  expect(bsHashCount(bs) == 0L && bsHashFind(bs, at, 2L) == -1L, tick());
+  expect(bsPosSet(bs, 0L, at, plant(at, "one")) == 0L && bsPosSet(bs, 1L, at + 128L, plant(at + 128L, "two")) == 0L, tick());
+  bsPosKeep(bs, 2L);
+  expect(bsPosCount(bs) == 2L && strIs(bsPosAt(bs, 1L), bsPosLen(bs, 1L), "two") == 1L, tick());
+  expect(bsPosShift(bs, 1L) == 0L && bsPosCount(bs) == 1L, tick());
+  expect(strIs(bsPosAt(bs, 0L), bsPosLen(bs, 0L), "two") == 1L, tick());
+  expect(bsPosShift(bs, 2L) == 1L && bsPosCount(bs) == 1L, tick());
+  expect(bsPosShift(bs, 1L) == 0L && bsPosCount(bs) == 0L, tick());
+  expect(bsTrapState(bs, 2L) == 0L, tick());
+  expect(bsTrapSet(bs, 2L, 2L, at, plant(at, "echo hi")) == 0L && bsTrapState(bs, 2L) == 2L, tick());
+  expect(strIs(bsTrapActionAt(bs, 2L), bsTrapActionLen(bs, 2L), "echo hi") == 1L, tick());
+  expect(bsTrapSet(bs, 2L, 1L, at, 0L) == 0L && bsTrapState(bs, 2L) == 1L && bsTrapActionLen(bs, 2L) == 0L, tick());
+  expect(bsTrapSet(bs, 9L, 2L, at, 1L) == 0L, tick());
+  expect(bsGuardHas(bs, at, plant(at, "ll")) == 0L, tick());
+  expect(bsGuardPush(bs, at, 2L) == 0L && bsGuardHas(bs, at, 2L) == 1L, tick());
+  bsGuardPop(bs);
+  expect(bsGuardHas(bs, at, 2L) == 0L, tick());
+  expect(bsSaveKeep(bs, 0L, at, plant(at, "IFS"), 1L, at + 128L, plant(at + 128L, "old")) == 0L, tick());
+  expect(bsSaveSet(bs, 0L) == 1L && bsSaveNameLen(bs, 0L) == 3L, tick());
+  expect(strIs(bsSaveValueAt(bs, 0L), bsSaveValueLen(bs, 0L), "old") == 1L, tick());
+  expect(bsSaveKeep(bs, 1L, at, plant(at, "N"), 0L, at + 128L, 0L) == 0L && bsSaveSet(bs, 1L) == 0L, tick());
+}
+
+
+deRfun textCases(): void {
+  long at = blobAt();
+  expect(bcText(at, plant(at, "INT"), "INT") == 1L, tick());
+  expect(bcText(at, plant(at, "INT"), "IN") == 0L, tick());
+  expect(bcText(at, plant(at, ""), "") == 1L, tick());
+  expect(bcText(at, plant(at, "Ab"), "Ab") == 1L, tick());
+  expect(bcText(at, plant(at, "cd"), "CD") == 0L, tick());
+}
+
+
+deRfun sigCases(): void {
+  long at = blobAt();
+  long number = -2L;
+  expect(bcSigOperand(at, plant(at, "INT"), &number) == 1L && number == 2L, tick());
+  expect(bcSigOperand(at, plant(at, "sigterm"), &number) == 1L && number == 15L, tick());
+  expect(bcSigOperand(at, plant(at, "EXIT"), &number) == 1L && number == 0L, tick());
+  expect(bcSigOperand(at, plant(at, "9"), &number) == 1L && number == 9L, tick());
+  expect(bcSigOperand(at, plant(at, "chld"), &number) == 1L && number == 17L, tick());
+  expect(bcSigOperand(at, plant(at, "NOPE"), &number) == 0L, tick());
+  expect(bcSigName(at, plant(at, "kill")) == 9L, tick());
+  expect(bcSigName(at, plant(at, "xcpu")) == 24L, tick());
+  expect(bcSigName(at, plant(at, "sys")) == 31L, tick());
+}
+
+
+deRfun main(): int {
+  nameCases();
+  numCases();
+  quoteCases();
+  fieldCases();
+  optCases();
+  tableCases();
+  textCases();
+  sigCases();
+  report();
+  return 0;
+}
+
+
+
